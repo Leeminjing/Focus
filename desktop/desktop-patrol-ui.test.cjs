@@ -68,6 +68,8 @@ if (!process.versions.electron) {
   const submissionAttempts = [];
   let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null, loopRevision = 1;
   const controlChanges = [];
+  const restartRequests = [], currentLoops = new Map();
+  let restartError = false, releaseRestartSnapshot = null, holdRestartSnapshot = false;
   const conversationReads = [], externalLinks = [], previewReads = [], sharedActions = [];
   const answerText = revision => `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${revision}\n\n## 处理结果\n\n**已完成检查**，可以继续阅读详细说明。\n\n${"正文按自然段阅读，代码与表格保留原有结构。\n\n".repeat(8)}\n\n\`\`\`js\nconst value = "<safe>";\n\`\`\`\n\n| 文件 | 状态 |\n| --- | --- |\n| result.md | 已生成 |\n\n[参考链接](https://example.com/result)\n\n[查看报告](<reports/中文 报告.md>)\n\n<script>window.answerInjected=true</script>`;
   const workspace = id => ({ workspace_id: id, display_name: id === "workspace-a" ? "设计工作区 A" : "验证工作区 B", path: `C:\\fixture\\${id}` });
@@ -93,7 +95,13 @@ if (!process.versions.electron) {
   }
   function snapshot(loopId) {
     return { loop_id: loopId, last_sequence: liveSequence,
-      loop: entity(loopId, { status: statusOverride || (completed ? "completed" : "running"), revision: loopRevision, interaction_mode: "workspace_patrol", waiting_reason: null,
+      loop: entity(loopId, { status: statusOverride || (completed ? "waiting_user" : "running"), revision: loopRevision, interaction_mode: "workspace_patrol", waiting_reason: completed ? "awaiting_input" : null,
+        current_round_id: "delivery-round", goal_revision: 1,
+        final_result: completed ? { summary: "完成截图分析并生成报告", round_id: "delivery-round", goal_revision: 1,
+          verification: { verification_id: "accepted-delivery", conclusion: "satisfied", criteria: [
+            { check_id: "report", status: "satisfied", explanation: "报告内容检查通过" },
+            { check_id: "optional", status: "unknown", explanation: "可选平台尚未验证" },
+          ], unresolved: ["optional"] }, final_path: [{ context_id: "context-answer", revision_id: "revision-answer", title: "分析报告" }] } : {},
         authority_revision: authorityRevision, created_at: new Date(Date.now() - 600000).toISOString(),
         grant: { status: "active", budgets: activeBudget }, usage: { model_calls: 40, input_tokens: 100000, output_tokens: 5000, rounds: 5, retries: 0 } }),
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
@@ -170,10 +178,18 @@ if (!process.versions.electron) {
       uploads.push({ workspaceId: upload[1], submissionId: url.searchParams.get("submission_id"), itemId: url.searchParams.get("item_id"), bytes });
       return json(response, { material_id: `material-${uploads.length}`, sha256: "a".repeat(64) });
     }
+    const restart = url.pathname.match(/^\/desktop\/api\/agent-loops\/workspace\/([^/]+)\/restart$/);
+    if (restart) {
+      restartRequests.push(restart[1]);
+      if (restartError) return json(response, { detail: "前序执行尚未安全结算" }, 409);
+      const loopId = `loop-restarted-${restartRequests.length}`;
+      currentLoops.set(restart[1], loopId); statusOverride = "running";
+      return json(response, { loop_id: loopId, status: "running" });
+    }
     const input = url.pathname.match(/^\/desktop\/api\/agent-loops\/workspace\/([^/]+)(\/inputs)?$/);
     if (input) {
       const id = input[1];
-      if (!input[2]) { workspaceReads.push(id); return json(response, history.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null); }
+      if (!input[2]) { workspaceReads.push(id); return json(response, history.has(id) ? { loop_id: currentLoops.get(id) || `loop-${id}`, workspace_id: id } : null); }
       if (request.method === "GET") {
         if (failWorkspaceInputs) { failWorkspaceInputs--; return json(response,{detail:"暂时读取失败"},503); }
         const requestedIds = url.searchParams.getAll("intent_ids");
@@ -186,14 +202,17 @@ if (!process.versions.electron) {
       const receipt = { ...body, ...(body.attachments ? {attachments:body.attachments.map(item => ({...item,
         relative_path:`.focus/attachments/${item.source_kind === "image" ? "粘贴截图.png" : "参考文字.txt"}`,
         material_kind:item.source_kind === "image" ? "image" : "text",digest:item.sha256}))} : {}),
-        intent_id: `intent-${requests.length + 1}`, loop_id: `loop-${id}`, status: "accepted", created_at: new Date().toISOString() };
+        intent_id: `intent-${requests.length + 1}`, loop_id: currentLoops.get(id) || `loop-${id}`, status: "accepted", created_at: new Date().toISOString() };
       requests.push({ workspaceId: id, body });
       history.set(id, [...(history.get(id) || []), receipt]);
       if (dropReceipt) { dropReceipt = false; hiddenSubmission = body.submission_id; return; }
       return json(response, receipt);
     }
     const live = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live$/);
-    if (live) return json(response, snapshot(live[1]));
+    if (live) {
+      if (holdRestartSnapshot && live[1].startsWith("loop-restarted-")) await new Promise(resolve => { releaseRestartSnapshot = resolve; });
+      return json(response, snapshot(live[1]));
+    }
     const liveHistory = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live\/history$/);
     if (liveHistory) return json(response, { loop_id: liveHistory[1], last_sequence: liveSequence, authority_revision: authorityRevision,
       items: [], next_before_sequence: null, minimum_sequence: 1, truncated: false });
@@ -432,6 +451,17 @@ if (!process.versions.electron) {
     assert.ok(streams.has("loop-workspace-a"));
     assert.notEqual(streams.get("loop-workspace-a"),streamBeforeReload,"刷新后的状态必须发送给新页面建立的连接");
     streams.get("loop-workspace-a").write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: 2 })}\n\n`);
+    await waitFor(host.panel, "!document.querySelector('#delivery').hidden", "已验收的常驻 Patrol 必须展示本次交付");
+    assert.match(await run(host.panel, "document.querySelector('#status').textContent"), /本次工作已交付/);
+    assert.match(await run(host.panel, "document.querySelector('#delivery').textContent"), /完成截图分析并生成报告.*验收通过 1 项 · 仍未解决 1 项/s);
+    assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "A 的草稿");
+    assert.equal(await run(host.panel, "document.querySelector('#toggle-work').disabled"), false);
+    await run(host.panel, "document.querySelector('#delivery details').open=true; document.querySelector('#delivery').scrollIntoView({block:'start'})");
+    await capture(host.panel, "desktop-accepted-delivery");
+    assert.equal(await run(host.panel, "document.querySelector('#delivery').scrollWidth <= document.querySelector('#delivery').clientWidth + 1"), true);
+    await run(host.panel, "document.querySelector('#delivery details').open=false; document.querySelector('[data-patrol-delivery-context]').click()");
+    await run(workbench, "window.target=null;window.focusDesktop.patrol.onWorkbench(value=>window.target=value);window.focusDesktop.patrol.ready()");
+    await waitFor(workbench, "window.target?.revisionId === 'revision-answer'", "交付入口必须传递验收时的固定结果版本");
     await waitFor(host.panel, "document.querySelector('#results').textContent.includes('截图中的机器人已经接住材料')", "已提交回答未显示");
     const resultText = await run(host.panel, "document.querySelector('#results').textContent");
     assert.equal(await run(host.panel, "document.querySelector('#results [data-context-id]').dataset.contextId"), "context-answer");
@@ -503,10 +533,10 @@ if (!process.versions.electron) {
     await run(host.panel, "new Promise(resolve=>setTimeout(resolve,80))");
     assert.equal(conversationReads.length, readsBefore + 1, "再次展开应复用 Revision 缓存");
     await run(host.panel, "window.resultObserver.disconnect()");
+    await run(workbench, "window.target=null");
     await run(host.panel, "document.querySelector('#results [data-context-id]').click()");
     for (let i = 0; i < 120 && (!workbench || !workbench.webContents.getURL().endsWith("/desktop/")); i++) await delay(40);
     assert.ok(workbench);
-    await run(workbench, "window.target=null; window.focusDesktop.patrol.onWorkbench(value=>window.target=value); window.focusDesktop.patrol.ready()");
     await waitFor(workbench, "Boolean(window.target)", "工作台未收到来源定位");
     assert.deepEqual(await run(workbench, "window.target"), { workspaceId: "workspace-a", taskId: "context-answer", revisionId: answerRevision });
     await host.openPanel();
@@ -647,6 +677,41 @@ if (!process.versions.electron) {
     await waitFor(host.panel, "document.querySelector('#instruction').value === '重启后继续编辑' && document.querySelector('.patrol-material-card img')?.complete && document.querySelector('#history-items').textContent.includes('服务端已受理但回执丢失') && ![...document.querySelectorAll('#history-items small')].some(node => node.textContent.startsWith('未确认'))", "跨来源重启后未恢复草稿或核对回执");
     assert.equal(requests.length, requestsBeforeLostReceipt + 1, "服务端已受理的输入不能在重启后重发");
     assert.equal(uploads.length, 2, "重启恢复不能自动上传草稿附件");
+    for (const terminal of ["stopped", "failed"]) {
+      const loopId = currentLoops.get("workspace-a") || "loop-workspace-a";
+      for (let i = 0; i < 120 && !streams.has(loopId); i++) await delay(20);
+      assert.ok(streams.has(loopId), "重新启用验收前工作状态应已连接");
+      statusOverride = terminal; liveSequence++; loopRevision++;
+      streams.get(loopId).write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: liveSequence })}\n\n`);
+      await waitFor(host.panel, "!document.querySelector('#restart-work').hidden && !document.querySelector('#restart-work').disabled", "终态应原位显示重新启用");
+      const before = requests.length, restartCount = restartRequests.length;
+      await run(host.panel, "document.querySelector('#instruction').value='继续，换个方案'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#send').click()");
+      await waitFor(host.panel, "document.querySelector('#recovery-message').textContent === '这条输入已保存，重新启用后处理。' && document.querySelector('#receipt').textContent === '已保存'", "已保存和重新启用必须区分");
+      assert.equal(requests.length, before + 1);
+      assert.equal(restartRequests.length, restartCount, "发送不得自动重新启用");
+      await capture(host.panel, `desktop-saved-${terminal}`);
+      await run(host.panel, "document.querySelector('#instruction').value='保留后续草稿'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true}))");
+      if (terminal === "stopped") {
+        restartError = true;
+        await run(host.panel, "document.querySelector('#restart-work').click()");
+        await waitFor(host.panel, "!document.querySelector('#error').hidden && !document.querySelector('#restart-work').disabled", "重新启用失败应保留入口");
+        assert.match(await run(host.panel, "document.querySelector('#error').textContent"), /尚未安全结算/);
+        restartError = false;
+      }
+      const attempts = restartRequests.length;
+      holdRestartSnapshot = true; releaseRestartSnapshot = null;
+      await run(host.panel, "document.querySelector('#restart-work').click(); document.querySelector('#restart-work').click()");
+      await waitFor(host.panel, "document.querySelector('#recovery-message').textContent.includes('正在确认工作状态')", "HTTP 回执不能声称已经恢复");
+      assert.equal(restartRequests.length, attempts + 1);
+      assert.equal(await run(host.panel, "document.querySelector('#restart-work').disabled"), true);
+      for (let i = 0; i < 120 && !releaseRestartSnapshot; i++) await delay(20);
+      assert.ok(releaseRestartSnapshot);
+      holdRestartSnapshot = false; releaseRestartSnapshot();
+      await waitFor(host.panel, "document.querySelector('#recovery-message').textContent === '工作已重新启用。' && document.querySelector('#restart-work').hidden", "Live 确认后才显示重新启用成功");
+      assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "保留后续草稿");
+      assert.equal(requests.length, before + 1, "重新启用不得重复提交输入");
+      await capture(host.panel, `desktop-reactivated-${terminal}`);
+    }
     assert.deepEqual(errors, []);
     console.log("PATROL_UI_PASS preview-before-binding, pathless-image, screenshot-paste, remove, explicit-send, IME guard, CtrlEnter, workspace isolation, pause-resume-stop, control-acceptance-and-Live, hide/restore, accepted-is-not-complete, committed-answer-source, independent-progress, hidden-refresh-budget, revision-cache, reload-recovery, new-port-recovery, lost-receipt-reconciliation");
   }

@@ -35,6 +35,10 @@ class ContextRunPool:
         self._concurrency = max(1, concurrency)
         self._tasks: dict[str, tuple[str, int, asyncio.Task]] = {}
         self._drain_lock = asyncio.Lock()
+        self._wake = lambda: None
+
+    def bind_wakeup(self, wake) -> None:
+        self._wake = wake
 
     async def drain(self, loop_id: str | None = None) -> int:
         async with self._drain_lock:
@@ -61,6 +65,7 @@ class ContextRunPool:
                 name=f"loop-context-run:{loop_id}:{round_id}",
             )
             self._tasks[round_id] = (loop_id, slots, task)
+            task.add_done_callback(self._launch_done)
             capacity -= slots
             started += 1
         return started
@@ -109,15 +114,22 @@ class ContextRunPool:
                 if str(round_id) not in self._tasks
             )
 
-    async def _launch(self, loop_id: str, round_id: str, capacity: int) -> None:
+    def _launch_done(self, task: asyncio.Task) -> None:
+        """Only progress wakes the pool; expired authority must not hot-loop."""
+        if not task.cancelled() and task.exception() is None and task.result():
+            self._wake()
+
+    async def _launch(self, loop_id: str, round_id: str, capacity: int) -> bool:
         claim = CoordinatorClaim("context-pool", loop_id, round_id, "0")
         try:
-            await self._coordinator.dispatch_ready(claim, self._dispatcher, capacity)
+            run_ids = await self._coordinator.dispatch_ready(claim, self._dispatcher, capacity)
+            return bool(run_ids)
         except asyncio.CancelledError:
             await self._set_reason(round_id, "component_stopped")
             raise
         except Exception as exc:
             await self._set_reason(round_id, f"launch_retry:{str(exc)[:500]}")
+            return False
 
     async def _active_run_count(self, loop_id: str | None = None) -> int:
         async with self._sessions() as session:

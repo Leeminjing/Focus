@@ -37,12 +37,13 @@ def _runtime(workspace, permissions):
 
 
 def test_select_workspace_tools_by_permission(tmp_path):
-    assert [t.name for t in select_workspace_tools(["read"])] == ["read_file", "list_files"]
-    assert [t.name for t in select_workspace_tools(["read", "write"])] == ["read_file", "list_files", "write_file"]
+    read_names = ["read_file", "read_file_lines", "list_files", "search_files", "search_text"]
+    assert [t.name for t in select_workspace_tools(["read"])] == read_names
+    assert [t.name for t in select_workspace_tools(["read", "write"])] == [*read_names, "write_file", "edit_file"]
     full = {t.name for t in select_workspace_tools(["read", "write", "host_command"])}
-    assert full == {"read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"}
+    assert full == {*read_names, "write_file", "edit_file", "bash", "powershell", "cmd", "sh"}
     # 默认只读
-    assert [t.name for t in select_workspace_tools(None)] == ["read_file", "list_files"]
+    assert [t.name for t in select_workspace_tools(None)] == read_names
 
 
 def test_read_file_within_workspace(tmp_path):
@@ -193,5 +194,6 @@ def test_read_file_unknown_extension_falls_back_to_utf8(tmp_path):
 
 def test_all_tools_registered():
     assert [t.name for t in WORKSPACE_TOOLS] == [
-        "read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh",
+        "read_file", "read_file_lines", "list_files", "search_files", "search_text",
+        "write_file", "edit_file", "bash", "powershell", "cmd", "sh",
     ]

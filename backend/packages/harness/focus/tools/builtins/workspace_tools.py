@@ -1,7 +1,7 @@
 """本文件对外提供工作区内置工具，供桌面 Agent 在真实宿主机工作区执行。
 
 对外提供:
-    WORKSPACE_TOOLS — 全部工作区内置工具列表（read_file/list_files/write_file/bash/powershell/cmd/sh）
+    WORKSPACE_TOOLS — 文件读取、代码定位、精确编辑和四种 Shell 的默认工具列表
     TOOL_NAMES_BY_PERMISSION — 权限 → 工具名映射（read/write/host_command）
     select_workspace_tools(permissions) — 按权限过滤工具
 
@@ -11,8 +11,9 @@
     提供，由执行层在运行起点派生，工具自身不接受扁平字段充当授权。
 
 输出:
-    read_file/list_files → 文件文本/目录列表
-    write_file → 写入结果说明
+    read_file/list_files → 兼容的文件文本/目录列表
+    read_file_lines/search_files/search_text/edit_file → 有界 JSON 页、搜索匹配或实际 diff
+    write_file → 整文件写入结果说明
     bash/powershell/cmd/sh → 含实际模式、受限状态、退出状态、截断标记与独立清理告警的执行事实
 
 具体工作流:
@@ -25,13 +26,13 @@
     (5) Shell 先排除 Windows WSL 启动器，再绑定服务端执行身份和本次调用；受限模式经 Focus Windows ACL 后端执行，
         Windows 三档模式共用可取消且等待进程树退出的 Job；POSIX 完全访问使用可取消进程组，受限模式明确不可用；实际启动前将服务端清理回执置 unknown，明确未启动或清理确认后才解除结算屏障；后端失败不启动替代命令
 
-效果声明：三个文件工具的目标就是参数里的 path，可由确定性解析完整枚举，故声明为可结构化
-枚举；四个 Shell 仅因实际走受限后端而声明受限效果，未知宿主工具仍按不透明效果审批。
+效果声明：直接文件工具枚举 path；递归搜索显式声明 read_trees 及祖先忽略文件，
+由准入点检查树下的权柄面。四个 Shell 声明受限效果，未知工具仍按不透明效果审批。
 
 示例:
     tools = select_workspace_tools(["read", "write"])
-    # → [read_file, list_files, write_file]
-已授权 write_file 在真实写入前后调用注入的文件观察端口；Shell 仅在清理已确认后交付工作区变化，端口缺省时沿用原执行。
+    # → 只读工具 + write_file/edit_file
+已授权 write_file/edit_file 在真实写入前后调用文件观察端口；Shell 清理确认后交付变化。
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ import atexit
 import json
 import os
 import shutil
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -62,15 +64,23 @@ from focus.security.effects import (
     declare_effect,
     structured_fs,
 )
+from focus.tools.builtins.workspace_search import search
+from focus.tools.builtins.workspace_text import (
+    TextEdit, atomic_replace, check_version, edit_feedback, read_lines, read_utf8, replace_text,
+)
 
-WORKSPACE_TOOL_NAMES = frozenset({"read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"})
+WORKSPACE_TOOL_NAMES = frozenset({
+    "read_file", "read_file_lines", "list_files", "search_files", "search_text",
+    "write_file", "edit_file", "bash", "powershell", "cmd", "sh",
+})
+_EDIT_LOCK = threading.Lock()
 _SHELL_BACKEND = WindowsAclBackend()
 _POSIX_SHELL_BACKEND = PosixShellBackend()
 atexit.register(_SHELL_BACKEND.close)
 
 TOOL_NAMES_BY_PERMISSION: dict[str, list[str]] = {
-    "read": ["read_file", "list_files"],
-    "write": ["write_file"],
+    "read": ["read_file", "read_file_lines", "list_files", "search_files", "search_text"],
+    "write": ["write_file", "edit_file"],
     "host_command": ["bash", "powershell", "cmd", "sh"],
 }
 
@@ -114,9 +124,116 @@ def _write_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> Resol
     return ResolvedFsEffect(writes=(target,), args=_stamped_args(args, target))
 
 
+def _edit_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    target = _declared_target(args, context)
+    return ResolvedFsEffect(reads=(target,), writes=(target,), args=_stamped_args(args, target))
+
+
+def _search_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    policy = policy_from_context(context)
+    target = canonical_target(policy.workspace, str(args.get("path") or "."))
+    # 子目录搜索要读取工作区祖先的忽略文件；这些具体文件也经过同一个准入点。
+    parents = tuple(parent for parent in target.parents
+                    if parent == policy.workspace or parent.is_relative_to(policy.workspace))
+    ignores = tuple(parent / name for parent in parents
+                    for name in (".gitignore", ".ignore", ".rgignore"))
+    return ResolvedFsEffect(reads=ignores, read_trees=(target,), args=_stamped_args(args, target))
+
+
+@tool
+def read_file_lines(
+    path: str, runtime: ToolRuntime[dict], start_line: int = 1, max_lines: int = 200,
+    start_column: int = 1, expected_sha256: str | None = None,
+) -> str:
+    """优先用此工具读取代码：UTF-8 文件最多 4 MiB，返回行号、SHA-256 和有界 JSON 页。
+
+    行/列从 1 开始，每页最多 500 行/20000 字符。按 next_line/next_column 继续读取，
+    可传 expected_sha256 防止分页期间版本漂移。每行 line_ending 保留原换行，供多行精确编辑；
+    UTF-8 BOM 由 utf8_bom 标记，不计入首列。文档材料请用 read_file。
+    """
+    policy, permissions = _runtime_values(runtime)
+    if "read" not in permissions:
+        raise PermissionError("当前运行未授权 read")
+    return json.dumps(read_lines(_interpret_target(policy, path), start_line, max_lines,
+                                start_column, expected_sha256), ensure_ascii=False)
+
+
+@tool
+def search_files(
+    runtime: ToolRuntime[dict], pattern: str = "*", path: str = ".",
+    max_results: int = 100, include_hidden: bool = False,
+) -> str:
+    """递归按 glob 搜索文件路径（如 *.py），返回有界 JSON；需要 read，不依赖 Shell。
+
+    遵守工作区和子目录的 .gitignore/.ignore/.rgignore；默认跳过隐藏项，始终跳过 .git
+    和目录链接。最多 200 个结果；truncated/incomplete 表示应缩小路径或条件后重试。
+    """
+    policy, permissions = _runtime_values(runtime)
+    if "read" not in permissions:
+        raise PermissionError("当前运行未授权 read")
+    return json.dumps(search(_interpret_target(policy, path), policy.workspace, pattern=pattern,
+                             query=None, max_results=max_results, include_hidden=include_hidden),
+                      ensure_ascii=False)
+
+
+@tool
+def search_text(
+    query: str, runtime: ToolRuntime[dict], path: str = ".", file_pattern: str = "*",
+    max_results: int = 100, context_lines: int = 2, case_sensitive: bool = True,
+    include_hidden: bool = False,
+) -> str:
+    """搜索 UTF-8 文件中的字面文本（非正则），按匹配行返回路径、行列及有界上下文 JSON。
+
+    忽略规则同 search_files；path 可为目录或显式文件。每文件最多 4 MiB，默认最多 100
+    个匹配行，可调至 200；context_lines 为 0..5。超限/不可读会明确标记 incomplete。
+    """
+    policy, permissions = _runtime_values(runtime)
+    if "read" not in permissions:
+        raise PermissionError("当前运行未授权 read")
+    return json.dumps(search(_interpret_target(policy, path), policy.workspace, pattern=file_pattern,
+                             query=query, max_results=max_results, context_lines=context_lines,
+                             case_sensitive=case_sensitive, include_hidden=include_hidden),
+                      ensure_ascii=False)
+
+
+@tool
+def edit_file(
+    path: str, edits: list[TextEdit], runtime: ToolRuntime[dict],
+    expected_sha256: str | None = None, requested_mode: str | None = None,
+    reason: str | None = None,
+) -> str:
+    """局部编辑现有 UTF-8 文件，需要 read/write。edits 为 old_text/new_text 精确替换列表。
+
+    所有 old_text 都必须在原文件中唯一匹配，区间不得重叠；全部验证后一次提交。
+    不做换行或空白归一化。建议传 read_file_lines 的 sha256 作为 expected_sha256；
+    版本/内容不匹配时不写入，重新读取后重试。返回实际 diff（有界）、前后 SHA-256。
+    """
+    policy, permissions = _runtime_values(runtime)
+    for permission in ("read", "write"):
+        if permission not in permissions:
+            raise PermissionError(f"当前运行未授权 {permission}")
+    with _EDIT_LOCK:
+        target = checked_write_target(policy, path)
+        original, text = read_utf8(target)
+        check_version(original, expected_sha256)
+        normalized = [item if isinstance(item, TextEdit) else TextEdit.model_validate(item) for item in edits]
+        updated = replace_text(text, normalized).encode("utf-8")
+        feedback = edit_feedback(target, original, updated)
+        if original != updated:
+            capture = security_context_of(runtime.context).extras.get("file_version_capture")
+            if capture is not None:
+                capture.before_write(target)
+            if checked_write_target(policy, str(target)) != target:
+                raise ToolException("写入路径已变化，未修改；请重新读取")
+            atomic_replace(target, original, updated)
+            if capture is not None:
+                capture.after_write(target, updated)
+    return json.dumps(feedback, ensure_ascii=False)
+
+
 @tool
 def read_file(path: str, runtime: ToolRuntime[dict]) -> str:
-    """读取当前工作区内文件；path 可以是绝对路径或相对工作区路径，支持 .pdf/.docx/.doc。"""
+    """读取完整文本或 .pdf/.docx/.doc 材料；代码优先用 read_file_lines，减少整文件输出。"""
     policy, permissions = _runtime_values(runtime)
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
@@ -170,6 +287,8 @@ def _recoverable_path_error(error: ToolException) -> str:
 
 read_file.handle_tool_error = _recoverable_path_error
 list_files.handle_tool_error = _recoverable_path_error
+for _text_tool in (read_file_lines, search_files, search_text, edit_file):
+    _text_tool.handle_tool_error = _recoverable_path_error
 
 
 @tool
@@ -309,7 +428,10 @@ def powershell(
     return _run_shell(command, runtime, "powershell.exe", ["-NoProfile", "-Command"])
 
 
-WORKSPACE_TOOLS: list[Any] = [read_file, list_files, write_file, bash, powershell, cmd, sh]
+WORKSPACE_TOOLS: list[Any] = [
+    read_file, read_file_lines, list_files, search_files, search_text,
+    write_file, edit_file, bash, powershell, cmd, sh,
+]
 
 
 def select_workspace_tools(permissions: list[str]) -> list[Any]:
@@ -323,7 +445,7 @@ def select_workspace_tools(permissions: list[str]) -> list[Any]:
 
     工作流:
         (1) 归一化权限并去重
-        (2) read → read_file/list_files；write → write_file；host_command → 4 个 shell
+        (2) read → 读取/搜索；write → write_file/edit_file；host_command → 4 个 shell
     """
     normalized = list(dict.fromkeys(["read"] if permissions is None else permissions))
     names: set[str] = set()
@@ -336,6 +458,9 @@ READ_TARGET_EFFECT = structured_fs(_read_targets)
 WRITE_TARGET_EFFECT = structured_fs(_write_targets)
 
 declare_effect(read_file, READ_TARGET_EFFECT)
+declare_effect(read_file_lines, READ_TARGET_EFFECT)
 declare_effect(list_files, READ_TARGET_EFFECT)
+declare_all_effects([search_files, search_text], structured_fs(_search_targets))
 declare_effect(write_file, WRITE_TARGET_EFFECT)
+declare_effect(edit_file, structured_fs(_edit_targets))
 declare_all_effects([bash, powershell, cmd, sh], SANDBOXED_SHELL_EFFECT)

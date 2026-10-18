@@ -29,6 +29,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopDelegationGrant,
     LoopDirective,
     LoopRound,
+    LoopAction,
 )
 from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceFingerprinter
 from backend.app.desktop.workspace_coordination.git_worktree import GitWorktreeIsolationProvider, WorkspaceIsolationCapacity
@@ -93,6 +94,11 @@ class WorkspaceRunPlanner:
                 intent = WorkspaceIntentDeriver.derive(await resolve_directive_equipment(session, loop, directive))
                 (readers if intent.mode.value == "read" else writers).append(directive)
             occupied, writing = await self._activity(session, loop.workspace_id)
+            repair_directives = []
+            for directive in directives:
+                action = await session.get(LoopAction, directive.action_id)
+                if action and action.payload.get("workspace_repair"):
+                    repair_directives.append(directive)
             other_claim = await session.scalar(select(LoopDirective.directive_id).where(
                 LoopDirective.loop_id == loop_id, LoopDirective.status == "launching",
                 LoopDirective.directive_id.not_in(directive_ids)).limit(1))
@@ -105,6 +111,18 @@ class WorkspaceRunPlanner:
         if authoritative.slot_id in writing:
             await self._queue(loop_id, directives, "authoritative_writer_active")
             return ()
+        if repair_directives:
+            # Never let the normal single-writer fallback place a repair in the target.
+            if len(directives) != 1 or occupied:
+                await self._queue(loop_id, directives, "workspace_repair_waiting")
+                return ()
+            from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair
+
+            try:
+                return (await WorkspaceConflictRepair(self._sessions).plan(repair_directives[0]),)
+            except WorkspaceIsolationCapacity:
+                await self._queue(loop_id, directives, "workspace_isolation_quota")
+                return ()
         plans = [WorkspaceRunPlan(row.directive_id, authoritative.slot_id, "read") for row in readers]
         if not writers:
             return tuple(plans)

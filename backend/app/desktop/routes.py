@@ -20,6 +20,7 @@ import uuid
 from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from backend.app.desktop.session_patrol.contracts import SourcePreviewRequest
+from backend.app.desktop.conversation_inputs import ConversationInputCreate
 
 from backend.app.desktop.models import (
     BatchDeleteRequest,
@@ -329,6 +330,8 @@ async def start_main_run(
     idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
     request_identity = body.idempotency_key or idempotency_header or uuid.uuid4().hex
+    if body.message_reference and body.message_reference.task_id != task_id:
+        raise HTTPException(422, "引用必须来自当前会话")
     loop_service = getattr(request.app.state, "agent_loop_service", None)
     if loop_service is not None:
         accepted = await loop_service.user_message(task_id, _loop_message_text(body.message),
@@ -344,6 +347,7 @@ async def start_main_run(
     message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"focus:direct-user-message:{request_identity}").hex
     prepared = await request.app.state.desktop_service.start_main_run(
         task_id=task_id, message=body.message, model_name=body.model_name,
+        message_reference=body.message_reference.model_dump() if body.message_reference else None,
         permissions=body.permissions, skills=body.skills, spatial_focus=body.spatial_focus,
         memory_ids=body.memory_ids,
         material_inputs=[RunMaterialRequest(material_id=item.material_id, note=item.note)
@@ -354,6 +358,25 @@ async def start_main_run(
     )
     request.app.state.desktop_service.notify_run_dispatch()
     return prepared.payload
+
+
+@desktop_router.post("/tasks/{task_id}/main/inputs")
+async def submit_conversation_input(task_id: str, body: "ConversationInputCreate", request: Request,
+    idempotency_header: str = Header(alias="Idempotency-Key", min_length=1, max_length=160)) -> dict:
+    service = request.app.state.desktop_service
+    accepted = await service.conversation_inputs.submit(task_id, body, idempotency_header)
+    service.notify_run_dispatch()
+    return accepted
+
+
+@desktop_router.delete("/tasks/{task_id}/main/inputs/{input_id}")
+async def withdraw_conversation_input(task_id: str, input_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.conversation_inputs.withdraw(task_id, input_id)
+
+
+@desktop_router.get("/tasks/{task_id}/main/inputs")
+async def list_conversation_inputs(task_id: str, request: Request) -> list[dict]:
+    return await request.app.state.desktop_service.conversation_inputs.list(task_id)
 
 
 @desktop_router.post("/drafts/{draft_id}/preview")

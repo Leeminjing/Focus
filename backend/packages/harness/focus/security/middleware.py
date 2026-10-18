@@ -26,6 +26,7 @@ from focus.security.context import security_context_of
 from focus.security.escalation import escalation_request_id, validate_escalation
 from focus.security.execution import bind_call_execution
 from focus.security.live_mode import refreshed_runtime_context
+from focus.security.paths import is_within
 from focus.security.effects import EffectContract, ToolEffectKind, effect_of, resolve_fs_effect
 from focus.security.policy import (
     AccessDecision,
@@ -230,7 +231,7 @@ def _admit_escalation(
             raise ValueError("只有结构化写操作可以申请文件模式放宽")
         if "write" not in security_context_of(context).authorization.permissions:
             return _Admission(False, args, capability_denied="write")
-        reads, writes = resolved.reads, resolved.writes
+        reads, writes = _structured_reads(resolved, policy), resolved.writes
         rewritten = resolved.args if resolved.args is not None else args
         candidate = replace(policy, mode=target_mode)
         denied = tuple(
@@ -256,6 +257,15 @@ def _admit_escalation(
     return _Admission(True, rewritten, reads, writes, approval, requested_mode=target_mode)
 
 
+def _structured_reads(resolved, policy: AccessPolicy) -> tuple[Path, ...]:
+    """递归根覆盖其下的权柄面；不读取内容即可生成保守的准入目标。"""
+    return tuple(dict.fromkeys((
+        *resolved.reads, *resolved.read_trees,
+        *(surface.path for surface in policy.authority
+          if any(is_within(root, surface.path) for root in resolved.read_trees)),
+    )))
+
+
 def _admit_structured(
     request: ToolCallRequest,
     policy: AccessPolicy,
@@ -265,26 +275,27 @@ def _admit_structured(
 ) -> _Admission:
     """可结构化枚举的调用：解析全部受治理目标后逐目标判定。"""
     resolved = resolve_fs_effect(contract, args, context)
+    reads = _structured_reads(resolved, policy)
     rewritten = resolved.args if resolved.args is not None else args
     if resolved.writes and "write" not in security_context_of(context).authorization.permissions:
         return _Admission(False, rewritten, capability_denied="write")
-    if resolved.reads and "read" not in security_context_of(context).authorization.permissions:
+    if reads and "read" not in security_context_of(context).authorization.permissions:
         return _Admission(False, rewritten, capability_denied="read")
     denied = tuple(
         target for target in resolved.writes
         if decide_path_access(policy, target, AccessOperation.WRITE) is AccessDecision.DENY
     )
     if denied:
-        return _Admission(False, rewritten, resolved.reads, resolved.writes, denied=denied)
+        return _Admission(False, rewritten, reads, resolved.writes, denied=denied)
     pending = [
-        *_pending(policy, resolved.reads, AccessOperation.READ),
+        *_pending(policy, reads, AccessOperation.READ),
         *_pending(policy, resolved.writes, AccessOperation.WRITE),
     ]
     if not pending:
-        return _Admission(False, rewritten, resolved.reads, resolved.writes)
+        return _Admission(False, rewritten, reads, resolved.writes)
     return _Admission(
-        True, rewritten, resolved.reads, resolved.writes,
-        _request(request, policy, resolved.reads, resolved.writes),
+        True, rewritten, reads, resolved.writes,
+        _request(request, policy, reads, resolved.writes),
     )
 
 

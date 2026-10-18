@@ -1,7 +1,7 @@
 """本文件对外提供 make_lead_agent 的统一角色执行图工厂。
 
-输入为显式模型目录、稳定基础行为、实际工具与冻结 selected context、inbox／attempt 端口；输出为 CompiledStateGraph。
-具体工作流为装配唯一 Provider 模型入口及安全最外层，依次处理耐久 inbox 和完整请求压缩预算，
+输入为显式模型目录、稳定基础行为、实际工具与冻结 selected context、user_input／inbox／attempt 端口；输出为 CompiledStateGraph。
+具体工作流为装配唯一 Provider 模型入口，用户补充先否决过时调用，工具仍无条件经过安全准入层，再处理耐久 inbox 和完整请求压缩预算，
 历史重建后统一准备 WorldState、冻结 selected context、有效 replay 分支和 typed authority，
 再由 create_agent 执行 sampling／工具交换。Scoped context 与运行状态进入 input，基础行为独立进入 instructions；
 工具执行 ledger 保留不确定恢复边界；WorldState 与 typed bridge 在 sync checkpoint 提交，模型审计独立于任务语义。
@@ -117,6 +117,7 @@ async def make_lead_agent(
     frozen_contexts: tuple[FrozenContext, ...] = (),
     world_skill_catalog: dict | None = None,
     inbox_middleware: AgentMiddleware | None = None,
+    user_input_middleware: AgentMiddleware | None = None,
     attempt_middleware: AgentMiddleware | None = None,
     preparation_observer=None,
 ) -> CompiledStateGraph:
@@ -171,7 +172,9 @@ async def make_lead_agent(
 
 
     middlewares = [AccessPolicyMiddleware(), ToolExecutionMiddleware(), *middlewares]
-    middleware = [middlewares[0], *([inbox_middleware] if inbox_middleware is not None else []), *middlewares[1:]]
+    # 用户补充先否决过时的工具调用，再进入该工具的访问审批和执行审计。
+    middleware = [*([user_input_middleware] if user_input_middleware is not None else []),
+                  middlewares[0], *([inbox_middleware] if inbox_middleware is not None else []), *middlewares[1:]]
     tail = [TypedHistoryMiddleware(), *([attempt_middleware] if attempt_middleware is not None else [])]
     tool_catalog = compile_agent_tool_catalog(tools, [*middleware, *tail])
     from focus.agents.compression.gate import CompressionGate

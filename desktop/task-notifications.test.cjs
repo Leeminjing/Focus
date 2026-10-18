@@ -12,6 +12,34 @@ function fixture(stored = {}) {
 }
 const task = (id, status, extra = {}) => ({ task_id: id, title: `任务 ${id}`, latest_run: { run_id: id, status }, ...extra });
 
+test("accepted deliveries notify per verification across repeated work on a resident Patrol", async () => {
+  const f = fixture();
+  const loop = { loop_id: "patrol", workspace_id: "workspace", initial_context_id: "root", interaction_mode: "workspace_patrol",
+    status: "waiting_user", waiting_reason: "awaiting_input" };
+  const rows = () => [task("child", "success", { loop }), task("root", null, { loop, latest_run: null })];
+  f.set(rows());
+  await f.service.poll();
+  loop.delivery = { verification_id: "first", conclusion: "satisfied" };
+  await f.service.poll();
+  await f.service.poll();
+  assert.equal(f.shown.length, 1);
+  assert.equal(f.shown[0].title, "本次工作已交付");
+  assert.deepEqual(f.shown[0].target, { taskId: "root", loopId: "patrol", workspaceId: "workspace", deliveryId: "first" });
+  loop.status = "running";
+  await f.service.poll();
+  loop.status = "waiting_user";
+  await f.service.poll();
+  assert.equal(f.shown.length, 1, "讨论后待输入不重放上次交付");
+  loop.delivery = { verification_id: "second", conclusion: "satisfied" };
+  await f.service.poll();
+  assert.equal(f.shown.length, 2);
+  const restart = fixture(f.saved());
+  restart.set(rows());
+  await restart.service.poll();
+  assert.equal(restart.shown.length, 0);
+  assert.doesNotMatch(JSON.stringify(f.saved()), /任务 root/);
+});
+
 test("initial results stay quiet; new results notify after attention and only once", async () => {
   const f = fixture();
   f.set([task("old", "success")]);
@@ -26,6 +54,28 @@ test("initial results stay quiet; new results notify after attention and only on
   await f.service.poll();
   assert.equal(f.shown.length, 3);
   assert.equal(f.updates.length, 3);
+});
+
+test("unverified waits never notify and startup or muted accepted deliveries do not replay", async () => {
+  const loop = { loop_id: "patrol", workspace_id: "workspace", initial_context_id: "root", interaction_mode: "workspace_patrol", status: "waiting_user" };
+  const f = fixture();
+  await f.service.poll();
+  f.set([task("root", "success", { loop })]);
+  for (const delivery of [undefined, {}, { verification_id: "unknown", conclusion: "unknown" }, { conclusion: "satisfied" }]) {
+    loop.delivery = delivery;
+    await f.service.poll();
+  }
+  assert.equal(f.shown.length, 0);
+  loop.delivery = { verification_id: "historical", conclusion: "satisfied" };
+  const restart = fixture();
+  restart.set([task("root", null, { loop })]);
+  await restart.service.poll();
+  restart.service.configure(false);
+  loop.delivery = { verification_id: "muted", conclusion: "satisfied" };
+  await restart.service.poll();
+  restart.service.configure(true);
+  await restart.service.poll();
+  assert.equal(restart.shown.length, 0);
 });
 
 test("restart deduplicates attention; settings persist and muted results do not replay", async () => {

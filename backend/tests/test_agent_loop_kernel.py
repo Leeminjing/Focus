@@ -269,7 +269,8 @@ def test_completion_guard_rejects_unknown() -> None:
     assert result.waiting_user is True
 
 
-def test_independent_verifier_is_required_before_completion_and_final_result_is_auditable(tmp_path) -> None:
+@pytest.mark.parametrize("interaction_mode", ["context_loop", "workspace_patrol"])
+def test_independent_verifier_is_required_before_completion_and_final_result_is_auditable(tmp_path, interaction_mode) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -295,6 +296,8 @@ def test_independent_verifier_is_required_before_completion_and_final_result_is_
             snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-complete", goal="Finish safely", task_contract="Tests must pass", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass", "required": True},), capabilities=("request_completion_verifier", "request_completion"), context_scope=(context_id,), permission_scope=("read", "host_command")))
             async with sessions.begin() as session:
                 round_row = await session.get(LoopRound, snapshot["current_round_id"])
+                loop = await session.get(AgentLoop, loop_id)
+                loop.interaction_mode = interaction_mode
                 slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == workspace_id, WorkspaceSlot.kind == "authoritative"))
                 worker_id = uuid.uuid4().hex
                 session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=loop_id, round_id=round_row.round_id, kind="completion_verifier", scope={"candidate_context_ids": [context_id]}))
@@ -307,9 +310,16 @@ def test_independent_verifier_is_required_before_completion_and_final_result_is_
             assert result.status == "committed", result.reason
             async with sessions() as session:
                 loop = await session.get(AgentLoop, loop_id)
-                assert loop.status == "completed"
+                assert loop.status == ("waiting_user" if interaction_mode == "workspace_patrol" else "completed")
+                if interaction_mode == "workspace_patrol":
+                    assert (loop.health, loop.waiting_reason) == ("idle", "awaiting_input")
                 assert loop.final_result["verification"]["verification_id"] == verification.verification_id
+                assert loop.final_result["summary"] == "Finish safely"
+                assert loop.final_result["round_id"] == round_row.round_id
+                assert loop.final_result["goal_revision"] == 1
                 assert loop.final_result["final_path"][0]["context_id"] == context_id
+                assert loop.final_result["final_path"][0]["revision_id"] == revision_id
+                assert loop.final_result["final_path"][0]["title"] == "complete"
                 assert loop.final_result["workspace"]["authoritative_slot_id"] == slot.slot_id
                 assert loop.final_result["delegated_directives"] == []
         finally:

@@ -359,6 +359,7 @@ class DesktopDirectiveLaunchPort:
             memory_ids=list(equipment.get("memory_ids") or []),
             access_mode=equipment.get("access_mode"),
             spatial_focus=user_request.get("spatial_focus"),
+            message_reference=user_request.get("message_reference"),
             material_inputs=self._material_inputs(user_request, frozen_attachments),
             attached_material_ids=user_request.get("attached_material_ids"),
             must_view_material_ids=user_request.get("must_view_material_ids") or [],

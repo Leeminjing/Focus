@@ -740,7 +740,7 @@
     `;
   }
 
-  function mountPanel(container, material, appState) {
+  function mountPanel(container, material, appState, { onReference } = {}) {
     const name = material?.relative_path || material?.path || "";
     const target = { task_id: appState.activeTaskId, content_ref: name };
     const preview = root.FocusFilePreview;
@@ -753,7 +753,7 @@
       state.selectedId = null;
       container.innerHTML = `<header class="file-panel-head"><strong>${escapeHtml(name)}</strong><button type="button" data-generic-close>关闭</button></header><div data-generic-file></div>`;
       container.querySelector("[data-generic-close]").addEventListener("click", () => root.__focusCloseFilePanel?.());
-      void preview.mount(container.querySelector("[data-generic-file]"), { name, target });
+      void preview.mount(container.querySelector("[data-generic-file]"), { name, target, onReference });
       return;
     }
     if (/\.docx$/i.test(material?.relative_path || "")) {

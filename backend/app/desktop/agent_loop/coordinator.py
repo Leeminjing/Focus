@@ -17,11 +17,13 @@ Run 结算先 flush 当前已发生事实，再按 Loop→Round 刷新锁定所�
 派发接受所属 ready/running Round 中成功授权的就绪工作，不依赖 current_round_id；正常推进检查全 Loop 后果汇合。
 用户输入提升原未决轮 Observation/fence，既有 outbox 定向取消认知；通知有界返回，重复取消保留 finally 清理，新认知领取等待旧清理证明，不阻塞输入受理。
 同一 Run outbox 消费器将 ArtifactVersion 转为规范文件事件；该分支不推进 Run 结算或 Round。
+事务提交后的 PostgreSQL hint 定向唤醒消费者；重连后扫描全部组件，正常轮询默认降为 5 秒恢复兜底。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -620,7 +622,7 @@ class LoopCoordinatorRuntime:
         workers: WorkerRuntimePort | None = None,
         recovery: RecoveryPort | None = None,
         compression_resolutions: CompressionResolutionPort | None = None,
-        poll_seconds: float = 1.0,
+        poll_seconds: float = 5.0,
         maintenance: RoundMaintenancePort | None = None,
         max_concurrent_loops: int = 4,
         portfolio_publications: SupervisedQueuePort | None = None,
@@ -646,8 +648,23 @@ class LoopCoordinatorRuntime:
         self._max_concurrent_loops = max(1, max_concurrent_loops)
         self._supervisor: LoopSupervisor | None = None
         self._registry = LoopSupervisorRegistry(self._components_for_loop)
+        for name, pool in (("workers", workers), ("context_runs", context_runs),
+                           ("portfolio_publications", portfolio_publications)):
+            bind = getattr(pool, "bind_wakeup", None)
+            if bind is not None:
+                # A committed result can arrive before its task releases a slot.
+                bind(lambda name=name: self._registry.wake(None, name))
         self._round_slots = asyncio.Semaphore(self._max_concurrent_loops)
         self._claims: dict[str, tuple[CoordinatorClaim, asyncio.Task]] = {}
+        self._notifications = None
+        sessions = getattr(coordinator, "_sessions", None)
+        if sessions is not None:
+            from backend.app.desktop.state_changes import PostgresNotifications
+
+            self._notifications = PostgresNotifications(
+                sessions, {"focus_loop_work": self._work_committed}, self._wake_all,
+                application_name="focus-loop-work-listener",
+            )
         from backend.app.desktop.agent_loop.cognition import register_runtime
 
         register_runtime(self)
@@ -697,8 +714,12 @@ class LoopCoordinatorRuntime:
             components.append(SupervisorComponent("maintenance", self._maintenance.maintain_rounds, self._poll_seconds))
         self._supervisor = LoopSupervisor("agent-loop-admission", components)
         await self._supervisor.start()
+        if self._notifications is not None:
+            self._notifications.start()
 
     async def close(self) -> None:
+        if self._notifications is not None:
+            await self._notifications.close()
         if self._supervisor is not None:
             await self._supervisor.close()
             self._supervisor = None
@@ -707,6 +728,29 @@ class LoopCoordinatorRuntime:
             close = getattr(component, "close", None)
             if close is not None:
                 await close()
+
+    def _wake_all(self) -> None:
+        if self._supervisor is not None:
+            self._supervisor.wake()
+        self._registry.wake()
+
+    def _work_committed(self, payload: str) -> None:
+        try:
+            hint = json.loads(payload)
+            loop_id, components = hint["loop_id"], hint["components"]
+            if ((loop_id is not None and not isinstance(loop_id, str))
+                or not isinstance(components, list) or not components):
+                return
+            if not all(isinstance(name, str) for name in components):
+                return
+        except (ValueError, KeyError, TypeError):
+            return
+        if self._supervisor is not None:
+            self._supervisor.wake(*components)
+            # New or resumed Loops have no execution supervisor yet.
+            if loop_id is not None and loop_id not in self._registry.loop_ids:
+                self._supervisor.wake("loop_registry")
+        self._registry.wake(loop_id, *components)
 
     def _components_for_loop(self, loop_id: str) -> tuple[SupervisorComponent, ...]:
         components = [

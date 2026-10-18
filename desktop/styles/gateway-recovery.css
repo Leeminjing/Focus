@@ -1,0 +1,30 @@
+.gateway-recovery[hidden] { display: none; }
+.gateway-recovery {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  z-index: 2000;
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 12px 16px;
+  border: 1px solid #dcc58e;
+  border-radius: 12px;
+  background: #fff9eb;
+  color: #513e18;
+  box-shadow: 0 6px 20px #1720331a;
+  font: 13px/1.5 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+.gateway-recovery p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.gateway-recovery button {
+  min-height: 32px;
+  margin: 0 8px 0 0;
+  padding: 4px 10px;
+  border: 1px solid #c4ad78;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.gateway-recovery button:disabled { opacity: .6; cursor: wait; }
+.gateway-recovery button:focus-visible { outline: 2px solid #1264d9; outline-offset: 2px; }
+.gateway-recovery.is-patrol { position: static; max-width: none; margin: 8px 0; box-shadow: none; }

@@ -14,6 +14,7 @@
   <title>Focus</title>
   <link rel="icon" href="./assets/focus-icon.png">
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles/gateway-recovery.css">
   <link rel="stylesheet" href="./skill-picker.css">
   <link rel="stylesheet" href="./styles/tokens.css">
   <link rel="stylesheet" href="./styles/base.css">
@@ -33,6 +34,7 @@
   <link rel="stylesheet" href="./styles/patrol-input-references.css">
   <link rel="stylesheet" href="./styles/message-reading.css">
   <link rel="stylesheet" href="./file-preview.css">
+  <link rel="stylesheet" href="./composer-files.css">
 </head>
 <body>
   <div class="app-frame">
@@ -138,7 +140,7 @@
     </section>
     <section class="settings-pane" data-settings-pane="models" hidden>
       <h3 data-i18n="settings.models">模型</h3>
-      <p class="muted tiny" data-i18n="settings.models_help">模型条目、默认选择与密钥都在这里配置；保存后立即生效，并实际调用验证普通回复和策展输出。</p>
+      <p class="muted tiny" data-i18n="settings.models_help">模型条目、默认选择与密钥都在这里配置；保存后立即生效，并逐项验证普通调用、策展输出和自动索引。</p>
       <div id="modelSettingsHost" class="model-settings-host" data-i18n-aria-label="settings.models" aria-label="模型"></div>
     </section>
     <section class="settings-pane" data-settings-pane="data" hidden>
@@ -242,6 +244,9 @@
   <script src="./access-mode.js?v=20260928a"></script>
   <script src="./access-approval.js"></script>
   <script src="./composer-draft.js"></script>
+  <script src="./composer-files.js"></script>
+  <script src="./conversation-reference.js"></script>
+  <script src="./message-retry.js"></script>
   <script src="./task-run-operations.js?v=20260920a"></script>
   <script src="./run-stream-subscriptions.js"></script>
   <script src="./running-context-preview.js"></script>
@@ -290,6 +295,8 @@
   <script src="./patrol-cards.js"></script><script src="./patrol-viewport.js"></script><script src="./patrol-ui.js"></script><script src="./patrol-source-controller.js"></script><script src="./patrol-source-browser.js"></script><script src="./patrol-assembly-view.js"></script><script src="./patrol-interactions.js"></script><script src="./patrol-review-panel.js"></script><script src="./patrol-workbench.js"></script>
   <script src="./patrol-branches.js"></script>
   <script src="./storage-settings.js"></script>
-  <script src="./app.js?v=20261017-attachments"></script>
+  <script src="./conversation-inputs.js"></script>
+  <script src="./app.js?v=20261018-conversation-inputs"></script>
+  <script src="./gateway-recovery.js"></script>
 </body>
 </html>

@@ -82,7 +82,7 @@
     }
     return response;
   }
-  async function mount(host, { name, target, text }) {
+  async function mount(host, { name, target, text, onReference }) {
     const owner = {}; host.__filePreview = owner;
     host.innerHTML = `${toolbar(target, name)}<div class="file-preview-content" data-file-content>正在读取文件…</div>`;
     bindActions(host, target, name);
@@ -124,14 +124,19 @@
         if (text.includes("\0")) throw new Error("二进制文件无法作为文本预览，请用系统应用打开或另存为");
       }
       if (host.__filePreview !== owner) return;
-      renderText(body, String(text ?? ""), name);
+      renderText(body, String(text ?? ""), name, {
+        range: root.FocusFileLinks?.lineRange(target.link || target),
+        onReference: onReference ? value => onReference({ ...(target.link || { path: target.content_ref || name }), ...value }) : undefined,
+      });
     } catch (error) {
       if (host.__filePreview === owner) body.textContent = `${error.message}。可使用上方文件操作。`;
     }
   }
-  function renderText(body, text, name) {
-    let source = !["markdown", "csv"].includes(kind(name)), query = "", matches = [], selected = -1;
-    body.innerHTML = `<div class="file-text-tools"><button type="button" data-source-toggle>${source ? "查看排版" : "查看源码"}</button><label>查找 <input type="search" data-file-search aria-label="查找文件内容"></label><button type="button" data-search-next>下一个</button><span data-search-count role="status"></span><button type="button" data-copy-file>复制全文</button></div><div class="file-text-body" tabindex="0"></div>`;
+  function renderText(body, text, name, { range = null, onReference } = {}) {
+    let source = !!range || !["markdown", "csv"].includes(kind(name)), query = "", matches = [], selected = -1;
+    let selection = range;
+    const lines = text.split("\n");
+    body.innerHTML = `<div class="file-text-tools"><button type="button" data-source-toggle>${source ? "查看排版" : "查看源码"}</button><label>查找 <input type="search" data-file-search aria-label="查找文件内容"></label><button type="button" data-search-next>下一个</button><span data-search-count role="status"></span><button type="button" data-copy-file>复制全文</button>${onReference ? '<button type="button" data-add-reference disabled>加入当前问题</button><span data-line-selection role="status">选择代码文本，或点击行号（Shift 连选）</span>' : ""}</div><div class="file-text-body" tabindex="0"></div>`;
     const content = body.querySelector(".file-text-body"), toggle = body.querySelector("[data-source-toggle]");
     toggle.hidden = !["markdown", "csv"].includes(kind(name));
     function render() {
@@ -140,13 +145,55 @@
         const rows = parseCsv(text, extension(name) === "tsv" ? "\t" : ",");
         content.innerHTML = `${rows.length > 1000 || rows.some(row => row.length > 100) ? "<p>仅预览前 1000 行、100 列，复制和另存为保留全文。</p>" : ""}<table class="file-csv"><tbody>${rows.slice(0, 1000).map((row, i) => `<tr>${row.slice(0, 100).map(cell => `<${i ? "td" : "th"}>${escape(cell)}</${i ? "td" : "th"}>`).join("")}</tr>`).join("")}</tbody></table>`;
       } else {
-        const lines = text.split("\n");
-        content.innerHTML = `${lines.length > 10000 ? "<p>仅预览和查找前 10000 行，复制和另存为保留全文。</p>" : ""}<pre class="file-source">${lines.slice(0, 10000).map(line => `<span class="file-source-line${query && line.toLowerCase().includes(query) ? " is-match" : ""}">${highlight(line, name)}</span>`).join("")}</pre>`;
+        const start = range?.start_line > 10000 ? Math.max(0, Math.min(range.start_line - 51, lines.length - 10000)) : 0;
+        const visibleEnd = Math.min(lines.length, start + 10000);
+        const notice = lines.length > 10000 ? `<p>仅预览和查找${start ? `第 ${start + 1}–${visibleEnd}` : "前 10000"} 行，复制和另存为保留全文。</p>` : "";
+        content.innerHTML = `${notice}<pre class="file-source">${lines.slice(start, visibleEnd).map((line, index) => `<span data-line="${start + index + 1}" class="file-source-line${query && line.toLowerCase().includes(query) ? " is-match" : ""}"><button type="button" class="file-line-number" data-select-line="${start + index + 1}" aria-label="选择第 ${start + index + 1} 行" tabindex="-1"></button>${highlight(line, name)}</span>`).join("")}</pre>`;
       }
       toggle.textContent = source ? "查看排版" : "查看源码";
       matches = [...content.querySelectorAll(".is-match")]; selected = -1;
       body.querySelector("[data-search-count]").textContent = query ? `${matches.length} 行匹配` : "";
+      paintSelection();
     }
+    function paintSelection() {
+      for (const node of content.querySelectorAll("[data-line]")) {
+        const number = Number(node.dataset.line);
+        node.classList.toggle("is-referenced", !!selection && number >= selection.start_line && number <= selection.end_line);
+      }
+      const add = body.querySelector("[data-add-reference]");
+      if (add) add.disabled = !source || !selection || selection.start_line > lines.length || selection.end_line > lines.length;
+      const label = body.querySelector("[data-line-selection]");
+      if (label) label.textContent = selection ? `第 ${selection.start_line}–${selection.end_line} 行` : "选择代码文本，或点击行号（Shift 连选）";
+    }
+    let anchorLine = range?.start_line;
+    content.addEventListener("click", event => {
+      const button = event.target.closest?.("[data-select-line]");
+      if (!button) return;
+      const line = Number(button.dataset.selectLine);
+      if (!event.shiftKey || !anchorLine) anchorLine = line;
+      selection = { start_line: Math.min(anchorLine, line), end_line: Math.max(anchorLine, line) };
+      paintSelection();
+    });
+    function captureSelection() {
+      const selectedText = root.getSelection?.();
+      if (!source || !selectedText?.rangeCount || selectedText.isCollapsed) return;
+      const selectedRange = selectedText.getRangeAt(0);
+      const lineFor = node => (node?.nodeType === 1 ? node : node?.parentElement)?.closest?.("[data-line]");
+      const first = lineFor(selectedRange.startContainer), last = lineFor(selectedRange.endContainer);
+      if (!first || !last || !content.contains(first) || !content.contains(last)) return;
+      const prefix = selectedRange.cloneRange();
+      prefix.setStart(last, 0);
+      const end = Number(last.dataset.line) - (!prefix.toString() && last !== first ? 1 : 0);
+      selection = { start_line: Number(first.dataset.line), end_line: end };
+      anchorLine = selection.start_line;
+      paintSelection();
+    }
+    content.addEventListener("mouseup", captureSelection);
+    content.addEventListener("keyup", captureSelection);
+    body.querySelector("[data-add-reference]")?.addEventListener("click", () => {
+      if (!selection || selection.start_line > lines.length || selection.end_line > lines.length) return;
+      onReference({ ...selection, text: lines.slice(selection.start_line - 1, selection.end_line).join("\n") });
+    });
     toggle.addEventListener("click", () => { source = !source; query = ""; body.querySelector("[data-file-search]").value = ""; render(); });
     body.querySelector("[data-file-search]").addEventListener("input", event => { query = event.target.value.toLowerCase(); if (query) source = true; render(); });
     body.querySelector("[data-search-next]").addEventListener("click", () => {
@@ -160,6 +207,10 @@
       catch { event.target.textContent = "复制失败，请选择文本复制"; }
     });
     render();
+    if (range) {
+      content.querySelector(`[data-line="${range.start_line}"]`)?.scrollIntoView?.({ block: "center" });
+      if (range.start_line > lines.length || range.end_line > lines.length) body.querySelector("[data-search-count]").textContent = "引用行范围超出当前文件，文件可能已变化";
+    }
   }
   function mountHistory(host, file, loopId) {
     if (!loopId || !file.fact_id) return;
@@ -168,5 +219,5 @@
     void mount(preview, { name: file.path, target: { loop_id: loopId, fact_id: file.fact_id, revision: file.revision },
       ...(file.after?.available ? { text: file.after.text } : {}) });
   }
-  return { kind, escape, highlight, parseCsv, toolbar, bindActions, mount, mountHistory };
+  return { kind, escape, highlight, parseCsv, toolbar, bindActions, mount, mountHistory, renderText };
 });

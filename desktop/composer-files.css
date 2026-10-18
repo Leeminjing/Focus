@@ -1,0 +1,10 @@
+.composer-file-references{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px}
+.composer-file-references:empty{display:none}
+.composer-file-card{display:inline-flex;max-width:100%;border:1px solid var(--border-default,#ccd3dd);border-radius:8px;background:var(--surface-muted,#f3f5f8);overflow:hidden}
+.composer-file-card button{font:inherit;font-size:12px;border:0;background:none;padding:6px 8px;cursor:pointer;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.composer-file-card button:focus-visible,.file-mention-option:focus-visible{outline:2px solid var(--accent,#4779d6);outline-offset:-2px}
+.composer-file-card button+button{border-left:1px solid var(--border-default,#ccd3dd)}
+.composer-file-menu{max-height:240px;overflow:auto;border:1px solid var(--border-default,#ccd3dd);border-radius:8px;margin:0 12px;background:var(--surface-raised,#fff);color:var(--text-primary,#222)}
+.composer-file-menu[hidden]{display:none}.composer-file-menu>div{padding:10px;font-size:12px}
+.file-mention-option{display:block;width:100%;text-align:left;border:0;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer;background:transparent;color:inherit;overflow-wrap:anywhere}
+.file-mention-option.is-active,.file-mention-option:hover{background:var(--surface-muted,#e8effb)}

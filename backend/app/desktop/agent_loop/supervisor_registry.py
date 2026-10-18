@@ -33,6 +33,11 @@ class LoopSupervisorRegistry:
             for state in supervisor.states()
         ]
 
+    def wake(self, loop_id: str | None = None, *components: str) -> None:
+        for identity, supervisor in self._supervisors.items():
+            if loop_id is None or identity == loop_id:
+                supervisor.wake(*components)
+
     async def reconcile(self, loop_ids: Iterable[str]) -> tuple[str, ...]:
         desired = frozenset(loop_ids)
         removed = tuple(sorted(set(self._supervisors) - desired))

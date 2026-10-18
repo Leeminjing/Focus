@@ -62,6 +62,38 @@ def read(client, **reference):
     return client.post("/desktop/api/tasks/t/file-links/content", json={"workspace_id": "w", **reference})
 
 
+def test_file_search_keeps_full_paths_and_workspace_scope(files):
+    client, root, tree, _, _ = files
+    (root / "src").mkdir()
+    (root / "src" / "dispatch.py").write_text("submit()", encoding="utf-8")
+    (root / "node_modules").mkdir()
+    (root / "node_modules" / "dispatch.py").write_text("ignored", encoding="utf-8")
+    (tree / "dispatch.py").write_text("another workspace", encoding="utf-8")
+    response = client.get("/desktop/api/tasks/t/files/search", params={"q": "DISPATCH"})
+    assert response.status_code == 200
+    assert response.json()["files"] == [{"path": str((root / "src" / "dispatch.py").resolve()),
+        "relative_path": "src/dispatch.py", "workspace_id": "w"}]
+    assert client.get("/desktop/api/tasks/t/files/search", params={"q": "../worktree"}).json()["files"] == []
+    assert client.get("/desktop/api/tasks/missing/files/search").status_code == 404
+    assert client.get("/desktop/api/tasks/t/files/search", params={"limit": 0}).status_code == 422
+    assert len(client.get("/desktop/api/tasks/t/files/search", params={"limit": 1}).json()["files"]) == 1
+    assert client.get("/desktop/api/tasks/t/files/search", params={"q": "中文"}).json()["files"][0]["relative_path"] == "docs/中文 报告.md"
+
+
+def test_line_ranges_survive_validation_and_preview_requests(files):
+    client, _, _, _, _ = files
+    response = read(client, path="report.md", start_line=2, end_line=4)
+    assert response.status_code == 200
+    identity = json.loads(unquote(response.headers["X-Focus-File-Reference"]))
+    assert (identity["start_line"], identity["end_line"]) == (2, 4)
+    identity = json.loads(unquote(read(client, path="report.md", start_line=2).headers["X-Focus-File-Reference"]))
+    assert identity["end_line"] == 2
+    for fields in ({"start_line": 0}, {"start_line": 5, "end_line": 2}, {"end_line": 2}):
+        assert read(client, path="report.md", **fields).status_code == 422
+    target = {"task_id": "t", "link": {"path": "report.md", "start_line": 1, "end_line": 1}}
+    assert client.post("/desktop/api/files/content?preview=true", json=target).text == "root"
+
+
 def test_exact_paths_and_native_windows_drive(files):
     client, root, tree, _, _ = files
     for path, expected in [("docs/report.md", "docs"), ("其他目录/report.md", "other"),
