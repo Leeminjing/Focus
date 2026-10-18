@@ -344,6 +344,14 @@ def test_validate_catalog_rejects_two_defaults():
 # --- 保存与就地生效 -------------------------------------------------------
 
 
+def test_older_settings_submission_preserves_declared_reasoning_efforts(workspace):
+    _write_preference(workspace, [{"name": "alpha", "reasoning_efforts": ["low", "high"]}], [])
+    config = _app_config()
+    snapshot = save_model_settings(config, {"models": _file_catalog()})
+    assert config.get_model("alpha").reasoning_efforts == ["low", "high"]
+    assert snapshot["models"][0]["reasoning_efforts"] == ["low", "high"]
+
+
 def test_save_writes_only_the_changed_entries(workspace):
     config = _app_config()
     catalog = _file_catalog()

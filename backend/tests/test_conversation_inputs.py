@@ -224,12 +224,13 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
     from backend.app.desktop import service as service_module
     from fastapi.testclient import TestClient
 
-    controls, sampled = {}, []
+    controls, sampled, assembled = {}, [], []
 
     async def empty_tools(**kwargs):
         return []
 
     async def make_agent(**kwargs):
+        assembled.append((kwargs.get("model_name"), kwargs.get("reasoning_effort")))
         class Model(GenericFakeChatModel):
             async def _astream(self, messages, stop=None, run_manager=None, **options):
                 sampled.append(messages)
@@ -247,6 +248,10 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
     monkeypatch.setattr(service_module, "make_lead_agent", make_agent)
     headers = {"X-Focus-Session": "focus-dev-session"}
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        config = app.state.desktop_service.app_config
+        selected_model = config.get_model(config.resolve_default_model_name())
+        monkeypatch.setattr(selected_model, "reasoning_efforts", ["high"])
+        model_options = {"model_name": selected_model.name, "reasoning_effort": "high"}
         folder = tmp_path / "workspace"
         folder.mkdir()
         workspace = client.post("/desktop/api/workspaces", headers=headers, json={"path": str(folder)})
@@ -254,7 +259,10 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
         task = client.post(f"/desktop/api/workspaces/{workspace.json()['workspace_id']}/threads", headers=headers,
                            json={"thread_id": f"conversation-{uuid.uuid4().hex}", "title": "conversation"}).json()
         path = f"/desktop/api/tasks/{task['task_id']}/main"
-        initial = client.post(f"{path}/runs", headers=headers, json={"message": "initial", "permissions": ["read"]})
+        unsupported = client.post(f"{path}/runs", headers=headers,
+            json={"message": "invalid effort", "model_name": selected_model.name, "reasoning_effort": "low"})
+        assert unsupported.status_code == 422, unsupported.text
+        initial = client.post(f"{path}/runs", headers=headers, json={"message": "initial", "permissions": ["read"], **model_options})
         assert initial.status_code == 200, initial.text
         run = initial.json()
         try:
@@ -273,7 +281,7 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
             json={"mode": "steer", "target_run_id": run["run_id"], "run": {"message": "只修前端"}})
         assert steer.status_code == 200, steer.text
         queued = client.post(f"{path}/inputs", headers={**headers, "Idempotency-Key": "queue"},
-            json={"mode": "queue", "run": {"message": "补一组测试", "permissions": ["read"]}})
+            json={"mode": "queue", "run": {"message": "补一组测试", "permissions": ["read"], **model_options}})
         assert queued.status_code == 200, queued.text
         assert steer.json()["status"] == "accepted" and queued.json()["status"] == "queued"
         async def release():
@@ -288,3 +296,7 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
         assert any(any(message.content == "补一组测试" for message in messages) for messages in sampled)
         detail = client.get(f"/desktop/api/tasks/{task['task_id']}", headers=headers).json()
         assert len(detail["conversation_inputs"]) == 2
+        assert detail["latest_main_run"]["model_name"] == selected_model.name
+        assert detail["latest_main_run"]["equipment"]["reasoning_effort"] == "high"
+        assert detail["context_usage"]["estimated_tokens"] > 0
+        assert assembled == [(selected_model.name, "high"), (selected_model.name, "high")]

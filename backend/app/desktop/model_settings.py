@@ -104,6 +104,7 @@ _EDITABLE_FIELDS = (
     "provider",
     "protocol",
     "context_window",
+    "reasoning_efforts",
     "curation_output_method",
     "curation_max_output_tokens",
     "derivation_max_output_tokens",
@@ -168,6 +169,7 @@ def _entry_view(model: ModelConfig | None, raw: dict | None) -> dict:
     surface = declared or (model.model_dump() if model is not None else raw or {})
     entry = {field: surface.get(field) for field in _EDITABLE_FIELDS}
     entry["derivation_max_output_tokens"] = surface.get("derivation_max_output_tokens") or {}
+    entry["reasoning_efforts"] = surface.get("reasoning_efforts") or []
 
     raw_key = raw.get("api_key") if isinstance(raw, dict) else None
     raw_key = raw_key if isinstance(raw_key, str) else ""
@@ -282,8 +284,10 @@ def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME
 
 def _entries_for_submission(entry: dict) -> dict:
 
-    return {field: entry.get(field, {} if field == "derivation_max_output_tokens" else None)
-            for field in _EDITABLE_FIELDS}
+    result = {field: entry.get(field, {} if field == "derivation_max_output_tokens" else None)
+              for field in _EDITABLE_FIELDS}
+    result["reasoning_efforts"] = entry.get("reasoning_efforts") or []
+    return result
 
 
 def _entry_errors(index: int, entry: Any) -> dict[str, str]:
@@ -472,7 +476,9 @@ def save_model_settings(
     # Older settings clients have no editor for role limits; keep declared limits.
     if isinstance(submitted, list):
         submitted = [{**entry, "derivation_max_output_tokens": entry.get("derivation_max_output_tokens",
-                      declared.get(entry.get("name"), {}).get("derivation_max_output_tokens", {}))}
+                      declared.get(entry.get("name"), {}).get("derivation_max_output_tokens", {})),
+                      "reasoning_efforts": entry.get("reasoning_efforts",
+                      declared.get(entry.get("name"), {}).get("reasoning_efforts", []))}
                      if isinstance(entry, dict) else entry for entry in submitted]
     validate_catalog(submitted)
     pending = _pending_credentials(payload)

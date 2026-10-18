@@ -1668,6 +1668,30 @@ function renderMaterialGroups(task) {
   return `<div class="material-group-toolbar"><span class="segmented" role="group" aria-label="材料自动分组"><button data-action="set-material-grouping" data-mode="run" class="${projection.mode === "run" ? "active" : ""}">按 Run</button><button data-action="set-material-grouping" data-mode="type" class="${projection.mode === "type" ? "active" : ""}">按类型</button></span><button class="text-button" data-action="create-material-group">新建分组</button></div>${groups}`;
 }
 
+function sessionUsageRun(taskId) {
+  const detail = state.details.get(taskId);
+  const task = state.tasks.find(item => item.task_id === taskId);
+  return detail?.active_run || task?.active_run || detail?.latest_main_run || detail?.latest_direct_user_run || task?.latest_run;
+}
+
+function renderSessionControls(taskId) {
+  const task = state.tasks.find(item => item.task_id === taskId);
+  if (task?.loop || state.details.get(taskId)?.context?.managed_status) return "";
+  return window.FocusSessionControls.render(state.equipment, state.details.get(taskId), sessionUsageRun(taskId), escapeHtml);
+}
+
+function refreshSessionControls() {
+  const current = document.querySelector("#sessionControls");
+  if (!current) return;
+  const template = document.createElement("template");
+  template.innerHTML = renderSessionControls(state.activeTaskId);
+  const next = template.content.firstElementChild;
+  next.querySelector("details").open = current.querySelector("details")?.open || false;
+  const focusId = current.contains(document.activeElement) ? document.activeElement.id : null;
+  current.replaceWith(next);
+  if (["sessionModel", "sessionReasoning"].includes(focusId)) next.querySelector(`#${focusId}`)?.focus({ preventScroll: true });
+}
+
 function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
   const open = state.inspector.open && state.view !== "patrol" && !(state.view === "focus" && state.filesPanel);
@@ -1730,9 +1754,10 @@ function renderInspector() {
 
     return;
   }
-  const run = task.active_run || task.latest_run;
+  const run = sessionUsageRun(task.task_id);
   const presented = presentTaskStatus(task);
   inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>主 Agent</h3><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header><dl class="inspector-run-meta"><div><dt>任务</dt><dd>${escapeHtml(task.title)}</dd></div><div><dt>运行 ID</dt><dd>${escapeHtml(run?.run_id || "—")}</dd></div></dl>${state.commitment.stage ? `<section class="inspector-run-stage"><span class="workspace-kicker">COMMITMENT</span><strong>${state.commitment.stage}/9 · ${escapeHtml(COMMITMENT_STAGE_NAMES[state.commitment.stage] || "准备中")}</strong><span>${state.commitment.review ? "等待人工确认" : state.commitment.terminalStatus ? presentRunStatus(state.commitment.terminalStatus).label : "正在执行"}</span></section>` : ""}${renderInterruptButton(state.details.get(task.task_id))}</section>`;
+  inspectorContent.insertAdjacentHTML("beforeend", window.FocusSessionControls.usage(state.equipment, run, escapeHtml));
 }
 
 function openInspector(tab, trigger) {
@@ -2146,11 +2171,20 @@ function patchFocusChrome(markup) {
   template.innerHTML = markup;
   const next = template.content;
   for (const selector of [".task-page-heading", ".task-workspace-list", ".task-workspace-tools",
-    ".composer-context", "#composerReference", "#composerAttachments", "#composerFileReferences", ".composer-actions", "#composerFeedback",
+    ".composer-context", "#composerReference", "#composerAttachments", "#composerFileReferences", "#sessionControls", ".composer-actions", "#composerFeedback",
     "#mainSubmissionRecovery", "#conversationInputs", "#taskDetailLoadStatus", "#mainSkillLoadStatus",
     '[data-skill-picker="main"] .skill-tags']) {
     const current = app.querySelector(selector);
     const replacement = next.querySelector(selector);
+    if (selector === "#sessionControls" && !current && replacement) {
+      app.querySelector(".composer").insertBefore(replacement, app.querySelector(".composer-actions"));
+      continue;
+    }
+    if (selector === "#sessionControls" && current && !replacement) { current.remove(); continue; }
+    if (selector === "#sessionControls" && current && replacement) {
+      if (current.contains(document.activeElement)) continue;
+      replacement.querySelector("details").open = current.querySelector("details")?.open || false;
+    }
     if (current && replacement && current.outerHTML !== replacement.outerHTML) current.replaceWith(replacement);
   }
   const view = app.querySelector(".focus-view");
@@ -2237,6 +2271,7 @@ function renderFocus(task = activeTask()) {
               <div id="composerFileReferences" class="composer-file-references" aria-label="本次问题引用的文件">${composerFiles.cards(fileReferences(task.task_id))}</div>
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，输入 @ 引用文件，或 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
               <div id="composerFileMenu" class="composer-file-menu" role="listbox" aria-label="工作区文件" hidden></div>
+              ${renderSessionControls(task.task_id)}
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? `<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
@@ -5298,6 +5333,8 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
     ? JSON.parse(taskRunOperations.recovery(taskId).body) : null;
   const requestOptions = retry ? null : {
     ...(queuedEdit || {}),
+    ...(!task.loop && !state.details.get(taskId)?.context?.managed_status
+      ? window.FocusSessionControls.request(state.equipment, state.details.get(taskId)?.ui_state) : {}),
     skills: selectedSkills("main"),
     ...accessMode.requestBody(accessModeOf("main")),
   };
@@ -7369,6 +7406,7 @@ function modelEntryPayload(entry) {
   const payload = {};
   fields.forEach(field => { payload[field] = entry[field] ?? null; });
   if (fields.includes("derivation_max_output_tokens")) payload.derivation_max_output_tokens = entry.derivation_max_output_tokens || {};
+  if (fields.includes("reasoning_efforts")) payload.reasoning_efforts = entry.reasoning_efforts || [];
   MODEL_FLAG_FIELDS.forEach(field => { payload[field] = Boolean(entry[field]); });
   return payload;
 }
@@ -7862,7 +7900,7 @@ async function saveModelSettings() {
     modelSettings.progress = null;
     modelSettings.credentialDrafts = {};
     modelSettings.dirty = false;
-    state.equipment = { ...state.equipment, models: snapshot.models };
+    state.equipment = { ...state.equipment, models: snapshot.models, default_model_name: snapshot.default_model_name };
     if (snapshot.verification) {
       setStatus(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }), !snapshot.verification.ok);
     } else setStatus(uiText("settings.model_saved", "已保存并立即生效"));
@@ -9145,6 +9183,18 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (["sessionModel", "sessionReasoning"].includes(event.target.id)) {
+    const detail = state.details.get(state.activeTaskId);
+    if (!detail) return;
+    detail.ui_state ||= {};
+    if (event.target.id === "sessionModel") {
+      detail.ui_state.session_model_name = event.target.value || null;
+      detail.ui_state.session_reasoning_effort = null;
+    } else detail.ui_state.session_reasoning_effort = event.target.value || null;
+    refreshSessionControls();
+    void persistUiState();
+    return;
+  }
   if (event.target.matches("[data-model-service]")) return updateModelService(event.target.value);
   if (event.target.id === "newSessionAccessMode") {
     const select = event.target;

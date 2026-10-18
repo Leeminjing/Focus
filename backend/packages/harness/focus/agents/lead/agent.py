@@ -120,9 +120,11 @@ async def make_lead_agent(
     user_input_middleware: AgentMiddleware | None = None,
     attempt_middleware: AgentMiddleware | None = None,
     preparation_observer=None,
+    reasoning_effort: str | None = None,
 ) -> CompiledStateGraph:
 
-    model = create_chat_model(name=model_name, app_config=app_config)
+    model = create_chat_model(name=model_name, app_config=app_config,
+                              **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}))
 
 
     catalog = None

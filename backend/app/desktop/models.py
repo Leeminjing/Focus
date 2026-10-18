@@ -612,6 +612,7 @@ class MainRunCreate(StrictRequest):
     attached_material_ids: list[str] | None = None
     must_view_material_ids: list[str] = Field(default_factory=list)
     model_name: str | None = None
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None = None
     skills: list[str] = Field(default_factory=list)
     spatial_focus: dict[str, Any] | None = None
     memory_ids: list[str] | None = None

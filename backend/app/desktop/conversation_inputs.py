@@ -187,6 +187,7 @@ class ConversationInputs:
                     prepared = await self.desktop.start_main_run(task_id=task_id, message=body.message,
                         message_reference=body.message_reference.model_dump() if body.message_reference else None,
                         model_name=body.model_name, permissions=body.permissions, skills=body.skills,
+                        reasoning_effort=body.reasoning_effort,
                         spatial_focus=body.spatial_focus, memory_ids=body.memory_ids, access_mode=body.access_mode,
                         material_inputs=[RunMaterialRequest(material_id=item.material_id, note=item.note)
                                          for item in body.material_inputs] if body.material_inputs is not None else None,

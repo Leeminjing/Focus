@@ -7,6 +7,7 @@ models:
     provider: deepseek
     protocol: responses
     model: deepseek-v4-flash-vision-exp
+    reasoning_efforts: [none, low, high, max]
     context_window: 131072
     curation_output_method: prompt_json
     curation_default: true
@@ -21,6 +22,7 @@ models:
     provider: deepseek
     protocol: responses
     model: deepseek-v4-flash
+    reasoning_efforts: [none, low, high, max]
     context_window: 131072
     curation_output_method: prompt_json
     api_key: $OPENAI_API_KEY
