@@ -2231,7 +2231,7 @@ function renderFocus(task = activeTask()) {
           <div id="taskDetailLoadStatus">${renderTaskResourceStatus(task.task_id, ["detail"])}</div>
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
-            <div class="composer">
+            <div class="composer" data-main-composer>
               <div id="composerReference">${conversationReference.render(mainReference(task.task_id))}</div>
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
               <div id="composerFileReferences" class="composer-file-references" aria-label="本次问题引用的文件">${composerFiles.cards(fileReferences(task.task_id))}</div>
@@ -5277,11 +5277,14 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const input = document.querySelector("#mainInput");
   const message = retry ? retry.message : input.value.trim();
   const submittedFileRefs = retry?.fileReferences || (retry ? [] : JSON.parse(JSON.stringify(fileReferences(taskId))));
-  if (!message && !submittedFileRefs.length) return;
+  let submittedSelection = retry ? null : JSON.parse(JSON.stringify(materialSelection(taskId)));
+  const attachments = retry ? [] : [...(state.composerAttachments.get(taskId)?.values() || [])]
+    .filter(entry => entry.status !== "ready");
+  if (!retry && !message && !submittedFileRefs.length && !submittedSelection.bindings.length && !attachments.length) return;
   if (!retry) composerDraft.claim(taskId, input.value);
   // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
   const quickKeyword = keywordCommand.parse(message);
-  if (!retry && !submittedFileRefs.length && quickKeyword !== null && !mainReference(taskId)) {
+  if (!retry && !submittedFileRefs.length && !submittedSelection.bindings.length && !attachments.length && quickKeyword !== null && !mainReference(taskId)) {
     const keyword = quickKeyword;
     input.value = "";
     composerDraft.release(taskId);
@@ -5291,9 +5294,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const submittedInput = retry?.input ?? input.value;
   const frozenBody = retry ? JSON.parse(retry.body) : null;
   const submittedReference = retry ? (frozenBody.run || frozenBody).message_reference || null : mainReference(taskId);
-  let submittedSelection = retry ? null : JSON.parse(JSON.stringify(materialSelection(taskId)));
-  const attachments = retry ? [] : [...(state.composerAttachments.get(taskId)?.values() || [])]
-    .filter(entry => entry.status !== "ready");
   const queuedEdit = !retry && taskRunOperations?.recovery(taskId)?.queued_edit
     ? JSON.parse(taskRunOperations.recovery(taskId).body) : null;
   const requestOptions = retry ? null : {
@@ -5310,6 +5310,8 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
       return;
     }
   }
+  // 等待期间可能移除了最后一个附件；只使用本次冻结的正文与附件判断，不能发送空消息。
+  if (!retry && !message && !submittedFileRefs.length && !submittedSelection.bindings.length) return;
   if (!delivery && !retry && !submittedFileRefs.length && !submittedReference && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
@@ -5334,6 +5336,7 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const original = retryBody?.run || retryBody;
   const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
     : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], composerFiles.compose(message, submittedFileRefs), submittedSelection);
+  if (!retry && !outgoing.message.trim() && !outgoing.materialInputs.length) return;
   const messagePayload = outgoing.message;
   let detail = state.details.get(taskId) || {};
   let confirmed = false;
@@ -9254,6 +9257,43 @@ document.addEventListener("paste", event => {
   if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
   const taskId = state.activeTaskId;
   const files = images.map(item => item.getAsFile()).filter(Boolean);
+  queueComposerAttachments(files, taskId);
+});
+
+function mainComposerDropTarget(event) {
+  const composer = event.target.closest?.("[data-main-composer]");
+  const input = document.querySelector("#mainInput");
+  return composer && input && !input.disabled ? composer : null;
+}
+
+document.addEventListener("dragover", event => {
+  const composer = event.target.closest?.("[data-main-composer]");
+  if (!composer || !Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+  event.preventDefault();
+  if (!mainComposerDropTarget(event)) {
+    event.dataTransfer.dropEffect = "none";
+    composer.classList.remove("is-file-dragover");
+    return;
+  }
+  event.dataTransfer.dropEffect = "copy";
+  composer.classList.add("is-file-dragover");
+});
+
+document.addEventListener("dragleave", event => {
+  const composer = event.target.closest?.("[data-main-composer]");
+  if (composer && !composer.contains(event.relatedTarget)) composer.classList.remove("is-file-dragover");
+});
+
+document.addEventListener("drop", event => {
+  const composer = event.target.closest?.("[data-main-composer]");
+  composer?.classList.remove("is-file-dragover");
+  if (!composer || !Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+  event.preventDefault();
+  if (!mainComposerDropTarget(event)) return;
+  const files = Array.from(event.dataTransfer.files || []);
+  if (!files.length) return;
+  const taskId = state.activeTaskId;
+  if (!taskId) return setStatus("请先选择任务，再添加材料", true);
   queueComposerAttachments(files, taskId);
 });
 

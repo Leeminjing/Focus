@@ -1,5 +1,5 @@
 /* 回归普通输入框附件的默认绑定与异步上传任务归属。
- * 输入真实 change/paste 监听器，上传期间切换任务，断言上传和发送材料始终属于事件发生时的任务。
+ * 输入真实 change/paste/drop 监听器，验证纯附件发送、准备失败、移除及上传期间切换任务的归属。
  * 运行：node --test desktop/composer-attachments.test.cjs。
  */
 "use strict";
@@ -8,7 +8,12 @@ const assert = require("node:assert/strict");
 const { createAppHarness, readAppSource, createNode } = require("./test-helper.cjs");
 
 function sendingSetup() {
-  const input = { value: "看看这个报错", focus() {} };
+  const classes = new Set();
+  const composer = createNode({ classList: {
+    add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
+  } });
+  const input = createNode({ id: "mainInput", value: "看看这个报错", closest: selector => selector === "[data-main-composer]" ? composer : null });
+  composer.contains = target => target === input;
   const cards = { innerHTML: "" }, overlay = { innerHTML: "" }, revoked = [];
   const h = createAppHarness({ selectors: { "#mainInput": input, "#composerAttachments": cards, "#overlayRoot": overlay }, statusNode: "record", globals: {
     FormData: class { append(key, file) { this.file = file; } },
@@ -21,6 +26,7 @@ function sendingSetup() {
   evaluate(readAppSource());
   evaluate(`
     state.activeTaskId = "A";
+    state.view = "focus";
     state.tasks = [{ task_id: "A", workspace_id: "workspace" }];
     state.details.set("A", { messages: [], ui_state: {} });
     refreshMaterialView = () => {};
@@ -38,7 +44,7 @@ function sendingSetup() {
       }
     };
   `);
-  return { ...h, input, cards, overlay, revoked, evaluate };
+  return { ...h, input, composer, cards, overlay, revoked, evaluate };
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -46,6 +52,14 @@ function pasteFiles(h, names) {
   h.dispatch("paste", { target: h.input, preventDefault() {}, clipboardData: {
     items: names.map(name => ({ type: "image/png", getAsFile: () => ({ name, type: "image/png" }) })),
   } });
+}
+function dragFiles(h, type, files = [], target = h.input, types = ["Files"], relatedTarget = null) {
+  const event = { target, relatedTarget, defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+    dataTransfer: { types, files, getData: () => "" },
+  };
+  h.dispatch(type, event);
+  return event;
 }
 function attachmentAction(h, action, entry, materialId) {
   h.context.attachmentButton = { dataset: { action: `composer-${action}-attachment` }, closest: () => ({ dataset: {
@@ -66,6 +80,162 @@ test("paste then immediate send waits and includes the image in that request", a
   await sending;
   assert.deepEqual(JSON.parse(JSON.stringify(h.context.requests[0].material_inputs)), [{ material_id: "image", note: "" }]);
   assert.equal(h.evaluate('materialSelection("A").bindings.length'), 0);
+});
+
+test("an image with no text waits for upload and sends without a fabricated message", async () => {
+  const h = sendingSetup();
+  h.input.value = "  \n ";
+  pasteFiles(h, ["screenshot.png"]);
+  const sending = h.evaluate("sendMain()");
+  await settle();
+  assert.equal(h.context.requests.length, 0);
+  h.context.uploads[0].resolve({ material_id: "image", is_image: true, relative_path: "screenshot.png" });
+  await sending;
+  assert.equal(h.context.requests[0].message, "");
+  assert.deepEqual(Array.from(h.context.requests[0].material_inputs, item => item.material_id), ["image"]);
+  assert.equal(h.input.value, "");
+  assert.equal(h.cards.innerHTML, "");
+});
+
+test("ready attachments send with empty text, while an empty composer sends nothing", async () => {
+  const h = sendingSetup();
+  h.input.value = "";
+  await h.evaluate("sendMain()");
+  assert.equal(h.context.requests.length, 0);
+  h.evaluate('state.materials.set("A", [{material_id:"report",relative_path:"report.txt"}]); toggleRunMaterial("report");');
+  await h.evaluate("sendMain()");
+  assert.equal(h.context.requests[0].message, "");
+  assert.equal(h.context.requests[0].material_inputs[0].material_id, "report");
+  await h.evaluate("sendMain()");
+  assert.equal(h.context.requests.length, 1);
+});
+
+test("removing the last preparing attachment cancels an attachment-only send", async () => {
+  const h = sendingSetup();
+  h.input.value = "";
+  pasteFiles(h, ["removed.png"]);
+  const sending = h.evaluate("sendMain()");
+  await settle();
+  await attachmentAction(h, "remove", h.evaluate('[...composerAttachments("A").values()][0]'));
+  await sending;
+  assert.equal(h.context.requests.length, 0);
+  h.context.uploads[0].resolve({ material_id: "removed", is_image: true });
+  await settle();
+  await h.evaluate("sendMain()");
+  assert.equal(h.context.requests.length, 0);
+});
+
+test("attachment-only failure retains the image and retries the frozen empty message", async () => {
+  const h = sendingSetup();
+  h.input.value = "";
+  pasteFiles(h, ["retry.png"]);
+  const sending = h.evaluate("sendMain()");
+  await settle();
+  h.context.uploads[0].reject(new Error("网络断开"));
+  await sending;
+  assert.equal(h.context.requests.length, 0);
+  assert.match(h.cards.innerHTML, /失败/);
+  const retryUpload = attachmentAction(h, "retry", h.evaluate('[...composerAttachments("A").values()][0]'));
+  h.context.uploads[1].resolve({ material_id: "retry", is_image: true });
+  await retryUpload;
+  h.evaluate(`api = async (_path, options) => { requests.push(options.body); throw new Error("Failed to fetch"); };`);
+  await h.evaluate("sendMain()");
+  assert.match(h.cards.innerHTML, /retry.png/);
+  h.input.value = "下一条消息";
+  h.evaluate('composerDraft.claim("A", "下一条消息")');
+  h.evaluate(`api = async (_path, options) => { requests.push(options.body); return {run_id:"retry-run",message_id:"retry-message",status:"pending"}; };`);
+  await h.evaluate("sendMain(true)");
+  assert.equal(h.context.requests[0], h.context.requests[1]);
+  assert.equal(JSON.parse(h.context.requests[1]).message, "");
+  assert.equal(h.input.value, "下一条消息");
+});
+
+test("attachment-only queue delivery keeps its material inputs", async () => {
+  const h = sendingSetup();
+  h.input.value = "";
+  h.evaluate(`state.materials.set("A", [{material_id:"image",is_image:true}]); toggleRunMaterial("image");
+    api = async (_path, options) => { requests.push(JSON.parse(options.body)); return {input_id:"queued",status:"queued"}; };`);
+  await h.evaluate('sendMain(false, "queue")');
+  assert.equal(h.context.requests[0].mode, "queue");
+  assert.equal(h.context.requests[0].run.message, "");
+  assert.equal(h.context.requests[0].run.material_inputs[0].material_id, "image");
+});
+
+test("external file drops show feedback and use the existing batch upload and send path", async () => {
+  const h = sendingSetup();
+  h.input.value = "";
+  const over = dragFiles(h, "dragover");
+  assert.equal(over.defaultPrevented, true);
+  assert.equal(over.dataTransfer.dropEffect, "copy");
+  assert.equal(h.composer.classList.contains("is-file-dragover"), true);
+  dragFiles(h, "dragleave", [], h.input, ["Files"], h.input);
+  assert.equal(h.composer.classList.contains("is-file-dragover"), true);
+  dragFiles(h, "dragleave");
+  assert.equal(h.composer.classList.contains("is-file-dragover"), false);
+  const dropped = [{ name: "report.txt", type: "text/plain" }, { name: "shot.png", type: "image/png" }];
+  assert.equal(dragFiles(h, "drop", dropped).defaultPrevented, true);
+  assert.match(h.cards.innerHTML, /report.txt/);
+  assert.match(h.cards.innerHTML, /shot.png/);
+  const sending = h.evaluate("sendMain()");
+  await settle();
+  h.context.uploads[0].resolve({ material_id: "report", relative_path: "report.txt" });
+  await settle();
+  assert.equal(h.context.requests.length, 0);
+  h.context.uploads[1].resolve({ material_id: "shot", relative_path: "shot.png", is_image: true });
+  await sending;
+  assert.deepEqual(Array.from(h.context.requests[0].material_inputs, item => item.material_id), ["report", "shot"]);
+});
+
+test("file drops retain the originating task even when switching before upload starts", async () => {
+  const h = sendingSetup();
+  h.evaluate('runUiAction = action => { globalThis.startUploads = action; };');
+  dragFiles(h, "drop", [{ name: "a.txt" }, { name: "b.png" }]);
+  h.evaluate('state.activeTaskId = "B"; globalThis.paths = []; api = async (path, options) => { paths.push(path); return {material_id:options.body.file.name}; };');
+  await h.evaluate("startUploads()");
+  assert.deepEqual(Array.from(h.context.paths), ["/desktop/api/tasks/A/materials/upload", "/desktop/api/tasks/A/materials/upload"]);
+  assert.equal(h.evaluate('materialSelection("A").bindings.length'), 2);
+  assert.equal(h.evaluate('materialSelection("B").bindings.length'), 0);
+});
+
+test("plain text drags, outside drops and disabled composers do not upload files", () => {
+  const h = sendingSetup();
+  assert.equal(dragFiles(h, "dragover", [], h.input, ["text/plain"]).defaultPrevented, false);
+  assert.equal(dragFiles(h, "drop", [], h.input, ["text/plain"]).defaultPrevented, false);
+  assert.equal(dragFiles(h, "drop", [{ name: "outside.txt" }], createNode()).defaultPrevented, false);
+  h.input.disabled = true;
+  const over = dragFiles(h, "dragover");
+  assert.equal(over.dataTransfer.dropEffect, "none");
+  assert.equal(dragFiles(h, "drop", [{ name: "locked.txt" }]).defaultPrevented, true);
+  assert.equal(h.context.uploads.length, 0);
+});
+
+test("attachments and quotation cards are included together with no typed text", async () => {
+  const h = sendingSetup();
+  h.input.value = "";
+  h.evaluate(`addFileReference({path:"code.py", start_line:1, end_line:1, text:"check()"}, "A");
+    setMainReference({task_id:"A", message_id:"answer", text:"answer", start:0, end:6, offset_basis:"rendered_text_utf16"});`);
+  pasteFiles(h, ["shot.png"]);
+  const sending = h.evaluate("sendMain()");
+  await settle();
+  h.context.uploads[0].resolve({ material_id: "shot", is_image: true });
+  await sending;
+  assert.match(h.context.requests[0].message, /check\(\)/);
+  assert.equal(h.context.requests[0].message_reference.message_id, "answer");
+  assert.equal(h.context.requests[0].material_inputs[0].material_id, "shot");
+  assert.equal(h.evaluate('fileReferences("A").length'), 0);
+  assert.equal(h.evaluate('referenceDrafts.get("A")'), null);
+});
+
+test("a compression command with an attachment sends the complete message", async () => {
+  const h = sendingSetup();
+  h.input.value = "@关键字快捷压缩 报错";
+  pasteFiles(h, ["shot.png"]);
+  const sending = h.evaluate("sendMain()");
+  await settle();
+  h.context.uploads[0].resolve({ material_id: "shot", is_image: true });
+  await sending;
+  assert.equal(h.context.requests[0].message, "@关键字快捷压缩 报错");
+  assert.equal(h.context.requests[0].material_inputs[0].material_id, "shot");
 });
 
 test("all pasted files appear before the UI action starts and are awaited as one batch", async () => {
