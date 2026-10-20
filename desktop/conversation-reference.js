@@ -9,6 +9,12 @@
   if (root) root.FocusConversationReference = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const escape = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
   const clone = value => value ? JSON.parse(JSON.stringify(value)) : null;
   function createDrafts(storage) {
@@ -62,7 +68,7 @@
   }
   function render(reference, { editable = true } = {}) {
     if (!reference) return "";
-    return `<aside class="conversation-reference" aria-label="引用原文"><div><button type="button" class="text-button" data-action="reference-source" data-reference="${escape(JSON.stringify(reference))}">引用回答 · 跳回原消息</button>${editable ? '<button type="button" class="text-button" data-action="reference-remove" aria-label="移除引用">移除</button>' : ""}</div><blockquote>${escape(reference.text)}</blockquote></aside>`;
+    return localize`<aside class="conversation-reference" aria-label="引用原文"><div><button type="button" class="text-button" data-action="reference-source" data-reference="${escape(JSON.stringify(reference))}">引用回答 · 跳回原消息</button>${editable ? localize('<button type="button" class="text-button" data-action="reference-remove" aria-label="移除引用">移除</button>') : ""}</div><blockquote>${escape(reference.text)}</blockquote></aside>`;
   }
   function stripProtocol(value, reference) {
     if (!reference || typeof value !== "string" || !value.endsWith("\n</focus_message_reference>")) return value;
@@ -105,8 +111,8 @@
       toolbar = document.createElement("div");
       toolbar.className = "conversation-selection-toolbar";
       toolbar.setAttribute("role", "toolbar");
-      toolbar.setAttribute("aria-label", "选中文字操作");
-      toolbar.innerHTML = '<button type="button" data-reference-command="quote">追问</button><button type="button" data-reference-command="copy">复制</button>';
+      toolbar.setAttribute("aria-label", localize("选中文字操作"));
+      toolbar.innerHTML = localize('<button type="button" data-reference-command="quote">追问</button><button type="button" data-reference-command="copy">复制</button>');
       // Keep the range alive when pressing the floating controls with a pointer.
       toolbar.addEventListener("pointerdown", event => event.preventDefault());
       toolbar.addEventListener("click", async event => {
@@ -117,8 +123,8 @@
           onQuote(submitted);
           hide(); selection.removeAllRanges();
         } else {
-          try { await window.navigator.clipboard.writeText(submitted.text); onStatus("已复制"); }
-          catch { onStatus("复制失败，请重试", true); }
+          try { await window.navigator.clipboard.writeText(submitted.text); onStatus(localize("已复制")); }
+          catch { onStatus(localize("复制失败，请重试"), true); }
           hide();
         }
       });

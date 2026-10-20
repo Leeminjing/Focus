@@ -5,8 +5,8 @@ const { deliveryVerification } = require("./workspace-patrol-feedback.js");
 // Persist identities/statuses only, never task content or approval payloads.
 class TaskNotifications {
   constructor({ load, save, listTasks, show, onTasks = () => {}, subscribe,
-    interval = 60000, debounce = 250 }) {
-    Object.assign(this, { save, listTasks, show, onTasks, subscribe, interval, debounce });
+    interval = 60000, debounce = 250, translate = source => source }) {
+    Object.assign(this, { save, listTasks, show, onTasks, subscribe, interval, debounce, translate });
     this.generation = 0;
     this.abort = new AbortController();
     const stored = load() || {};
@@ -45,7 +45,7 @@ class TaskNotifications {
         const workspacePatrol = loop?.interaction_mode === "workspace_patrol";
         for (const item of task.attention || []) {
           events.push({ key: `attention:${task.task_id}:${item.id}`, priority: 0,
-            title: item.kind === "access_approval" ? "需要你授权" : "需要你处理",
+            title: this.translate(item.kind === "access_approval" ? "需要你授权" : "需要你处理"),
             body: task.title, target: { taskId: task.task_id, attentionId: item.id, loopId: item.loop_id || null,
               ...(workspacePatrol && item.loop_id === loop.loop_id ? { workspaceId: loop.workspace_id } : {}) } });
         }
@@ -61,7 +61,7 @@ class TaskNotifications {
           : task.latest_run;
         if (!result || !["success", "error"].includes(result.status)) continue;
         const event = { key: `result:${task.task_id}:${result.run_id}:${result.status}`, priority: 1,
-          title: result.status === "success" ? (delivery ? "本次工作已交付" : "任务已完成") : "任务运行失败",
+          title: this.translate(result.status === "success" ? (delivery ? "本次工作已交付" : "任务已完成") : "任务运行失败"),
           body: task.title, target: { taskId: task.task_id, loopId: loop?.loop_id || null,
             ...(delivery && result.status === "success" ? { deliveryId: delivery.verification_id } : {}),
             ...(workspacePatrol ? { workspaceId: loop.workspace_id } : {}) } };

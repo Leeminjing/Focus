@@ -10,14 +10,20 @@
   if (root) root.FocusLoopMissionEditor = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
 
-  const EVIDENCE = [
-    ["test", "测试结果"],
-    ["tool", "工具输出"],
-    ["artifact", "交付物 / 文件"],
-    ["workspace", "Workspace 变更"],
-    ["fact", "已验证事实"],
-    ["user", "用户确认"],
+
+  const EVIDENCE = () => [
+    ["test", localize("测试结果")],
+    ["tool", localize("工具输出")],
+    ["artifact", localize("交付物 / 文件")],
+    ["workspace", localize("Workspace 变更")],
+    ["fact", localize("已验证事实")],
+    ["user", localize("用户确认")],
   ];
   const escape = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const clean = value => String(value ?? "").trim().replace(/\s+/g, " ");
@@ -61,27 +67,27 @@
   }
 
   function boundaryRow(kind, value = "") {
-    const placeholder = kind === "prohibited_actions" ? "自然语言限制，或系统动作名（如 create_lane）" : kind === "in_scope" ? "范围说明，或 context:<Context ID>" : "必须始终保持的不变量";
-    const label = kind === "prohibited_actions" ? "禁止或超范围动作" : kind === "in_scope" ? "允许触及的范围" : "必须保持的不变量";
-    return `<div class="loop-mission-row" data-mission-row><input type="text" data-mission-boundary="${escape(kind)}" value="${escape(value)}" placeholder="${escape(placeholder)}" aria-label="${escape(label)}"><button type="button" class="text-button" data-action="mission-remove-row" aria-label="移除此边界">移除</button></div>`;
+    const placeholder = kind === "prohibited_actions" ? localize("自然语言限制，或系统动作名（如 create_lane）") : kind === "in_scope" ? localize("范围说明，或 context:<Context ID>") : localize("必须始终保持的不变量");
+    const label = kind === "prohibited_actions" ? localize("禁止或超范围动作") : kind === "in_scope" ? localize("允许触及的范围") : localize("必须保持的不变量");
+    return localize`<div class="loop-mission-row" data-mission-row><input type="text" data-mission-boundary="${escape(kind)}" value="${escape(value)}" placeholder="${escape(placeholder)}" aria-label="${escape(label)}"><button type="button" class="text-button" data-action="mission-remove-row" aria-label="移除此边界">移除</button></div>`;
   }
 
   function boundaryGroup(kind, title, help, values) {
     const rows = values?.length ? values : [""];
-    return `<section class="loop-mission-boundary" data-boundary-group="${escape(kind)}"><header><div><strong>${escape(title)}</strong><small>${escape(help)}</small></div><button type="button" class="text-button" data-action="mission-add-boundary" data-boundary-kind="${escape(kind)}">添加</button></header><div data-mission-rows>${rows.map(value => boundaryRow(kind, value)).join("")}</div></section>`;
+    return localize`<section class="loop-mission-boundary" data-boundary-group="${escape(kind)}"><header><div><strong>${escape(title)}</strong><small>${escape(help)}</small></div><button type="button" class="text-button" data-action="mission-add-boundary" data-boundary-kind="${escape(kind)}">添加</button></header><div data-mission-rows>${rows.map(value => boundaryRow(kind, value)).join("")}</div></section>`;
   }
 
   function checkRow(check = {}, index = 0) {
     const evidence = check.user_verification ? "user" : check.expected_evidence_kinds?.[0] || "test";
-    const options = EVIDENCE.map(([value, label]) => `<option value="${value}"${value === evidence ? " selected" : ""}>${label}</option>`).join("");
-    return `<div class="loop-mission-check" data-mission-check data-check-id="${escape(check.check_id || `check-${index + 1}`)}"><label><span>可验证声明</span><input type="text" data-check-claim value="${escape(check.claim || "")}" required placeholder="例如：核心回归测试全部通过"></label><label><span>需要的证据</span><select data-check-evidence>${options}</select></label><label class="loop-mission-required"><input type="checkbox" data-check-required${check.required === false ? "" : " checked"}>必需</label><button type="button" class="text-button" data-action="mission-remove-check" aria-label="移除此完成检查">移除</button></div>`;
+    const options = EVIDENCE().map(([value, label]) => `<option value="${value}"${value === evidence ? " selected" : ""}>${label}</option>`).join("");
+    return localize`<div class="loop-mission-check" data-mission-check data-check-id="${escape(check.check_id || `check-${index + 1}`)}"><label><span>可验证声明</span><input type="text" data-check-claim value="${escape(check.claim || "")}" required placeholder="例如：核心回归测试全部通过"></label><label><span>需要的证据</span><select data-check-evidence>${options}</select></label><label class="loop-mission-required"><input type="checkbox" data-check-required${check.required === false ? "" : " checked"}>必需</label><button type="button" class="text-button" data-action="mission-remove-check" aria-label="移除此完成检查">移除</button></div>`;
   }
 
   function render(value = {}) {
     const mission = normalizeMission(value);
     const checks = mission.completion_checks.length ? mission.completion_checks : [{ check_id: "check-1", required: true, expected_evidence_kinds: ["test"] }];
-    const legacy = mission.boundaries.legacy_text ? `<details class="loop-mission-legacy"><summary>旧版执行边界（原文保留）</summary><pre>${escape(mission.boundaries.legacy_text)}</pre></details>` : "";
-    return `<section class="loop-mission-editor" data-loop-mission-editor><section class="loop-mission-section"><header><span>1</span><div><h3>最终结果</h3><p>Loop 结束时，什么必须已经成为事实？这里只描述结果，不写限制或验收状态。</p></div></header><textarea data-mission-outcome name="missionOutcome" rows="3" required aria-label="最终结果" placeholder="例如：用户可以在当前 Portfolio Map 中实时观察多个 Context 协同完成任务。">${escape(mission.outcome)}</textarea></section><section class="loop-mission-section"><header><span>2</span><div><h3>执行边界</h3><p>Patrol 和 Context 在执行期间不能越过什么边界？交付物不写在这里。</p></div></header><div class="loop-mission-boundaries">${boundaryGroup("in_scope", "允许触及的范围", "明确本 Loop 可以修改或调查的区域", mission.boundaries.in_scope)}${boundaryGroup("required_invariants", "必须保持", "整个执行过程都不能破坏的不变量", mission.boundaries.required_invariants)}${boundaryGroup("prohibited_actions", "禁止 / 超范围", "无论是否有利于目标都不得执行的动作", mission.boundaries.prohibited_actions)}</div>${legacy}</section><section class="loop-mission-section"><header><span>3</span><div><h3>完成检查</h3><p>用什么可追溯证据证明完成？每一项都有稳定标识和证据类别。</p></div><button type="button" class="text-button" data-action="mission-add-check">添加检查</button></header><div class="loop-mission-checks" data-mission-checks>${checks.map(checkRow).join("")}</div></section></section>`;
+    const legacy = mission.boundaries.legacy_text ? localize`<details class="loop-mission-legacy"><summary>旧版执行边界（原文保留）</summary><pre>${escape(mission.boundaries.legacy_text)}</pre></details>` : "";
+    return localize`<section class="loop-mission-editor" data-loop-mission-editor><section class="loop-mission-section"><header><span>1</span><div><h3>最终结果</h3><p>Loop 结束时，什么必须已经成为事实？这里只描述结果，不写限制或验收状态。</p></div></header><textarea data-mission-outcome name="missionOutcome" rows="3" required aria-label="最终结果" placeholder="例如：用户可以在当前 Portfolio Map 中实时观察多个 Context 协同完成任务。">${escape(mission.outcome)}</textarea></section><section class="loop-mission-section"><header><span>2</span><div><h3>执行边界</h3><p>Patrol 和 Context 在执行期间不能越过什么边界？交付物不写在这里。</p></div></header><div class="loop-mission-boundaries">${boundaryGroup("in_scope", localize("允许触及的范围"), localize("明确本 Loop 可以修改或调查的区域"), mission.boundaries.in_scope)}${boundaryGroup("required_invariants", localize("必须保持"), localize("整个执行过程都不能破坏的不变量"), mission.boundaries.required_invariants)}${boundaryGroup("prohibited_actions", localize("禁止 / 超范围"), localize("无论是否有利于目标都不得执行的动作"), mission.boundaries.prohibited_actions)}</div>${legacy}</section><section class="loop-mission-section"><header><span>3</span><div><h3>完成检查</h3><p>用什么可追溯证据证明完成？每一项都有稳定标识和证据类别。</p></div><button type="button" class="text-button" data-action="mission-add-check">添加检查</button></header><div class="loop-mission-checks" data-mission-checks>${checks.map(checkRow).join("")}</div></section></section>`;
   }
 
   function buildMission(values) {
@@ -105,19 +111,19 @@
       },
       completion_checks: completionChecks,
     };
-    if (!mission.outcome) throw new Error("请填写最终结果");
-    if (!mission.completion_checks.length) throw new Error("至少需要一条完成检查");
+    if (!mission.outcome) throw new Error(localize("请填写最终结果"));
+    if (!mission.completion_checks.length) throw new Error(localize("至少需要一条完成检查"));
     const roles = [
-      ["最终结果", [mission.outcome]],
-      ["执行边界", [...mission.boundaries.in_scope, ...mission.boundaries.required_invariants, ...mission.boundaries.prohibited_actions]],
-      ["完成检查", mission.completion_checks.map(item => item.claim)],
+      [localize("最终结果"), [mission.outcome]],
+      [localize("执行边界"), [...mission.boundaries.in_scope, ...mission.boundaries.required_invariants, ...mission.boundaries.prohibited_actions]],
+      [localize("完成检查"), mission.completion_checks.map(item => item.claim)],
     ];
     const locations = new Map();
     for (const [role, entries] of roles) {
       for (const entry of entries) {
         const key = clean(entry).toLocaleLowerCase();
         const previous = locations.get(key);
-        if (previous && previous !== role) throw new Error(`相同内容不能同时属于${previous}和${role}`);
+        if (previous && previous !== role) throw new Error(localize`相同内容不能同时属于${previous}和${role}`);
         locations.set(key, role);
       }
     }

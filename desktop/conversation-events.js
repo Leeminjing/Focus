@@ -11,6 +11,12 @@
   if (root) root.FocusConversationEvents = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   function escapeHtml(value = "") {
     return String(value).replace(/[&<>"']/g, char => ({
@@ -109,7 +115,7 @@
     const args = call.args || {};
     const output = text(event.result?.content);
     const status = event.status || "pending";
-    const statusLabel = { pending: "调用中", success: "完成", error: "失败" }[status] || status;
+    const statusLabel = { pending: localize("调用中"), success: localize("完成"), error: localize("失败") }[status] || status;
     const error = status === "error" ? preview(output, 140) : "";
     const name = call.name || event.result?.name || "tool";
     return `<details class="conversation-event is-tool is-${escapeHtml(status)}" data-event-key="${escapeHtml(event.eventKey || `tool:${call.id || name}`)}">
@@ -126,7 +132,7 @@
       const call = event.call || {};
       const args = call.args || {};
       const output = text(event.result?.content);
-      return `<dl><div><dt>参数</dt><dd><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre></dd></div>${event.result ? `<div><dt>输出</dt><dd><pre>${escapeHtml(output)}</pre></dd></div>` : ""}</dl>`;
+      return localize`<dl><div><dt>参数</dt><dd><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre></dd></div>${event.result ? localize`<div><dt>输出</dt><dd><pre>${escapeHtml(output)}</pre></dd></div>` : ""}</dl>`;
     }
     return "";
   }

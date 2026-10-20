@@ -4,11 +4,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-function loadI18n(initial = {}) {
+function loadI18n(initial = {}, preferences = null) {
   const values = new Map(Object.entries(initial));
+  const listeners = new Map();
+  const events = [];
   const document = {
     documentElement: { lang: "", dataset: {} },
-    dispatchEvent() {},
+    dispatchEvent(event) { events.push(event); },
   };
   const window = {
     localStorage: {
@@ -16,6 +18,8 @@ function loadI18n(initial = {}) {
       setItem(key, value) { values.set(key, String(value)); },
     },
     document,
+    ...(preferences ? { focusDesktop: { preferences } } : {}),
+    addEventListener(type, handler) { listeners.set(type, handler); },
     CustomEvent: class CustomEvent {
       constructor(type, options) { this.type = type; this.detail = options?.detail; }
     },
@@ -23,7 +27,7 @@ function loadI18n(initial = {}) {
   window.window = window;
   const source = fs.readFileSync(path.join(__dirname, "i18n.js"), "utf8");
   vm.runInNewContext(source, window, { filename: "i18n.js" });
-  return { i18n: window.FocusI18n, values, document };
+  return { i18n: window.FocusI18n, values, document, listeners, events };
 }
 
 test("interface language defaults to Chinese and translates known labels", () => {
@@ -51,6 +55,25 @@ test("user can switch to English and the choice survives reload", () => {
 test("unsupported stored language falls back to Chinese", () => {
   const { i18n } = loadI18n({ "focus-interface-language-v1": "fr-FR" });
   assert.equal(i18n.locale(), "zh-CN");
+});
+
+test("desktop broadcasts and browser storage events update other windows without writing back", () => {
+  let receive;
+  let writes = 0;
+  const { i18n, document, listeners, events } = loadI18n({}, {
+    getItem: () => "zh-CN",
+    setItem() { writes++; },
+    onChange(callback) { receive = callback; },
+  });
+  receive({ key: "focus-interface-language-v1", value: "en-US" });
+  assert.equal(i18n.t("nav.settings"), "Settings");
+  assert.equal(document.documentElement.lang, "en-US");
+  assert.equal(events.length, 1);
+  receive({ key: "focus-interface-language-v1", value: "en-US" });
+  assert.equal(events.length, 1, "a broadcast echo must not redraw the window");
+  listeners.get("storage")({ key: "focus-interface-language-v1", newValue: "zh-CN" });
+  assert.equal(i18n.t("nav.settings"), "设置");
+  assert.equal(writes, 0, "cross-window updates must not create a persistence loop");
 });
 
 test("translation applies to declarative text and accessible labels", () => {

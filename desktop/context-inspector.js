@@ -5,6 +5,12 @@
  */
 (function (root) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   function create({ api, onOpenTask, view = root.FocusWorkspacePatrolView, presentation = "default", getManifest = () => null, onSelectionChange = () => {} }) {
     let panel = null, active = null, tab = "overview", returnFocus = null;
     let lifetime = null, request = null, generation = 0;
@@ -17,7 +23,7 @@
       const scroll = panel.scrollTop, bodyScroll = panel.querySelector(".patrol-context-body")?.scrollTop || 0;
       content.innerHTML = view.context({ ...active.page, context_id: active.contextId }, active.node, tab, { presentation, manifest: getManifest(), revisionId: active.revisionId });
       panel.classList.toggle("is-expanded", presentation === "workbench" && tab !== "overview");
-      if (active.readError) content.querySelector(".patrol-context-body")?.insertAdjacentHTML("afterbegin", `<p role="alert">完整会话不可用：${view.escape(active.readError)} <button data-context-inspection-retry>重试读取</button></p>`);
+      if (active.readError) content.querySelector(".patrol-context-body")?.insertAdjacentHTML("afterbegin", localize`<p role="alert">完整会话不可用：${view.escape(active.readError)} <button data-context-inspection-retry>重试读取</button></p>`);
       panel.scrollTop = scroll;
       const body = panel.querySelector(".patrol-context-body");
       if (body) body.scrollTop = bodyScroll;

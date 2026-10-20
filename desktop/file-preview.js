@@ -7,6 +7,21 @@
   root.FocusFilePreview = api;
 })(globalThis, function (root) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
+  const languageViews = new WeakMap();
+  function watchLanguage(node, render) {
+    node.setAttribute("data-file-locale", "");
+    languageViews.set(node, render);
+  }
+  root.document?.addEventListener?.("focus:languagechange", () => {
+    root.document.querySelectorAll("[data-file-locale]").forEach(node => languageViews.get(node)?.());
+  });
+
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const extension = name => String(name).split(".").at(-1).toLowerCase();
   function kind(name) {
@@ -51,12 +66,12 @@
   }
   function toolbar(target, name) {
     const history = !!target?.loop_id;
-    return `<div class="file-exits" role="group" aria-label="文件操作">
-      <button type="button" data-file-operation="open">${history ? "用系统应用打开此版本" : "用系统应用打开"}</button>
-      ${history ? '<button type="button" data-file-operation="current">打开当前文件</button>' : ""}
+    return localize`<div class="file-exits" role="group" aria-label="文件操作">
+      <button type="button" data-file-operation="open">${history ? localize("用系统应用打开此版本") : localize("用系统应用打开")}</button>
+      ${history ? localize('<button type="button" data-file-operation="current">打开当前文件</button>') : ""}
       <button type="button" data-file-operation="reveal">打开所在文件夹</button>
-      <button type="button" data-file-operation="save">${history ? "此版本另存为" : "另存为"}</button>
-      ${kind(name) === "html" ? '<button type="button" data-file-operation="html">独立预览 HTML</button>' : ""}
+      <button type="button" data-file-operation="save">${history ? localize("此版本另存为") : localize("另存为")}</button>
+      ${kind(name) === "html" ? localize('<button type="button" data-file-operation="html">独立预览 HTML</button>') : ""}
       <span data-file-status role="status"></span></div>`;
   }
   function bindActions(host, target, name) {
@@ -65,10 +80,10 @@
       button.disabled = true;
       try {
         const operation = button.dataset.fileOperation;
-        if (!root.focusDesktop?.fileAction) throw new Error("请在 Focus 桌面应用中使用系统文件操作");
+        if (!root.focusDesktop?.fileAction) throw new Error(localize("请在 Focus 桌面应用中使用系统文件操作"));
         const result = await root.focusDesktop.fileAction({ operation: operation === "current" ? "open" : operation,
           target: operation === "current" || operation === "reveal" ? { ...target, current: true } : target, name });
-        if (status) status.textContent = result === false ? "已取消" : "已完成";
+        if (status) status.textContent = result === false ? localize("已取消") : localize("已完成");
       } catch (error) { if (status) status.textContent = error.message; }
       finally { button.disabled = false; }
     });
@@ -78,29 +93,45 @@
       headers: { "Content-Type": "application/json", "X-Focus-Session": root.focusDesktop?.runtime?.().session || "focus-dev-session" }, body: JSON.stringify(target) });
     if (!response.ok) {
       let detail; try { detail = (await response.json()).detail; } catch {}
-      throw new Error(typeof detail === "string" ? detail : `读取失败 (${response.status})`);
+      throw new Error(typeof detail === "string" ? detail : localize`读取失败 (${response.status})`);
     }
     return response;
   }
   async function mount(host, { name, target, text, onReference }) {
     const owner = {}; host.__filePreview = owner;
-    host.innerHTML = `${toolbar(target, name)}<div class="file-preview-content" data-file-content>正在读取文件…</div>`;
+    host.innerHTML = localize`${toolbar(target, name)}<div class="file-preview-content" data-file-content>正在读取文件…</div>`;
     bindActions(host, target, name);
     const body = host.querySelector("[data-file-content]");
+    let renderMessage = () => localize("正在读取文件…");
+    watchLanguage(host, () => {
+      if (host.__filePreview !== owner) return;
+      const chrome = root.document.createElement("div");
+      chrome.innerHTML = toolbar(target, name);
+      host.querySelector(".file-exits")?.replaceWith(chrome.firstElementChild);
+      bindActions(host, target, name);
+      if (renderMessage) body.textContent = renderMessage();
+      const previous = body.querySelector("[data-prev-page]"), next = body.querySelector("[data-next-page]");
+      if (previous) previous.textContent = localize("上一页");
+      if (next) next.textContent = localize("下一页");
+      const image = body.querySelector(".file-preview-image");
+      if (image) image.alt = kind(name) === "pdf" ? localize("PDF 页面") : localize("文件图片");
+    });
     const type = kind(name);
     try {
       if (text === undefined && /\.docx?$/i.test(name)) {
         text = (await (await request("text", target)).json()).content;
       } else if (text === undefined && type === "binary") {
-        body.textContent = "此格式暂无内置预览，请用系统应用打开或另存为。"; return;
+        renderMessage = () => localize("此格式暂无内置预览，请用系统应用打开或另存为。");
+        body.textContent = renderMessage(); return;
       } else if (text === undefined) {
         const bytes = type === "pdf" ? null : await (await request("content?preview=true", target)).arrayBuffer();
         if (host.__filePreview !== owner) return;
         if (type === "image" || type === "pdf") {
+          renderMessage = null;
           // PDF is rendered on the backend so no active document is embedded.
           if (type === "pdf") {
             let page = 1;
-            body.innerHTML = '<div class="file-preview-pages"><button type="button" data-prev-page>上一页</button><span data-page-label></span><button type="button" data-next-page>下一页</button></div><img class="file-preview-image" alt="PDF 页面">';
+            body.innerHTML = localize('<div class="file-preview-pages"><button type="button" data-prev-page>上一页</button><span data-page-label></span><button type="button" data-next-page>下一页</button></div><img class="file-preview-image" alt="PDF 页面">');
             const renderPage = async next => {
               const data = await (await request(`pdf-page?page=${next}`, target)).json();
               if (host.__filePreview !== owner) return;
@@ -115,44 +146,57 @@
             await renderPage(1); return;
           }
           const url = URL.createObjectURL(new Blob([bytes], { type: `image/${extension(name) === "jpg" ? "jpeg" : extension(name)}` }));
-          body.innerHTML = '<img class="file-preview-image" alt="文件图片">';
+          body.innerHTML = localize('<img class="file-preview-image" alt="文件图片">');
           const img = body.querySelector("img");
           img.onload = img.onerror = () => URL.revokeObjectURL(url); img.src = url; return;
         }
         try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-        catch { throw new Error("文件不是 UTF-8 文本，请用系统应用打开或另存为"); }
-        if (text.includes("\0")) throw new Error("二进制文件无法作为文本预览，请用系统应用打开或另存为");
+        catch { throw new Error(localize("文件不是 UTF-8 文本，请用系统应用打开或另存为")); }
+        if (text.includes("\0")) throw new Error(localize("二进制文件无法作为文本预览，请用系统应用打开或另存为"));
       }
       if (host.__filePreview !== owner) return;
+      renderMessage = null;
       renderText(body, String(text ?? ""), name, {
         range: root.FocusFileLinks?.lineRange(target.link || target),
         onReference: onReference ? value => onReference({ ...(target.link || { path: target.content_ref || name }), ...value }) : undefined,
       });
     } catch (error) {
-      if (host.__filePreview === owner) body.textContent = `${error.message}。可使用上方文件操作。`;
+      if (host.__filePreview === owner) {
+        renderMessage = () => localize`${error.message}。可使用上方文件操作。`;
+        body.textContent = renderMessage();
+      }
     }
   }
   function renderText(body, text, name, { range = null, onReference } = {}) {
     let source = !!range || !["markdown", "csv"].includes(kind(name)), query = "", matches = [], selected = -1;
     let selection = range;
     const lines = text.split("\n");
-    body.innerHTML = `<div class="file-text-tools"><button type="button" data-source-toggle>${source ? "查看排版" : "查看源码"}</button><label>查找 <input type="search" data-file-search aria-label="查找文件内容"></label><button type="button" data-search-next>下一个</button><span data-search-count role="status"></span><button type="button" data-copy-file>复制全文</button>${onReference ? '<button type="button" data-add-reference disabled>加入当前问题</button><span data-line-selection role="status">选择代码文本，或点击行号（Shift 连选）</span>' : ""}</div><div class="file-text-body" tabindex="0"></div>`;
+    body.innerHTML = localize`<div class="file-text-tools"><button type="button" data-source-toggle>${source ? localize("查看排版") : localize("查看源码")}</button><label><span data-file-search-label>查找</span> <input type="search" data-file-search aria-label="查找文件内容"></label><button type="button" data-search-next>下一个</button><span data-search-count role="status"></span><button type="button" data-copy-file>复制全文</button>${onReference ? localize('<button type="button" data-add-reference disabled>加入当前问题</button><span data-line-selection role="status">选择代码文本，或点击行号（Shift 连选）</span>') : ""}</div><div class="file-text-body" tabindex="0"></div>`;
     const content = body.querySelector(".file-text-body"), toggle = body.querySelector("[data-source-toggle]");
     toggle.hidden = !["markdown", "csv"].includes(kind(name));
+    watchLanguage(body, () => {
+      body.querySelector("[data-file-search-label]").textContent = localize("查找");
+      body.querySelector("[data-file-search]").setAttribute("aria-label", localize("查找文件内容"));
+      body.querySelector("[data-search-next]").textContent = localize("下一个");
+      body.querySelector("[data-copy-file]").textContent = localize("复制全文");
+      const reference = body.querySelector("[data-add-reference]");
+      if (reference) reference.textContent = localize("加入当前问题");
+      render();
+    });
     function render() {
       if (!source && kind(name) === "markdown" && root.markdownit) content.innerHTML = root.markdownit({ html: false, linkify: true }).render(text);
       else if (!source && kind(name) === "csv") {
         const rows = parseCsv(text, extension(name) === "tsv" ? "\t" : ",");
-        content.innerHTML = `${rows.length > 1000 || rows.some(row => row.length > 100) ? "<p>仅预览前 1000 行、100 列，复制和另存为保留全文。</p>" : ""}<table class="file-csv"><tbody>${rows.slice(0, 1000).map((row, i) => `<tr>${row.slice(0, 100).map(cell => `<${i ? "td" : "th"}>${escape(cell)}</${i ? "td" : "th"}>`).join("")}</tr>`).join("")}</tbody></table>`;
+        content.innerHTML = `${rows.length > 1000 || rows.some(row => row.length > 100) ? localize("<p>仅预览前 1000 行、100 列，复制和另存为保留全文。</p>") : ""}<table class="file-csv"><tbody>${rows.slice(0, 1000).map((row, i) => `<tr>${row.slice(0, 100).map(cell => `<${i ? "td" : "th"}>${escape(cell)}</${i ? "td" : "th"}>`).join("")}</tr>`).join("")}</tbody></table>`;
       } else {
         const start = range?.start_line > 10000 ? Math.max(0, Math.min(range.start_line - 51, lines.length - 10000)) : 0;
         const visibleEnd = Math.min(lines.length, start + 10000);
-        const notice = lines.length > 10000 ? `<p>仅预览和查找${start ? `第 ${start + 1}–${visibleEnd}` : "前 10000"} 行，复制和另存为保留全文。</p>` : "";
-        content.innerHTML = `${notice}<pre class="file-source">${lines.slice(start, visibleEnd).map((line, index) => `<span data-line="${start + index + 1}" class="file-source-line${query && line.toLowerCase().includes(query) ? " is-match" : ""}"><button type="button" class="file-line-number" data-select-line="${start + index + 1}" aria-label="选择第 ${start + index + 1} 行" tabindex="-1"></button>${highlight(line, name)}</span>`).join("")}</pre>`;
+        const notice = lines.length > 10000 ? localize`<p>仅预览和查找${start ? localize`第 ${start + 1}–${visibleEnd}` : localize("前 10000")} 行，复制和另存为保留全文。</p>` : "";
+        content.innerHTML = `${notice}<pre class="file-source">${lines.slice(start, visibleEnd).map((line, index) => localize`<span data-line="${start + index + 1}" class="file-source-line${query && line.toLowerCase().includes(query) ? " is-match" : ""}"><button type="button" class="file-line-number" data-select-line="${start + index + 1}" aria-label="选择第 ${start + index + 1} 行" tabindex="-1"></button>${highlight(line, name)}</span>`).join("")}</pre>`;
       }
-      toggle.textContent = source ? "查看排版" : "查看源码";
+      toggle.textContent = source ? localize("查看排版") : localize("查看源码");
       matches = [...content.querySelectorAll(".is-match")]; selected = -1;
-      body.querySelector("[data-search-count]").textContent = query ? `${matches.length} 行匹配` : "";
+      body.querySelector("[data-search-count]").textContent = query ? localize`${matches.length} 行匹配` : "";
       paintSelection();
     }
     function paintSelection() {
@@ -163,7 +207,7 @@
       const add = body.querySelector("[data-add-reference]");
       if (add) add.disabled = !source || !selection || selection.start_line > lines.length || selection.end_line > lines.length;
       const label = body.querySelector("[data-line-selection]");
-      if (label) label.textContent = selection ? `第 ${selection.start_line}–${selection.end_line} 行` : "选择代码文本，或点击行号（Shift 连选）";
+      if (label) label.textContent = selection ? localize`第 ${selection.start_line}–${selection.end_line} 行` : localize("选择代码文本，或点击行号（Shift 连选）");
     }
     let anchorLine = range?.start_line;
     content.addEventListener("click", event => {
@@ -200,16 +244,16 @@
       if (!matches.length) return;
       matches[selected]?.classList.remove("is-current"); selected = (selected + 1) % matches.length;
       matches[selected].classList.add("is-current"); matches[selected].scrollIntoView({ block: "center" });
-      body.querySelector("[data-search-count]").textContent = `${selected + 1}/${matches.length} 行匹配`;
+      body.querySelector("[data-search-count]").textContent = localize`${selected + 1}/${matches.length} 行匹配`;
     });
     body.querySelector("[data-copy-file]").addEventListener("click", async event => {
-      try { await root.navigator.clipboard.writeText(text); event.target.textContent = "已复制"; }
-      catch { event.target.textContent = "复制失败，请选择文本复制"; }
+      try { await root.navigator.clipboard.writeText(text); event.target.textContent = localize("已复制"); }
+      catch { event.target.textContent = localize("复制失败，请选择文本复制"); }
     });
     render();
     if (range) {
       content.querySelector(`[data-line="${range.start_line}"]`)?.scrollIntoView?.({ block: "center" });
-      if (range.start_line > lines.length || range.end_line > lines.length) body.querySelector("[data-search-count]").textContent = "引用行范围超出当前文件，文件可能已变化";
+      if (range.start_line > lines.length || range.end_line > lines.length) body.querySelector("[data-search-count]").textContent = localize("引用行范围超出当前文件，文件可能已变化");
     }
   }
   function mountHistory(host, file, loopId) {

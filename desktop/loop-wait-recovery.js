@@ -6,6 +6,12 @@
  */
 (function initLoopWaitRecovery(global) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   function canResume(request) {
     return Boolean(
@@ -19,7 +25,7 @@
 
   async function confirmAndResume({ request, loopId, confirm, submit, beforeSubmit }) {
     if (!canResume(request) || !loopId) return false;
-    if (!confirm("确认当前 Mission 已包含完整目标和完成检查，并沿用它继续执行？这不会发送一条普通聊天消息。")) return false;
+    if (!confirm(localize("确认当前 Mission 已包含完整目标和完成检查，并沿用它继续执行？这不会发送一条普通聊天消息。"))) return false;
     beforeSubmit?.();
     await submit(loopId, request.request_id, {
       confirmation: "resume_with_current_mission",

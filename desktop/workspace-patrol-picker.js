@@ -11,22 +11,28 @@
   if (root) root.FocusWorkspacePatrolPicker = api;
 })(globalThis, function (escape, composer) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const icon = name => `<span class="ui-icon icon-${name}" aria-hidden="true"></span>`;
 
   function shell() {
-    return `<section class="workspace-patrol is-quiet patrol-workspace-picker">${composer(null)}<dialog class="patrol-picker-dialog glass-surface" aria-labelledby="patrolPickerTitle">
+    return localize`<section class="workspace-patrol is-quiet patrol-workspace-picker">${composer(null)}<dialog class="patrol-picker-dialog glass-surface" aria-labelledby="patrolPickerTitle">
       <header class="patrol-picker-heading"><h1 id="patrolPickerTitle">选择工作区文件夹</h1><button type="button" data-patrol-picker-close aria-label="关闭选择">×</button><p>从电脑文件系统选择项目文件夹，确认后进入工作区。</p></header>
       <p class="patrol-picker-error" data-patrol-binding-error role="alert" hidden></p>
       <section class="patrol-picker-detail" data-patrol-workspace-detail aria-label="工作区路径确认">${detail(null)}</section></dialog></section>`;
   }
 
   function detail(path) {
-    const name = path ? path.split(/[\\/]/).filter(Boolean).at(-1) || path : "选择一个本地文件夹";
-    return `<div class="patrol-workspace-summary"><div class="patrol-workspace-emblem">${icon("folder")}</div>
+    const name = path ? path.split(/[\\/]/).filter(Boolean).at(-1) || path : localize("选择一个本地文件夹");
+    return localize`<div class="patrol-workspace-summary"><div class="patrol-workspace-emblem">${icon("folder")}</div>
       <h2>${escape(name)}</h2>${path ? `<div class="patrol-workspace-path">${escape(path)}</div>` : ""}
-      <p class="patrol-workspace-description">${path ? "确认这个文件夹后，即可进入 Patrol 输入想法和决定。" : "打开系统文件夹选择器，选择你要推进的项目目录。"}</p>
-      <div class="patrol-picker-actions">${path ? '<button class="primary patrol-workspace-enter" type="button" data-patrol-enter>进入 Patrol</button>' : ""}
-      <button class="${path ? "quiet-button" : "primary patrol-workspace-enter"}" type="button" data-patrol-bind>${icon("folder")}${path ? "重新选择文件夹" : "选择文件夹"}</button></div>
+      <p class="patrol-workspace-description">${path ? localize("确认这个文件夹后，即可进入 Patrol 输入想法和决定。") : localize("打开系统文件夹选择器，选择你要推进的项目目录。")}</p>
+      <div class="patrol-picker-actions">${path ? localize('<button class="primary patrol-workspace-enter" type="button" data-patrol-enter>进入 Patrol</button>') : ""}
+      <button class="${path ? "quiet-button" : "primary patrol-workspace-enter"}" type="button" data-patrol-bind>${icon("folder")}${path ? localize("重新选择文件夹") : localize("选择文件夹")}</button></div>
       <p class="patrol-workspace-note">选择工作区不会启动执行，发送首条信息后开始。</p></div>`;
   }
 
@@ -102,7 +108,18 @@
     }
     function cancel(event) { event.preventDefault(); void globalThis.FocusSurfaceTransition.visible(page.querySelector("dialog"), false, { modal: true }); }
     function cancelled() { if (!entering && alive()) onCancel?.(); }
-    return Object.freeze({ mount, dispose });
+    function refreshLanguage() {
+      if (!alive()) return;
+      const host = page.parentElement;
+      const open = page.querySelector("dialog").open;
+      const selected = path;
+      dispose();
+      mount(host);
+      path = selected;
+      page.querySelector("[data-patrol-workspace-detail]").innerHTML = detail(path);
+      if (open) page.querySelector("dialog").showModal();
+    }
+    return Object.freeze({ mount, dispose, refreshLanguage });
   }
   return Object.freeze({ create });
 });

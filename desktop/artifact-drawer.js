@@ -7,6 +7,12 @@
   if (root) root.FocusArtifactDrawer = api;
 })(globalThis, function (root) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const name = file => file.path.split(/[\\/]/).at(-1);
   function groupFiles(facts, query = "") {
@@ -27,33 +33,43 @@
   function create({ host, api, getLoopId, onSource, bridge = root.focusDesktop?.files }) {
     const drawer = root.document.createElement("aside");
     drawer.className = "artifact-drawer"; drawer.hidden = true;
-    drawer.setAttribute("aria-label", "文件 / 产物");
-    drawer.innerHTML = '<header><h2>文件 / 产物</h2><button type="button" data-files-close aria-label="关闭文件抽屉">×</button></header><p class="artifact-scope">本次工作新建、修改的文件</p><div class="artifact-toolbar"><input type="search" data-files-search aria-label="按文件名搜索" placeholder="搜索文件名…"><button type="button" data-files-refresh>刷新</button></div><p data-files-status role="status"></p><div data-files-list></div><div data-files-preview hidden></div>';
+    drawer.setAttribute("aria-label", localize("文件 / 产物"));
+    drawer.innerHTML = localize('<header><h2>文件 / 产物</h2><button type="button" data-files-close aria-label="关闭文件抽屉">×</button></header><p class="artifact-scope">本次工作新建、修改的文件</p><div class="artifact-toolbar"><input type="search" data-files-search aria-label="按文件名搜索" placeholder="搜索文件名…"><button type="button" data-files-refresh>刷新</button></div><p data-files-status role="status"></p><div data-files-list></div><div data-files-preview hidden></div>');
     host.prepend(drawer);
     const $ = selector => drawer.querySelector(selector);
     const lifetime = new AbortController();
+    root.document.addEventListener?.("focus:languagechange", () => {
+      drawer.setAttribute("aria-label", localize("文件 / 产物"));
+      $("h2").textContent = localize("文件 / 产物");
+      $("[data-files-close]").setAttribute("aria-label", localize("关闭文件抽屉"));
+      $(".artifact-scope").textContent = localize("本次工作新建、修改的文件");
+      $("[data-files-search]").setAttribute("aria-label", localize("按文件名搜索"));
+      $("[data-files-search]").setAttribute("placeholder", localize("搜索文件名…"));
+      $("[data-files-refresh]").textContent = localize("刷新");
+      if (!drawer.hidden) render();
+    }, { signal: lifetime.signal });
     let reads = new AbortController(), epoch = 0, previewVersion = 0, liveKey = "", facts = [], selected = [], returnFocus = null;
     function status(message) { $("[data-files-status]").textContent = message; }
-    const date = value => { const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? "修改时间未知" : parsed.toLocaleString(); };
+    const date = value => { const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? localize("修改时间未知") : parsed.toLocaleString(); };
     function render() {
       selected = [];
       const button = (fact, label, historical = false) => {
         const index = selected.push(fact) - 1;
-        return `<button type="button" data-files-view="${index}">${escape(label)}</button>${!historical && bridge ? `<div class="artifact-exits"><button type="button" data-files-native="open" data-index="${index}">打开</button><button type="button" data-files-native="reveal" data-index="${index}">所在文件夹</button><button type="button" data-files-native="saveAs" data-index="${index}">另存</button></div>` : ""}<button type="button" data-files-source="${index}"${fact.context_id ? "" : " disabled"}>来源 Context</button>`;
+        return localize`<button type="button" data-files-view="${index}">${escape(label)}</button>${!historical && bridge ? localize`<div class="artifact-exits"><button type="button" data-files-native="open" data-index="${index}">打开</button><button type="button" data-files-native="reveal" data-index="${index}">所在文件夹</button><button type="button" data-files-native="saveAs" data-index="${index}">另存</button></div>` : ""}<button type="button" data-files-source="${index}"${fact.context_id ? "" : " disabled"}>来源 Context</button>`;
       };
       const groups = groupFiles(facts, $("[data-files-search]").value);
       $("[data-files-list]").innerHTML = groups.map(versions => {
         const latest = versions[0];
-        return `<article class="artifact-row"><strong>${escape(name(latest.file))}</strong><span class="artifact-path">${escape(latest.file.path)}</span><time>${latest.file.operation === "created" ? "新建" : "修改"} · ${escape(date(latest.occurred_at))}</time><div class="artifact-actions">${button(latest, "查看")}</div><details><summary>历史版本（${versions.length - 1}）</summary>${versions.slice(1).map(fact => `<div class="artifact-history"><time>${escape(date(fact.occurred_at))}</time>${button(fact, "查看历史快照", true)}</div>`).join("") || "暂无更早版本"}</details></article>`;
-      }).join("") || `<p>${$("[data-files-search]").value ? "没有匹配的文件" : "本次工作尚无文件产物。文件生成后可在这里查看和另存。"}</p>`;
+        return localize`<article class="artifact-row"><strong>${escape(name(latest.file))}</strong><span class="artifact-path">${escape(latest.file.path)}</span><time>${latest.file.operation === "created" ? localize("新建") : localize("修改")} · ${escape(date(latest.occurred_at))}</time><div class="artifact-actions">${button(latest, localize("查看"))}</div><details><summary>历史版本（${versions.length - 1}）</summary>${versions.slice(1).map(fact => `<div class="artifact-history"><time>${escape(date(fact.occurred_at))}</time>${button(fact, localize("查看历史快照"), true)}</div>`).join("") || localize("暂无更早版本")}</details></article>`;
+      }).join("") || `<p>${$("[data-files-search]").value ? localize("没有匹配的文件") : localize("本次工作尚无文件产物。文件生成后可在这里查看和另存。")}</p>`;
     }
     async function refresh() {
       if (drawer.hidden) return;
       reads.abort(); reads = new AbortController();
       const signal = reads.signal, owner = ++epoch, id = getLoopId(); previewVersion++;
       facts = []; render(); $("[data-files-preview]").hidden = true;
-      status("正在读取文件…");
-      if (!id) { status("发送任务并生成文件后，产物会显示在这里。"); return; }
+      status(localize("正在读取文件…"));
+      if (!id) { status(localize("发送任务并生成文件后，产物会显示在这里。")); return; }
       try {
         const all = []; let before;
         do {
@@ -61,11 +77,11 @@
           if (owner !== epoch || id !== getLoopId()) return;
           all.push(...(page.facts || []));
           if (!page.has_more) break;
-          if (page.next_before == null || page.next_before === before) throw new Error("文件分页不可用，请刷新重试");
+          if (page.next_before == null || page.next_before === before) throw new Error(localize("文件分页不可用，请刷新重试"));
           before = page.next_before;
         } while (true);
-        facts = all; render(); status(`${groupFiles(facts).length} 个文件 · 当前磁盘文件可打开或另存，历史版本可查看快照`);
-      } catch (error) { if (owner === epoch && error.name !== "AbortError") status(`文件读取失败：${error.message}。可点击刷新重试。`); }
+        facts = all; render(); status(localize`${groupFiles(facts).length} 个文件 · 当前磁盘文件可打开或另存，历史版本可查看快照`);
+      } catch (error) { if (owner === epoch && error.name !== "AbortError") status(localize`文件读取失败：${error.message}。可点击刷新重试。`); }
     }
     function close(focus = true) {
       epoch++; previewVersion++; reads.abort(); drawer.hidden = true;
@@ -90,14 +106,14 @@
         if (target.hasAttribute("data-files-source")) await onSource(fact.context_id);
         else if (target.dataset.filesNative) {
           const result = await bridge[target.dataset.filesNative]({ loopId: id, factId: fact.fact_id, revision: fact.revision });
-          if (owner === epoch && !result?.canceled) status(target.dataset.filesNative === "saveAs" ? "已另存文件" : "已打开");
+          if (owner === epoch && !result?.canceled) status(target.dataset.filesNative === "saveAs" ? localize("已另存文件") : localize("已打开"));
         } else {
           const version = ++previewVersion;
           const detail = await api.factDetail(id, fact.fact_id, reads.signal, fact.revision);
           if (owner !== epoch || version !== previewVersion || id !== getLoopId()) return;
-          if (!detail.file || detail.file.result_key !== fact.file.result_key || (fact.file.sha256 && detail.file.sha256 !== fact.file.sha256)) throw new Error("此版本快照不可用");
+          if (!detail.file || detail.file.result_key !== fact.file.result_key || (fact.file.sha256 && detail.file.sha256 !== fact.file.sha256)) throw new Error(localize("此版本快照不可用"));
           const file = { ...detail.file, fact_id: fact.fact_id, revision: fact.revision };
-          $("[data-files-preview]").innerHTML = `<h3>历史版本 · 固定快照</h3>${root.FocusLoopFactsView.renderFile(file)}`;
+          $("[data-files-preview]").innerHTML = localize`<h3>历史版本 · 固定快照</h3>${root.FocusLoopFactsView.renderFile(file)}`;
           $("[data-files-preview]").querySelector("[data-patrol-file-add]")?.remove();
           root.FocusFilePreview?.mountHistory($("[data-files-preview]"), file, id);
           $("[data-files-preview]").hidden = false;

@@ -1,5 +1,11 @@
 (function contextEditorModule(global) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   function escapeHtml(value = "") {
     return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -16,20 +22,20 @@
   function messagePreview(message) {
     const content = message && typeof message === "object" ? message.content : message;
     const text = typeof content === "string" ? content : JSON.stringify(content ?? "");
-    return text.replace(/\s+/g, " ").trim().slice(0, 260) || "空内容";
+    return text.replace(/\s+/g, " ").trim().slice(0, 260) || localize("空内容");
   }
 
   function protocolSummary(message) {
     const details = [];
     if (message?.name) details.push(`name: ${message.name}`);
     if (message?.tool_call_id) details.push(`tool_call_id: ${message.tool_call_id}`);
-    if (Array.isArray(message?.tool_calls)) details.push(`${message.tool_calls.length} 个 tool call`);
+    if (Array.isArray(message?.tool_calls)) details.push(localize`${message.tool_calls.length} 个 tool call`);
     return details.join(" · ");
   }
 
   function renderSourceMessage(message, index, contextId, locked) {
-    const role = message && typeof message === "object" ? (message.role || "未指定角色") : "非法消息";
-    return `<article class="context-source-message" data-context-source-index="${index}" data-source-context-id="${escapeHtml(contextId)}">
+    const role = message && typeof message === "object" ? (message.role || localize("未指定角色")) : localize("非法消息");
+    return localize`<article class="context-source-message" data-context-source-index="${index}" data-source-context-id="${escapeHtml(contextId)}">
       <header><span><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong>${protocolSummary(message) ? `<small>${escapeHtml(protocolSummary(message))}</small>` : ""}</span><span class="context-message-actions">
         <button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="source" aria-label="拖拽此来源消息到新 Context"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button>
         <button type="button" class="text-button" data-action="context-source-copy"${locked ? " disabled" : ""}>加入</button>
@@ -40,24 +46,24 @@
   }
 
   function renderSourceMessages(messages, contextId, locked = false) {
-    return (Array.isArray(messages) ? messages : []).map((message, index) => renderSourceMessage(message, index, contextId, locked)).join("") || '<p class="context-empty-source muted">这个来源 checkpoint 没有消息。</p>';
+    return (Array.isArray(messages) ? messages : []).map((message, index) => renderSourceMessage(message, index, contextId, locked)).join("") || localize('<p class="context-empty-source muted">这个来源 checkpoint 没有消息。</p>');
   }
 
   function renderMessage(message, index, uiKey, expandedKey, locked) {
-    const role = message && typeof message === "object" ? (message.role || "未指定角色") : "非法消息";
+    const role = message && typeof message === "object" ? (message.role || localize("未指定角色")) : localize("非法消息");
     const expanded = uiKey === expandedKey;
-    return `<article class="context-message-editor${expanded ? " is-expanded" : ""}" data-context-message-index="${index}" data-context-ui-key="${escapeHtml(uiKey)}">
+    return localize`<article class="context-message-editor${expanded ? " is-expanded" : ""}" data-context-message-index="${index}" data-context-ui-key="${escapeHtml(uiKey)}">
       <header><span><button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="draft" aria-label="拖拽消息排序" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong>${protocolSummary(message) ? `<small>${escapeHtml(protocolSummary(message))}</small>` : ""}</span><span class="context-message-actions">
         <button type="button" class="text-button" data-action="context-message-copy"${locked ? " disabled" : ""}>复制</button>
         <button type="button" class="text-button danger" data-action="context-message-delete"${locked ? " disabled" : ""}>删除</button>
       </span></header>
-      <button type="button" class="context-message-summary" data-action="context-message-toggle" aria-expanded="${expanded ? "true" : "false"}"><span class="context-message-preview">${escapeHtml(messagePreview(message))}</span><span>${expanded ? "收起" : "编辑 JSON"}</span></button>
-      ${expanded ? `<textarea data-context-message-json data-context-message-index="${index}" spellcheck="false" aria-label="消息 ${index + 1} JSON"${locked ? " disabled" : ""}>${escapeHtml(JSON.stringify(message, null, 2))}</textarea>` : ""}
+      <button type="button" class="context-message-summary" data-action="context-message-toggle" aria-expanded="${expanded ? "true" : "false"}"><span class="context-message-preview">${escapeHtml(messagePreview(message))}</span><span>${expanded ? localize("收起") : localize("编辑 JSON")}</span></button>
+      ${expanded ? localize`<textarea data-context-message-json data-context-message-index="${index}" spellcheck="false" aria-label="消息 ${index + 1} JSON"${locked ? " disabled" : ""}>${escapeHtml(JSON.stringify(message, null, 2))}</textarea>` : ""}
     </article>`;
   }
 
   function renderMessages(messages, uiKeys = [], expandedKey = null, locked = false) {
-    return messages.map((message, index) => renderMessage(message, index, uiKeys[index] || `context-ui-${index}`, expandedKey, locked)).join("") || '<div class="context-empty-drop"><strong>把左侧消息拖到这里</strong><span>也可以直接新增任意消息</span></div>';
+    return messages.map((message, index) => renderMessage(message, index, uiKeys[index] || `context-ui-${index}`, expandedKey, locked)).join("") || localize('<div class="context-empty-drop"><strong>把左侧消息拖到这里</strong><span>也可以直接新增任意消息</span></div>');
   }
 
   function readMessages(root, currentMessages = []) {
@@ -66,8 +72,8 @@
       const index = Number(input.dataset.contextMessageIndex ?? position);
       let value;
       try { value = JSON.parse(input.value); }
-      catch (error) { throw new Error(`消息 ${index + 1} 不是合法 JSON：${error.message}`); }
-      if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(`消息 ${index + 1} 必须是 JSON 对象`);
+      catch (error) { throw new Error(localize`消息 ${index + 1} 不是合法 JSON：${error.message}`); }
+      if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(localize`消息 ${index + 1} 必须是 JSON 对象`);
       messages[index] = value;
     });
     return messages;

@@ -12,6 +12,12 @@
   if (root) root.FocusRunningContextPreview = api;
 })(globalThis, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const TEXT_LIMIT = 4096, SEEN_LIMIT = 256;
   const terminal = new Set(["success", "error", "interrupted", "timeout", "cancelled", "stopped"]);
   const text = value => typeof value === "string" ? value : Array.isArray(value)
@@ -101,17 +107,17 @@
   function reduce(state, frame) {
     if (state.ended) return state;
     if (frame.type === "resync") return Object.freeze({ ...state, role: null, actor: null, tool_name: null,
-      text: "", current_key: null, message_id: null, status: "waiting", notice: "已重新接收，早前片段不可用" });
+      text: "", current_key: null, message_id: null, status: "waiting", notice: localize("已重新接收，早前片段不可用") });
     let envelope;
     try { envelope = typeof frame.data === "string" ? JSON.parse(frame.data) : frame.data; }
-    catch { return Object.freeze({ ...state, status: "unavailable", notice: "输出事件无法读取" }); }
+    catch { return Object.freeze({ ...state, status: "unavailable", notice: localize("输出事件无法读取") }); }
     if (!envelope || envelope.run_id !== state.identity.run_id) return state;
     if (frame.type !== "end" && (envelope.workspace_id !== state.identity.workspace_id || envelope.thread_id !== state.identity.thread_id)) return state;
     const numeric = /^\d+$/.test(String(frame.id || "")) ? Number(frame.id) : null;
     if (numeric !== null && state.last_sequence !== null && numeric <= state.last_sequence) return state;
     let next = { ...state, last_sequence: numeric ?? state.last_sequence };
     if (numeric !== null && (state.last_sequence === null ? numeric > 1 : numeric > state.last_sequence + 1)) {
-      next = { ...next, role: null, actor: null, tool_name: null, text: "", current_key: null, message_id: null, status: "waiting", notice: "已重新接收，早前片段不可用" };
+      next = { ...next, role: null, actor: null, tool_name: null, text: "", current_key: null, message_id: null, status: "waiting", notice: localize("已重新接收，早前片段不可用") };
     }
     const payload = envelope.data || {};
     if (frame.type === "end" || frame.type === "metadata" && terminal.has(payload.status)) {
@@ -126,7 +132,7 @@
     } else if (frame.type === "events") {
       if (payload.type === "commitment_messages") next = commitment(next, payload);
       else if (Array.isArray(payload.messages)) next = values(next, payload.messages);
-    } else if (frame.type === "error") next = { ...next, status: "unavailable", notice: String(payload.error || "输出不可用") };
+    } else if (frame.type === "error") next = { ...next, status: "unavailable", notice: String(payload.error || localize("输出不可用")) };
     return Object.freeze(next);
   }
   return Object.freeze({ create, reduce, connection, TEXT_LIMIT });

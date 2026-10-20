@@ -12,12 +12,18 @@
   if (root) root.FocusLoopFactsView = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
-  const statusOptions = [["", "全部事实状态"], ["observed", "已观察"], ["verifying", "验证中"], ["verified", "已验证"], ["contradicted", "已被反证"], ["superseded", "已替代"]];
-  const outcomeOptions = [["", "全部业务结果"], ["success", "成功"], ["failed", "失败"], ["unknown", "未知"]];
-  const factStates = Object.fromEntries(statusOptions);
-  const outcomeStates = Object.fromEntries(outcomeOptions);
+  const statusOptions = () => [["", localize("全部事实状态")], ["observed", localize("已观察")], ["verifying", localize("验证中")], ["verified", localize("已验证")], ["contradicted", localize("已被反证")], ["superseded", localize("已替代")]];
+  const outcomeOptions = () => [["", localize("全部业务结果")], ["success", localize("成功")], ["failed", localize("失败")], ["unknown", localize("未知")]];
+  const factStates = () => Object.fromEntries(statusOptions());
+  const outcomeStates = () => Object.fromEntries(outcomeOptions());
   function evidenceLabel(item) {
     return item.run_id || item.evidence?.[0]?.run_id || item.evidence?.run_id || item.evidence?.tool_name || item.evidence?.message_id || "evidence";
   }
@@ -29,25 +35,25 @@
   }
 
   function rowHtml(item) {
-    return `<tr data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><td>${escape(timeLabel(item.occurred_at))}</td><td><strong>${escape(item.context_id)}</strong></td><td><span class="fact-kind">${escape(item.kind)}</span></td><td><strong>${escape(item.title)}</strong><span>${escape(item.summary)}</span></td><td><span class="fact-status is-${escape(item.status)}">${escape(factStates[item.status] || item.status)}</span>${item.outcome_status ? `<small>${escape(outcomeStates[item.outcome_status] || item.outcome_status)}</small>` : ""}</td><td><button class="text-button" data-action="inspect-loop-fact" data-fact-id="${escape(item.fact_id)}">${escape(evidenceLabel(item))} ↗</button></td></tr>`;
+    return `<tr data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><td>${escape(timeLabel(item.occurred_at))}</td><td><strong>${escape(item.context_id)}</strong></td><td><span class="fact-kind">${escape(item.kind)}</span></td><td><strong>${escape(item.title)}</strong><span>${escape(item.summary)}</span></td><td><span class="fact-status is-${escape(item.status)}">${escape(factStates()[item.status] || item.status)}</span>${item.outcome_status ? `<small>${escape(outcomeStates()[item.outcome_status] || item.outcome_status)}</small>` : ""}</td><td><button class="text-button" data-action="inspect-loop-fact" data-fact-id="${escape(item.fact_id)}">${escape(evidenceLabel(item))} ↗</button></td></tr>`;
   }
 
   function timelineHtml(item) {
     const file = fileReference(item);
     if (file) {
       const importance = item.file_importance || file.importance;
-      const label = importance === "user_reference" ? "用户引用 · " : importance === "declared_artifact" ? "关键产出 · " : "";
-      return `<article data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="file-fact${label ? " is-important" : ""} is-${escape(item.status)}"><time>${escape(timeLabel(item.occurred_at))}</time><button data-fact-id="${escape(item.fact_id)}" data-action="inspect-loop-fact" title="${escape(file.path)}">${escape(file.path)}</button><small>${label}${escape({ created: "新建", modified: "修改", deleted: "删除" }[file.operation] || "文件")} · ${escape((file.sha256 || file.result_key).slice(0, 8))} · 查看版本</small></article>`;
+      const label = importance === "user_reference" ? localize("用户引用 · ") : importance === "declared_artifact" ? localize("关键产出 · ") : "";
+      return localize`<article data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="file-fact${label ? " is-important" : ""} is-${escape(item.status)}"><time>${escape(timeLabel(item.occurred_at))}</time><button data-fact-id="${escape(item.fact_id)}" data-action="inspect-loop-fact" title="${escape(file.path)}">${escape(file.path)}</button><small>${label}${escape({ created: localize("新建"), modified: localize("修改"), deleted: localize("删除") }[file.operation] || localize("文件"))} · ${escape((file.sha256 || file.result_key).slice(0, 8))} · 查看版本</small></article>`;
     }
-    return `<article data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><time>${escape(timeLabel(item.occurred_at))}</time><button data-fact-id="${escape(item.fact_id)}" data-action="inspect-loop-fact">${escape(item.title || item.kind)}</button><p>${escape(item.summary)}</p><small>${escape(factStates[item.status] || item.status || "待确认")}${item.outcome_status ? ` · 结果${escape(outcomeStates[item.outcome_status] || item.outcome_status)}` : ""}</small></article>`;
+    return `<article data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><time>${escape(timeLabel(item.occurred_at))}</time><button data-fact-id="${escape(item.fact_id)}" data-action="inspect-loop-fact">${escape(item.title || item.kind)}</button><p>${escape(item.summary)}</p><small>${escape(factStates()[item.status] || item.status || localize("待确认"))}${item.outcome_status ? localize` · 结果${escape(outcomeStates()[item.outcome_status] || item.outcome_status)}` : ""}</small></article>`;
   }
   function renderTimeline(items) {
-    return items.filter(item => item.kind !== "tool").map(timelineHtml).join("") || '<p data-fact-empty>暂无可验证事实</p>';
+    return items.filter(item => item.kind !== "tool").map(timelineHtml).join("") || localize('<p data-fact-empty>暂无可验证事实</p>');
   }
   const reconcileTimeline = (host, items) => reconcileRows(host, items, "timeline");
 
   function renderRows(items) {
-    return items.filter(item => item.kind !== "tool").map(rowHtml).join("") || '<tr data-fact-empty><td colspan="6" class="history-boundary">暂无可验证事实</td></tr>';
+    return items.filter(item => item.kind !== "tool").map(rowHtml).join("") || localize('<tr data-fact-empty><td colspan="6" class="history-boundary">暂无可验证事实</td></tr>');
   }
 
   function reconcileRows(tbody, items, presentation = "table") {
@@ -103,18 +109,18 @@
       return result;
     }, { passed: 0, failed: 0, skipped: 0, unknown: 0 });
     const filters = ["all", "run", "test", "workspace", "artifact", "context_revision", "directive"];
-    const statuses = [["all", "全部状态"], ["failed", "失败"], ["unknown", "未知"]];
+    const statuses = [["all", localize("全部状态")], ["failed", localize("失败")], ["unknown", localize("未知")]];
     const older = state.facts?.has_more
-      ? '<div class="fact-sentinel" data-loop-fact-sentinel aria-hidden="true"></div><button type="button" class="load-facts" data-action="loop-load-older-facts">加载更早事实</button>'
+      ? localize('<div class="fact-sentinel" data-loop-fact-sentinel aria-hidden="true"></div><button type="button" class="load-facts" data-action="loop-load-older-facts">加载更早事实</button>')
       : "";
-    return `<section class="loop-facts-drawer"><header><div><span class="loop-kicker">Live Facts</span><h3>持续演化的事实</h3></div><div class="fact-totals"><strong>${totals.passed}</strong> passed <strong>${totals.failed}</strong> failed <strong>${totals.skipped}</strong> skipped${totals.unknown ? ` · ${totals.unknown} unknown` : ""}</div><div class="fact-filters"><button type="button" data-action="loop-fact-scope" data-scope="${state.factScope === "all" ? "current" : "all"}">${state.factScope === "all" ? "全部 Context" : "当前 Context"}</button>${filters.map(value => `<button type="button" data-action="loop-fact-filter" data-filter="${value}" class="${state.factFilter === value ? "is-active" : ""}">${value}</button>`).join("")}${statuses.map(([value, label]) => `<button type="button" data-action="loop-fact-status" data-status="${value}" class="${factStatus === value ? "is-active" : ""}">${label}</button>`).join("")}</div></header><div class="fact-table-scroll" data-loop-fact-list>${older}<table class="fact-table"><thead><tr><th>时间</th><th>Context</th><th>类型</th><th>事实内容</th><th>状态</th><th>证据</th></tr></thead><tbody>${renderRows(filtered)}</tbody></table></div></section>`;
+    return localize`<section class="loop-facts-drawer"><header><div><span class="loop-kicker">Live Facts</span><h3>持续演化的事实</h3></div><div class="fact-totals"><strong>${totals.passed}</strong> passed <strong>${totals.failed}</strong> failed <strong>${totals.skipped}</strong> skipped${totals.unknown ? ` · ${totals.unknown} unknown` : ""}</div><div class="fact-filters"><button type="button" data-action="loop-fact-scope" data-scope="${state.factScope === "all" ? "current" : "all"}">${state.factScope === "all" ? localize("全部 Context") : localize("当前 Context")}</button>${filters.map(value => `<button type="button" data-action="loop-fact-filter" data-filter="${value}" class="${state.factFilter === value ? "is-active" : ""}">${value}</button>`).join("")}${statuses.map(([value, label]) => `<button type="button" data-action="loop-fact-status" data-status="${value}" class="${factStatus === value ? "is-active" : ""}">${label}</button>`).join("")}</div></header><div class="fact-table-scroll" data-loop-fact-list>${older}<table class="fact-table"><thead><tr><th>时间</th><th>Context</th><th>类型</th><th>事实内容</th><th>状态</th><th>证据</th></tr></thead><tbody>${renderRows(filtered)}</tbody></table></div></section>`;
   }
 
   function renderDetail(detail) {
     if (detail.file) return renderFile(detail.file);
     const fact = detail.fact || {};
     const metrics = fact.metrics || {};
-    return `<section class="fact-inspection"><h3>${escape(fact.title || fact.kind)}</h3><p>${escape(fact.summary)}</p><p>事实状态：${escape(factStates[fact.status] || fact.status)} · 业务结果：${escape(outcomeStates[fact.outcome_status] || fact.outcome_status || "未知")}</p>${fact.kind === "test" ? `<p>${metrics.count_status === "exact" ? `${escape(metrics.passed ?? 0)} passed · ${escape(metrics.failed ?? 0)} failed · ${escape(metrics.skipped ?? 0)} skipped` : "测试数量尚未明确，不计为成功"}</p>` : ""}<h3>事实修订</h3><ul>${(detail.revisions || []).map(row => `<li>版本 ${row.revision} · ${escape(factStates[row.state] || row.state)}<p>${escape(row.reason || row.presentation?.summary)}</p></li>`).join("") || "<li>暂无修订历史</li>"}</ul><details><summary>证据与精确来源</summary><pre>${escape(JSON.stringify({ fact_id: fact.fact_id, context_id: fact.context_id, run_id: fact.run_id, evidence: fact.evidence, relationships: detail.relationships }, null, 2))}</pre></details>${fact.evidence ? "" : "<p>证据正文未在当前权限下返回。</p>"}</section>`;
+    return localize`<section class="fact-inspection"><h3>${escape(fact.title || fact.kind)}</h3><p>${escape(fact.summary)}</p><p>事实状态：${escape(factStates()[fact.status] || fact.status)} · 业务结果：${escape(outcomeStates()[fact.outcome_status] || fact.outcome_status || localize("未知"))}</p>${fact.kind === "test" ? `<p>${metrics.count_status === "exact" ? `${escape(metrics.passed ?? 0)} passed · ${escape(metrics.failed ?? 0)} failed · ${escape(metrics.skipped ?? 0)} skipped` : localize("测试数量尚未明确，不计为成功")}</p>` : ""}<h3>事实修订</h3><ul>${(detail.revisions || []).map(row => localize`<li>版本 ${row.revision} · ${escape(factStates()[row.state] || row.state)}<p>${escape(row.reason || row.presentation?.summary)}</p></li>`).join("") || localize("<li>暂无修订历史</li>")}</ul><details><summary>证据与精确来源</summary><pre>${escape(JSON.stringify({ fact_id: fact.fact_id, context_id: fact.context_id, run_id: fact.run_id, evidence: fact.evidence, relationships: detail.relationships }, null, 2))}</pre></details>${fact.evidence ? "" : localize("<p>证据正文未在当前权限下返回。</p>")}</section>`;
   }
 
   function fileReference(fact) {
@@ -220,9 +226,9 @@
   }
 
   function renderLineDiff(comparison) {
-    if (comparison.limited) return '<p class="file-diff-notice">文件差异过大，已停止逐行比较；请查看前后完整版本。</p>';
+    if (comparison.limited) return localize('<p class="file-diff-notice">文件差异过大，已停止逐行比较；请查看前后完整版本。</p>');
     const { rows, hunks, added, removed } = comparison;
-    if (!hunks.length) return '<p class="file-diff-summary">无逐行变更 · +0 / −0</p>';
+    if (!hunks.length) return localize('<p class="file-diff-summary">无逐行变更 · +0 / −0</p>');
     // Separate budgets keep collapsed context from crowding out actual edits.
     const budgets = { visible: { rows: 1000, characters: 120000 }, folded: { rows: 1000, characters: 60000 } };
     function renderRows(start, end, folded = false) {
@@ -236,38 +242,38 @@
         const shown = text.slice(0, Math.min(2000, budget.characters));
         budget.characters -= shown.length + 1;
         const marker = row.kind === "added" ? "+" : row.kind === "removed" ? "−" : " ";
-        html.push(`<div class="file-diff-row is-${row.kind}" data-old-line="${row.oldLine ?? ""}" data-new-line="${row.newLine ?? ""}"><code class="file-diff-number" aria-label="旧行 ${row.oldLine ?? "无"}">${row.oldLine ?? ""}</code><code class="file-diff-number" aria-label="新行 ${row.newLine ?? "无"}">${row.newLine ?? ""}</code><span class="${row.kind}">${marker}${escape(shown)}${shown.length < text.length ? '<small class="file-diff-notice"> … 此行显示已截断</small>' : ""}</span></div>${row.text.endsWith("\n") ? "" : '<div class="file-diff-note">\\ 文件末尾无换行</div>'}`);
+        html.push(localize`<div class="file-diff-row is-${row.kind}" data-old-line="${row.oldLine ?? ""}" data-new-line="${row.newLine ?? ""}"><code class="file-diff-number" aria-label="旧行 ${row.oldLine ?? localize("无")}">${row.oldLine ?? ""}</code><code class="file-diff-number" aria-label="新行 ${row.newLine ?? localize("无")}">${row.newLine ?? ""}</code><span class="${row.kind}">${marker}${escape(shown)}${shown.length < text.length ? localize('<small class="file-diff-notice"> … 此行显示已截断</small>') : ""}</span></div>${row.text.endsWith("\n") ? "" : localize('<div class="file-diff-note">\\ 文件末尾无换行</div>')}`);
       }
-      if (index < end) html.push(`<p class="file-diff-notice">其余 ${end - index} 行未渲染，请查看前后完整版本。</p>`);
+      if (index < end) html.push(localize`<p class="file-diff-notice">其余 ${end - index} 行未渲染，请查看前后完整版本。</p>`);
       return html.join("");
     }
     function foldedRows(start, end) {
-      return end > start ? `<details class="file-diff-fold"><summary>展开 ${end - start} 行未修改内容</summary><div class="file-diff-lines">${renderRows(start, end, true)}</div></details>` : "";
+      return end > start ? localize`<details class="file-diff-fold"><summary>展开 ${end - start} 行未修改内容</summary><div class="file-diff-lines">${renderRows(start, end, true)}</div></details>` : "";
     }
     let cursor = 0;
     const blocks = [];
     for (const [index, hunk] of hunks.entries()) {
       if (budgets.visible.rows <= 0 || budgets.visible.characters <= 0) {
-        blocks.push(`<p class="file-diff-notice">其余 ${hunks.length - index} 个变更块未渲染，请查看前后完整版本。统计包含全部变更。</p>`);
+        blocks.push(localize`<p class="file-diff-notice">其余 ${hunks.length - index} 个变更块未渲染，请查看前后完整版本。统计包含全部变更。</p>`);
         cursor = rows.length;
         break;
       }
       const content = renderRows(hunk.start, hunk.end);
-      blocks.push(`${foldedRows(cursor, hunk.start)}<section class="file-diff-hunk" aria-label="变更块 ${index + 1}"><header>@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@</header><div class="file-diff-lines">${content}</div></section>`);
+      blocks.push(localize`${foldedRows(cursor, hunk.start)}<section class="file-diff-hunk" aria-label="变更块 ${index + 1}"><header>@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@</header><div class="file-diff-lines">${content}</div></section>`);
       cursor = hunk.end;
     }
     blocks.push(foldedRows(cursor, rows.length));
-    return `<p class="file-diff-summary">${hunks.length} 个变更块 · 新增 ${added} 行 · 删除 ${removed} 行（+${added} / −${removed}）</p><div class="file-diff" aria-label="逐行差异"><div class="file-diff-columns">旧行　 新行　 内容</div>${blocks.join("")}</div>`;
+    return localize`<p class="file-diff-summary">${hunks.length} 个变更块 · 新增 ${added} 行 · 删除 ${removed} 行（+${added} / −${removed}）</p><div class="file-diff" aria-label="逐行差异"><div class="file-diff-columns">旧行　 新行　 内容</div>${blocks.join("")}</div>`;
   }
 
   function renderFile(file) {
-    const reasons = { before_unobserved: "写入前版本未被观察，无法生成可靠 Diff", unreadable: "无法读取", outside_slot: "超出工作区", over_1_mib: "超过 1 MiB，未保存正文", binary: "二进制文件", non_utf8: "非 UTF-8 文本" };
-    const snapshot = side => side?.available ? `<pre>${escape(side.text)}</pre>` : `<p>${escape(reasons[side?.reason] || "历史快照不可用")}</p>`;
+    const reasons = { before_unobserved: localize("写入前版本未被观察，无法生成可靠 Diff"), unreadable: localize("无法读取"), outside_slot: localize("超出工作区"), over_1_mib: localize("超过 1 MiB，未保存正文"), binary: localize("二进制文件"), non_utf8: localize("非 UTF-8 文本") };
+    const snapshot = side => side?.available ? `<pre>${escape(side.text)}</pre>` : `<p>${escape(reasons[side?.reason] || localize("历史快照不可用"))}</p>`;
     const before = file.before, after = file.after;
     const reliable = before?.available && after?.available;
     const comparison = reliable ? buildLineDiff(before.text, after.text) : null;
     const summary = comparison && !comparison.limited ? ` · +${comparison.added} / −${comparison.removed}` : "";
-    return `<section class="file-version"><h3>${escape(file.path)}</h3><p>版本 ${(file.sha256 || file.result_key).slice(0, 12)}${before?.redacted || after?.redacted ? " · 已脱敏" : ""}</p><p>执行位置 ${escape(file.slot_id)}${file.context_id ? ` · 工作线 ${escape(file.context_id)}` : ""}</p><button type="button" data-patrol-file-add="${escape(JSON.stringify(inputFileReference(file)))}">＠ 引用此版本</button><details open><summary>此版本内容</summary><div data-version-preview>${snapshot(after)}</div></details><details><summary>Diff${reliable ? summary : " · 不可用"}</summary>${reliable ? renderLineDiff(comparison) : snapshot(before?.available ? after : before)}</details><details><summary>写入前内容</summary>${snapshot(before)}</details></section>`;
+    return localize`<section class="file-version"><h3>${escape(file.path)}</h3><p>版本 ${(file.sha256 || file.result_key).slice(0, 12)}${before?.redacted || after?.redacted ? localize(" · 已脱敏") : ""}</p><p>执行位置 ${escape(file.slot_id)}${file.context_id ? localize` · 工作线 ${escape(file.context_id)}` : ""}</p><button type="button" data-patrol-file-add="${escape(JSON.stringify(inputFileReference(file)))}">＠ 引用此版本</button><details open><summary>此版本内容</summary><div data-version-preview>${snapshot(after)}</div></details><details><summary>Diff${reliable ? summary : localize(" · 不可用")}</summary>${reliable ? renderLineDiff(comparison) : snapshot(before?.available ? after : before)}</details><details><summary>写入前内容</summary>${snapshot(before)}</details></section>`;
   }
-  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, buildLineDiff, renderLineDiff, fileReference, inputFileReference, markFileReferences, statusOptions, outcomeOptions });
+  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, buildLineDiff, renderLineDiff, fileReference, inputFileReference, markFileReferences, get statusOptions() { return statusOptions(); }, get outcomeOptions() { return outcomeOptions(); } });
 });

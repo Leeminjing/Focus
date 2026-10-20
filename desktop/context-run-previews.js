@@ -11,6 +11,12 @@
   if (root) root.FocusContextRunPreviews = api;
 })(globalThis, function (Preview) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const terminal = new Set(["success", "error", "interrupted", "timeout", "cancelled", "stopped"]);
 
   function create({ streams, loadRun, onChange, schedule = globalThis.requestAnimationFrame, cancel = globalThis.cancelAnimationFrame }) {
@@ -31,12 +37,12 @@
     function release(entry) { entry.abort.abort(); entry.subscription?.close(); }
     function validate(entry, run) {
       if (run?.run_id !== entry.runId || run.task_id !== entry.contextId || run.workspace_anchor?.workspace_id !== entry.owner.workspaceId
-          || (run.loop_id && run.loop_id !== entry.owner.loopId) || typeof run.execution_thread_id !== "string" || !run.execution_thread_id) throw new Error("运行预览身份不匹配");
+          || (run.loop_id && run.loop_id !== entry.owner.loopId) || typeof run.execution_thread_id !== "string" || !run.execution_thread_id) throw new Error(localize("运行预览身份不匹配"));
       return run;
     }
     function finish(entry, result) {
       if (!current(entry) || entry.terminal) return;
-      if (result?.run_id !== entry.runId || !terminal.has(result.status)) return unavailable(entry, "运行结束状态无法确认");
+      if (result?.run_id !== entry.runId || !terminal.has(result.status)) return unavailable(entry, localize("运行结束状态无法确认"));
       entry.terminal = result;
       entry.preview = Preview.reduce(entry.preview, { type: "end", id: "end", data: JSON.stringify(result) });
       entry.subscription?.close();
@@ -57,7 +63,7 @@
         const run = validate(entry, result);
         if (terminal.has(run.status)) finish(entry, run);
       } catch (error) {
-        if ([401, 403, 404].includes(Number(error.status)) || error.message === "运行预览身份不匹配") unavailable(entry, "运行预览不可用，请重试");
+        if ([401, 403, 404].includes(Number(error.status)) || error.message === localize("运行预览身份不匹配")) unavailable(entry, localize("运行预览不可用，请重试"));
       } finally { entry.checking = false; }
     }
     async function attach(entry, owner) {
@@ -75,13 +81,13 @@
               try {
                 const result = JSON.parse(event.data);
                 if (result.run_id === entry.runId) finish(entry, result);
-              } catch { unavailable(entry, "运行结束状态无法读取"); }
+              } catch { unavailable(entry, localize("运行结束状态无法读取")); }
               return;
             }
             entry.preview = Preview.reduce(entry.preview, event);
             if (entry.preview.ended) {
               try { const result = JSON.parse(event.data); finish(entry, { run_id: result.run_id, ...result.data }); }
-              catch { unavailable(entry, "运行结束状态无法读取"); }
+              catch { unavailable(entry, localize("运行结束状态无法读取")); }
             } else changed();
           },
           onConnection(status) {
@@ -93,7 +99,7 @@
         });
         changed();
       } catch (error) {
-        if (current(entry) && error.name !== "AbortError") unavailable(entry, error.message || "运行预览不可用，请重试");
+        if (current(entry) && error.name !== "AbortError") unavailable(entry, error.message || localize("运行预览不可用，请重试"));
       }
     }
     function sync(owner) {

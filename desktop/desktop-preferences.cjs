@@ -33,12 +33,13 @@ class DesktopPreferences {
     fs.renameSync(`${this.file}.tmp`, this.file);
   }
 }
-function registerDesktopPreferences(ipcMain, { directory, authorize }) {
+function registerDesktopPreferences(ipcMain, { directory, authorize, onChange }) {
   for (const operation of ["getItem", "setItem"]) {
     ipcMain.on(`focus:preferences-${operation}`, (event, key, value) => {
       try {
         authorize(event);
         event.returnValue = { value: new DesktopPreferences(directory())[operation](key, value) ?? null };
+        if (operation === "setItem") onChange?.({ key, value });
       } catch (error) { event.returnValue = { error: error.message }; }
     });
   }

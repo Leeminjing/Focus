@@ -9,24 +9,30 @@
   root.FocusWorkspacePatrolMaterialPreview = api;
 })(globalThis, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   function captureTransfer(data) {
-    if ([...(data?.items || [])].some(item => item.webkitGetAsEntry?.()?.isDirectory)) throw new Error("文件夹请用“绑定工作区”选择；这里只接收文件和文字");
+    if ([...(data?.items || [])].some(item => item.webkitGetAsEntry?.()?.isDirectory)) throw new Error(localize("文件夹请用“绑定工作区”选择；这里只接收文件和文字"));
     const text = data?.getData("text/plain") || "";
     return { files: [...(data?.files || [])], getData: () => text };
   }
   async function readTransfer(data, limits) {
     const items = [...(data?.items || [])];
-    if (items.some(item => item.webkitGetAsEntry?.()?.isDirectory)) throw new Error("文件夹请用“绑定工作区”选择；这里只接收文件和文字");
+    if (items.some(item => item.webkitGetAsEntry?.()?.isDirectory)) throw new Error(localize("文件夹请用“绑定工作区”选择；这里只接收文件和文字"));
     const files = [...(data?.files || [])];
-    if (files.length > Math.min(32, limits.run_material_count)) throw new Error("材料数量超限");
+    if (files.length > Math.min(32, limits.run_material_count)) throw new Error(localize("材料数量超限"));
     let total = 0;
     for (const file of files) {
       total += file.size;
-      if (!file.size || file.size > (file.type.startsWith("image/") ? limits.original_image_bytes : limits.general_file_bytes) || total > limits.general_file_bytes) throw new Error("材料为空或超过大小限制");
+      if (!file.size || file.size > (file.type.startsWith("image/") ? limits.original_image_bytes : limits.general_file_bytes) || total > limits.general_file_bytes) throw new Error(localize("材料为空或超过大小限制"));
     }
-    if (files.length) return Promise.all(files.map(async file => ({ kind: "file", name: file.name || "截图.png", type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) })));
+    if (files.length) return Promise.all(files.map(async file => ({ kind: "file", name: file.name || localize("截图.png"), type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) })));
     const text = data?.getData("text/plain") || "";
-    if (new TextEncoder().encode(text).byteLength > limits.general_file_bytes) throw new Error("参考文字超过大小限制");
+    if (new TextEncoder().encode(text).byteLength > limits.general_file_bytes) throw new Error(localize("参考文字超过大小限制"));
     return text.trim() ? [{ kind: "text", text }] : [];
   }
   function create({ host, intake, workspaceId, onError, compact = false }) {
@@ -70,12 +76,12 @@
           if (!urls.has(item.local_id)) urls.set(item.local_id, URL.createObjectURL(new Blob([bytes], { type: item.type })));
           const img = document.createElement("img"); img.src = urls.get(item.local_id); img.alt = item.name; card.append(img);
         }
-        const label = document.createElement("span"); label.textContent = compact && item.source_kind === "text" ? "参考文字" : item.name; label.title = item.name; card.append(label);
+        const label = document.createElement("span"); label.textContent = compact && item.source_kind === "text" ? localize("参考文字") : item.name; label.title = item.name; card.append(label);
         if (item.source_kind === "text" && bytes) {
           const text = document.createElement("pre"); text.textContent = new TextDecoder().decode(bytes.slice(0, 1200)); card.append(text);
         }
-        const size = document.createElement("small"); size.textContent = compact ? (item.source_kind === "image" ? "图片" : "参考材料") : `${Math.max(1, Math.ceil(item.size / 1024))} KB · 参考材料`; card.append(size);
-        const remove = document.createElement("button"); remove.type = "button"; remove.dataset.materialRemove = item.local_id; remove.textContent = "移除"; remove.setAttribute("aria-label", `移除 ${item.name}`); card.append(remove);
+        const size = document.createElement("small"); size.textContent = compact ? (item.source_kind === "image" ? localize("图片") : localize("参考材料")) : localize`${Math.max(1, Math.ceil(item.size / 1024))} KB · 参考材料`; card.append(size);
+        const remove = document.createElement("button"); remove.type = "button"; remove.dataset.materialRemove = item.local_id; remove.textContent = localize("移除"); remove.setAttribute("aria-label", localize`移除 ${item.name}`); card.append(remove);
         return card;
       });
       container.replaceChildren(...nodes);

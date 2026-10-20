@@ -10,6 +10,12 @@
   if (root) root.FocusMapCollapsibleView = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   function escapeHtml(value = "") {
     return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -103,7 +109,7 @@
 
     return {
       id: workspaceId,
-      name: tasks[0]?.workspace_name || "本地工作区",
+      name: tasks[0]?.workspace_name || localize("本地工作区"),
       activeCount: rootGroups.reduce((total, group) => total + group.activeCount, 0),
       roots: rootGroups,
     };
@@ -166,7 +172,7 @@
   }
 
   function renderToggle(kind, id, expanded, label) {
-    return `<button type="button" class="map-collapsible-toggle" data-action="toggle-map-${kind}" data-${kind}-id="${escapeHtml(id)}" aria-expanded="${expanded}" aria-label="${expanded ? "收起" : "展开"}${escapeHtml(label)}" tabindex="-1"><span class="ui-icon is-sm icon-chevron-right" aria-hidden="true"></span></button>`;
+    return `<button type="button" class="map-collapsible-toggle" data-action="toggle-map-${kind}" data-${kind}-id="${escapeHtml(id)}" aria-expanded="${expanded}" aria-label="${expanded ? localize("收起") : localize("展开")}${escapeHtml(label)}" tabindex="-1"><span class="ui-icon is-sm icon-chevron-right" aria-hidden="true"></span></button>`;
   }
 
   function renderNode(group, nodeId, level, parentKey, options, focusKey, seen) {
@@ -187,13 +193,13 @@
       const parentTask = options.tasksById.get(parent.context_id);
       return parentTask?.title || parent.context_id;
     });
-    const sourceDetails = sourceNames.length ? `<details class="map-collapsible-sources"><summary aria-label="${escapeHtml(`${task.title} 还有 ${sourceNames.length} 个来源`)}">+${sourceNames.length} 来源</summary><span>${escapeHtml(sourceNames.join("、"))}</span></details>` : "";
+    const sourceDetails = sourceNames.length ? localize`<details class="map-collapsible-sources"><summary aria-label="${escapeHtml(localize`${task.title} 还有 ${sourceNames.length} 个来源`)}">+${sourceNames.length} 来源</summary><span>${escapeHtml(sourceNames.join("、"))}</span></details>` : "";
     const selectedMark = options.selectionMode ? `<span class="map-collapsible-check" aria-hidden="true">${selected ? "✓" : ""}</span>` : "";
-    const currentMark = current ? '<span class="map-collapsible-current">当前</span>' : "";
+    const currentMark = current ? localize('<span class="map-collapsible-current">当前</span>') : "";
     const projection = node.node?.projection_status;
     const projectionMark = projection && !["root", "valid", "repaired", "approved"].includes(projection)
       ? `<span class="map-collapsible-projection">${escapeHtml(projection)}</span>` : "";
-    const actions = options.selectionMode ? "" : `<details class="map-collapsible-actions">
+    const actions = options.selectionMode ? "" : localize`<details class="map-collapsible-actions">
       <summary aria-label="打开 ${escapeHtml(task.title)} 的操作" title="更多操作">···</summary>
       <div class="map-collapsible-menu">
         <button type="button" class="text-button" data-action="archive-context" data-context-id="${escapeHtml(nodeId)}">归档</button>
@@ -217,7 +223,7 @@
   function renderRoot(group, parentKey, options, focusKey) {
     if (!group.activeCount) return "";
     const rootNodeVisible = group.nodes.has(group.id);
-    const meta = rootNodeVisible ? "" : `<div class="map-collapsible-root-meta" role="presentation"><strong>${escapeHtml(group.title)}</strong><span>根 Context 已${group.lifecycle === "archived" ? "归档" : "删除"} · ${group.activeCount} 个派生</span></div>`;
+    const meta = rootNodeVisible ? "" : localize`<div class="map-collapsible-root-meta" role="presentation"><strong>${escapeHtml(group.title)}</strong><span>根 Context 已${group.lifecycle === "archived" ? localize("归档") : localize("删除")} · ${group.activeCount} 个派生</span></div>`;
     const seen = new Set();
     const nodes = group.topIds.map(nodeId => renderNode(group, nodeId, 2, parentKey, options, focusKey, seen)).join("");
     return `<section class="map-collapsible-root" role="none">${meta}${nodes}</section>`;
@@ -227,7 +233,7 @@
     const expanded = workspace.activeCount > 0 && options.expandedWorkspaceIds.has(workspace.id);
     const key = itemKey("workspace", workspace.id);
     const roots = expanded ? workspace.roots.map(group => renderRoot(group, key, options, focusKey)).join("") : "";
-    return `<section class="map-collapsible-workspace" role="none" data-workspace-id="${escapeHtml(workspace.id)}">
+    return localize`<section class="map-collapsible-workspace" role="none" data-workspace-id="${escapeHtml(workspace.id)}">
       <div class="map-collapsible-row map-collapsible-workspace-row" role="none">
         ${workspace.activeCount ? renderToggle("workspace", workspace.id, expanded, workspace.name) : '<span class="map-collapsible-toggle-spacer" aria-hidden="true"></span>'}
         <button type="button" class="map-collapsible-item map-collapsible-workspace-item" role="treeitem" aria-level="1"${workspace.activeCount ? ` aria-expanded="${expanded}"` : ""} tabindex="${key === focusKey ? "0" : "-1"}" data-tree-key="${escapeHtml(key)}" data-tree-kind="workspace" data-tree-parent-key="" data-tree-has-children="${workspace.activeCount > 0}" data-action="toggle-map-workspace" data-workspace-id="${escapeHtml(workspace.id)}">
@@ -250,7 +256,7 @@
       tasksById: new Map((rawOptions.tasks || []).map(task => [task.task_id, task])),
     };
     const focusKey = defaultFocusKey(model, options);
-    return `<section class="map-collapsible-view"><div class="map-collapsible-tree" role="tree" aria-label="工作区与 Context">${model.workspaces.map(workspace => renderWorkspace(workspace, options, focusKey)).join("")}</div></section>`;
+    return localize`<section class="map-collapsible-view"><div class="map-collapsible-tree" role="tree" aria-label="工作区与 Context">${model.workspaces.map(workspace => renderWorkspace(workspace, options, focusKey)).join("")}</div></section>`;
   }
 
   function treeKeyAction(key, currentIndex, items) {

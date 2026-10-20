@@ -11,6 +11,12 @@
   if (root) root.FocusLoopConsoleView = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const signatures = new WeakMap();
   function conversationSignature(state) {
@@ -31,11 +37,11 @@
     return `${value.length}:${hash >>> 0}`;
   }
   function render(state) {
-    if (!state?.manifest) return '<section class="loop-console-loading">正在建立 Context Portfolio…</section>';
+    if (!state?.manifest) return localize('<section class="loop-console-loading">正在建立 Context Portfolio…</section>');
     const map = globalThis.FocusPortfolioMapView?.render(state.manifest, state.selectedContextId, state.graphActivity) || "";
     const conversation = globalThis.FocusContextConversationView?.render(state) || "";
     const facts = globalThis.FocusLoopFactsView?.render(state) || "";
-    return `<section class="loop-console" data-conversation-signature="${signatureToken(conversationSignature(state))}"><div class="loop-console-main"><div class="loop-console-workspace"><div class="loop-console-map">${map}</div>${facts}</div><div class="loop-console-divider" data-loop-console-resizer role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整 Context 图与完整会话宽度" aria-valuemin="32" aria-valuemax="68" aria-valuenow="52"></div><div class="loop-console-conversation">${conversation}</div></div>${state.error ? `<p class="loop-error" role="alert">${escape(state.error)}</p>` : ""}</section>`;
+    return localize`<section class="loop-console" data-conversation-signature="${signatureToken(conversationSignature(state))}"><div class="loop-console-main"><div class="loop-console-workspace"><div class="loop-console-map">${map}</div>${facts}</div><div class="loop-console-divider" data-loop-console-resizer role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整 Context 图与完整会话宽度" aria-valuemin="32" aria-valuemax="68" aria-valuenow="52"></div><div class="loop-console-conversation">${conversation}</div></div>${state.error ? `<p class="loop-error" role="alert">${escape(state.error)}</p>` : ""}</section>`;
   }
 
   function patch(container, state) {

@@ -9,7 +9,8 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme, Notification, powerMonitor } = require("electron");
 const { TaskNotifications } = require("./task-notifications.cjs");
 const { registerMainRequestStorage } = require("./main-request-storage.cjs");
-const { registerDesktopPreferences } = require("./desktop-preferences.cjs");
+const { DesktopPreferences, registerDesktopPreferences } = require("./desktop-preferences.cjs");
+const { createNativeI18n } = require("./native-i18n.cjs");
 const { subscribeTaskChanges } = require("./task-state-stream.cjs");
 const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
 const { DesktopPatrolHost } = require("./desktop-patrol-host.cjs");
@@ -90,6 +91,12 @@ if (process.env.FOCUS_DISABLE_HARDWARE_ACCELERATION === "1") {
 }
 if (process.env.FOCUS_ELECTRON_USER_DATA) app.setPath("userData", process.env.FOCUS_ELECTRON_USER_DATA);
 
+function desktopLocale() {
+  try { return new DesktopPreferences(app.getPath("userData")).getItem("focus-interface-language-v1") || "zh-CN"; }
+  catch { return "zh-CN"; }
+}
+const nativeText = createNativeI18n(desktopLocale);
+
 function pythonEnvironment(session) {
   const separator = process.platform === "win32" ? ";" : ":";
   const pythonPath = [path.join(rootDir, "backend", "packages", "harness"), rootDir, process.env.PYTHONPATH].filter(Boolean).join(separator);
@@ -124,14 +131,15 @@ function createSplashWindow() {
     },
   });
   splashWindow.once("ready-to-show", () => splashWindow?.show());
-  return splashWindow.loadFile(path.join(desktopDir, "splash.html"));
+  return splashWindow.loadFile(path.join(desktopDir, "splash.html")).then(() =>
+    splashWindow.webContents.executeJavaScript(`window.FocusI18n.setLocale(${JSON.stringify(desktopLocale())})`));
 }
 
 async function updateSplashStage(label, progress) {
   startupStage = label;
   if (!splashWindow || splashWindow.isDestroyed()) return;
   await splashWindow.webContents.executeJavaScript(
-    `window.setFocusSplashStage(${JSON.stringify(label)}, ${Number(progress) || 0})`,
+    `window.setFocusSplashStage(${JSON.stringify(nativeText(label))}, ${Number(progress) || 0})`,
   ).catch(() => {});
 }
 
@@ -375,6 +383,7 @@ async function start() {
       byteLimit: limits.general_file_bytes, getWorkbench: () => mainWindow, origin: apiBase });
     if (patrolEnabled) {
       patrolHost = new DesktopPatrolHost({
+        translate: nativeText,
         electron: require("electron"), apiBase, desktopDir, icon: focusIconPath, limits,
         openWorkbench: showWorkbench, getWorkbench: () => mainWindow, quit: () => app.quit(),
         getModelSettings: async () => {
@@ -399,6 +408,7 @@ async function start() {
   publishGatewayStatus("ready");
   const notificationFile = path.join(app.getPath("userData"), "task-notifications.json");
   taskNotifications = new TaskNotifications({
+    translate: nativeText,
     load: () => { try { return JSON.parse(fs.readFileSync(notificationFile, "utf8")); } catch { return {}; } },
     save: value => {
       fs.mkdirSync(path.dirname(notificationFile), { recursive: true });
@@ -534,6 +544,12 @@ registerMainRequestStorage(ipcMain, {
 registerDesktopPreferences(ipcMain, {
   directory: () => app.getPath("userData"),
   authorize: assertDesktopSender,
+  onChange: change => {
+    if (change.key === "focus-interface-language-v1") patrolHost?.refreshLanguage();
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send("focus:preferences-changed", change);
+    }
+  },
 });
 ipcMain.handle("focus:gateway-status", event => { assertDesktopSender(event); return gatewayStatus; });
 for (const operation of ["reconnect", "restart"]) {

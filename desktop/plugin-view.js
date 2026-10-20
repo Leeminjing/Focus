@@ -8,16 +8,22 @@
   if (root) root.FocusPluginView = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   function escapeHtml(value = "") {
     return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   }
 
   const STATUS_BADGES = {
-    active: "已注册",
-    unavailable: "不可用",
-    rejected: "已拒绝",
-    pending: "待解析",
+    get active() { return localize("已注册"); },
+    get unavailable() { return localize("不可用"); },
+    get rejected() { return localize("已拒绝"); },
+    get pending() { return localize("待解析"); },
   };
 
   const STATUS_TONES = {
@@ -37,15 +43,15 @@
       ].join("");
       return `<article class="plugin-interface-row">
         <strong>${escapeHtml(name)}</strong>
-        <span class="plugin-interface-order">${ordered || "（无实现）"}</span>
+        <span class="plugin-interface-order">${ordered || localize("（无实现）")}</span>
         ${tags}
       </article>`;
     }).join("");
-    return rows || `<p class="muted">暂无已注入接口</p>`;
+    return rows || localize`<p class="muted">暂无已注入接口</p>`;
   }
 
   function renderPluginCard(plugin, selected = false) {
-    const injected = (plugin.injected || []).map(name => `<span class="plugin-injected-tag">${escapeHtml(name)}</span>`).join("") || "（无）";
+    const injected = (plugin.injected || []).map(name => `<span class="plugin-injected-tag">${escapeHtml(name)}</span>`).join("") || localize("（无）");
     const missing = plugin.missing?.length
       ? `<span class="plugin-reason">Missing dependency: ${escapeHtml(plugin.missing.join(", "))}</span>`
       : "";
@@ -61,8 +67,8 @@
   }
 
   function renderTraces(traces) {
-    if (!traces?.length) return `<p class="muted">暂无执行轨迹（插件 hook 参与执行后在此展示）</p>`;
-    return `<table class="plugin-trace-table">
+    if (!traces?.length) return localize`<p class="muted">暂无执行轨迹（插件 hook 参与执行后在此展示）</p>`;
+    return localize`<table class="plugin-trace-table">
       <thead><tr><th>接口</th><th>插件</th><th>状态</th><th>耗时</th><th>详情</th></tr></thead>
       <tbody>${traces.map(trace => `<tr class="trace-${escapeHtml(trace.status)}">
         <td><code>${escapeHtml(trace.interface)}</code></td>
@@ -75,22 +81,22 @@
   }
 
   function renderPluginDetail(plugin, interfaces, traces) {
-    if (!plugin) return `<section class="ui-empty-state"><h1>没有匹配的插件</h1><p>切换状态筛选查看其他插件。</p></section>`;
+    if (!plugin) return localize`<section class="ui-empty-state"><h1>没有匹配的插件</h1><p>切换状态筛选查看其他插件。</p></section>`;
     const relevantInterfaces = Object.fromEntries(Object.entries(interfaces || {}).filter(([, entry]) => (entry.plugins || []).includes(plugin.name)));
     const relevantTraces = (traces || []).filter(trace => trace.plugin === plugin.name);
     const errors = relevantTraces.filter(trace => !["success", "completed"].includes(trace.status));
     const missing = plugin.missing || [];
-    return `<section class="plugin-detail status-${escapeHtml(plugin.status)}">
+    return localize`<section class="plugin-detail status-${escapeHtml(plugin.status)}">
       <header class="plugin-detail-heading">
         <div><span class="workspace-kicker">PLUGIN DETAIL</span><h2>${escapeHtml(plugin.name)}</h2><p>版本 ${escapeHtml(plugin.version)} · ${STATUS_BADGES[plugin.status] || escapeHtml(plugin.status)}</p></div>
         <span class="ui-badge is-${STATUS_TONES[plugin.status] || "neutral"}">${STATUS_BADGES[plugin.status] || escapeHtml(plugin.status)}</span>
       </header>
-      ${plugin.conflict ? `<div class="ui-notice is-danger"><strong>接口注入冲突</strong><span>${escapeHtml(plugin.conflict.interface)} 已由 ${escapeHtml(plugin.conflict.current)} 注册，无法再注入 ${escapeHtml(plugin.conflict.new)}。</span></div>` : ""}
-      ${missing.length ? `<div class="ui-notice is-warning"><strong>缺少依赖</strong><span>${escapeHtml(missing.join(", "))}</span></div>` : ""}
-      ${plugin.reason && !plugin.conflict && !missing.length ? `<div class="ui-notice is-warning"><strong>插件不可用</strong><span>${escapeHtml(plugin.reason)}</span></div>` : ""}
+      ${plugin.conflict ? localize`<div class="ui-notice is-danger"><strong>接口注入冲突</strong><span>${escapeHtml(plugin.conflict.interface)} 已由 ${escapeHtml(plugin.conflict.current)} 注册，无法再注入 ${escapeHtml(plugin.conflict.new)}。</span></div>` : ""}
+      ${missing.length ? localize`<div class="ui-notice is-warning"><strong>缺少依赖</strong><span>${escapeHtml(missing.join(", "))}</span></div>` : ""}
+      ${plugin.reason && !plugin.conflict && !missing.length ? localize`<div class="ui-notice is-warning"><strong>插件不可用</strong><span>${escapeHtml(plugin.reason)}</span></div>` : ""}
       <section class="plugin-detail-section"><header><h3>接口注入</h3><span>${Object.keys(relevantInterfaces).length} 个</span></header>${renderInterfaces(relevantInterfaces)}</section>
-      <section class="plugin-detail-section"><header><h3>依赖</h3><span>${(plugin.requires || []).length} 个</span></header><div class="plugin-dependency-list">${(plugin.requires || []).map(name => `<span class="ui-badge">${escapeHtml(name)}</span>`).join("") || '<span class="muted">无外部插件依赖</span>'}</div></section>
-      <section class="plugin-detail-section plugin-traces"><header><h3>执行轨迹</h3><span>${errors.length ? `${errors.length} 条异常优先` : `最近 ${relevantTraces.length} 条`}</span></header>${renderTraces([...errors, ...relevantTraces.filter(trace => !errors.includes(trace))])}</section>
+      <section class="plugin-detail-section"><header><h3>依赖</h3><span>${(plugin.requires || []).length} 个</span></header><div class="plugin-dependency-list">${(plugin.requires || []).map(name => `<span class="ui-badge">${escapeHtml(name)}</span>`).join("") || localize('<span class="muted">无外部插件依赖</span>')}</div></section>
+      <section class="plugin-detail-section plugin-traces"><header><h3>执行轨迹</h3><span>${errors.length ? localize`${errors.length} 条异常优先` : localize`最近 ${relevantTraces.length} 条`}</span></header>${renderTraces([...errors, ...relevantTraces.filter(trace => !errors.includes(trace))])}</section>
     </section>`;
   }
 
@@ -102,12 +108,12 @@
     const filtered = all.filter(plugin => (filter === "all" || plugin.status === filter) && (!query || `${plugin.name} ${(plugin.injected || []).join(" ")}`.toLowerCase().includes(query)));
     const selected = filtered.find(plugin => plugin.name === options.selectedName) || null;
     const filters = [
-      ["all", "全部"], ["active", "已注册"], ["unavailable", "不可用"], ["rejected", "已拒绝"],
+      ["all", localize("全部")], ["active", localize("已注册")], ["unavailable", localize("不可用")], ["rejected", localize("已拒绝")],
     ].map(([status, label]) => {
       const count = status === "all" ? all.length : all.filter(plugin => plugin.status === status).length;
       return `<button type="button" class="${filter === status ? "active" : ""}" data-action="filter-plugins" data-plugin-status="${status}" aria-pressed="${filter === status}">${label} <span>${count}</span></button>`;
     }).join("");
-    return `<section class="plugins-view">
+    return localize`<section class="plugins-view">
       <header class="plugins-heading">
         <div><h1>插件</h1><p class="muted">能力状态、依赖与实际执行轨迹。</p></div>
         <button class="text-button" data-action="reload-plugins"${options.loading ? " disabled" : ""}>重新加载注册表</button>
@@ -115,12 +121,12 @@
       </header>
       <div class="ui-notice"><strong>插件变更何时生效</strong><span>重新加载后，工具与 hooks 在下次 Run 装配时生效，正在运行的 Run 保留原快照。“已注册”仅表示注册表接入成功。插件 UI/API 的新增、变更、禁用或卸载需要重启后端进程；桌面使用时请退出并重新启动 Focus。“刷新”仅读取当前状态。</span></div>
       <div class="library-toolbar"><div class="plugin-filter segmented" role="group" aria-label="按插件状态筛选">${filters}</div>
-      <label class="page-search">检索已加载插件 <input type="search" data-page-search="plugins" value="${escapeHtml(options.query || "")}" placeholder="查找能力…"></label><div class="library-layout" role="group" aria-label="插件布局" data-i18n-aria-label="view.layout">${["cards", "list"].map(layout => `<button data-action="set-library-layout" data-library="plugins" data-layout="${layout}" aria-pressed="${(options.layout || "cards") === layout}" data-i18n="view.${layout}">${layout === "cards" ? "卡片" : "列表"}</button>`).join("")}</div></div>
-      ${options.loading ? '<p role="status">正在读取插件状态…</p>' : ""}
-      ${options.error ? `<p role="alert">读取失败：${escapeHtml(options.error)} <button data-action="refresh-plugins">重试</button></p>` : ""}
+      <label class="page-search">检索已加载插件 <input type="search" data-page-search="plugins" value="${escapeHtml(options.query || "")}" placeholder="查找能力…"></label><div class="library-layout" role="group" aria-label="插件布局" data-i18n-aria-label="view.layout">${["cards", "list"].map(layout => `<button data-action="set-library-layout" data-library="plugins" data-layout="${layout}" aria-pressed="${(options.layout || "cards") === layout}" data-i18n="view.${layout}">${layout === "cards" ? localize("卡片") : localize("列表")}</button>`).join("")}</div></div>
+      ${options.loading ? localize('<p role="status">正在读取插件状态…</p>') : ""}
+      ${options.error ? localize`<p role="alert">读取失败：${escapeHtml(options.error)} <button data-action="refresh-plugins">重试</button></p>` : ""}
       <div class="plugins-workbench">
-        <aside class="plugins-list${options.layout === "list" ? " is-list" : ""}"><header><strong>插件</strong><span>${filtered.length}/${all.length}</span></header><div class="plugin-list-scroll">${filtered.map(plugin => renderPluginCard(plugin, plugin === selected)).join("") || `<section class="ui-empty-state"><h1>${all.length ? "没有匹配项" : "尚无插件"}</h1><p>${all.length ? "切换筛选查看其他状态。" : "plugins/ 目录为空，宿主仍可独立启动。"}</p></section>`}</div></aside>
-        ${selected ? `<details class="plugins-detail"${options.selectedName ? " open" : ""}><summary>接口、依赖与执行轨迹 · ${escapeHtml(selected.name)}</summary>${renderPluginDetail(selected, interfaces, traces)}</details>` : ""}
+        <aside class="plugins-list${options.layout === "list" ? " is-list" : ""}"><header><strong>插件</strong><span>${filtered.length}/${all.length}</span></header><div class="plugin-list-scroll">${filtered.map(plugin => renderPluginCard(plugin, plugin === selected)).join("") || `<section class="ui-empty-state"><h1>${all.length ? localize("没有匹配项") : localize("尚无插件")}</h1><p>${all.length ? localize("切换筛选查看其他状态。") : localize("plugins/ 目录为空，宿主仍可独立启动。")}</p></section>`}</div></aside>
+        ${selected ? localize`<details class="plugins-detail"${options.selectedName ? " open" : ""}><summary>接口、依赖与执行轨迹 · ${escapeHtml(selected.name)}</summary>${renderPluginDetail(selected, interfaces, traces)}</details>` : ""}
       </div>
     </section>`;
   }

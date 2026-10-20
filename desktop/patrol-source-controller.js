@@ -5,6 +5,12 @@
  */
 (function(root){
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   class PatrolSourceController {
     constructor({draft,api,onChange=()=>{}}){
       this.draft=draft;this.api=api;this.onChange=onChange;this.kind="context";this.catalog=[];this.rows=[];
@@ -43,7 +49,7 @@
         const versions=await this.api(`/desktop/api/materials/${ref.material_id}/versions`);
         if(ticket!==this.catalogRequest)return;
         const offset=append?this.materialOffset || 0:0;this.materialRef=ref;this.materialOffset=offset+50;this.materialNext=this.materialOffset<versions.length;
-        this.versions=[...(append?[]:[{label:"当前文件快照",source_ref:ref}]),...versions.slice(offset,this.materialOffset).map(version=>({label:`版本 ${version.version_id.slice(0,8)}`,source_ref:{...ref,version_id:version.version_id}}))];
+        this.versions=[...(append?[]:[{label: localize("当前文件快照"),source_ref:ref}]),...versions.slice(offset,this.materialOffset).map(version=>({label:localize`版本 ${version.version_id.slice(0,8)}`,source_ref:{...ref,version_id:version.version_id}}))];
         if(!append)this.choose(ref);
       }catch(error){if(ticket===this.catalogRequest)this.error=error.message;}
       finally{if(ticket===this.catalogRequest){this.catalogLoading=false;this._emit();}}
@@ -68,7 +74,7 @@
         if(ticket!==this.request)return;
         if(this.fingerprint && result.source_fingerprint!==this.fingerprint){
           this.detailRequest++;
-          this.selected.clear();this.details.clear();this.expanded.clear();this.error="来源已变化，选择已清空，请重新确认";
+          this.selected.clear();this.details.clear();this.expanded.clear();this.error=localize("来源已变化，选择已清空，请重新确认");
         }
         this.source=result.source_ref;this.fingerprint=result.source_fingerprint;this.rows=result.rows;
         this.total=result.total;this.excluded=result.excluded_count;this.next=result.next_cursor;
@@ -86,14 +92,14 @@
       try{
         const result=await this.api(`/desktop/api/drafts/${this.draft.draft_id}/source-preview`,{method:"POST",body:JSON.stringify({...ref,row_id:id,include_historical:this.historical})});
         if(ticket!==this.detailRequest || ref!==this.ref)return;
-        if(fingerprint!==result.source_fingerprint){this.error="来源已变化，请刷新预览后重新确认";this._emit();return;}
+        if(fingerprint!==result.source_fingerprint){this.error=localize("来源已变化，请刷新预览后重新确认");this._emit();return;}
         this.details.set(id,result.row.entry || null);
         while(this.details.size>24){const oldest=this.details.keys().next().value;this.details.delete(oldest);this.expanded.delete(oldest);}
         this._emit();
       }catch(error){if(ticket===this.detailRequest){this.error=error.message;this._emit();}}
     }
     insertion(beforeId){
-      if(!this.ref || !this.fingerprint || !this.selected.size)throw new Error("请先选择来源条目");
+      if(!this.ref || !this.fingerprint || !this.selected.size)throw new Error(localize("请先选择来源条目"));
       return {...this.source,...this.ref,include_historical:this.historical,selected_row_ids:[...this.selected],source_fingerprint:this.fingerprint,before_entry_id:beforeId};
     }
     destroy(){this.request++;this.catalogRequest++;this.detailRequest++;this.onChange=()=>{};this.details.clear();}

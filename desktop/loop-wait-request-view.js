@@ -7,6 +7,12 @@
  */
 
 (function initLoopWaitRequestView(global) {
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const fallbackEscape = value => String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -45,13 +51,13 @@
     const draft = escape(typeof ui.draft === "string" && !ui.draft.startsWith("{") ? ui.draft : draftState.answer || "");
     let control = "";
     if (request.response_mode === "text") {
-      control = `<textarea name="answer" rows="3" maxlength="${escape(contract.max_length || 12000)}"${disabled}>${draft}</textarea><button class="primary" type="submit"${disabled}>${pending ? "提交中…" : "回复并继续"}</button>`;
+      control = `<textarea name="answer" rows="3" maxlength="${escape(contract.max_length || 12000)}"${disabled}>${draft}</textarea><button class="primary" type="submit"${disabled}>${pending ? localize("提交中…") : localize("回复并继续")}</button>`;
     } else if (["single_choice", "multiple_choice"].includes(request.response_mode)) {
       const type = request.response_mode === "multiple_choice" ? "checkbox" : "radio";
       const selected = new Set(Array.isArray(draftState.choice) ? draftState.choice : [draftState.choice].filter(Boolean));
-      control = (contract.choices || contract.options || []).map(choice => `<label><input type="${type}" name="choice" value="${escape(choice.value)}"${selected.has(String(choice.value)) ? " checked" : ""}${disabled}>${escape(choice.label || choice.value)}</label>`).join("") + `<button class="primary" type="submit"${disabled}>确认</button>`;
+      control = (contract.choices || contract.options || []).map(choice => `<label><input type="${type}" name="choice" value="${escape(choice.value)}"${selected.has(String(choice.value)) ? " checked" : ""}${disabled}>${escape(choice.label || choice.value)}</label>`).join("") + localize`<button class="primary" type="submit"${disabled}>确认</button>`;
     } else if (request.response_mode === "structured") {
-      control = Object.entries(contract.fields || {}).map(([name, field]) => `<label>${escape(field.label || name)}<input name="${escape(name)}" type="${escape(field.type || "text")}" value="${escape(draftState[name] || "")}"${disabled}></label>`).join("") + `<button class="primary" type="submit"${disabled}>确认</button>`;
+      control = Object.entries(contract.fields || {}).map(([name, field]) => `<label>${escape(field.label || name)}<input name="${escape(name)}" type="${escape(field.type || "text")}" value="${escape(draftState[name] || "")}"${disabled}></label>`).join("") + localize`<button class="primary" type="submit"${disabled}>确认</button>`;
     } else if (request.response_mode === "action") {
       control = (contract.actions || []).map(action => {
         const inputs = action.input_schema && typeof action.input_schema === "object"
@@ -60,14 +66,14 @@
         return `${inputs}<button type="button" data-action="loop-wait-response" data-wait-action="${escape(action.action)}"${disabled}>${escape(action.label || action.action)}</button>`;
       }).join("");
     } else {
-      control = `<p class="loop-wait-unsupported">当前客户端暂不支持响应模式 ${escape(request.response_mode)}</p>`;
+      control = localize`<p class="loop-wait-unsupported">当前客户端暂不支持响应模式 ${escape(request.response_mode)}</p>`;
     }
     const recoverable = global.FocusLoopWaitRecovery?.canResume(request);
-    const recovery = recoverable ? `<button type="button" data-action="loop-resume-current-mission"${disabled}>确认沿用当前 Mission 并继续</button>` : "";
-    const scope = request.scope && Object.keys(request.scope).length ? escape(JSON.stringify(request.scope)) : "当前 Loop";
+    const recovery = recoverable ? localize`<button type="button" data-action="loop-resume-current-mission"${disabled}>确认沿用当前 Mission 并继续</button>` : "";
+    const scope = request.scope && Object.keys(request.scope).length ? escape(JSON.stringify(request.scope)) : localize("当前 Loop");
     const quality = request.scope?.quality_recovery;
-    const diagnostics = quality ? `<div class="loop-quality-recovery"><p>材料修订 ${escape(quality.revision_count ?? 0)}/2 · 失败维度：${escape((quality.failed_dimensions || []).join(", "))}</p><ul>${(quality.reasons || []).map(item => `<li>${escape(item.dimension)}：${escape(item.reason)}</li>`).join("")}</ul><small>WorkSpec ${escape(quality.work_spec_id)} · Assessment ${escape(quality.assessment_id)}</small></div>` : "";
-    return `<section class="loop-wait-request" data-wait-request-id="${id}" data-response-mode="${escape(request.response_mode)}"><header><span>等待你的决定</span><small>${escape(request.kind || "clarification")}</small></header><p>${escape(request.prompt)}</p>${diagnostics}<div class="loop-wait-meta"><span>来源：${escape(request.created_by || "Patrol")}</span><span>范围：${scope}</span></div><form data-loop-wait-response>${control}${recovery}</form>${ui.error ? `<p class="loop-wait-error">${escape(ui.error)}</p>` : ""}</section>`;
+    const diagnostics = quality ? localize`<div class="loop-quality-recovery"><p>材料修订 ${escape(quality.revision_count ?? 0)}/2 · 失败维度：${escape((quality.failed_dimensions || []).join(", "))}</p><ul>${(quality.reasons || []).map(item => `<li>${escape(item.dimension)}：${escape(item.reason)}</li>`).join("")}</ul><small>WorkSpec ${escape(quality.work_spec_id)} · Assessment ${escape(quality.assessment_id)}</small></div>` : "";
+    return localize`<section class="loop-wait-request" data-wait-request-id="${id}" data-response-mode="${escape(request.response_mode)}"><header><span>等待你的决定</span><small>${escape(request.kind || "clarification")}</small></header><p>${escape(request.prompt)}</p>${diagnostics}<div class="loop-wait-meta"><span>来源：${escape(request.created_by || "Patrol")}</span><span>范围：${scope}</span></div><form data-loop-wait-response>${control}${recovery}</form>${ui.error ? `<p class="loop-wait-error">${escape(ui.error)}</p>` : ""}</section>`;
   }
 
   function parseDraft(value) {

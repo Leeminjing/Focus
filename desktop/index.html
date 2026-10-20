@@ -50,8 +50,8 @@
     </header>
     <section id="accessPending" class="access-pending" role="region" aria-label="后台执行主体的本机资源请求" data-i18n-aria-label="access.background_title" hidden></section>
     <div class="app-shell">
-      <nav id="appNavigation" class="app-navigation glass-surface" aria-label="全局导航">
-        <button class="shell-workspace-button" data-action="show-patrol" data-patrol-switch><strong id="shellWorkspaceName">选择工作区</strong><span>Patrol 工作区</span></button>
+      <nav id="appNavigation" class="app-navigation glass-surface" aria-label="全局导航" data-i18n-aria-label="nav.global">
+        <button class="shell-workspace-button" data-action="show-patrol" data-patrol-switch><strong id="shellWorkspaceName" data-i18n="nav.workspace">选择工作区</strong><span data-i18n="nav.patrol_workspace">Patrol 工作区</span></button>
         <button class="app-nav-item" data-action="show-patrol" data-nav-key="patrol"><span class="app-nav-label">Patrol</span></button>
         <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
           <span class="app-nav-label" data-i18n="nav.tasks">任务</span>
@@ -74,18 +74,18 @@
         </button>
         <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
       </nav>
-      <div class="shell-resizer shell-resizer-nav" role="separator" aria-orientation="vertical" aria-label="调整导航宽度" title="拖拽调整导航宽度"></div>
+      <div class="shell-resizer shell-resizer-nav" role="separator" aria-orientation="vertical" aria-label="调整导航宽度" title="拖拽调整导航宽度" data-i18n-aria-label="nav.resize" data-i18n-title="nav.resize_help"></div>
       <section class="app-workspace">
         <main id="app" tabindex="-1" aria-live="polite"></main>
       </section>
-      <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度"></div>
-      <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden>
-        <div class="inspector-tabs glass-surface" role="tablist" aria-label="检查器内容">
+      <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度" data-i18n-aria-label="inspector.resize" data-i18n-title="inspector.resize_help"></div>
+      <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden data-i18n-aria-label="inspector.title">
+        <div class="inspector-tabs glass-surface" role="tablist" aria-label="检查器内容" data-i18n-aria-label="inspector.tabs">
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
-          <button data-action="close-inspector" aria-label="关闭任务检查器">×</button>
+          <button data-action="close-inspector" aria-label="关闭任务检查器" data-i18n-aria-label="inspector.close">×</button>
         </div>
         <div id="inspectorContent" class="inspector-content"></div>
       </aside>
@@ -111,15 +111,15 @@
       </div>
       <button class="quiet-button" data-action="close-settings" aria-label="关闭" data-i18n-aria-label="settings.close"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
     </header>
-    <nav class="settings-sections" role="tablist" aria-label="设置区块">
+    <nav class="settings-sections" role="tablist" aria-label="设置区块" data-i18n-aria-label="settings.sections">
       <button role="tab" data-action="settings-tab" data-settings-tab="general" aria-selected="true" class="is-active" data-i18n="settings.general">常规</button>
       <button role="tab" data-action="settings-tab" data-settings-tab="models" aria-selected="false" data-i18n="settings.models">模型</button>
       <button role="tab" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
     </nav>
     <section class="settings-pane" data-settings-pane="general">
-      <h3>桌面提醒</h3>
-      <label><input id="taskNotificationsEnabled" type="checkbox" checked>启用桌面提醒</label>
-      <p class="muted tiny">优先提醒需要你处理的事项，再提醒任务完成和失败。点击提醒可进入对应任务。</p>
+      <h3 data-i18n="settings.notifications">桌面提醒</h3>
+      <label><input id="taskNotificationsEnabled" type="checkbox" checked><span data-i18n="settings.notifications_enabled">启用桌面提醒</span></label>
+      <p class="muted tiny" data-i18n="settings.notifications_help">优先提醒需要你处理的事项，再提醒任务完成和失败。点击提醒可进入对应任务。</p>
       <h3 data-i18n="settings.language">界面语言</h3>
       <div class="settings-language-options" role="radiogroup" aria-label="界面语言" data-i18n-aria-label="settings.language">
         <button type="button" data-action="set-language" data-locale="zh-CN" data-i18n="settings.chinese">中文</button>
@@ -146,7 +146,7 @@
     </section>
     <section class="settings-pane" data-settings-pane="data" hidden>
       <h3 data-i18n="settings.data">数据</h3>
-      <section id="storageSettingsHost" class="settings-data-section" aria-label="长期存储维护"></section>
+      <section id="storageSettingsHost" class="settings-data-section" aria-label="长期存储维护" data-i18n-aria-label="settings.storage_maintenance"></section>
       <section class="settings-data-section">
         <header><strong data-i18n="settings.archived">已归档的会话</strong><span class="muted tiny" data-i18n="settings.archived_help">归档可恢复；删除需确认</span></header>
         <div id="archivedSessions" class="archived-session-list"></div>
@@ -161,24 +161,24 @@
           <span class="review-kicker"></span>
           <h3></h3>
         </div>
-        <span class="review-badge">等待确认</span>
+        <span class="review-badge" data-i18n="review.waiting">等待确认</span>
       </header>
       <pre class="review-draft"></pre>
-      <textarea class="review-contract-editor" aria-label="任务合同 Markdown" hidden></textarea>
+      <textarea class="review-contract-editor" aria-label="任务合同 Markdown" hidden data-i18n-aria-label="review.contract_markdown"></textarea>
       <p class="review-error" role="alert"></p>
       <div class="review-actions">
-        <button class="primary approve-button" type="button">批准并继续</button>
-        <button class="text-button revise-toggle" type="button">提出修订</button>
+        <button class="primary approve-button" type="button" data-i18n="review.approve">批准并继续</button>
+        <button class="text-button revise-toggle" type="button" data-i18n="review.revise">提出修订</button>
       </div>
       <form class="revision-form" hidden>
-        <div class="segmented" role="group" aria-label="修订方式">
-          <button class="active" type="button" data-mode="feedback">反馈</button>
-          <button type="button" data-mode="replacement">替换草稿</button>
+        <div class="segmented" role="group" aria-label="修订方式" data-i18n-aria-label="review.revision_mode">
+          <button class="active" type="button" data-mode="feedback" data-i18n="review.feedback">反馈</button>
+          <button type="button" data-mode="replacement" data-i18n="review.replace">替换草稿</button>
         </div>
-        <textarea class="revision-input" rows="4" placeholder="输入需要调整的内容"></textarea>
+        <textarea class="revision-input" rows="4" placeholder="输入需要调整的内容" data-i18n-placeholder="review.revision_placeholder"></textarea>
         <div class="revision-footer">
-          <button class="text-button cancel-revision" type="button">取消</button>
-          <button class="primary" type="submit">提交修订</button>
+          <button class="text-button cancel-revision" type="button" data-i18n="access.risk_cancel">取消</button>
+          <button class="primary" type="submit" data-i18n="review.submit">提交修订</button>
         </div>
       </form>
     </article>
@@ -208,11 +208,11 @@
       <summary>
         <span class="trace-summary-title">
           <span class="trace-live-dot" aria-hidden="true"></span>
-          <span class="trace-state">思考中</span>
+          <span class="trace-state" data-i18n="trace.thinking">思考中</span>
         </span>
         <span class="trace-summary-meta">
-          <span class="trace-elapsed">已思考 0 秒</span>
-          <span class="trace-count">0 项</span>
+          <span class="trace-elapsed" data-i18n="trace.initial_elapsed">已思考 0 秒</span>
+          <span class="trace-count" data-i18n="trace.initial_count">0 项</span>
         </span>
       </summary>
       <ol class="trace-list"></ol>
@@ -223,7 +223,8 @@
   </template>
   <script src="./vendor/markdown-it.min.js"></script>
   <script src="./message-reading.js"></script>
-  <script src="./i18n.js?v=20260928a"></script>
+  <script src="./i18n-catalog.js"></script>
+  <script src="./i18n.js"></script>
   <script src="./skill-picker.js"></script>
   <script src="./context-editor.js"></script>
   <script src="./compression-panel.js?v=20260905c"></script>

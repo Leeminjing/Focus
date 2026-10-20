@@ -5,6 +5,12 @@
  */
 (function(root){
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const {node,action,kindLabel}=root.FocusPatrolUI;
   class PatrolReviewPanel {
     constructor(wb){this.wb=wb;this.state="idle";this.ticket=0;this.plan=null;}
@@ -28,43 +34,43 @@
     }
     render(){
       if(!this.panel)return;
-      const heading=node("header","patrol-review-heading");heading.append(node("h3","patrol-panel-title","检查与实际请求"),action("关闭",()=>this.close()));
+      const heading=node("header","patrol-review-heading");heading.append(node("h3","patrol-panel-title",localize("检查与实际请求")),action(localize("关闭"),()=>this.close()));
       this.panel.replaceChildren(heading);
-      if(this.state==="checking"){this.panel.append(node("p","","正在准备真实模型请求…"));return;}
-      if(this.state==="stale")this.panel.append(node("p","patrol-review-stale","文档或配置已变化，以下结果已过期，请重新检查"),action("重新检查",()=>this.check()));
-      if(this.error)this.panel.append(node("p","patrol-item-error",this.error),action("重试检查",()=>this.check()));
+      if(this.state==="checking"){this.panel.append(node("p","",localize("正在准备真实模型请求…")));return;}
+      if(this.state==="stale")this.panel.append(node("p","patrol-review-stale",localize("文档或配置已变化，以下结果已过期，请重新检查")),action(localize("重新检查"),()=>this.check()));
+      if(this.error)this.panel.append(node("p","patrol-item-error",this.error),action(localize("重试检查"),()=>this.check()));
       const plan=this.plan;
       if(plan){
-        this.panel.append(node("p","",plan.budget?`输入 ${plan.budget.input} · 工具 ${plan.budget.tools} · 指令 ${plan.budget.instructions} · 输出预留 ${plan.budget.output_reserve}`:"当前检查没有可用预算"));
+        this.panel.append(node("p","",plan.budget?localize`输入 ${plan.budget.input} · 工具 ${plan.budget.tools} · 指令 ${plan.budget.instructions} · 输出预留 ${plan.budget.output_reserve}`:localize("当前检查没有可用预算")));
         for(const diagnostic of plan.diagnostics || [])this.panel.append(this._diagnostic(diagnostic));
       }
       this._transformations();
-      if(plan){const details=node("details"),summary=node("summary","","实际 instructions / input / tools 与角色映射");details.append(summary);
+      if(plan){const details=node("details"),summary=node("summary","",localize("实际 instructions / input / tools 与角色映射"));details.append(summary);
         details.ontoggle=()=>{if(details.open && details.children.length===1)details.append(node("pre","",JSON.stringify({request:plan.request,roles:plan.role_mappings,transformations:plan.transformations},null,2)));};this.panel.append(details);}
-      if(!plan && !this.error)this.panel.append(node("p","","检查当前上下文后查看预算、诊断和实际请求"));
+      if(!plan && !this.error)this.panel.append(node("p","",localize("检查当前上下文后查看预算、诊断和实际请求")));
     }
     _diagnostic(diagnostic){
       const row=node("div","patrol-diagnostic");row.append(node("p","",diagnostic.message));const ids=diagnostic.entry_ids || [];
-      if(ids.some(id=>this.wb.doc.byId.has(id)))row.append(action(diagnostic.field?"定位字段":"定位条目",()=>{
+      if(ids.some(id=>this.wb.doc.byId.has(id)))row.append(action(diagnostic.field?localize("定位字段"):localize("定位条目"),()=>{
         const id=ids.find(id=>this.wb.doc.byId.has(id));this.wb._locate(id,diagnostic.field);this.view.setPage("target");
-      }));else row.append(node("span","patrol-global-diagnostic","全局检查问题"));
-      if(diagnostic.code==="raw_parse_error")row.append(action("编辑完整 JSON",()=>this.wb._toggleRaw()));
-      if(!ids.length && diagnostic.code==="provider_projection")row.append(action("编辑完整 JSON",()=>this.wb._toggleRaw()));
-      if(["target_protocol","window_exceeded"].includes(diagnostic.code) && this.wb.options.onEquipment)row.append(action("调整模型与权限",()=>this.wb.options.onEquipment()));
+      }));else row.append(node("span","patrol-global-diagnostic",localize("全局检查问题")));
+      if(diagnostic.code==="raw_parse_error")row.append(action(localize("编辑完整 JSON"),()=>this.wb._toggleRaw()));
+      if(!ids.length && diagnostic.code==="provider_projection")row.append(action(localize("编辑完整 JSON"),()=>this.wb._toggleRaw()));
+      if(["target_protocol","window_exceeded"].includes(diagnostic.code) && this.wb.options.onEquipment)row.append(action(localize("调整模型与权限"),()=>this.wb.options.onEquipment()));
       const options=diagnostic.options || [];
-      for(const [operation,label]of [["as_text","转为参考文本"],["placeholder","生成未完成结果"]])if(options.includes(operation) && ids.length){
-        const button=action(`${label} · ${ids.length} 项`,()=>this.transform(diagnostic,operation));button.disabled=this.state==="stale";row.append(button);
+      for(const [operation,label]of [["as_text",localize("转为参考文本")],["placeholder",localize("生成未完成结果")]])if(options.includes(operation) && ids.length){
+        const button=action(localize`${label} · ${ids.length} 项`,()=>this.transform(diagnostic,operation));button.disabled=this.state==="stale";row.append(button);
       }
       return row;
     }
     _transformations(){
       const plans=this.wb.doc.value.transformations || [];if(!plans.length)return;
-      const section=node("section","patrol-transformations");section.append(node("h4","","显式变换"));
+      const section=node("section","patrol-transformations");section.append(node("h4","",localize("显式变换")));
       plans.forEach((plan,index)=>{
         const row=node("div","patrol-transformation"),stale=this.plan && plan.document_hash!==this.plan.document_hash;
-        const label={as_text:"转为参考文本",placeholder:"补充未完成结果"}[plan.operation] || plan.operation;
-        const targets=plan.entry_ids.map(id=>{const index=this.wb.doc.value.entries.findIndex(entry=>entry.entry_id===id);return index<0?"已删除条目":`第 ${index+1} 项 · ${kindLabel(this.wb.doc.value.entries[index].kind)}`;});
-        row.append(node("p","",`${label} · ${plan.entry_ids.length} 项${stale || this.state==="stale"?" · 需重新确认":""}`),node("small","",`目标：${targets.join("、")}`),action("取消变换",()=>this.cancelTransformation(index)),action("重新确认并替换",()=>this.replaceTransformation(index)));section.append(row);
+        const label={as_text: localize("转为参考文本"),placeholder: localize("补充未完成结果")}[plan.operation] || plan.operation;
+        const targets=plan.entry_ids.map(id=>{const index=this.wb.doc.value.entries.findIndex(entry=>entry.entry_id===id);return index<0?localize("已删除条目"):localize`第 ${index+1} 项 · ${kindLabel(this.wb.doc.value.entries[index].kind)}`;});
+        row.append(node("p","",localize`${label} · ${plan.entry_ids.length} 项${stale || this.state==="stale"?localize(" · 需重新确认"):""}`),node("small","",localize`目标：${targets.join("、")}`),action(localize("取消变换"),()=>this.cancelTransformation(index)),action(localize("重新确认并替换"),()=>this.replaceTransformation(index)));section.append(row);
       });this.panel.append(section);
     }
     async transform(diagnostic,operation){
@@ -80,7 +86,7 @@
       const plan=await this.check(false);if(!plan)return;
       if(previous!==this.wb.doc.value.transformations?.[index])return;
       const ids=previous.entry_ids.filter(id=>this.wb.doc.byId.has(id));
-      if(!ids.length){this.error="变换目标已不存在，可以取消该变换";this.render();return;}
+      if(!ids.length){this.error=localize("变换目标已不存在，可以取消该变换");this.render();return;}
       this.wb.doc.transform({...previous,entry_ids:ids,document_hash:plan.document_hash},index);await this.check();
     }
     destroy(){this.ticket++;this.panel=null;this.view=null;}

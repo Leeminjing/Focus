@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld("focusDesktop", {
   preferences: {
     getItem: key => readPreference(key),
     setItem: (key, value) => preferenceCall("setItem", key, value),
+    onChange: callback => subscribe("focus:preferences-changed", callback),
   },
   mainRequestStorage: {
     getItem: key => mainRequestCall("getItem", key),

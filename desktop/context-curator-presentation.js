@@ -4,6 +4,12 @@
  */
 (function contextCuratorPresentationModule(global) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   const PENDING_REVISIONS = new Set([
     "observed", "preparing", "ready", "publishing", "approval_required",
@@ -11,9 +17,9 @@
 
   function trackingLabel(control) {
     return ({
-      following: "持续跟踪",
-      paused: "已暂停",
-      stopped: "已停止",
+      following: localize("持续跟踪"),
+      paused: localize("已暂停"),
+      stopped: localize("已停止"),
     })[control] || control || "—";
   }
 
@@ -39,19 +45,19 @@
   function stateLabel(agent) {
     const control = agent?.control_state || "following";
     if (control !== "following") return trackingLabel(control);
-    if (agent?.health_state === "running") return "正在更新";
-    if (agent?.health_state === "preparing") return "正在准备";
-    if (agent?.health_state === "degraded") return "处理失败";
+    if (agent?.health_state === "running") return localize("正在更新");
+    if (agent?.health_state === "preparing") return localize("正在准备");
+    if (agent?.health_state === "degraded") return localize("处理失败");
     if (agent?.health_state === "blocked") {
-      return agent?.latest_revision?.status === "approval_required" ? "等待决断" : "处理阻塞";
+      return agent?.latest_revision?.status === "approval_required" ? localize("等待决断") : localize("处理阻塞");
     }
     return trackingLabel(control);
   }
 
   function followingMessage(agent) {
     return isCaughtUp(agent)
-      ? "正在等待根 Context 的下一个稳定版本。"
-      : "已观察到新版本，正在等待处理。";
+      ? localize("正在等待根 Context 的下一个稳定版本。")
+      : localize("已观察到新版本，正在等待处理。");
   }
 
   function attemptRows(revision) {
@@ -72,13 +78,13 @@
     const labels = { system: "System", human: "Human", ai: "AI", tool: "Tool" };
     const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
     const associations = calls.map(call => ({
-      direction: "调用",
+      direction: localize("调用"),
       name: call?.name || "tool",
       tool_call_id: call?.id || "",
     }));
     if (kind === "tool") {
       associations.push({
-        direction: "响应",
+        direction: localize("响应"),
         name: message?.name || "tool",
         tool_call_id: message?.tool_call_id || "",
       });

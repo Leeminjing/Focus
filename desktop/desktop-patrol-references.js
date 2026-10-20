@@ -4,6 +4,12 @@
  */
 (function (root) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   root.FocusDesktopPatrolReferences = { create({ host, api, runtime, store, loopId, onError }) {
     const $ = selector => host.querySelector(selector), view = root.FocusLoopFactsView;
     let reads = new AbortController(), epoch = 0, candidates = [], before = null, typed = false, rendered = "", linkedTarget = null;
@@ -25,7 +31,7 @@
     function add(file) {
       const draft = store().get().draft, ref = view.inputFileReference(file);
       const refs = [...draft.file_refs.filter(item => item.result_key !== ref.result_key), ref];
-      if (refs.length > 32) throw new Error("一次输入最多引用 32 个文件版本");
+      if (refs.length > 32) throw new Error(localize("一次输入最多引用 32 个文件版本"));
       store().edit({ file_refs:refs, ...(typed ? { content:draft.content.replace(/(^|\s)@[^@\n]*$/, "$1") } : {}) });
       close(true);
     }
@@ -37,15 +43,15 @@
         const icon = document.createElement("span"); icon.className = "ui-icon icon-file-text"; icon.setAttribute("aria-hidden", "true");
         const label = document.createElement("span"), name = document.createElement("b"), version = document.createElement("small");
         name.textContent = file.path.split(/[\\/]/).at(-1); name.title = file.path;
-        version.textContent = `${(file.sha256 || file.result_key).slice(0,8)} · 已提交产物`;
+        version.textContent = localize`${(file.sha256 || file.result_key).slice(0,8)} · 已提交产物`;
         label.append(name,version); item.append(icon,label);
       }
-      if (!container.children.length) container.textContent = query ? "没有匹配的文件版本" : "没有可引用的文件版本";
+      if (!container.children.length) container.textContent = query ? localize("没有匹配的文件版本") : localize("没有可引用的文件版本");
     }
     async function load(older = false) {
       const id = loopId(), owner = epoch;
       const container = $("#version-candidates");
-      if (!id) { container.textContent = "没有可引用的文件版本"; return; }
+      if (!id) { container.textContent = localize("没有可引用的文件版本"); return; }
       $("#older-versions").disabled = true;
       try {
         const page = await api.facts(id,{kind:"artifact",limit:100,signal:reads.signal,...(older ? {before} : {})});
@@ -57,8 +63,8 @@
         renderCandidates();
       } catch (error) {
         if (owner !== epoch || error.name === "AbortError") return;
-        container.textContent = "文件版本读取失败，草稿已保留。";
-        button("重新读取",container,() => load(older));
+        container.textContent = localize("文件版本读取失败，草稿已保留。");
+        button(localize("重新读取"),container,() => load(older));
       } finally { if (owner === epoch) $("#older-versions").disabled = false; }
     }
     async function open(fromTyping = false) {
@@ -66,24 +72,24 @@
       $("#version-query").value = fromTyping ? $("#instruction").value.match(/(?:^|\s)@([^@\n]*)$/)?.[1] || "" : "";
       $("#version-picker").hidden = false; $("#older-versions").hidden = true;
       $("#reference-file").setAttribute("aria-expanded", "true");
-      $("#version-candidates").textContent = "正在读取文件版本…";
+      $("#version-candidates").textContent = localize("正在读取文件版本…");
       if (!fromTyping) $("#version-query").focus({preventScroll:true});
       await load();
     }
     async function detail(file, sourceLoopId = loopId()) {
       close(); typed = false;
       const owner = epoch, id = sourceLoopId, body = $("#version-body");
-      $("#version-detail").hidden = false; body.textContent = "正在读取文件版本…";
+      $("#version-detail").hidden = false; body.textContent = localize("正在读取文件版本…");
       try {
         const result = await api.factDetail(id,file.fact_id,reads.signal,file.revision);
         if (owner !== epoch) return;
-        if (!result.file || result.file.result_key !== file.result_key || (file.sha256 && result.file.sha256 !== file.sha256)) throw new Error("引用版本不可用，请重新选择；原引用和要求已保留。");
+        if (!result.file || result.file.result_key !== file.result_key || (file.sha256 && result.file.sha256 !== file.sha256)) throw new Error(localize("引用版本不可用，请重新选择；原引用和要求已保留。"));
         body.innerHTML = view.renderFile({ ...result.file, fact_id:file.fact_id, revision:file.revision });
         const section = body.querySelector(".file-version"), tabs = document.createElement("div");
         section.querySelector("h3").textContent = file.path.split(/[\\/]/).at(-1);
         section.querySelector("h3").title = file.path;
-        section.querySelector("p").textContent = `${(file.sha256 || file.result_key).slice(0,8)} · 已提交来源${result.file.after?.redacted || result.file.before?.redacted ? " · 已脱敏" : ""}`;
-        tabs.className = "version-tabs"; tabs.setAttribute("role","tablist"); tabs.setAttribute("aria-label","版本内容");
+        section.querySelector("p").textContent = localize`${(file.sha256 || file.result_key).slice(0,8)} · 已提交来源${result.file.after?.redacted || result.file.before?.redacted ? localize(" · 已脱敏") : ""}`;
+        tabs.className = "version-tabs"; tabs.setAttribute("role","tablist"); tabs.setAttribute("aria-label",localize("版本内容"));
         const panels = [...section.querySelectorAll(":scope > details")];
         section.querySelectorAll(":scope > p")[1]?.classList.add("sr-only");
         const cite = section.querySelector("[data-patrol-file-add]");
@@ -105,9 +111,9 @@
         }
         select(0); section.append(cite);
         root.FocusFilePreview?.mountHistory(body, { ...result.file, fact_id: file.fact_id, revision: file.revision }, id);
-        const note = document.createElement("small"); note.className = "version-note"; note.textContent = "固定版本，不随文件更新漂移"; section.append(note);
+        const note = document.createElement("small"); note.className = "version-note"; note.textContent = localize("固定版本，不随文件更新漂移"); section.append(note);
         body.querySelector("[data-patrol-file-add]")?.addEventListener("click",() => { try { add(file); } catch (error) { onError(error); } });
-      } catch (error) { if (owner === epoch && error.name !== "AbortError") body.textContent = "引用版本不可用，请重新选择；原引用和要求已保留。"; }
+      } catch (error) { if (owner === epoch && error.name !== "AbortError") body.textContent = localize("引用版本不可用，请重新选择；原引用和要求已保留。"); }
     }
     async function link(reference, taskId) {
       close();
@@ -127,7 +133,7 @@
         const icon = document.createElement("span"); icon.className = "ui-icon icon-file-text"; icon.setAttribute("aria-hidden","true"); row.append(icon);
         const name = button(file.path.split(/[\\/]/).at(-1),row,() => detail(file)); name.title = file.path;
         const version = document.createElement("small"); version.textContent = (file.sha256 || file.result_key).slice(0,8); row.append(version);
-        button("移除文件引用",row,() => store().edit({file_refs:store().get().draft.file_refs.filter(item => item.result_key !== file.result_key)})).setAttribute("aria-label",`移除文件引用 ${file.path}`);
+        button(localize("移除文件引用"),row,() => store().edit({file_refs:store().get().draft.file_refs.filter(item => item.result_key !== file.result_key)})).setAttribute("aria-label",localize`移除文件引用 ${file.path}`);
         container.append(row);
       }
     }

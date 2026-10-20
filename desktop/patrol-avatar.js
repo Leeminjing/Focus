@@ -7,6 +7,12 @@
  */
 (function patrolAvatarModule(global) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   const ASSET_ROOT = "./assets/patrol-avatar";
   const DRAG_THRESHOLD = 5;
@@ -15,13 +21,13 @@
   const ROTATE_EXIT_RATIO = 2.2;
   const DEFAULT_SIZE = 116;
   const STATUS = Object.freeze({
-    ready: { asset: "idle", label: "就绪", message: "我在这里，需要时可以继续安排任务。" },
-    pending: { asset: "loading", label: "排队中", message: "任务已收到，正在等待开始。" },
-    running: { asset: "working", label: "工作中", message: "正在执行当前 Patrol 任务。" },
-    success: { asset: "happy", label: "已完成", message: "任务完成了，可以查看结果或继续安排。" },
-    interrupted: { asset: "thinking", label: "已中断", message: "运行已中断，可以查看详情或继续。" },
-    cancelled: { asset: "thinking", label: "已取消", message: "运行已取消，可以重新安排。" },
-    error: { asset: "alert", label: "运行失败", message: "这次运行遇到问题，可以查看详情或重试。" },
+    ready: { asset: "idle", get label() { return localize("就绪"); }, get message() { return localize("我在这里，需要时可以继续安排任务。"); } },
+    pending: { asset: "loading", get label() { return localize("排队中"); }, get message() { return localize("任务已收到，正在等待开始。"); } },
+    running: { asset: "working", get label() { return localize("工作中"); }, get message() { return localize("正在执行当前 Patrol 任务。"); } },
+    success: { asset: "happy", get label() { return localize("已完成"); }, get message() { return localize("任务完成了，可以查看结果或继续安排。"); } },
+    interrupted: { asset: "thinking", get label() { return localize("已中断"); }, get message() { return localize("运行已中断，可以查看详情或继续。"); } },
+    cancelled: { asset: "thinking", get label() { return localize("已取消"); }, get message() { return localize("运行已取消，可以重新安排。"); } },
+    error: { asset: "alert", get label() { return localize("运行失败"); }, get message() { return localize("这次运行遇到问题，可以查看详情或重试。"); } },
   });
 
   function clamp(value, minimum = 0, maximum = 1) {
@@ -98,7 +104,7 @@
 
   function avatarLabel(avatar) {
     if (avatar?.label) return avatar.label;
-    return avatar?.agent_id ? `小兵 ${avatar.agent_id.slice(0, 8)}` : "Patrol 小兵";
+    return avatar?.agent_id ? localize`小兵 ${avatar.agent_id.slice(0, 8)}` : localize("Patrol 小兵");
   }
 
   function avatarActions(avatar) {
@@ -113,7 +119,7 @@
     }
     return [{
       id: avatar?.agent_id ? "details" : "configure",
-      label: avatar?.action_label || (avatar?.agent_id ? "查看详情" : "布置任务"),
+      label: avatar?.action_label || (avatar?.agent_id ? localize("查看详情") : localize("布置任务")),
       tone: "primary",
     }];
   }
@@ -175,7 +181,7 @@
       const statusLabel = record.avatar.status_label || presentation.label;
       record.element.dataset.status = record.status;
       applyVisualAsset(record);
-      record.button.setAttribute("aria-label", `${avatarLabel(record.avatar)}，${statusLabel}。点击查看状态，方向键移动位置。`);
+      record.button.setAttribute("aria-label", localize`${avatarLabel(record.avatar)}，${statusLabel}。点击查看状态，方向键移动位置。`);
       record.statusNode.textContent = statusLabel;
       record.message.textContent = record.avatar.message || presentation.message;
     }

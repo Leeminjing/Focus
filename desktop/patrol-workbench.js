@@ -6,6 +6,12 @@
  */
 (function (global) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const { PatrolDocument, DraftSaveQueue } = global.FocusPatrolDocument;
   const instances = new Map();
   const rootOwners = new WeakMap();
@@ -26,9 +32,9 @@
         }, onStatus:(status, result) => {
           if (result?.draft_revision != null) this.draft.draft_revision = result.draft_revision;
           if (status === "saved") { localStorage.removeItem(this._storageKey()); this.draft.authoring_document = this.doc.value; }
-          if (this.status) this.status.textContent = ({pending:"有修改", saving:"保存中…", saved:"已保存", error:"保存失败，点击重试"})[status];
+          if (this.status) this.status.textContent = ({pending: localize("有修改"), saving: localize("保存中…"), saved: localize("已保存"), error: localize("保存失败，点击重试")})[status];
           if(status==="error" && (result?.code || result?.detail?.code)==="draft_revision_conflict"){
-            this.queue.blocked=result;this.localConflict=true;if(this.status)this.status.textContent="保存冲突 · 本地编辑已保留，请载入服务器版本（可撤销）";
+            this.queue.blocked=result;this.localConflict=true;if(this.status)this.status.textContent=localize("保存冲突 · 本地编辑已保留，请载入服务器版本（可撤销）");
           }
         }});
       this.queue.changed();
@@ -40,13 +46,13 @@
       if(this.worker)return;this.worker=new Worker("./patrol-parser-worker.js");
       this.worker.onmessage=event=>event.data.kind==="format"?this._formatted(event.data):event.data.request_id!=null?this._entryParsed(event.data):this._parsed(event.data);
       for(const state of this.entryParses.values())if(state.result)this._entryParsed(state.result);else this.worker.postMessage({request_id:state.request_id,entry_id:state.entry.entry_id,kind:state.kind,raw:state.raw});
-      if(this.doc.value.raw_error==="JSON 正在解析")this.worker.postMessage({generation:this.generation,raw:this.doc.value.raw_buffer});
+      if(this.doc.value.raw_error===localize("JSON 正在解析"))this.worker.postMessage({generation:this.generation,raw:this.doc.value.raw_buffer});
     }
     _stopWorker(){clearTimeout(this.parseTimer);for(const state of this.entryParses.values())clearTimeout(state.timer);this.worker?.terminate();this.worker=null;}
     mount(root) {
       this._cancelRaw();this.interactions.cancel();this.events?.abort();this.events=new AbortController();const signal=this.events.signal;
       this.sourceView?.destroy();this.view?.destroy();this.root=root;this.active=true;this.cards.clear();
-      this.rawEditor ||= global.FocusPatrolJsonEditor.createJsonEditor({label:"高级文档 JSON，允许保存未完成输入"});
+      this.rawEditor ||= global.FocusPatrolJsonEditor.createJsonEditor({label: localize("高级文档 JSON，允许保存未完成输入")});
       const previous=this.viewport;previous?.suspend();
       this.view=new global.FocusPatrolAssembly.PatrolAssemblyView(this,root);
       for(const key of ["status","list","panel","raw","rawState","instructions"])this[key]=this.view[key];
@@ -56,7 +62,7 @@
       this.view.source.append(this.sourceView.node);this.review.bind(this.view);
       this._startWorker();
       this.raw.addEventListener("input",event=>{
-        if(event.target!==this.raw)return;this.doc.value.raw_buffer=this.rawEditor.value;this.doc.value.raw_error="JSON 正在解析";this._changed();clearTimeout(this.parseTimer);
+        if(event.target!==this.raw)return;this.doc.value.raw_buffer=this.rawEditor.value;this.doc.value.raw_error=localize("JSON 正在解析");this._changed();clearTimeout(this.parseTimer);
         this.parseTimer=setTimeout(()=>this.worker.postMessage({generation:this.generation,raw:this.rawEditor.value}),450);
       },{signal});
       root.addEventListener("input",event=>event.stopPropagation(),{signal});root.addEventListener("change",event=>event.stopPropagation(),{signal});
@@ -68,7 +74,7 @@
       root.addEventListener("keydown",event=>this._keys(event),{signal});
       this.renderList();this.select(this.selected || this.doc.value.entries[0]?.entry_id);
       if(this.restoredScroll!=null){this.list.scrollTop=this.restoredScroll;this.restoredScroll=null;this.renderList();}
-      if(this.localConflict)this.status.textContent="本地编辑已保留 · 服务器有新版本";
+      if(this.localConflict)this.status.textContent=localize("本地编辑已保留 · 服务器有新版本");
       if(!this.sourceController.catalog.length && this.sourceController.kind!=="file")this.sourceController.directory();
       this._refreshSources();
     }
@@ -82,23 +88,23 @@
     }
     _storageKey() { return "focus-patrol-draft:" + this.draft.draft_id; }
     _persist() {
-      try { localStorage.setItem(this._storageKey(), JSON.stringify({ serverRevision:this.queue.serverRevision, document:this.doc.value })); } catch (_) { if (this.status) this.status.textContent = "本地缓存空间不足，草稿仍可保存"; }
+      try { localStorage.setItem(this._storageKey(), JSON.stringify({ serverRevision:this.queue.serverRevision, document:this.doc.value })); } catch (_) { if (this.status) this.status.textContent = localize("本地缓存空间不足，草稿仍可保存"); }
     }
     leave() { this.active=false;this._cancelDrag?.(); this._cancelRaw(); this._persist();clearTimeout(this.localTimer);this._stopWorker();this.events?.abort();this.viewport?.suspend();this.sourceView?.destroy();this.view?.destroy();this.review.destroy();this.healthGeneration=(this.healthGeneration || 0)+1;
       this.composing = false; this.queue.held = false; this.queue.flush().catch(() => {}); }
-    async flush() { if (this.composing) throw new Error("请完成当前输入"); return this.queue.flush(); }
+    async flush() { if (this.composing) throw new Error(localize("请完成当前输入")); return this.queue.flush(); }
     async _reloadServer() {
       if (this.composing) return;
       const generation=this.generation;
       try {
         if(this.queue.running)await this.queue.running.catch(()=>{});
         const remote=await this.api(`/desktop/api/drafts/${this.draft.draft_id}`);
-        if(generation!==this.generation){this.status.textContent="载入期间有新编辑，已保留本地内容";return;}
+        if(generation!==this.generation){this.status.textContent=localize("载入期间有新编辑，已保留本地内容");return;}
         clearTimeout(this.queue.timer);this.queue.timer=null;Object.assign(this.draft,remote);
         this.reloading=true;this.doc.replace(global.FocusPatrolAuthoring.upgradeDocument(remote.authoring_document));this.reloading=false;
         this.queue.serverRevision=remote.draft_revision;this.queue.confirmed=this.queue.localRevision;this.queue.error=null;this.queue.blocked=null;this.localConflict=false;
         clearTimeout(this.localTimer);localStorage.removeItem(this._storageKey());this.renderList();this.select(this.selected);
-        this._syncInstructions();this.status.textContent="已载入服务器版本；可以撤销恢复刚才的本地内容";this.options.onReload?.(remote);
+        this._syncInstructions();this.status.textContent=localize("已载入服务器版本；可以撤销恢复刚才的本地内容");this.options.onReload?.(remote);
       } catch(error){this.reloading=false;this.status.textContent=error.message;}
     }
     renderList() { if(!this.active)return;this.viewport.render(); this.view?.update(); }
@@ -121,7 +127,7 @@
         const value = result.kind === "content" ? { ...state.base, payload:{...state.base.payload,[state.field || "content"]:result.value} } : result.kind === "payload" ? {...state.base,payload:result.value} : result.value;
         const pendingContent = this.entryParses.has(`${entry.entry_id}:content`) || entry.content_error && entry.content_buffer != null;
         const merged = this.doc.applyFields(entry.entry_id, state.base, value, { pendingFields:result.kind === "fields" && pendingContent ? ["payload.content", "payload.output"] : [] });
-        error = merged.conflicts.length ? `字段已被较新编辑修改：${merged.conflicts.join("、")}；原输入已保留` : null;
+        error = merged.conflicts.length ? localize`字段已被较新编辑修改：${merged.conflicts.join("、")}；原输入已保留` : null;
         changes = merged.changed;
         if (!error) state.applied?.(value);
       }
@@ -142,7 +148,7 @@
       } catch (_) { if (ticket === this.healthGeneration) { this.sourceStatus = null; this.sourceChecking = false; this.sourceFailed = true; this._sourceLabel(); } }
     }
     _add(kind="message",role="user",index) { this.interactions.run(()=>{const entry=global.FocusPatrolAuthoring.newEntry(kind,role);const anchor=this.interactions.anchor;
-      if(index==null && anchor!=null){index=this.doc.value.entries.findIndex(value=>value.entry_id===anchor);if(index<0){this.status.textContent="插入位置已不存在，请重新选择位置";return;}}
+      if(index==null && anchor!=null){index=this.doc.value.entries.findIndex(value=>value.entry_id===anchor);if(index<0){this.status.textContent=localize("插入位置已不存在，请重新选择位置");return;}}
       this.doc.insert(entry,index);this.renderList();this._locate(entry.entry_id);}); }
     _moveSelected(delta) { this.interactions.run(()=>{if(!this.selected)return;const index=this.doc.value.entries.findIndex(entry=>entry.entry_id===this.selected);this.doc.move(this.selected,index+delta);this.renderList();}); }
     _undo(redo) {
@@ -169,7 +175,7 @@
         return false;
       }
       this.panelGeneration++;this.panel.hidden=true;
-      this.rawState.textContent = "正在准备完整结构…"; this.rawEditor.readOnly = true; this.rawEditor.refresh(); this.rawEditor.focus();
+      this.rawState.textContent = localize("正在准备完整结构…"); this.rawEditor.readOnly = true; this.rawEditor.refresh(); this.rawEditor.focus();
       return new Promise(resolve => {
         const request = this.rawFormat = { view_id:this.rawViewGeneration, resolve };
         requestAnimationFrame(() => requestAnimationFrame(() => { if (this.rawFormat === request) this._requestRaw(request); }));
@@ -198,7 +204,7 @@
       if (this.composing) { this.pendingDocument = result; return; }
       if(this.interactions.busy){this.interactions.run(()=>{
         if(result.generation===this.generation)this._parsed(result);
-        else {this.doc.value.raw_error="导入后上下文结构已变化，完整 JSON 输入已保留，请重新编辑确认";this._changed();this.rawState.hidden=false;this.rawState.textContent=this.doc.value.raw_error;}
+        else {this.doc.value.raw_error=localize("导入后上下文结构已变化，完整 JSON 输入已保留，请重新编辑确认");this._changed();this.rawState.hidden=false;this.rawState.textContent=this.doc.value.raw_error;}
       });return;}
       const raw = this.rawEditor.value;
       const invalid = result.error || global.FocusPatrolAuthoring.validateDocument(result.value);

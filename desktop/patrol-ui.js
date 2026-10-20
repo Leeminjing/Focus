@@ -5,8 +5,14 @@
  */
 (function(root){
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const node=(tag,cls="",text=null)=>{const result=document.createElement(tag);result.className=cls;if(text!=null)result.textContent=text;return result;};
   const action=(label,callback,cls="text-button")=>{const result=node("button",cls,label);result.type="button";result.addEventListener("click",callback);return result;};
-  const kindLabel=kind=>({message:"消息",authored_instruction:"指令消息",function_call:"工具调用",function_call_output:"工具结果",custom_tool_call:"自定义调用",custom_tool_call_output:"自定义结果",task_contract:"任务合同",agent_collaboration:"协作消息",selected_context:"参考内容",unknown:"未知类型"})[kind] || kind;
+  const kindLabel=kind=>({message: localize("消息"),authored_instruction: localize("指令消息"),function_call: localize("工具调用"),function_call_output: localize("工具结果"),custom_tool_call: localize("自定义调用"),custom_tool_call_output: localize("自定义结果"),task_contract: localize("任务合同"),agent_collaboration: localize("协作消息"),selected_context: localize("参考内容"),unknown: localize("未知类型")})[kind] || kind;
   root.FocusPatrolUI={node,action,kindLabel};
 })(window);

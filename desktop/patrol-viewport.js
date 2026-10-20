@@ -5,6 +5,12 @@
  */
 (function(global){
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   class PatrolViewport{
     constructor(wb,list,options={}){this.wb=wb;this.list=list;this.items=options.items || (()=>wb.doc.value.entries);this.key=options.key || (entry=>entry.entry_id);
       this.create=options.create || (entry=>global.FocusPatrolCards.create(wb,entry));this.estimate=options.estimate || 150;this.gap=options.gap ?? 8;
@@ -44,7 +50,7 @@
       this._order([...wanted]);
       while(this.cache.size>120){const victim=[...this.cache.keys()].find(id=>!wanted.has(id));if(!victim)break;this.cache.get(victim).destroy();this.cache.delete(victim);}
       for(const id of this.heights.keys())if(!positions.has(id)){this.heights.delete(id);this.widths.delete(id);}
-      this.empty ||= document.createElement("div");this.empty.className="patrol-empty";this.empty.innerHTML='<span class="patrol-empty-mark">＋</span><h3>编写 Patrol 的上下文</h3><p>添加消息、调用或结果，也可以导入已有 Context。</p>';
+      this.empty ||= document.createElement("div");this.empty.className="patrol-empty";this.empty.innerHTML=localize('<span class="patrol-empty-mark">＋</span><h3>编写 Patrol 的上下文</h3><p>添加消息、调用或结果，也可以导入已有 Context。</p>');
       if(this.wb && !entries.length && !this.empty.isConnected)this.list.append(this.empty);else if(entries.length || !this.wb)this.empty.remove();
     }
     _order(ids){

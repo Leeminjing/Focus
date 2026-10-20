@@ -17,6 +17,12 @@
   if (root) root.FocusWorkspacePatrolController = api;
 })(globalThis, function (root) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   function create({ api, inputs, intake, onCompose, liveStore, connection, onOpenTask, createRunPreviews, view = root.FocusWorkspacePatrolView }) {
     let host = null;
     let workspace = null;
@@ -131,7 +137,7 @@
         if (detailsOpen) host.scrollTop = detailsScroll;
       });
       for (const button of host.querySelectorAll("[data-patrol-details]")) button.setAttribute("aria-expanded", String(detailsOpen));
-      composer.querySelector("[data-patrol-details]").textContent = detailsOpen ? "收起详情 ↙" : "查看工作详情 ↗";
+      composer.querySelector("[data-patrol-details]").textContent = detailsOpen ? localize("收起详情 ↙") : localize("查看工作详情 ↗");
       if (!detailsOpen) { previews?.stop(); closeInspection(); }
       else if (projection) { patchGraph(); void refreshLineage(projection); void refreshObservation(); }
     }
@@ -141,7 +147,7 @@
       const owner = token, version = ++fileVersion;
       const picker = host.querySelector("[data-patrol-file-picker]");
       picker.hidden = false;
-      picker.textContent = "正在读取文件版本…";
+      picker.textContent = localize("正在读取文件版本…");
       const page = await api.facts(loopId, { kind: "artifact", limit: 100, signal: lifetime.signal });
       if (owner !== token || version !== fileVersion) return;
       fileCandidates = page.facts || [];
@@ -150,12 +156,12 @@
     function renderFilePicker() {
       const query = inputs.get().draft.content.match(/(?:^|\s)@([^@\n]*)$/)?.[1]?.toLowerCase() || "";
       const candidates = fileCandidates.map(root.FocusLoopFactsView.fileReference).filter(file => file && file.path.toLowerCase().includes(query));
-      host.querySelector("[data-patrol-file-picker]").innerHTML = candidates.map(file => `<button type="button" data-patrol-file-add="${view.escape(JSON.stringify(root.FocusLoopFactsView.inputFileReference(file)))}">${view.escape(file.path)} · ${view.escape((file.sha256 || file.result_key).slice(0, 8))}</button>`).join("") || "没有可引用的文件版本";
+      host.querySelector("[data-patrol-file-picker]").innerHTML = candidates.map(file => `<button type="button" data-patrol-file-add="${view.escape(JSON.stringify(root.FocusLoopFactsView.inputFileReference(file)))}">${view.escape(file.path)} · ${view.escape((file.sha256 || file.result_key).slice(0, 8))}</button>`).join("") || localize("没有可引用的文件版本");
     }
     function addFileReference(file) {
       const draft = inputs.get().draft;
       const refs = [...(draft.file_refs || []).filter(item => item.result_key !== file.result_key), file];
-      if (refs.length > 32) throw new Error("一次输入最多引用 32 个文件版本");
+      if (refs.length > 32) throw new Error(localize("一次输入最多引用 32 个文件版本"));
       const pickerOpen = !host.querySelector("[data-patrol-file-picker]").hidden;
       inputs.edit({ file_refs: refs, content: pickerOpen ? draft.content.replace(/(^|\s)@[^@\n]*$/, "$1") : draft.content });
       host.querySelector("[data-patrol-file-picker]").hidden = true;
@@ -181,7 +187,7 @@
       const button = host.querySelector("[data-patrol-related]");
       button.disabled = !selected;
       button.setAttribute("aria-pressed", String(relatedOnly));
-      button.textContent = relatedOnly ? "恢复全部关系" : "仅看所选关联";
+      button.textContent = relatedOnly ? localize("恢复全部关系") : localize("仅看所选关联");
       for (const item of host.querySelectorAll("[data-patrol-progress-locate]")) item.setAttribute("aria-pressed", String(JSON.parse(item.dataset.patrolProgressLocate).includes(selected?.contextId)));
     }
     function scheduleGraphPatch(refreshTopology = false) {
@@ -214,13 +220,13 @@
       const notice = host.querySelector("[data-workbench-location]");
       notice.hidden = false;
       const available = ids.filter(id => manifest().nodes.some(node => node.context_id === id));
-      notice.textContent = !ids.length ? "此条目尚未关联工作线" : !available.length ? "关联工作线尚未发布到当前关系图" : `${available.length} 条关联工作线已突出显示，请选择查看`;
+      notice.textContent = !ids.length ? localize("此条目尚未关联工作线") : !available.length ? localize("关联工作线尚未发布到当前关系图") : localize`${available.length} 条关联工作线已突出显示，请选择查看`;
       showPanel("graph"); patchGraph();
       if (available.length === 1) await inspectContext(available[0], trigger);
       host.querySelector(`[data-patrol-lineage] [data-context-id="${root.CSS.escape(available[0] || "")}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
     function inspectEdges(identity) {
-      showDialog("relationship", "已提交来源关系", root.FocusPortfolioMapView.relationship(manifest(), identity));
+      showDialog("relationship", localize("已提交来源关系"), root.FocusPortfolioMapView.relationship(manifest(), identity));
     }
     async function refreshObservation(force = false) {
       const id = projection?.round?.state?.observation_id;
@@ -228,7 +234,7 @@
       observationIdentity = id;
       observation = null;
       const owner = token, version = ++observationVersion;
-      host.querySelector("[data-patrol-observation]").textContent = "正在读取本轮冻结输入";
+      host.querySelector("[data-patrol-observation]").textContent = localize("正在读取本轮冻结输入");
       host.querySelector("[data-patrol-observation-open]").disabled = true;
       try {
         const value = await api.observation(loopId, id, { signal: lifetime.signal });
@@ -239,7 +245,7 @@
       } catch (failure) {
         if (owner === token && version === observationVersion && failure.name !== "AbortError") {
           observationIdentity = null;
-          host.querySelector("[data-patrol-observation]").innerHTML = `读取失败：${view.escape(failure.message)} <button data-patrol-observation-retry>重试</button>`;
+          host.querySelector("[data-patrol-observation]").innerHTML = localize`读取失败：${view.escape(failure.message)} <button data-patrol-observation-retry>重试</button>`;
         }
       }
     }
@@ -264,7 +270,7 @@
     async function openObservation(id) {
       const owner = token, version = ++inspectionVersion;
       observationInspection = null; observationSections = {}; observationLoading = new Set();
-      showDialog("observation", "Observation", "正在读取所选冻结版本");
+      showDialog("observation", "Observation", localize("正在读取所选冻结版本"));
       const value = await api.observation(loopId, id, { signal: lifetime.signal });
       if (owner !== token || version !== inspectionVersion || dialogKind !== "observation") return;
       observationInspection = value;
@@ -284,12 +290,12 @@
       const selected = page.selected || page.current;
       const versions = [...(page.history || [])];
       if (selected && !versions.some(item => item.progress_id === selected.progress_id)) versions.unshift(selected);
-      const toolbar = `<label>查看已提交版本<select data-patrol-progress-version>${versions.map(item => `<option value="${view.escape(item.progress_id)}"${item.progress_id === selected?.progress_id ? " selected" : ""}>P${item.generation}${item.progress_id === page.current?.progress_id ? " · 当前" : ""}</option>`).join("")}</select></label>${page.history_has_more ? "<p>列表为最近 32 个版本；Observation 可读取本轮精确前序。</p>" : ""}<p>版本 ${view.escape(selected?.progress_id || "尚未提交")}，不会随实时事件改写此份检查。</p>`;
-      showDialog("progress", "Task Progress · 已提交版本", toolbar + view.progress(selected, true, progressFilter) + (page.work || []).map(work => `<p>进度沉淀：${view.escape(work.state)}${work.failure_kind ? ` · ${view.escape(work.failure_kind)}` : ""}${work.state === "blocked" ? ` <button data-patrol-progress-retry="${view.escape(work.work_id || work.observation_id)}">重试这份冻结进度</button>` : ""}</p>`).join(""));
+      const toolbar = localize`<label>查看已提交版本<select data-patrol-progress-version>${versions.map(item => `<option value="${view.escape(item.progress_id)}"${item.progress_id === selected?.progress_id ? " selected" : ""}>P${item.generation}${item.progress_id === page.current?.progress_id ? localize(" · 当前") : ""}</option>`).join("")}</select></label>${page.history_has_more ? localize("<p>列表为最近 32 个版本；Observation 可读取本轮精确前序。</p>") : ""}<p>版本 ${view.escape(selected?.progress_id || localize("尚未提交"))}，不会随实时事件改写此份检查。</p>`;
+      showDialog("progress", localize("Task Progress · 已提交版本"), toolbar + view.progress(selected, true, progressFilter) + (page.work || []).map(work => localize`<p>进度沉淀：${view.escape(work.state)}${work.failure_kind ? ` · ${view.escape(work.failure_kind)}` : ""}${work.state === "blocked" ? localize` <button data-patrol-progress-retry="${view.escape(work.work_id || work.observation_id)}">重试这份冻结进度</button>` : ""}</p>`).join(""));
     }
     async function openProgress(progressId = null) {
       const owner = token, version = ++progressVersion;
-      showDialog("progress", "Task Progress", '正在读取已提交版本 <button data-patrol-progress-open>重试读取</button>');
+      showDialog("progress", "Task Progress", localize('正在读取已提交版本 <button data-patrol-progress-open>重试读取</button>'));
       const page = await api.taskProgress(loopId, progressId, lifetime.signal);
       if (owner !== token || version !== progressVersion || dialogKind !== "progress") return;
       progressInspection = page;
@@ -297,11 +303,11 @@
     }
     async function openGrant() {
       const owner = token;
-      showDialog("grant", "工作区授权与预算", '正在读取当前授权 <button data-patrol-grant-open>重试</button>');
+      showDialog("grant", localize("工作区授权与预算"), localize('正在读取当前授权 <button data-patrol-grant-open>重试</button>'));
       const value = await api.get(loopId);
       if (owner !== token || dialogKind !== "grant") return;
       grantInspection = value;
-      showDialog("grant", "工作区授权与预算", root.FocusLoopView.grantControls(value) || "当前没有可修改的有效授权。历史工作仍可检查。");
+      showDialog("grant", localize("工作区授权与预算"), root.FocusLoopView.grantControls(value) || localize("当前没有可修改的有效授权。历史工作仍可检查。"));
     }
     function patchRequests() {
       if (!host || !projection) return;
@@ -351,44 +357,44 @@
     }
     async function loadFacts(older = false) {
       const owner = token, version = ++factVersion;
-      if (dialogKind !== "facts") showDialog("facts", "LoopFact", '正在读取事实 <button data-patrol-facts-open>重试读取</button>');
+      if (dialogKind !== "facts") showDialog("facts", "LoopFact", localize('正在读取事实 <button data-patrol-facts-open>重试读取</button>'));
       const page = await api.facts(loopId, { ...factOptions, before: older ? factPage?.next_before : undefined, signal: lifetime.signal });
       if (owner !== token || version !== factVersion || dialogKind !== "facts") return;
       const merged = older ? [...(page.facts || []), ...(factPage?.facts || [])] : page.facts || [];
       factPage = { ...page, facts: [...new Map(merged.map(item => [item.fact_id, item])).values()] };
-      showDialog("facts", "LoopFact", `<div class="patrol-fact-filters"><label>类型<select data-patrol-fact-filter="kind">${["", "run", "test", "context_revision", "artifact", "workspace", "directive"].map(v => `<option value="${v}"${factOptions.kind === v ? " selected" : ""}>${v || "全部"}</option>`).join("")}</select></label><label>事实状态<select data-patrol-fact-filter="status">${root.FocusLoopFactsView.statusOptions.map(([value, label]) => `<option value="${value}"${factOptions.status === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>业务结果<select data-patrol-fact-filter="outcomeStatus">${root.FocusLoopFactsView.outcomeOptions.map(([value, label]) => `<option value="${value}"${factOptions.outcomeStatus === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>Context<input data-patrol-fact-filter="contextId" value="${view.escape(factOptions.contextId)}" placeholder="精确 Context 身份"></label></div><div class="patrol-facts"><table><tbody>${root.FocusLoopFactsView.renderRows(factPage.facts)}</tbody></table></div><p>${factPage.has_more ? "后续还有事实" : "已到当前查询范围末尾"}</p>${factPage.has_more ? '<button data-patrol-facts-older>加载更早事实</button>' : ""}`);
+      showDialog("facts", "LoopFact", localize`<div class="patrol-fact-filters"><label>类型<select data-patrol-fact-filter="kind">${["", "run", "test", "context_revision", "artifact", "workspace", "directive"].map(v => `<option value="${v}"${factOptions.kind === v ? " selected" : ""}>${v || localize("全部")}</option>`).join("")}</select></label><label>事实状态<select data-patrol-fact-filter="status">${root.FocusLoopFactsView.statusOptions.map(([value, label]) => `<option value="${value}"${factOptions.status === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>业务结果<select data-patrol-fact-filter="outcomeStatus">${root.FocusLoopFactsView.outcomeOptions.map(([value, label]) => `<option value="${value}"${factOptions.outcomeStatus === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>Context<input data-patrol-fact-filter="contextId" value="${view.escape(factOptions.contextId)}" placeholder="精确 Context 身份"></label></div><div class="patrol-facts"><table><tbody>${root.FocusLoopFactsView.renderRows(factPage.facts)}</tbody></table></div><p>${factPage.has_more ? localize("后续还有事实") : localize("已到当前查询范围末尾")}</p>${factPage.has_more ? localize('<button data-patrol-facts-older>加载更早事实</button>') : ""}`);
     }
 
     async function openProjectionFailures(older = false) {
       if (!loopId || projectionRepair) return;
       const owner = token, identity = loopId, version = ++projectionVersion;
       const before = older ? projectionPage?.next_before : null;
-      showDialog("projection", "事实投影诊断", '正在读取失败记录 <button data-patrol-projection-refresh>重试读取</button>');
+      showDialog("projection", localize("事实投影诊断"), localize('正在读取失败记录 <button data-patrol-projection-refresh>重试读取</button>'));
       const page = await api.projectionFailures(identity, { before, includeResolved: projectionIncludeResolved, signal: lifetime.signal });
       if (owner !== token || identity !== loopId || version !== projectionVersion || dialogKind !== "projection") return;
       projectionPage = older ? { ...page, items: [...projectionPage.items, ...page.items] } : page;
-      showDialog("projection", "事实投影诊断", view.projectionFailures(projectionPage, { includeResolved: projectionIncludeResolved }));
+      showDialog("projection", localize("事实投影诊断"), view.projectionFailures(projectionPage, { includeResolved: projectionIncludeResolved }));
     }
 
     async function repairProjection(failureId) {
       if (!loopId || projectionRepair) return;
       const operation = { loopId, failureId }, owner = token, version = ++projectionVersion;
       projectionRepair = operation;
-      showDialog("projection", "事实投影诊断", view.projectionFailures(projectionPage, { pendingId: failureId, includeResolved: projectionIncludeResolved }));
+      showDialog("projection", localize("事实投影诊断"), view.projectionFailures(projectionPage, { pendingId: failureId, includeResolved: projectionIncludeResolved }));
       try {
         const result = await api.repairProjectionFailure(operation.loopId, failureId);
         if (owner !== token || operation.loopId !== loopId) return;
         projectionPage = { ...projectionPage, items: projectionPage.items.map(row => row.failure_id === failureId ? result.failure : row) };
-        if (version === projectionVersion && dialogKind === "projection") showDialog("projection", "事实投影诊断", view.projectionFailures(projectionPage, {
+        if (version === projectionVersion && dialogKind === "projection") showDialog("projection", localize("事实投影诊断"), view.projectionFailures(projectionPage, {
           includeResolved: projectionIncludeResolved,
-          message: result.failure.status === "resolved" ? "事实投影已修复。" : "重新生成仍失败，记录已更新。请修复来源或实现后再次尝试。",
+          message: result.failure.status === "resolved" ? localize("事实投影已修复。") : localize("重新生成仍失败，记录已更新。请修复来源或实现后再次尝试。"),
         }));
         // 已物化事实和诊断不一定产生新业务事件，主动重取权威快照。
         connection.stop(); connect(operation.loopId);
       } catch (failure) {
         if (owner === token && operation.loopId === loopId && version === projectionVersion && dialogKind === "projection") {
-          showDialog("projection", "事实投影诊断", view.projectionFailures(projectionPage, {
-            includeResolved: projectionIncludeResolved, message: `修复请求未确认：${failure.message}。可刷新诊断核对结果。`,
+          showDialog("projection", localize("事实投影诊断"), view.projectionFailures(projectionPage, {
+            includeResolved: projectionIncludeResolved, message: localize`修复请求未确认：${failure.message}。可刷新诊断核对结果。`,
           }));
         }
       } finally {
@@ -427,12 +433,12 @@
       draftOccupied = occupied;
       for (const button of host.querySelectorAll("[data-patrol-edit-failed]")) {
         button.disabled = occupied;
-        button.title = occupied ? "先处理当前草稿" : "";
+        button.title = occupied ? localize("先处理当前草稿") : "";
       }
     }
     function patchHistoryStatus() {
       const status = host.querySelector("[data-patrol-history-status]");
-      status.textContent = historyFailure ? `读取记录失败：${historyFailure.message || historyFailure}` : historyLoading ? "正在读取记录…" : "";
+      status.textContent = historyFailure ? localize`读取记录失败：${historyFailure.message || historyFailure}` : historyLoading ? localize("正在读取记录…") : "";
       status.hidden = !status.textContent;
       host.querySelector("[data-patrol-history-retry]").hidden = !historyFailure;
     }
@@ -503,9 +509,9 @@
       materialPreview?.render(model.draft);
       const content = host.querySelector("[data-patrol-content]");
       if (content.value !== model.draft.content) content.value = model.draft.content;
-      host.querySelector("[data-patrol-file-refs]").innerHTML = (model.draft.file_refs || []).map(file => `<span>${view.escape(file.path)} · ${view.escape((file.sha256 || file.result_key).slice(0, 8))}<button type="button" data-patrol-file-remove="${view.escape(file.result_key)}" aria-label="移除文件引用">×</button></span>`).join("");
+      host.querySelector("[data-patrol-file-refs]").innerHTML = (model.draft.file_refs || []).map(file => localize`<span>${view.escape(file.path)} · ${view.escape((file.sha256 || file.result_key).slice(0, 8))}<button type="button" data-patrol-file-remove="${view.escape(file.result_key)}" aria-label="移除文件引用">×</button></span>`).join("");
       host.querySelector("[data-patrol-type]").value = model.draft.input_type;
-      host.querySelector("[data-patrol-target]").textContent = model.draft.request_id ? `回答请求 ${model.draft.request_id} · 版本 ${model.draft.request_revision ?? "未知"}` : "";
+      host.querySelector("[data-patrol-target]").textContent = model.draft.request_id ? localize`回答请求 ${model.draft.request_id} · 版本 ${model.draft.request_revision ?? localize("未知")}` : "";
       host.querySelector("[data-patrol-clear-target]").hidden = !model.draft.request_id;
       patchRecovery();
       if (historyChanged) historyFileRefs = model.rows.filter(row => row.status === "accepted").flatMap(row => row.file_refs || []);
@@ -531,17 +537,17 @@
       const pending = restart && restart.phase !== "applied";
       host.querySelector("[data-patrol-recovery]").hidden = !recovery && !restart;
       host.querySelector("[data-patrol-recovery-message]").textContent = restart
-        ? ({ requesting: "正在重新启用…", accepted: "重新启用请求已受理，正在确认工作状态…", applied: "工作已重新启用。" }[restart.phase]) : recovery?.text || "";
+        ? ({ requesting: localize("正在重新启用…"), accepted: localize("重新启用请求已受理，正在确认工作状态…"), applied: localize("工作已重新启用。") }[restart.phase]) : recovery?.text || "";
       for (const button of host.querySelectorAll("[data-patrol-restart]")) {
         const inline = !!button.closest("[data-patrol-recovery]");
         button.hidden = inline ? !recovery && !pending : !["completed", "stopped", "failed"].includes(current?.loop?.state?.status);
         button.disabled = !!pending || liveStore.get().connection.status !== "live";
         button.setAttribute("aria-busy", String(!!pending));
-        if (inline) button.textContent = recovery?.label || "重新启用";
+        if (inline) button.textContent = recovery?.label || localize("重新启用");
       }
       const latest = inputs.get().rows[0];
-      host.querySelector("[data-patrol-receipt]").textContent = latest?.status === "accepted" && recovery ? "已保存"
-        : ({ accepted: "已受理 · 变化以提交进度为准", sending: "发送中", failed: "发送失败 · 可在输入记录重试" }[latest?.status] || "");
+      host.querySelector("[data-patrol-receipt]").textContent = latest?.status === "accepted" && recovery ? localize("已保存")
+        : ({ accepted: localize("已受理 · 变化以提交进度为准"), sending: localize("发送中"), failed: localize("发送失败 · 可在输入记录重试") }[latest?.status] || "");
     }
     function patchFileFacts(announce = false) {
       if (!host || !projection) return;
@@ -562,7 +568,7 @@
       try {
         const snapshot = await api.committedLineage(projection.loop_id, lifetime.signal);
         if (current === token && version === lineageToken && host) {
-          if (snapshot.complete !== true) throw new Error("来源关系尚未完整返回");
+          if (snapshot.complete !== true) throw new Error(localize("来源关系尚未完整返回"));
           lineageSnapshot = snapshot;
           host.querySelector("[data-patrol-lineage-error]").hidden = true;
           scheduleGraphPatch(); inspector?.refresh();
@@ -572,8 +578,8 @@
           lineageKey = null;
           const notice = host.querySelector("[data-patrol-lineage-error]");
           notice.hidden = false;
-          notice.innerHTML = `${lineageSnapshot ? "关系图未更新，保留上次完整结果" : "关系图读取失败"}：${view.escape(failure.message)} <button data-patrol-lineage-retry>重试关系图</button>`;
-          if (!lineageSnapshot) host.querySelector("[data-patrol-lineage]").textContent = "尚未取得已提交关系";
+          notice.innerHTML = localize`${lineageSnapshot ? localize("关系图未更新，保留上次完整结果") : localize("关系图读取失败")}：${view.escape(failure.message)} <button data-patrol-lineage-retry>重试关系图</button>`;
+          if (!lineageSnapshot) host.querySelector("[data-patrol-lineage]").textContent = localize("尚未取得已提交关系");
         }
       }
     }
@@ -582,7 +588,7 @@
       patchRetry();
       if (!next) {
         patchRecovery();
-        host.querySelector("[data-patrol-state]").textContent = status?.status === "unavailable" ? "连接不可用 · 正在保留输入" : "正在连接工作状态";
+        host.querySelector("[data-patrol-state]").textContent = status?.status === "unavailable" ? localize("连接不可用 · 正在保留输入") : localize("正在连接工作状态");
         return;
       }
       if (next.loop_id !== loopId) return;
@@ -594,11 +600,11 @@
         if (!projection.wait_requests[id] || !["open", "resolving"].includes(projection.wait_requests[id].state.status)) waitUi.delete(id);
       }
       const loop = projection.loop?.state || {};
-      const states = { running: "推进中", paused: "已暂停", stopped: "已停止", failed: "执行失败", waiting_user: "等待处理", completed: "已完成当前工作" };
-      const connections = { live: "实时更新", syncing: "同步中", connecting: "连接中", reconnecting: "重连中", resyncing: "重新同步", unavailable: "连接不可用" };
-      const stateText = loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input" ? root.FocusWorkspacePatrolFeedback.status(projection, status, inputs.get()).text : `${states[loop.status] || "准备中"} · ${connections[status.status] || "同步中"}`;
+      const states = { running: localize("推进中"), paused: localize("已暂停"), stopped: localize("已停止"), failed: localize("执行失败"), waiting_user: localize("等待处理"), completed: localize("已完成当前工作") };
+      const connections = { live: localize("实时更新"), syncing: localize("同步中"), connecting: localize("连接中"), reconnecting: localize("重连中"), resyncing: localize("重新同步"), unavailable: localize("连接不可用") };
+      const stateText = loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input" ? root.FocusWorkspacePatrolFeedback.status(projection, status, inputs.get()).text : `${states[loop.status] || localize("准备中")} · ${connections[status.status] || localize("同步中")}`;
       host.querySelector("[data-workbench-status]").textContent = stateText;
-      host.querySelector("[data-workbench-round]").textContent = projection.round?.state?.number ? `当前 Round ${projection.round.state.number} · Live 事实` : "当前 Live 事实";
+      host.querySelector("[data-workbench-round]").textContent = projection.round?.state?.number ? localize`当前 Round ${projection.round.state.number} · Live 事实` : localize("当前 Live 事实");
       if (["rounds", "runs", "patrol_sessions", "loop", "directives"].some(key => previous?.[key] !== projection[key])) {
         host.querySelector("[data-patrol-rounds]").innerHTML = root.FocusObservationView.rounds(projection);
       }
@@ -624,7 +630,7 @@
       const pending = Object.values(projection.wait_requests).filter(item => item.state.status === "open").length;
       const pendingButton = host.querySelector("[data-patrol-pending]");
       pendingButton.hidden = !pending;
-      const pendingText = `${pending} 项待处理`;
+      const pendingText = localize`${pending} 项待处理`;
       if (pendingButton.textContent !== pendingText) pendingButton.textContent = pendingText;
       if (previous?.facts !== projection.facts) {
         patchFileFacts(true);
@@ -639,7 +645,7 @@
       if (!projection.round?.state?.observation_id) {
         observation = null; observationIdentity = null; observationVersion++;
         const node = host.querySelector("[data-patrol-observation]");
-        if (node.textContent !== "本轮尚未冻结") node.textContent = "本轮尚未冻结";
+        if (node.textContent !== localize("本轮尚未冻结")) node.textContent = localize("本轮尚未冻结");
         host.querySelector("[data-patrol-observation-open]").disabled = true;
       }
       if (historyRefresh.observe(projection, inputs.get())) {
@@ -702,7 +708,7 @@
         else if (button.hasAttribute("data-patrol-dialog-close")) void closeDialog();
         else if (button.hasAttribute("data-patrol-history-open")) setHistoryOpen(!historyOpen);
         else if (button.hasAttribute("data-patrol-history-retry")) void loadOlderHistory(true);
-        else if (button.hasAttribute("data-patrol-pending")) showDialog("requests", "待处理工作", "", host.querySelector("[data-patrol-requests]"));
+        else if (button.hasAttribute("data-patrol-pending")) showDialog("requests", localize("待处理工作"), "", host.querySelector("[data-patrol-requests]"));
         else if (button.hasAttribute("data-patrol-progress-open")) { progressFilter = "all"; await openProgress(); }
         else if (button.hasAttribute("data-patrol-grant-open")) await openGrant();
         else if (button.hasAttribute("data-patrol-projection-open") || button.hasAttribute("data-patrol-projection-refresh")) await openProjectionFailures();
@@ -710,7 +716,7 @@
         else if (button.dataset.patrolProjectionRepair) await repairProjection(button.dataset.patrolProjectionRepair);
         else if (button.hasAttribute("data-patrol-live-retry") && loopId) { previews?.retry(); connect(loopId); }
         else if (button.dataset.action === "loop-revoke-grant") {
-          if (!root.confirm("确认撤销当前工作区 Patrol 的授权？现有工作会保留。")) return;
+          if (!root.confirm(localize("确认撤销当前工作区 Patrol 的授权？现有工作会保留。"))) return;
           await api.mutateGrant(loopId, { command: "revoke" });
           await openGrant();
         }
@@ -781,7 +787,7 @@
               host.querySelector("[data-patrol-file-body]").innerHTML = root.FocusLoopFactsView.renderFile(detail.file);
               host.querySelector("[data-patrol-file-detail]").hidden = false;
               root.FocusFilePreview?.mountHistory(host.querySelector("[data-patrol-file-body]"), detail.file, loopId);
-            } else showDialog("fact", "事实与来源", root.FocusLoopFactsView.renderDetail(detail));
+            } else showDialog("fact", localize("事实与来源"), root.FocusLoopFactsView.renderDetail(detail));
           }
         }
       } catch (failure) {
@@ -802,7 +808,7 @@
           const owner = token, version = ++fileVersion;
           const detail = await api.factDetail(row.loop_id || loopId, file.fact_id, lifetime.signal, file.revision);
           if (owner !== token || version !== fileVersion) return;
-          if (!detail.file || detail.file.result_key !== file.result_key || (file.sha256 && detail.file.sha256 !== file.sha256)) throw new Error("引用版本不可用，原输入记录已保留");
+          if (!detail.file || detail.file.result_key !== file.result_key || (file.sha256 && detail.file.sha256 !== file.sha256)) throw new Error(localize("引用版本不可用，原输入记录已保留"));
           host.querySelector("[data-patrol-file-body]").innerHTML = root.FocusLoopFactsView.renderFile({ ...detail.file, fact_id: file.fact_id, revision: file.revision });
           host.querySelector("[data-patrol-file-detail]").hidden = false;
         } });
@@ -813,7 +819,7 @@
         host.querySelector("[data-patrol-composer]").classList.add("is-remote-composer");
         host.querySelector("[data-patrol-type]").hidden = true;
         host.querySelector("[data-patrol-type]").disabled = true;
-        host.querySelector('[data-patrol-composer] button[type="submit"]').textContent = "打开机器人输入 ↗";
+        host.querySelector('[data-patrol-composer] button[type="submit"]').textContent = localize("打开机器人输入 ↗");
       } else materialPreview = root.FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => bound.workspace_id, onError: error });
       inspector = root.FocusContextInspector.create({ api, onOpenTask, presentation: "workbench", getManifest: manifest, onSelectionChange: selectionChanged });
       inspector.mount(host.querySelector("[data-patrol-context]"));
@@ -939,7 +945,7 @@
       showAttention(requestId, expectedLoopId) {
         if (!host || !loopId || (expectedLoopId && expectedLoopId !== loopId)) return;
         attentionTarget = requestId;
-        showDialog("requests", "待处理工作", "", host.querySelector("[data-patrol-requests]"));
+        showDialog("requests", localize("待处理工作"), "", host.querySelector("[data-patrol-requests]"));
         locateAttention();
       },
       async showContext(contextId, revisionId) {

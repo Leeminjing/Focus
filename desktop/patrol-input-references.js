@@ -8,14 +8,20 @@
   root.FocusPatrolInputReferences = api;
 })(globalThis, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-  const name = item => String(item.name || item.relative_path || item.path || "附件").split(/[\\/]/).at(-1);
+  const name = item => String(item.name || item.relative_path || item.path || localize("附件")).split(/[\\/]/).at(-1);
   const digest = item => item.sha256 || item.digest || item.result_key || "";
   const image = item => (item.material_kind || item.source_kind) === "image";
   function render(row) {
-    const attachments = (row.attachments || []).map((item, index) => `<details data-patrol-history-attachment="${index}"><summary>${image(item) ? `<img alt="${escape(name(item))}" loading="lazy">` : ""}<span>${escape(name(item))}<small>${digest(item) ? `版本 ${escape(digest(item).slice(0, 8))}` : "待上传版本"}</small></span></summary><div data-patrol-history-preview></div></details>`).join("");
-    const files = (row.file_refs || []).map((file, index) => `<button type="button" data-patrol-history-file="${index}" title="${escape(file.path)}"><span>${escape(name(file))}<small>版本 ${escape(file.revision)} · ${escape(digest(file).slice(0, 8))}</small></span></button>`).join("");
-    return attachments || files ? `<div class="patrol-history-references" aria-label="本次输入的附件和文件版本">${attachments}${files}</div>` : "";
+    const attachments = (row.attachments || []).map((item, index) => `<details data-patrol-history-attachment="${index}"><summary>${image(item) ? `<img alt="${escape(name(item))}" loading="lazy">` : ""}<span>${escape(name(item))}<small>${digest(item) ? localize`版本 ${escape(digest(item).slice(0, 8))}` : localize("待上传版本")}</small></span></summary><div data-patrol-history-preview></div></details>`).join("");
+    const files = (row.file_refs || []).map((file, index) => localize`<button type="button" data-patrol-history-file="${index}" title="${escape(file.path)}"><span>${escape(name(file))}<small>版本 ${escape(file.revision)} · ${escape(digest(file).slice(0, 8))}</small></span></button>`).join("");
+    return attachments || files ? localize`<div class="patrol-history-references" aria-label="本次输入的附件和文件版本">${attachments}${files}</div>` : "";
   }
   function create({ host, intake, workspaceId, onFile, onError }) {
     const lifetime = new AbortController(), entries = new Map(), attempts = new WeakMap();
@@ -36,7 +42,7 @@
       if (entries.has(id)) return entries.get(id).promise;
       const entry = {};
       entry.promise = intake.attachmentContent(owner, row, item, reads.signal).then(blob => {
-        if (entries.get(id) !== entry) throw new Error("附件预览已关闭");
+        if (entries.get(id) !== entry) throw new Error(localize("附件预览已关闭"));
         entry.url = URL.createObjectURL(blob);
         return { blob, url: entry.url };
       }).catch(error => { if (entries.get(id) === entry) release(id); throw error; });
@@ -51,7 +57,7 @@
       try {
         const { url } = await load(row, item);
         if (currentVersion(node, id)) img.src = url;
-      } catch { if (img.isConnected) img.title = "提交版本暂时无法预览，可展开后重试"; }
+      } catch { if (img.isConnected) img.title = localize("提交版本暂时无法预览，可展开后重试"); }
     }
     const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver(items => {
       for (const entry of items) if (entry.isIntersecting) { observer.unobserve(entry.target); void thumbnail(entry.target); }
@@ -65,7 +71,7 @@
       attempts.set(body, attempt);
       const id = key(row, item);
       const current = () => currentVersion(node, id) && attempts.get(body) === attempt;
-      body.textContent = "正在读取提交版本…";
+      body.textContent = localize("正在读取提交版本…");
       try {
         const { blob, url } = await load(row, item);
         if (!current()) return;
@@ -74,11 +80,11 @@
         else if (item.material_kind === "text" || item.source_kind === "text" || blob.type.startsWith("text/") || /\.(txt|md|json|csv|log|js|ts|py|yaml|yml|html|css)$/i.test(name(item))) {
           const text = await blob.slice(0, 65536).text();
           if (!current()) return;
-          const pre = document.createElement("pre"); pre.textContent = text + (blob.size > 65536 ? "\n…预览已截断，请保存完整文件查看" : ""); body.append(pre);
+          const pre = document.createElement("pre"); pre.textContent = text + (blob.size > 65536 ? localize("\n…预览已截断，请保存完整文件查看") : ""); body.append(pre);
         }
-        const link = document.createElement("a"); link.href = url; link.download = name(item); link.textContent = `保存 ${name(item)} · ${blob.size} 字节`; body.append(link);
-        const version = document.createElement("small"); version.textContent = digest(item) ? `SHA-256 ${digest(item)}` : "本次输入的本地附件"; body.append(version);
-      } catch (error) { if (current()) body.textContent = `提交版本不可用：${error.message}。收起后展开可重试。`; }
+        const link = document.createElement("a"); link.href = url; link.download = name(item); link.textContent = localize`保存 ${name(item)} · ${blob.size} 字节`; body.append(link);
+        const version = document.createElement("small"); version.textContent = digest(item) ? `SHA-256 ${digest(item)}` : localize("本次输入的本地附件"); body.append(version);
+      } catch (error) { if (current()) body.textContent = localize`提交版本不可用：${error.message}。收起后展开可重试。`; }
     }, { capture: true, signal: lifetime.signal });
     host.addEventListener("click", event => {
       const button = event.target.closest("[data-patrol-history-file]");

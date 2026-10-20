@@ -8,6 +8,12 @@
  */
 
 (function initTaskRunOperations(global) {
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   function empty(taskId) {
     return { task_id: taskId, submission: null, admission: null, active_run: null, streams: {}, error: null };
   }
@@ -32,7 +38,7 @@
         }
         const value = saved ? JSON.parse(saved) : null;
         if (value && (value.version !== 1 || typeof value.request_id !== "string" || typeof value.body !== "string")) {
-          throw new Error("普通任务恢复数据无法读取，请保留原请求后重试");
+          throw new Error(localize("普通任务恢复数据无法读取，请保留原请求后重试"));
         }
         if (saved && legacy) legacy.removeItem(key);
         recoveries.set(taskId, value);

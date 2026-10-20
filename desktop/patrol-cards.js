@@ -7,6 +7,12 @@
  */
 (function(global){
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const node=(tag,cls,text)=>{const n=document.createElement(tag);n.className=cls || "";if(text!=null)n.textContent=text;return n;};
   const action=(label,fn)=>{const n=node("button","patrol-icon-action",label);n.type="button";n.onclick=fn;return n;};
   class PayloadField {
@@ -14,7 +20,7 @@
       this.wb=wb;this.entry=entry;this.key=key;this.multiline=multiline;this.label=label;
       const value=entry.payload[key] ?? "";this.renderedValue=value;this.structured=typeof value!=="string";
       this.node=node("label","patrol-field");
-      if(label!=="条目正文")this.node.append(node("span","patrol-field-label",label));
+      if(label!==localize("条目正文"))this.node.append(node("span","patrol-field-label",label));
       if(this.structured || value.length>32000){
         this.port=global.FocusPatrolJsonEditor.createJsonEditor({label,wrap:multiline});this.input=this.port.element;
         this.port.value=entry.content_buffer || (this.structured?JSON.stringify(value,null,2):value);this.node.classList.add("is-structured");
@@ -39,7 +45,7 @@
       if(this.port && event.target!==this.input)return;
       const raw=this.port?this.port.value:this.input.value;
       if(this.structured){
-        this.entry.content_buffer=raw;this.entry.content_error="内容正在解析";this.wb._changed();
+        this.entry.content_buffer=raw;this.entry.content_error=localize("内容正在解析");this.wb._changed();
         this.wb._parseEntry(this.entry,"content",raw,structuredClone(this.entry),()=>{this.renderedValue=this.entry.payload[this.key];},this.key);
       }else {this.wb.doc.setPayloadField(this.entry.entry_id,this.key,raw);this.renderedValue=raw;}
       this.refresh();
@@ -76,43 +82,43 @@
     }
     _heading(){
       const header=node("header","patrol-card-heading");
-      const drag=action("⠿",()=>{});drag.setAttribute("aria-label","拖动排序");drag.onpointerdown=e=>this.wb._drag(e,this.entry.entry_id);
+      const drag=action("⠿",()=>{});drag.setAttribute("aria-label",localize("拖动排序"));drag.onpointerdown=e=>this.wb._drag(e,this.entry.entry_id);
       this.title=node("span","patrol-kind");this.role=node("input","patrol-role");
-      this.role.setAttribute("aria-label","角色意图");this.role.setAttribute("list","patrol-roles");
+      this.role.setAttribute("aria-label",localize("角色意图"));this.role.setAttribute("list","patrol-roles");
       this.role.oninput=()=>this.wb.doc.setPayloadField(this.entry.entry_id,"role",this.role.value);
       this.number=node("span","patrol-card-number");
-      const menu=node("details","patrol-card-menu");menu.append(node("summary","","···"));menu.firstChild.setAttribute("aria-label","条目操作");
+      const menu=node("details","patrol-card-menu");menu.append(node("summary","","···"));menu.firstChild.setAttribute("aria-label",localize("条目操作"));
       const actions=node("div","patrol-popover");
-      actions.append(action("复制",()=>this.wb.interactions.run(()=>{const value=this.wb.doc.copy(this.entry.entry_id);this.wb.renderList();this.wb._locate(value.entry_id);})),
-        action("向上",()=>this._move(-1)),action("向下",()=>this._move(1)),
-        action("移动到指定位置",()=>this._position(actions)),
-        action("在下方插入",()=>this.wb._add("message","user",this.wb.doc.value.entries.indexOf(this.entry)+1)),
-        action("删除",()=>this.wb.interactions.run(()=>{this.wb.doc.remove(this.entry.entry_id);this.wb.renderList();})));
+      actions.append(action(localize("复制"),()=>this.wb.interactions.run(()=>{const value=this.wb.doc.copy(this.entry.entry_id);this.wb.renderList();this.wb._locate(value.entry_id);})),
+        action(localize("向上"),()=>this._move(-1)),action(localize("向下"),()=>this._move(1)),
+        action(localize("移动到指定位置"),()=>this._position(actions)),
+        action(localize("在下方插入"),()=>this.wb._add("message","user",this.wb.doc.value.entries.indexOf(this.entry)+1)),
+        action(localize("删除"),()=>this.wb.interactions.run(()=>{this.wb.doc.remove(this.entry.entry_id);this.wb.renderList();})));
       menu.append(actions);header.append(drag,this.title,this.role,this.number,menu);
-      const gap=action("＋ 插入到这里",()=>this.wb.interactions.setAnchor(this.entry.entry_id));gap.className="patrol-entry-gap";gap.setAttribute("aria-label","在此条目前插入来源或新增条目");
+      const gap=action(localize("＋ 插入到这里"),()=>this.wb.interactions.setAnchor(this.entry.entry_id));gap.className="patrol-entry-gap";gap.setAttribute("aria-label",localize("在此条目前插入来源或新增条目"));
       this.node.append(gap,header);
     }
     _body(){
       this.body=node("div","patrol-card-body");this.node.append(this.body);
       if(["function_call","custom_tool_call"].includes(this.kind)){
-        this._field("name","工具名称",false);this._field("call_id","call_id",false);
+        this._field("name",localize("工具名称"),false);this._field("call_id","call_id",false);
         this._field(this.kind==="function_call"?"arguments":"input",this.kind==="function_call"?"arguments":"input",true);
       }else if(["function_call_output","custom_tool_call_output"].includes(this.kind)){
         this._field("call_id","call_id",false);this._field("output","output",true);
       }else if(this.kind==="agent_collaboration"){
-        this._field("author","发送者",false);this._field("recipient","接收者",false);this._field("content","条目正文",true);
-      }else if(["message","authored_instruction","task_contract","selected_context"].includes(this.kind))this._field("content","条目正文",true);
+        this._field("author",localize("发送者"),false);this._field("recipient",localize("接收者"),false);this._field("content",localize("条目正文"),true);
+      }else if(["message","authored_instruction","task_contract","selected_context"].includes(this.kind))this._field("content",localize("条目正文"),true);
       else this._genericPayload();
     }
     _genericPayload(){
-      this.payloadEditor=global.FocusPatrolJsonEditor.createJsonEditor({label:"通用 Item payload"});
+      this.payloadEditor=global.FocusPatrolJsonEditor.createJsonEditor({label: localize("通用 Item payload")});
       this.renderedPayload=this.entry.payload;
       this.payloadEditor.value=this.entry.payload_buffer || JSON.stringify(this.entry.payload,null,2);
       this.body.append(this.payloadEditor.element);
       this.payloadEditor.element.addEventListener("input",event=>{
         if(event.target!==this.payloadEditor.element)return;
         const base=this.entry.payload_base || structuredClone(this.entry);this.entry.payload_base=base;
-        this.entry.payload_buffer=this.payloadEditor.value;this.entry.payload_error="payload 正在解析";this.wb._changed();
+        this.entry.payload_buffer=this.payloadEditor.value;this.entry.payload_error=localize("payload 正在解析");this.wb._changed();
         this.wb._parseEntry(this.entry,"payload",this.payloadEditor.value,base,()=>{delete this.entry.payload_base;this.renderedPayload=this.entry.payload;});
       });
     }
@@ -120,15 +126,15 @@
     _move(delta){this.wb.interactions.run(()=>{this.wb.doc.move(this.entry.entry_id,this.wb.doc.value.entries.indexOf(this.entry)+delta);this.wb.renderList();});}
     _position(container){
       if(this.positionInput)return;
-      this.positionInput=node("input");this.positionInput.type="number";this.positionInput.min="1";this.positionInput.max=String(this.wb.doc.value.entries.length);this.positionInput.value=String(this.wb.doc.value.entries.indexOf(this.entry)+1);this.positionInput.setAttribute("aria-label","目标条目位置");
-      const confirm=action("确认移动",()=>{const index=Number(this.positionInput.value)-1;if(Number.isInteger(index) && index>=0 && index<this.wb.doc.value.entries.length)this.wb.interactions.run(()=>{this.wb.doc.move(this.entry.entry_id,index);this.wb.renderList();});});container.append(this.positionInput,confirm);this.positionInput.focus();
+      this.positionInput=node("input");this.positionInput.type="number";this.positionInput.min="1";this.positionInput.max=String(this.wb.doc.value.entries.length);this.positionInput.value=String(this.wb.doc.value.entries.indexOf(this.entry)+1);this.positionInput.setAttribute("aria-label",localize("目标条目位置"));
+      const confirm=action(localize("确认移动"),()=>{const index=Number(this.positionInput.value)-1;if(Number.isInteger(index) && index>=0 && index<this.wb.doc.value.entries.length)this.wb.interactions.run(()=>{this.wb.doc.move(this.entry.entry_id,index);this.wb.renderList();});});container.append(this.positionInput,confirm);this.positionInput.focus();
     }
     _structure(){
-      const fields=node("details","patrol-item-structure");fields.append(node("summary","","条目结构"));this.node.append(fields);
+      const fields=node("details","patrol-item-structure");fields.append(node("summary","",localize("条目结构")));this.node.append(fields);
       fields.ontoggle=()=>{
         if(!fields.open || this.structureEditor)return;
         this.fieldsBase=this.entry.fields_base || structuredClone(this.entry);
-        this.structureEditor=global.FocusPatrolJsonEditor.createJsonEditor({label:"条目结构 JSON"});
+        this.structureEditor=global.FocusPatrolJsonEditor.createJsonEditor({label: localize("条目结构 JSON")});
         this.structureEditor.value=this.entry.fields_buffer || JSON.stringify(this.entry,null,2);fields.append(this.structureEditor.element);
         this.structureEditor.element.addEventListener("input",event=>this._parseStructure(event));
         requestAnimationFrame(()=>this.structureEditor.refresh());
@@ -136,7 +142,7 @@
     }
     _parseStructure(event){
       if(event.target!==this.structureEditor.element)return;
-      this.entry.fields_base=this.fieldsBase;this.entry.fields_buffer=this.structureEditor.value;this.entry.fields_error="结构正在解析";this.wb._changed();
+      this.entry.fields_base=this.fieldsBase;this.entry.fields_buffer=this.structureEditor.value;this.entry.fields_error=localize("结构正在解析");this.wb._changed();
       this.wb._parseEntry(this.entry,"fields",this.structureEditor.value,this.fieldsBase,value=>{this.fieldsBase=structuredClone(value);});
     }
     _source(){
@@ -154,8 +160,8 @@
         const raw=JSON.stringify(this.entry.payload,null,2),selection=this.payloadEditor.hasFocus?[this.payloadEditor.selectionStart,this.payloadEditor.selectionEnd]:null;
         this.payloadEditor.value=raw;this.renderedPayload=this.entry.payload;if(selection)this.payloadEditor.setSelectionRange(Math.min(selection[0],raw.length),Math.min(selection[1],raw.length));
       }
-      const health=this.wb.sourceStatus?.[this.entry.source_ref],label=this.entry.source_label || "冻结来源";
-      const status=health?.status==="unavailable"?"来源不可用 · 冻结内容保留":health?.status==="unknown"?"旧引用状态无法检查":this.wb.sourceFailed?"暂时无法检查来源":this.entry.edited_from?"已改写":"冻结引用";
+      const health=this.wb.sourceStatus?.[this.entry.source_ref],label=this.entry.source_label || localize("冻结来源");
+      const status=health?.status==="unavailable"?localize("来源不可用 · 冻结内容保留"):health?.status==="unknown"?localize("旧引用状态无法检查"):this.wb.sourceFailed?localize("暂时无法检查来源"):this.entry.edited_from?localize("已改写"):localize("冻结引用");
       this.source.hidden=!this.entry.source_ref;this.sourceTitle.textContent=label+" · "+status;
       this.error.textContent=this.entry.fields_error || this.entry.content_error || this.entry.payload_error || "";this.error.hidden=!this.error.textContent;
     }

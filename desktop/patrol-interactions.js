@@ -5,15 +5,21 @@
  */
 (function(root){
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   class PatrolInteractions {
     constructor(wb){this.wb=wb;this.anchor=null;this.pending=[];this.busy=false;}
-    run(action){if(this.busy){this.pending.push(action);this.wb.status.textContent="导入中 · 编排操作将在完成后执行";return;}return action();}
+    run(action){if(this.busy){this.pending.push(action);this.wb.status.textContent=localize("导入中 · 编排操作将在完成后执行");return;}return action();}
     setAnchor(id){this.anchor=id;this.wb.view?.update();for(const [entryId,card]of this.wb.cards)card.classList.toggle("is-insertion-anchor",entryId===id);}
     async importSelected(request=null){
       if(this.busy)return null;
       const wb=this.wb,controller=wb.sourceController;
       try{request ||= controller.insertion(this.anchor);}catch(error){controller.report(error.message);return null;}
-      if(wb.composing){controller.report("请完成当前输入后再插入");return null;}
+      if(wb.composing){controller.report(localize("请完成当前输入后再插入"));return null;}
       this.busy=true;wb.sourceView.busy=true;wb.sourceView.render();controller.error=null;
       try{
         const result=await wb.queue.mutate(async()=>{
@@ -23,7 +29,7 @@
           wb.doc.insertBatch(entries,request.before_entry_id);return result;
         });
         controller.imported(request.selected_row_ids,request.source_fingerprint);
-        wb.status.textContent=`已插入 ${result.inserted_entry_ids?.length ?? 0} 项 · 保留本地编辑`;wb.renderList();wb._refreshSources();return result;
+        wb.status.textContent=localize`已插入 ${result.inserted_entry_ids?.length ?? 0} 项 · 保留本地编辑`;wb.renderList();wb._refreshSources();return result;
       }catch(error){
         controller.error=error.detail?.message || error.message;wb.status.textContent=controller.error;
         if(error.code==="draft_revision_conflict"){wb.queue.blocked=error;wb.localConflict=true;}
@@ -32,8 +38,8 @@
           try{
             const remote=await wb.api(`/desktop/api/drafts/${wb.draft.draft_id}`);
             if(remote.draft_revision===wb.queue.serverRevision)wb.queue.blocked=null;
-            else {wb.localConflict=true;controller.error="导入结果已读取，服务端版本已变化；本地编辑保留，请载入服务器版本（可撤销）";}
-          }catch(_){controller.error="导入结果暂无法确认；本地编辑已保留，请读取服务器版本后继续";}
+            else {wb.localConflict=true;controller.error=localize("导入结果已读取，服务端版本已变化；本地编辑保留，请载入服务器版本（可撤销）");}
+          }catch(_){controller.error=localize("导入结果暂无法确认；本地编辑已保留，请读取服务器版本后继续");}
         }
         return null;
       }finally{
@@ -50,7 +56,7 @@
     _start(event,value){
       if(this.busy)return;event.preventDefault();this.cancel();const wb=this.wb;
       this.drag={...value,x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,started:false};
-      this.line=root.FocusPatrolUI.node("div","patrol-insertion-line",value.type==="source"?`插入 ${value.request.selected_row_ids.length} 项`:"移动到此处");wb.list.append(this.line);this.line.hidden=true;
+      this.line=root.FocusPatrolUI.node("div","patrol-insertion-line",value.type==="source"?localize`插入 ${value.request.selected_row_ids.length} 项`:localize("移动到此处"));wb.list.append(this.line);this.line.hidden=true;
       const move=event=>{if(this.drag){this.drag.x=event.clientX;this.drag.y=event.clientY;}};
       const finish=event=>{
         const drag=this.drag;this.cancel();if(event.type!=="pointerup" || !drag?.started || !drag.inside)return;

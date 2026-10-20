@@ -10,6 +10,12 @@
  */
 (function (global) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   function project(materials, customGroups, mode = "run", collapsedKeys = [], selection = null) {
     const byId = new Map((materials || []).map(item => [String(item.material_id), item]));
@@ -42,19 +48,19 @@
   }
 
   function makeGroup(key, label, source, materials, selected) {
-    return { key, label: String(label || "未命名分组"), source, materials, selectedCount: 0, collapsed: false };
+    return { key, label: String(label || localize("未命名分组")), source, materials, selectedCount: 0, collapsed: false };
   }
 
   function runDescriptor(material) {
     const runId = String(material.first_run_id || "");
     return runId
       ? { key: `run:${runId}`, label: `Run ${runId.slice(0, 8)}` }
-      : { key: "run:unassigned", label: "未随运行发送" };
+      : { key: "run:unassigned", label: localize("未随运行发送") };
   }
 
   function typeDescriptor(material) {
     const kind = String(material.material_kind || "other");
-    const labels = { image: "图片", text: "文本与代码", pdf: "PDF", document: "文档", spreadsheet: "表格", presentation: "演示文稿", archive: "压缩包", other: "其它文件" };
+    const labels = { image: localize("图片"), text: localize("文本与代码"), pdf: "PDF", document: localize("文档"), spreadsheet: localize("表格"), presentation: localize("演示文稿"), archive: localize("压缩包"), other: localize("其它文件") };
     return { key: `type:${kind}`, label: labels[kind] || labels.other };
   }
 

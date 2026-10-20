@@ -4,6 +4,6 @@
 window.setFocusSplashStage = (label, progress = 0) => {
   const status = document.querySelector("#splashStatus");
   const bar = document.querySelector("#splashProgress");
-  if (status) status.textContent = String(label || "正在启动 Focus");
+  if (status) status.textContent = window.FocusI18n?.text(String(label || "正在启动 Focus")) ?? String(label || "正在启动 Focus");
   if (bar) bar.style.setProperty("--splash-progress", `${Math.max(0, Math.min(100, Number(progress) || 0))}%`);
 };

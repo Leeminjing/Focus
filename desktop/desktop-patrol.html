@@ -8,40 +8,42 @@
 <body>
   <link rel="stylesheet" href="./styles/workspace-patrol-feedback.css">
   <link rel="stylesheet" href="./styles/artifact-drawer.css">
-  <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false"></button><span id="robot-status" role="status">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘">收起</button></main>
+  <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件" data-i18n-aria-label="panel.open"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false" data-i18n-alt="panel.robot"></button><span id="robot-status" role="status" data-i18n="panel.start">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘" data-i18n-aria-label="panel.hide_robot" data-i18n="panel.collapse">收起</button></main>
   <main id="panel" hidden>
     <div class="panel-shell">
     <header class="panel-header">
-      <button id="binding" title="选择工作区文件夹"><span class="ui-icon icon-folder" aria-hidden="true"></span><span id="binding-name">绑定工作区</span><span class="ui-icon icon-chevron-down" aria-hidden="true"></span></button>
-      <details class="panel-menu"><summary aria-label="更多操作" title="更多操作"><span class="ui-icon icon-ellipsis" aria-hidden="true"></span></summary><div class="panel-menu-content">
-        <button id="open-files">文件 / 产物</button><button id="toggle-history" aria-controls="history" aria-expanded="false">输入记录</button><button id="workbench">打开工作台</button><button id="stop-work" type="button" disabled>停止当前工作</button><button id="hide">收起面板 <span>Esc</span></button>
-        <div class="status-row"><i></i><span id="status" role="status">绑定工作区后即可发送</span><button id="reconnect" hidden>重连</button></div>
+      <button id="binding" title="选择工作区文件夹" data-i18n-title="panel.choose_workspace"><span class="ui-icon icon-folder" aria-hidden="true"></span><span id="binding-name" data-i18n="panel.bind">绑定工作区</span><span class="ui-icon icon-chevron-down" aria-hidden="true"></span></button>
+      <details class="panel-menu"><summary aria-label="更多操作" title="更多操作" data-i18n-aria-label="panel.more" data-i18n-title="panel.more"><span class="ui-icon icon-ellipsis" aria-hidden="true"></span></summary><div class="panel-menu-content">
+        <button id="open-files" data-i18n="panel.files">文件 / 产物</button><button id="toggle-history" aria-controls="history" aria-expanded="false" data-i18n="panel.history">输入记录</button><button id="workbench" data-i18n="panel.workbench">打开工作台</button><button id="stop-work" type="button" disabled data-i18n="panel.stop">停止当前工作</button><button id="hide"><span data-i18n="panel.hide">收起面板 </span><span>Esc</span></button>
+        <div class="status-row"><i></i><span id="status" role="status" data-i18n="panel.bind_help">绑定工作区后即可发送</span><button id="reconnect" hidden data-i18n="panel.reconnect">重连</button></div>
       </div></details>
     </header>
     <div class="panel-scroll"><div class="panel-content">
       <form id="compose" data-patrol-composer>
-        <label class="sr-only" for="instruction">你的想法或要求</label><textarea id="instruction" rows="2" placeholder="有什么想法？" aria-describedby="compose-help"></textarea>
-        <div id="references" hidden><div class="reference-heading">引用内容 <span id="reference-count"></span></div><div data-patrol-materials aria-label="待发送参考材料"></div><div id="file-refs" aria-label="固定文件版本引用"></div></div>
-        <div id="reply-target" hidden><span></span><button type="button" id="clear-reply">取消指定回复</button></div>
-        <div class="send-row"><button type="button" id="add-material" aria-label="添加材料" title="添加图片、文字或文件，也可以拖入或粘贴截图"><span class="ui-icon icon-plus" aria-hidden="true"></span></button><button type="button" id="reference-file" aria-label="引用文件版本" title="引用工作区的文件版本" aria-controls="version-picker" aria-expanded="false" disabled>@</button><input type="file" id="file-picker" multiple hidden><span id="compose-help" class="sr-only">可拖入图片、文字或文件。Enter 换行，Ctrl+Enter 发送。</span><span class="send-shortcut" title="Ctrl+Enter 发送">Ctrl <span class="ui-icon icon-corner-down-left" aria-hidden="true"></span></span><button id="send" type="submit" aria-label="发送" title="发送 · Ctrl+Enter"><span class="ui-icon icon-arrow-up" aria-hidden="true"></span></button></div>
+        <label class="sr-only" for="instruction" data-i18n="panel.input">你的想法或要求</label><textarea id="instruction" rows="2" placeholder="有什么想法？" aria-describedby="compose-help" data-i18n-placeholder="panel.placeholder"></textarea>
+        <div id="references" hidden><div class="reference-heading"><span data-i18n="panel.references">引用内容 </span><span id="reference-count"></span></div><div data-patrol-materials aria-label="待发送参考材料" data-i18n-aria-label="panel.materials"></div><div id="file-refs" aria-label="固定文件版本引用" data-i18n-aria-label="panel.fixed_references"></div></div>
+        <div id="reply-target" hidden><span></span><button type="button" id="clear-reply" data-i18n="panel.clear_reply">取消指定回复</button></div>
+        <div class="send-row"><button type="button" id="add-material" aria-label="添加材料" title="添加图片、文字或文件，也可以拖入或粘贴截图" data-i18n-aria-label="panel.add_material" data-i18n-title="panel.add_material_help"><span class="ui-icon icon-plus" aria-hidden="true"></span></button><button type="button" id="reference-file" aria-label="引用文件版本" title="引用工作区的文件版本" aria-controls="version-picker" aria-expanded="false" disabled data-i18n-aria-label="panel.reference_version" data-i18n-title="panel.reference_version_help">@</button><input type="file" id="file-picker" multiple hidden><span id="compose-help" class="sr-only" data-i18n="panel.shortcut_help">可拖入图片、文字或文件。Enter 换行，Ctrl+Enter 发送。</span><span class="send-shortcut" title="Ctrl+Enter 发送" data-i18n-title="panel.shortcut">Ctrl <span class="ui-icon icon-corner-down-left" aria-hidden="true"></span></span><button id="send" type="submit" aria-label="发送" title="发送 · Ctrl+Enter" data-i18n-aria-label="focus.send" data-i18n-title="panel.send_shortcut"><span class="ui-icon icon-arrow-up" aria-hidden="true"></span></button></div>
       </form>
-      <section id="version-picker" aria-label="引用文件版本" hidden><header><strong>引用文件版本</strong><button type="button" id="close-versions" aria-label="关闭文件版本"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><label class="version-search"><span class="ui-icon icon-search" aria-hidden="true"></span><input id="version-query" placeholder="搜索产物文件名…" aria-label="搜索产物文件名"></label><div id="version-candidates" role="status"></div><button id="older-versions" type="button" hidden>更早的文件版本</button></section>
-      <section id="version-detail" aria-label="文件版本详情" hidden><header><strong>文件版本</strong><button type="button" id="close-version-detail" aria-label="关闭版本详情"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><div id="version-body"></div></section>
+      <section id="version-picker" aria-label="引用文件版本" hidden data-i18n-aria-label="panel.reference_version"><header><strong data-i18n="panel.reference_version">引用文件版本</strong><button type="button" id="close-versions" aria-label="关闭文件版本" data-i18n-aria-label="panel.close_versions"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><label class="version-search"><span class="ui-icon icon-search" aria-hidden="true"></span><input id="version-query" placeholder="搜索产物文件名…" aria-label="搜索产物文件名" data-i18n-aria-label="panel.search" data-i18n-placeholder="panel.search_placeholder"></label><div id="version-candidates" role="status"></div><button id="older-versions" type="button" hidden data-i18n="panel.older_versions">更早的文件版本</button></section>
+      <section id="version-detail" aria-label="文件版本详情" hidden data-i18n-aria-label="panel.version_details"><header><strong data-i18n="panel.versions">文件版本</strong><button type="button" id="close-version-detail" aria-label="关闭版本详情" data-i18n-aria-label="panel.close_version"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><div id="version-body"></div></section>
       <div class="panel-feedback"><div class="panel-feedback-content">
-      <section id="first-goal" aria-label="首次使用引导" hidden><p id="first-goal-help" role="status"></p><button id="first-goal-folder" type="button">选择项目文件夹</button></section>
+      <section id="first-goal" aria-label="首次使用引导" hidden data-i18n-aria-label="panel.onboarding"><p id="first-goal-help" role="status"></p><button id="first-goal-folder" type="button" data-i18n="panel.project_folder">选择项目文件夹</button></section>
       <div id="task-budget"></div>
       <p id="error" role="alert" hidden></p>
-      <button id="retry-workspace" type="button" hidden>重新读取工作区</button>
-      <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><button id="toggle-work" type="button" aria-label="暂停当前工作" hidden disabled>暂停</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
+      <button id="retry-workspace" type="button" hidden data-i18n="panel.reload_workspace">重新读取工作区</button>
+      <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden data-i18n="panel.reconnect">重连</button><button id="toggle-work" type="button" aria-label="暂停当前工作" hidden disabled data-i18n-aria-label="panel.pause_work" data-i18n="panel.pause">暂停</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
       <p id="control-feedback" role="status" hidden></p>
-      <div id="work-recovery" hidden><p id="recovery-message" role="status"></p><button id="restart-work" type="button">重新启用</button></div>
-      <section id="delivery" class="patrol-delivery" aria-label="本次工作交付" hidden></section>
-      <section id="requests" aria-label="待处理请求"></section>
-      <section id="results" aria-label="工作区已提交结果"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
-      <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><p id="history-status" role="status" hidden></p><button id="retry-history" type="button" hidden>重试读取</button><button id="older" hidden>更早的输入</button></details>
+      <div id="work-recovery" hidden><p id="recovery-message" role="status"></p><button id="restart-work" type="button" data-i18n="panel.restart">重新启用</button></div>
+      <section id="delivery" class="patrol-delivery" aria-label="本次工作交付" hidden data-i18n-aria-label="panel.delivery"></section>
+      <section id="requests" aria-label="待处理请求" data-i18n-aria-label="panel.requests"></section>
+      <section id="results" aria-label="工作区已提交结果" data-i18n-aria-label="panel.results"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
+      <details id="history" hidden><summary><span data-i18n="panel.history">输入记录 </span><span id="receipt"></span></summary><div id="history-items"></div><p id="history-status" role="status" hidden></p><button id="retry-history" type="button" hidden data-i18n="panel.retry">重试读取</button><button id="older" hidden data-i18n="panel.older_inputs">更早的输入</button></details>
       </div></div>
     </div></div></div>
   </main>
+  <script src="./i18n-catalog.js"></script>
+  <script src="./i18n.js"></script>
   <script src="./http-response.js"></script><script src="./loop-api.js"></script>
   <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>
   <script src="./vendor/markdown-it.min.js"></script>

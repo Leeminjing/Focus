@@ -1,6 +1,12 @@
 /* 原生 Gateway 失联提示独立于工作区挂载，重连/重启不重载页面或提交新请求。 */
 (function (global) {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const gateway = global.focusDesktop?.gateway;
   if (!gateway || new URLSearchParams(global.location.search).get("surface") === "robot") return;
   const document = global.document;
@@ -33,11 +39,11 @@
     banner.hidden = ready || value.status === "starting";
     reconnect.disabled = restart.disabled = busy;
     const en = english();
-    reconnect.textContent = en ? "Reconnect" : "重新连接";
-    restart.textContent = en ? "Restart service" : "重启服务";
+    reconnect.textContent = en ? "Reconnect" : localize("重新连接");
+    restart.textContent = en ? "Restart service" : localize("重启服务");
     message.textContent = busy
-      ? (en ? "Restoring the local service… Your work stays open." : "正在恢复本地服务…当前工作已保留。")
-      : (en ? "Local service disconnected. Your window and drafts are preserved." : "本地服务已断开，当前窗口和草稿已保留。");
+      ? (en ? "Restoring the local service… Your work stays open." : localize("正在恢复本地服务…当前工作已保留。"))
+      : (en ? "Local service disconnected. Your window and drafts are preserved." : localize("本地服务已断开，当前窗口和草稿已保留。"));
     if (!busy && value.error) message.textContent += ` ${value.error}`;
     if (ready && disconnected) {
       disconnected = false;

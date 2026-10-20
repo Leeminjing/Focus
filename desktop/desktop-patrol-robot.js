@@ -5,19 +5,28 @@
  */
 (async function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   if (new URLSearchParams(location.search).get("surface") !== "robot") return;
   document.body.dataset.surface = "robot";
   const host = document.querySelector("#robot"), bridge = window.focusDesktop?.patrol;
   host.hidden = false;
   const label = document.querySelector("#robot-status"), button = document.querySelector("#robot-open");
-  if (!bridge?.enabled) { label.textContent = "请从 Focus 桌面版启动"; return; }
+  if (!bridge?.enabled) { label.textContent = localize("请从 Focus 桌面版启动"); return; }
   let currentWorkspaceId = "";
-  const stateLabels = { idle: "点击打开 · 拖入材料", sending: "正在发送", accepted: "已受理", running: "工作中", waiting_user: "需要你处理", paused: "已暂停", stopped: "已停止", failed: "需要查看", disconnected: "连接中断", completed: "工作已完成", delivered: "本次工作已交付" };
+  const stateLabels = { get idle() { return localize("点击打开 · 拖入材料"); }, get sending() { return localize("正在发送"); }, get accepted() { return localize("已受理"); }, get running() { return localize("工作中"); }, get waiting_user() { return localize("需要你处理"); }, get paused() { return localize("已暂停"); }, get stopped() { return localize("已停止"); }, get failed() { return localize("需要查看"); }, get disconnected() { return localize("连接中断"); }, get completed() { return localize("工作已完成"); }, get delivered() { return localize("本次工作已交付"); } };
+  let latestState = null;
+  document.addEventListener("focus:languagechange", () => { if (latestState) update(latestState); });
   function update(state) {
+    latestState = state;
     currentWorkspaceId = state.workspaceId || "";
     host.dataset.active = String(!["idle", "stopped", "completed"].includes(state.state));
-    label.textContent = stateLabels[state.state] || "点击打开";
-    label.title = state.workspaceName || "绑定工作区";
+    label.textContent = stateLabels[state.state] || localize("点击打开");
+    label.title = state.workspaceName || localize("绑定工作区");
     const asset = { sending: "loading", accepted: "loading", running: "working", waiting_user: "thinking", failed: "alert", disconnected: "alert", completed: "happy", delivered: "happy" }[state.state] || "idle";
     button.querySelector("img").src = `./assets/patrol-avatar/${asset}.png`;
   }

@@ -5,6 +5,11 @@
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
 
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   // token 估算：与后端 focus/agents/compression/tokens.py 同公式（CJK=1、其余÷4、
   // 每条消息 +12），仅用于面板 Before/After 展示；触发判定由后端以同一公式执行。
   function estimateRawTokens(raw, messageCount) {
@@ -109,8 +114,8 @@
         .map(id => (Array.isArray(messages) ? messages : []).findIndex(m => m.id === id))
         .filter(index => index >= 0);
       const label = indexes.length
-        ? `消息 ${Math.min(...indexes) + 1}~${Math.max(...indexes) + 1}`
-        : "已移除范围";
+        ? localize`消息 ${Math.min(...indexes) + 1}~${Math.max(...indexes) + 1}`
+        : localize("已移除范围");
       return {
         label,
         sourceIds: range.source_ids || [],

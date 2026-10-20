@@ -30,6 +30,12 @@
   if (root) root.FocusConversationView = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   const PRESERVED_ATTRIBUTE = "data-conversation-preserved";
   const PRESERVED_SELECTORS = [".trace-panel", ".review-panel", ".access-review-panel"];
@@ -525,7 +531,7 @@
       || Boolean(reasoning) !== Boolean(event)) {
       if (event) {
         const template = document.createElement("template");
-        template.innerHTML = `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${deps.events.renderEvent(event, { previewMode: "latest" })}</section>`;
+        template.innerHTML = localize`<section class="conversation-event-sequence" role="group" aria-label="执行过程">${deps.events.renderEvent(event, { previewMode: "latest" })}</section>`;
         const node = template.content.firstElementChild;
         const currentRow = reasoning?.querySelector(EVENT_SELECTOR);
         const nextRow = node.querySelector(EVENT_SELECTOR);

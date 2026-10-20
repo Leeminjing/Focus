@@ -43,6 +43,12 @@
  * 普通会话照旧，workspace Loop 不进入旧 Mission/介入控制台，草稿和单路 Live 由专责控制器保持；Patrol 不展示普通会话检查器，壳层刷新保留本次路径选择。
  * 记忆库沿用同一 CRUD，区分普通记忆与演化策略编辑；列表响应按导航身份、压缩响应按请求及编辑快照隔离，迟到结果不得覆盖后续页面、选择或草稿。
  */
+// 源文案在渲染时取当前语言；模板插值始终保留原文。
+function localize(source, ...values) {
+  if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+  return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+}
+
 "use strict";
 
 // Shared reader also supplies the Markdown instance used by streaming blocks.
@@ -72,7 +78,7 @@ const materialContentLoader = window.MaterialContentLoader
   ? new window.MaterialContentLoader(runtime)
   : {
       bindAll: async () => {},
-      load: async () => { throw new Error("材料内容加载器不可用"); },
+      load: async () => { throw new Error(localize("材料内容加载器不可用")); },
       releaseMaterial() {},
       releaseTask() {},
       releaseAll() {},
@@ -267,7 +273,7 @@ function updateFileReferences(taskId, refs) {
     const cards = document.querySelector("#composerFileReferences");
     if (cards) cards.innerHTML = composerFiles.cards(refs);
   }
-  void persistUiState(taskId).catch(error => setStatus(`文件引用保存失败：${error.message}`, true));
+  void persistUiState(taskId).catch(error => setStatus(localize`文件引用保存失败：${error.message}`, true));
 }
 
 function addFileReference(value, taskId = state.activeTaskId) {
@@ -322,7 +328,7 @@ function mainReference(taskId) {
 function setMainReference(reference) {
   const taskId = state.activeTaskId;
   const recovery = taskRunOperations?.recovery(taskId);
-  if (recovery && !recovery.editing) return setStatus("请先选择「编辑后重新发送」以修改引用", true);
+  if (recovery && !recovery.editing) return setStatus(localize("请先选择「编辑后重新发送」以修改引用"), true);
   referenceDrafts.set(taskId, reference);
   const detail = state.details.get(taskId);
   if (detail) detail.ui_state = { ...(detail.ui_state || {}), message_reference: reference };
@@ -345,7 +351,7 @@ async function jumpToReference(reference) {
     article = find();
     if (conversationWindowLimit(reference.task_id) === previous) break;
   }
-  if (!article) return setStatus("原消息已不在当前历史中，引用原文仍已保留", true);
+  if (!article) return setStatus(localize("原消息已不在当前历史中，引用原文仍已保留"), true);
   article.scrollIntoView({ block: "center", behavior: "smooth" });
   article.classList.add("is-reference-source");
   setTimeout(() => article.classList.remove("is-reference-source"), 2000);
@@ -361,7 +367,7 @@ let workspacePatrolIntake = null;
 async function createWorkspacePatrolIntake() {
   const recovery = window.focusDesktop?.workspacePatrolRecovery || await window.FocusPatrolBrowserRecovery.open("workbench");
   return window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi, recovery,
-    onSaveError: error => setStatus(`Patrol 草稿保存失败：${error.message}`, true),
+    onSaveError: error => setStatus(localize`Patrol 草稿保存失败：${error.message}`, true),
     selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: () => accessMode.readNewSessionDefault(window.localStorage) });
 }
 let workspacePatrolController = null;
@@ -758,11 +764,11 @@ async function hydratePluginAssets(bootstrapPlugins = null) {
         }
       }
     }
-    if (failed.length) throw new Error(`无法加载插件: ${failed.join("、")}`);
+    if (failed.length) throw new Error(localize`无法加载插件: ${failed.join("、")}`);
     return true;
   } catch (error) {
     console.error("插件前端资源注入失败:", error);
-    if (["focus", "plugins"].includes(state.view)) setStatus(`插件资源注入失败: ${error.message}`, true);
+    if (["focus", "plugins"].includes(state.view)) setStatus(localize`插件资源注入失败: ${error.message}`, true);
     return false;
   }
 }
@@ -797,7 +803,7 @@ function pluginViewForMaterial(material) {
   ) || (window.FocusFilePreview ? {
     mountPanel(container, file, appState) {
       const name = file.relative_path || file.path;
-      container.innerHTML = `<header class="file-panel-head"><strong>${escapeHtml(name)}</strong><button type="button" data-file-close>关闭</button></header><div data-generic-file></div>`;
+      container.innerHTML = localize`<header class="file-panel-head"><strong>${escapeHtml(name)}</strong><button type="button" data-file-close>关闭</button></header><div data-generic-file></div>`;
       container.querySelector("[data-file-close]").addEventListener("click", () => window.__focusCloseFilePanel());
       const taskId = appState.activeTaskId;
       void window.FocusFilePreview.mount(container.querySelector("[data-generic-file]"), { name, target: { task_id: taskId, content_ref: name }, onReference: value => addTaskFileReference(value, taskId) });
@@ -907,11 +913,11 @@ async function bootstrap() {
     window.focusDesktop?.workspacePatrolRecovery?.onFlush(async token => {
       let error = null;
       try { await workspacePatrolIntake.flush(); }
-      catch (failure) { error = failure.message; setStatus(`Patrol 草稿保存失败：${error}`, true); }
+      catch (failure) { error = failure.message; setStatus(localize`Patrol 草稿保存失败：${error}`, true); }
       await window.focusDesktop.workspacePatrolRecovery.flushed({ token, error });
     });
   }
-  setStatus("正在连接…");
+  setStatus(localize("正在连接…"));
   performance.mark("focus:bootstrap-start");
   render();
   void ensureModelSetup().catch(error => setStatus(error.message, true));
@@ -924,7 +930,7 @@ async function bootstrap() {
   } catch (error) {
     setStatus(error.message, true);
     // Patrol 有独立的数据入口，摘要读取失败不能卸载已挂载的页面。
-    statusNode.insertAdjacentHTML("beforeend", ' <button data-action="reload">重试连接</button>');
+    statusNode.insertAdjacentHTML("beforeend", localize(' <button data-action="reload">重试连接</button>'));
     return false;
   }
   render();
@@ -939,12 +945,12 @@ async function bootstrap() {
 }
 
 const TASK_RESOURCES = {
-  detail: { suffix: "", label: "任务消息与运行状态", store: "details" },
-  materials: { suffix: "/materials", label: "材料", store: "materials" },
+  detail: { suffix: "", get label() { return localize("任务消息与运行状态"); }, store: "details" },
+  materials: { suffix: "/materials", get label() { return localize("材料"); }, store: "materials" },
   agents: { suffix: "/agents", label: "Agents", store: "agents" },
   skills: { suffix: "/skills", label: "Skills", store: "skillCatalogs" },
-  groups: { suffix: "/material-groups", label: "材料分组", store: "materialGroups" },
-  history: { suffix: "/material-history", label: "材料历史", store: "materialHistory" },
+  groups: { suffix: "/material-groups", get label() { return localize("材料分组"); }, store: "materialGroups" },
+  history: { suffix: "/material-history", get label() { return localize("材料历史"); }, store: "materialHistory" },
 };
 
 function renderTaskResourceStatus(taskId, resources) {
@@ -952,9 +958,9 @@ function renderTaskResourceStatus(taskId, resources) {
   return resources.map(resource => {
     const load = loads?.[resource];
     const source = TASK_RESOURCES[resource];
-    if (load?.status === "loading") return `<p class="muted tiny" role="status">${source.label}${state[source.store].has(taskId) ? "正在刷新" : "加载中"}…</p>`;
+    if (load?.status === "loading") return `<p class="muted tiny" role="status">${source.label}${state[source.store].has(taskId) ? localize("正在刷新") : localize("加载中")}…</p>`;
     if (load?.status !== "error") return "";
-    return `<p class="ui-notice is-warning" role="status"><span>${source.label}加载失败：${escapeHtml(load.error)}</span><button type="button" data-action="retry-task-resource" data-task-id="${escapeHtml(taskId)}" data-resource="${resource}">重试</button></p>`;
+    return localize`<p class="ui-notice is-warning" role="status"><span>${source.label}加载失败：${escapeHtml(load.error)}</span><button type="button" data-action="retry-task-resource" data-task-id="${escapeHtml(taskId)}" data-resource="${resource}">重试</button></p>`;
   }).join("");
 }
 
@@ -1046,7 +1052,7 @@ function applyTaskDetail(taskId, detail, { preserveMount = false } = {}) {
     if (workspaceId && !state.contextTrees.has(workspaceId)) void hydrateContextTrees([workspaceId]).then(() => {
       if (state.view === "focus" && state.activeTaskId === taskId) render();
     }).catch(error => {
-      if (state.view === "focus" && state.activeTaskId === taskId) setStatus(`Context 目录加载失败: ${error.message}`, true);
+      if (state.view === "focus" && state.activeTaskId === taskId) setStatus(localize`Context 目录加载失败: ${error.message}`, true);
     });
   }
 }
@@ -1090,7 +1096,7 @@ function render() {
   else if (state.view === "context") renderContextEditor();
   else {
     state.view = "focus";
-    setStatus("当前视图已不可用，已返回任务", true);
+    setStatus(localize("当前视图已不可用，已返回任务"), true);
     renderShellChrome();
     const task = activeTask();
     if (!task) renderNoActiveTask();
@@ -1104,7 +1110,7 @@ function renderNoActiveTask() {
   if (appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
   appInspector.hidden = true;
   const english = interfaceI18n.locale() === "en-US";
-  app.innerHTML = `<section class="empty-state"><h1>${english ? "No active Context" : "暂无活动 Context"}</h1><p>${english ? "There is no active Context. Create a task or restore an archived Context from Settings." : "当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。"}</p><div class="ui-toolbar"><button class="primary" data-action="new-task">${uiText("header.new_task", "新增任务")}</button><button class="text-button" data-action="open-settings">${english ? "View Archived Contexts" : "查看已归档 Context"}</button></div></section>`;
+  app.innerHTML = `<section class="empty-state"><h1>${english ? "No active Context" : localize("暂无活动 Context")}</h1><p>${english ? "There is no active Context. Create a task or restore an archived Context from Settings." : localize("当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。")}</p><div class="ui-toolbar"><button class="primary" data-action="new-task">${uiText("header.new_task", "新增任务")}</button><button class="text-button" data-action="open-settings">${english ? "View Archived Contexts" : localize("查看已归档 Context")}</button></div></section>`;
 }
 
 async function renderWorkspacePatrol() {
@@ -1125,7 +1131,7 @@ async function renderWorkspacePatrol() {
       onOpenTask: async contextId => {
         if (!state.tasks.some(item => item.task_id === contextId)) await refreshTasks();
         if (state.tasks.some(item => item.task_id === contextId)) await switchTask(contextId);
-        else setStatus("此 Context 暂不可从任务入口打开，请刷新工作区", true);
+        else setStatus(localize("此 Context 暂不可从任务入口打开，请刷新工作区"), true);
       },
     });
     workspacePatrolMount = workspacePatrolController.mount(app, workspace);
@@ -1207,7 +1213,7 @@ async function openLoopView() {
     }
     const snapshot = await loopApi.get(state.loop.loopId);
     if (snapshot.interaction_mode === "workspace_patrol") {
-      state.patrolWorkspace = { workspace_id: snapshot.workspace_id, display_name: task.workspace_name || "工作区" };
+      state.patrolWorkspace = { workspace_id: snapshot.workspace_id, display_name: task.workspace_name || localize("工作区") };
       state.view = "patrol";
       return render();
     }
@@ -1225,7 +1231,7 @@ async function openLoopView() {
 
 function renderLoop() {
   if (!loopView || !loopStore) {
-    app.innerHTML = '<section class="empty-state"><h1>Agent Loop</h1><p>Loop 视图模块不可用。</p></section>';
+    app.innerHTML = localize('<section class="empty-state"><h1>Agent Loop</h1><p>Loop 视图模块不可用。</p></section>');
     return;
   }
   const priorTranscript = app.querySelector?.("[data-loop-transcript]");
@@ -1298,7 +1304,7 @@ function renderLoop() {
   if (state.loop.revisionSnapshot) {
     const revision = state.loop.revisionSnapshot;
     const messages = revision.messages || revision.authored_messages || revision.execution_messages || [];
-    app.insertAdjacentHTML("beforeend", `<aside class="loop-revision-snapshot" aria-label="Context revision snapshot"><header><div><span class="loop-kicker">Historical snapshot</span><h3>${escapeHtml(revision.ref?.context_id || revision.context_id || "Context")} · R${escapeHtml(revision.ref?.generation || revision.generation || "—")}</h3></div><button type="button" data-action="close-loop-revision" aria-label="关闭历史快照">×</button></header><dl><div><dt>Revision</dt><dd>${escapeHtml(revision.ref?.revision_id || revision.revision_id || "—")}</dd></div><div><dt>Projection</dt><dd>${escapeHtml(revision.projection_status || "—")}</dd></div></dl><ol>${messages.map(message => `<li><strong>${escapeHtml(message.type || message.role || "message")}</strong><pre>${escapeHtml(typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? message, null, 2))}</pre></li>`).join("") || "<li>该历史视图没有内联消息。</li>"}</ol></aside>`);
+    app.insertAdjacentHTML("beforeend", localize`<aside class="loop-revision-snapshot" aria-label="Context revision snapshot"><header><div><span class="loop-kicker">Historical snapshot</span><h3>${escapeHtml(revision.ref?.context_id || revision.context_id || "Context")} · R${escapeHtml(revision.ref?.generation || revision.generation || "—")}</h3></div><button type="button" data-action="close-loop-revision" aria-label="关闭历史快照">×</button></header><dl><div><dt>Revision</dt><dd>${escapeHtml(revision.ref?.revision_id || revision.revision_id || "—")}</dd></div><div><dt>Projection</dt><dd>${escapeHtml(revision.projection_status || "—")}</dd></div></dl><ol>${messages.map(message => `<li><strong>${escapeHtml(message.type || message.role || "message")}</strong><pre>${escapeHtml(typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? message, null, 2))}</pre></li>`).join("") || localize("<li>该历史视图没有内联消息。</li>")}</ol></aside>`);
   }
   const error = loopStore.get().error;
   if (error) app.insertAdjacentHTML("beforeend", `<p class="loop-error" role="alert">${escapeHtml(error)}</p>`);
@@ -1367,13 +1373,13 @@ async function exitAgentLoop(prepareNew = false) {
     try {
       state.details.set(task.task_id, await api(`/desktop/api/tasks/${task.task_id}`));
     } catch (error) {
-      setStatus(`已退出 Loop；刷新 Context 状态失败：${error.message}`, true);
+      setStatus(localize`已退出 Loop；刷新 Context 状态失败：${error.message}`, true);
     }
   }
   if (prepareNew) {
     state.view = "focus";
     render();
-    setStatus("请在当前 Context 发送一条新的直接用户消息，再进入 Agent Loop 创建后继 Loop。", false);
+    setStatus(localize("请在当前 Context 发送一条新的直接用户消息，再进入 Agent Loop 创建后继 Loop。"), false);
     return;
   }
   renderLoop();
@@ -1389,19 +1395,19 @@ async function startAgentLoop(form) {
   const status = form.querySelector("[data-loop-start-status]");
   if (submit?.disabled) return;
   if (submit) submit.disabled = true;
-  if (status) status.textContent = "正在复核最新直接用户 Run…";
+  if (status) status.textContent = localize("正在复核最新直接用户 Run…");
   let eligibility;
   try {
     eligibility = await loopApi.activationEligibility(task.task_id);
   } catch (error) {
     if (submit) submit.disabled = false;
-    if (status) status.textContent = `复核失败：${error.message}`;
+    if (status) status.textContent = localize`复核失败：${error.message}`;
     return;
   }
   if (taskDetail) taskDetail.loop_activation = eligibility;
   if (!eligibility.eligible || !eligibility.candidate_run_id) {
     if (submit) submit.disabled = false;
-    if (status) status.textContent = `当前不能启动：${eligibility.reason || "没有可用 Run"}`;
+    if (status) status.textContent = localize`当前不能启动：${eligibility.reason || localize("没有可用 Run")}`;
     return;
   }
   const initialRunId = eligibility.candidate_run_id;
@@ -1444,7 +1450,7 @@ async function startAgentLoop(form) {
     equipment: {},
   };
   state.loop.loading = true;
-  if (status) status.textContent = `正在授权 Run ${initialRunId}…`;
+  if (status) status.textContent = localize`正在授权 Run ${initialRunId}…`;
   try {
     const snapshot = await loopApi.start(body);
     state.loop.loopId = snapshot.loop_id;
@@ -1462,7 +1468,7 @@ async function startAgentLoop(form) {
     observeLoopConnection(snapshot.loop_id);
   } catch (error) {
     loopStore.fail(error);
-    if (status) status.textContent = `授权失败：${error.message}`;
+    if (status) status.textContent = localize`授权失败：${error.message}`;
   } finally {
     state.loop.loading = false;
     if (submit?.isConnected) submit.disabled = false;
@@ -1585,14 +1591,15 @@ function activeNavigationKey() {
 function renderShellChrome() {
   const task = activeTask();
   const workspaceName = document.querySelector("#shellWorkspaceName");
-  if (workspaceName) workspaceName.textContent = state.patrolWorkspace?.display_name || (task?.harness_mode !== "assembly" && task?.workspace_name) || "选择工作区";
+  for (const node of [workspaceName, shellTaskTitle, shellTaskMeta]) node?.removeAttribute?.("data-i18n");
+  if (workspaceName) workspaceName.textContent = state.patrolWorkspace?.display_name || (task?.harness_mode !== "assembly" && task?.workspace_name) || localize("选择工作区");
   if (shellTaskTitle) shellTaskTitle.textContent = state.view === "patrol" ? `Patrol${state.patrolWorkspace?.display_name ? ` · ${state.patrolWorkspace.display_name}` : ""}` : task?.title || uiText("header.no_task", "尚未选择任务");
-  if (shellTaskMeta) shellTaskMeta.textContent = state.view === "patrol" ? "工作区统一输入" : task
+  if (shellTaskMeta) shellTaskMeta.textContent = state.view === "patrol" ? localize("工作区统一输入") : task
     ? `${task.workspace_name || uiText("common.local_workspace", "本地工作区")} · ${task.task_id.slice(0, 8)}`
     : uiText("header.workbench", "本地 Agent 工作台");
   if (state.view === "history") {
-    if (shellTaskTitle) shellTaskTitle.textContent = state.historyReader.detail?.title || "历史记录";
-    if (shellTaskMeta) shellTaskMeta.textContent = "只读查看";
+    if (shellTaskTitle) shellTaskTitle.textContent = state.historyReader.detail?.title || localize("历史记录");
+    if (shellTaskMeta) shellTaskMeta.textContent = localize("只读查看");
   }
   const current = activeNavigationKey();
   document.querySelectorAll?.("[data-nav-key]").forEach(button => {
@@ -1610,13 +1617,13 @@ function renderShellChrome() {
 }
 
 const RUN_STATUS_PRESENTATION = Object.freeze({
-  pending: { key: "status.pending", fallback: "排队中", tone: "active" },
-  running: { key: "status.running", fallback: "运行中", tone: "active" },
-  success: { key: "status.success", fallback: "已完成", tone: "success" },
-  interrupted: { key: "status.interrupted", fallback: "已中断", tone: "warning" },
-  error: { key: "status.error", fallback: "运行失败", tone: "danger" },
-  cancelled: { key: "status.cancelled", fallback: "已取消", tone: "warning" },
-  ready: { key: "status.ready", fallback: "就绪", tone: "neutral" },
+  pending: { key: "status.pending", get fallback() { return localize("排队中"); }, tone: "active" },
+  running: { key: "status.running", get fallback() { return localize("运行中"); }, tone: "active" },
+  success: { key: "status.success", get fallback() { return localize("已完成"); }, tone: "success" },
+  interrupted: { key: "status.interrupted", get fallback() { return localize("已中断"); }, tone: "warning" },
+  error: { key: "status.error", get fallback() { return localize("运行失败"); }, tone: "danger" },
+  cancelled: { key: "status.cancelled", get fallback() { return localize("已取消"); }, tone: "warning" },
+  ready: { key: "status.ready", get fallback() { return localize("就绪"); }, tone: "neutral" },
 });
 
 function presentRunStatus(status) {
@@ -1627,19 +1634,19 @@ function presentRunStatus(status) {
 function presentTaskStatus(task) {
   const attention = task.attention || [];
   if (attention.length) {
-    return { label: attention.some(item => item.kind === "access_approval") ? "等待授权" : "需要你处理", tone: "warning" };
+    return { label: attention.some(item => item.kind === "access_approval") ? localize("等待授权") : localize("需要你处理"), tone: "warning" };
   }
-  if (task.attention_unavailable) return { label: "待处理状态待刷新", tone: "warning" };
+  if (task.attention_unavailable) return { label: localize("待处理状态待刷新"), tone: "warning" };
   if (["pending", "running"].includes(task.active_run?.status)) return presentRunStatus(task.active_run.status);
   const loopStatus = task.loop?.status;
   if (["running", "pausing", "completing"].includes(loopStatus)) return presentRunStatus("running");
-  if (loopStatus === "waiting_user") return { label: "需要你处理", tone: "warning" };
-  if (loopStatus === "paused") return { label: "已暂停", tone: "warning" };
+  if (loopStatus === "waiting_user") return { label: localize("需要你处理"), tone: "warning" };
+  if (loopStatus === "paused") return { label: localize("已暂停"), tone: "warning" };
   if (loopStatus === "failed") return presentRunStatus("error");
   if (loopStatus === "completed") return presentRunStatus("success");
-  if (loopStatus === "stopped") return { label: "已停止", tone: "warning" };
+  if (loopStatus === "stopped") return { label: localize("已停止"), tone: "warning" };
   if (task.latest_run) return presentRunStatus(task.latest_run.status);
-  return { label: "未开始", tone: "neutral" };
+  return { label: localize("未开始"), tone: "neutral" };
 }
 
 function materialGroupingProjection(task) {
@@ -1663,10 +1670,10 @@ function materialGroupingProjection(task) {
 function renderMaterialGroups(task) {
   const projection = materialGroupingProjection(task);
   const groups = projection.groups.map(group => `<section class="material-group" data-material-group-key="${escapeHtml(group.key)}">
-    <header class="material-group-header"><button class="text-button material-group-toggle" data-action="toggle-material-group" data-group-key="${escapeHtml(group.key)}" aria-expanded="${!group.collapsed}">${group.collapsed ? "▸" : "▾"} ${escapeHtml(group.label)}</button><span class="ui-badge">${group.materials.length}${group.selectedCount ? ` · 已选 ${group.selectedCount}` : ""}</span>${group.source === "custom" ? `<span class="material-group-actions"><button class="text-button" data-action="move-material-group-order" data-group-id="${escapeHtml(group.key.slice(7))}" data-direction="-1" title="上移">↑</button><button class="text-button" data-action="move-material-group-order" data-group-id="${escapeHtml(group.key.slice(7))}" data-direction="1" title="下移">↓</button><button class="text-button" data-action="rename-material-group" data-group-id="${escapeHtml(group.key.slice(7))}">改名</button><button class="text-button danger" data-action="delete-material-group" data-group-id="${escapeHtml(group.key.slice(7))}">删除</button></span>` : ""}</header>
-    <div class="material-group-body"${group.collapsed ? " hidden" : ""} data-drop-group-id="${group.source === "custom" ? escapeHtml(group.key.slice(7)) : ""}">${group.materials.map(renderMaterial).join("") || '<p class="muted tiny">空分组</p>'}</div>
+    <header class="material-group-header"><button class="text-button material-group-toggle" data-action="toggle-material-group" data-group-key="${escapeHtml(group.key)}" aria-expanded="${!group.collapsed}">${group.collapsed ? "▸" : "▾"} ${escapeHtml(group.label)}</button><span class="ui-badge">${group.materials.length}${group.selectedCount ? localize` · 已选 ${group.selectedCount}` : ""}</span>${group.source === "custom" ? localize`<span class="material-group-actions"><button class="text-button" data-action="move-material-group-order" data-group-id="${escapeHtml(group.key.slice(7))}" data-direction="-1" title="上移">↑</button><button class="text-button" data-action="move-material-group-order" data-group-id="${escapeHtml(group.key.slice(7))}" data-direction="1" title="下移">↓</button><button class="text-button" data-action="rename-material-group" data-group-id="${escapeHtml(group.key.slice(7))}">改名</button><button class="text-button danger" data-action="delete-material-group" data-group-id="${escapeHtml(group.key.slice(7))}">删除</button></span>` : ""}</header>
+    <div class="material-group-body"${group.collapsed ? " hidden" : ""} data-drop-group-id="${group.source === "custom" ? escapeHtml(group.key.slice(7)) : ""}">${group.materials.map(renderMaterial).join("") || localize('<p class="muted tiny">空分组</p>')}</div>
   </section>`).join("");
-  return `<div class="material-group-toolbar"><span class="segmented" role="group" aria-label="材料自动分组"><button data-action="set-material-grouping" data-mode="run" class="${projection.mode === "run" ? "active" : ""}">按 Run</button><button data-action="set-material-grouping" data-mode="type" class="${projection.mode === "type" ? "active" : ""}">按类型</button></span><button class="text-button" data-action="create-material-group">新建分组</button></div>${groups}`;
+  return localize`<div class="material-group-toolbar"><span class="segmented" role="group" aria-label="材料自动分组"><button data-action="set-material-grouping" data-mode="run" class="${projection.mode === "run" ? "active" : ""}">按 Run</button><button data-action="set-material-grouping" data-mode="type" class="${projection.mode === "type" ? "active" : ""}">按类型</button></span><button class="text-button" data-action="create-material-group">新建分组</button></div>${groups}`;
 }
 
 // 查询仅在运行详情可见时触发；请求身份隔离任务切换和迟到响应。
@@ -1692,23 +1699,23 @@ function readRunCausality(run, refresh = false) {
 function renderRunCausality(run) {
   if (!run?.run_id) return "";
   const entry = readRunCausality(run);
-  const heading = '<header><h3>指令因果链</h3><button class="text-button" data-action="refresh-run-causality">刷新</button></header>';
-  if (entry.loading) return `<section class="inspector-section run-causality">${heading}<p role="status">正在读取指令因果链…</p></section>`;
-  if (entry.error) return `<section class="inspector-section run-causality">${heading}<p role="alert">因果链读取失败：${escapeHtml(entry.error)}</p><button class="text-button" data-action="refresh-run-causality">重试</button></section>`;
+  const heading = localize('<header><h3>指令因果链</h3><button class="text-button" data-action="refresh-run-causality">刷新</button></header>');
+  if (entry.loading) return localize`<section class="inspector-section run-causality">${heading}<p role="status">正在读取指令因果链…</p></section>`;
+  if (entry.error) return localize`<section class="inspector-section run-causality">${heading}<p role="alert">因果链读取失败：${escapeHtml(entry.error)}</p><button class="text-button" data-action="refresh-run-causality">重试</button></section>`;
   const chain = entry.data;
-  if (!chain) return `<section class="inspector-section run-causality">${heading}<p class="muted">此运行未关联 Directive，暂无指令因果记录。</p></section>`;
-  const labels = { proposed: "已提出", authorized: "已授权", delivering: "投递中", delivered: "已送达", run_started: "已启动", settled: "已结算", rejected: "已拒绝", failed: "执行失败", cancelled: "已取消", delivery_failed: "投递失败" };
-  const origins = { direct_user: "用户直接指令", patrol: "Patrol 委托", delegated_patrol: "Patrol 委托" };
+  if (!chain) return localize`<section class="inspector-section run-causality">${heading}<p class="muted">此运行未关联 Directive，暂无指令因果记录。</p></section>`;
+  const labels = { proposed: localize("已提出"), authorized: localize("已授权"), delivering: localize("投递中"), delivered: localize("已送达"), run_started: localize("已启动"), settled: localize("已结算"), rejected: localize("已拒绝"), failed: localize("执行失败"), cancelled: localize("已取消"), delivery_failed: localize("投递失败") };
+  const origins = { direct_user: localize("用户直接指令"), patrol: localize("Patrol 委托"), delegated_patrol: localize("Patrol 委托") };
   const meta = fields => `<dl class="inspector-run-meta">${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value ?? "—")}</dd></div>`).join("")}</dl>`;
   const json = value => `<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
-  return `<section class="inspector-section run-causality">${heading}
-    ${meta([["指令 ID", chain.directive.directive_id], ["来源", origins[chain.directive.origin] || chain.directive.origin], ["执行进度", labels[chain.directive.state] || chain.directive.state], ["关联标识", chain.directive.correlation_id]])}
-    <h4>为什么执行</h4><p>${escapeHtml(chain.decision?.rationale || "未记录决策理由")}</p>
+  return localize`<section class="inspector-section run-causality">${heading}
+    ${meta([[localize("指令 ID"), chain.directive.directive_id], [localize("来源"), origins[chain.directive.origin] || chain.directive.origin], [localize("执行进度"), labels[chain.directive.state] || chain.directive.state], [localize("关联标识"), chain.directive.correlation_id]])}
+    <h4>为什么执行</h4><p>${escapeHtml(chain.decision?.rationale || localize("未记录决策理由"))}</p>
     <h4>指令内容</h4><p>${escapeHtml(chain.directive.content)}</p>
     ${chain.directive.reason ? `<p>${escapeHtml(chain.directive.reason)}</p>` : ""}
-    <h4>状态变化</h4><ol>${chain.transitions.map(item => `<li><strong>${escapeHtml(labels[item.state] || item.state)}</strong> · ${escapeHtml(item.occurred_at || "")} ${item.reason ? `<p>${escapeHtml(item.reason)}</p>` : ""}${item.run_id ? `<small>Run ${escapeHtml(item.run_id)}</small>` : ""}</li>`).join("") || "<li>暂无状态变化记录</li>"}</ol>
-    <h4>关联运行</h4>${chain.runs.map(item => meta([["Run", item.run_id], ["状态", presentRunStatus(item.status).label]])).join("") || '<p class="muted">暂无关联运行</p>'}
-    <h4>工作树与变更</h4>${chain.workspace.map(item => `<div>${meta([["Run", item.run_id], ["工作树", item.root_path], ["工作树 ID", item.slot_id], ["类型", item.kind === "isolated" ? "隔离工作树" : "主工作区"], ["工作区版本", `${item.observed_workspace_revision} → ${item.resulting_workspace_revision ?? "待结算"}`], ["采用状态", item.adoption_state]])}<details><summary>变更证据</summary>${json(item.effect_evidence)}</details></div>`).join("") || '<p class="muted">暂无工作区执行锚点</p>'}
+    <h4>状态变化</h4><ol>${chain.transitions.map(item => `<li><strong>${escapeHtml(labels[item.state] || item.state)}</strong> · ${escapeHtml(item.occurred_at || "")} ${item.reason ? `<p>${escapeHtml(item.reason)}</p>` : ""}${item.run_id ? `<small>Run ${escapeHtml(item.run_id)}</small>` : ""}</li>`).join("") || localize("<li>暂无状态变化记录</li>")}</ol>
+    <h4>关联运行</h4>${chain.runs.map(item => meta([["Run", item.run_id], [localize("状态"), presentRunStatus(item.status).label]])).join("") || localize('<p class="muted">暂无关联运行</p>')}
+    <h4>工作树与变更</h4>${chain.workspace.map(item => localize`<div>${meta([["Run", item.run_id], [localize("工作树"), item.root_path], [localize("工作树 ID"), item.slot_id], [localize("类型"), item.kind === "isolated" ? localize("隔离工作树") : localize("主工作区")], [localize("工作区版本"), `${item.observed_workspace_revision} → ${item.resulting_workspace_revision ?? localize("待结算")}`], [localize("采用状态"), item.adoption_state]])}<details><summary>变更证据</summary>${json(item.effect_evidence)}</details></div>`).join("") || localize('<p class="muted">暂无工作区执行锚点</p>')}
     <details><summary>关联事件（${chain.events.length}）</summary><ol>${chain.events.map(item => `<li><strong>#${item.sequence} · ${escapeHtml(item.kind)}</strong>${json(item)}</li>`).join("")}</ol></details>
   </section>`;
 }
@@ -1755,7 +1762,7 @@ function renderInspector() {
     button.tabIndex = selected ? 0 : -1;
   });
   if (!task) {
-    inspectorContent.innerHTML = '<section class="ui-empty-state"><h1>暂无任务</h1><p>创建任务后即可查看上下文信息。</p></section>';
+    inspectorContent.innerHTML = localize('<section class="ui-empty-state"><h1>暂无任务</h1><p>创建任务后即可查看上下文信息。</p></section>');
     return;
   }
   if (tab === "context") {
@@ -1765,7 +1772,7 @@ function renderInspector() {
   if (tab === "materials") {
     const materials = state.materials.get(task.task_id) || [];
     const protectedCount = materials.filter(item => item.retention === "irreplaceable").length;
-    inspectorContent.innerHTML = `<section class="inspector-section materials-inspector"><header><div><span class="workspace-kicker">TASK SOURCES</span><h3>任务材料</h3></div><span class="ui-badge">${materials.length}</span></header><p class="inspector-description">每轮选择与长期策略互不覆盖；手动分组始终优先于自动分组。</p>${protectedCount ? `<div class="ui-notice is-success"><strong>${protectedCount} 份材料受版本保护</strong><span>不可遗失材料可置空或从历史版本恢复，但不会直接删除。</span></div>` : ""}<div class="inspector-list">${materials.length || (state.materialGroups.get(task.task_id) || []).length ? renderMaterialGroups(task) : '<section class="ui-empty-state"><h1>暂无材料</h1><p>从 Composer 添加文件后，可在这里配置阅读和保留策略。</p></section>'}</div></section>`;
+    inspectorContent.innerHTML = localize`<section class="inspector-section materials-inspector"><header><div><span class="workspace-kicker">TASK SOURCES</span><h3>任务材料</h3></div><span class="ui-badge">${materials.length}</span></header><p class="inspector-description">每轮选择与长期策略互不覆盖；手动分组始终优先于自动分组。</p>${protectedCount ? localize`<div class="ui-notice is-success"><strong>${protectedCount} 份材料受版本保护</strong><span>不可遗失材料可置空或从历史版本恢复，但不会直接删除。</span></div>` : ""}<div class="inspector-list">${materials.length || (state.materialGroups.get(task.task_id) || []).length ? renderMaterialGroups(task) : localize('<section class="ui-empty-state"><h1>暂无材料</h1><p>从 Composer 添加文件后，可在这里配置阅读和保留策略。</p></section>')}</div></section>`;
     inspectorContent.insertAdjacentHTML("afterbegin", renderTaskResourceStatus(task.task_id, ["materials", "groups", "history"]));
     return;
   }
@@ -1781,10 +1788,10 @@ function renderInspector() {
       inspectorContent.innerHTML = `<section class="inspector-section agent-inspector-detail">
         ${renderTaskResourceStatus(task.task_id, ["agents"])}
         <header><button class="text-button" type="button" data-action="agent-list"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span>Agents</button><span class="ui-badge is-${presented.tone}">${escapeHtml(curator ? curatorStateLabel(agent) : presented.label)}</span></header>
-        <div><h3>${agent ? `小兵 ${escapeHtml(agent.agent_id.slice(0, 8))}` : "Agent"}</h3><p class="ui-meta">${escapeHtml(agent?.checkpoint_ns || "")}</p></div>
+        <div><h3>${agent ? localize`小兵 ${escapeHtml(agent.agent_id.slice(0, 8))}` : "Agent"}</h3><p class="ui-meta">${escapeHtml(agent?.checkpoint_ns || "")}</p></div>
         ${curator
-          ? (state.agentDetails.busy ? '<p class="muted">加载中…</p>' : renderCuratorDetails(agent, state.agentDetails.curation))
-          : `<div class="agent-detail-history">${state.agentDetails.busy ? '<p class="muted">加载中…</p>' : state.agentDetails.messages.length ? state.agentDetails.messages.map(renderMessage).join("") : '<p class="muted">暂无已提交消息</p>'}</div>
+          ? (state.agentDetails.busy ? localize('<p class="muted">加载中…</p>') : renderCuratorDetails(agent, state.agentDetails.curation))
+          : localize`<div class="agent-detail-history">${state.agentDetails.busy ? localize('<p class="muted">加载中…</p>') : state.agentDetails.messages.length ? state.agentDetails.messages.map(renderMessage).join("") : localize('<p class="muted">暂无已提交消息</p>')}</div>
             <div class="ui-toolbar agent-detail-actions"><button class="text-button" data-action="refresh-agent-details">刷新</button><button class="text-button" data-action="retry-agent-details">重试</button><button class="text-button danger" data-action="cancel-agent-details">取消运行</button></div>
             <div id="patrolBranchControls"></div><form class="agent-inspector-continue" id="agentInspectorContinueForm"><label for="agentInspectorInput">继续对话</label><textarea id="agentInspectorInput" rows="3" placeholder="给这个 Agent 追加指令…"></textarea><button class="primary" type="submit">继续</button></form>`}
       </section>`;
@@ -1795,13 +1802,13 @@ function renderInspector() {
       });
       return;
     }
-    inspectorContent.innerHTML = `${renderTaskResourceStatus(task.task_id, ["agents"])}<section class="inspector-section"><header><h3>协作 Agents</h3><span class="ui-badge">${agents.length}</span></header><div class="inspector-list">${agents.length ? renderAgentStrip(task.task_id) : '<p class="muted">尚未投放小兵</p>'}</div></section>`;
+    inspectorContent.innerHTML = localize`${renderTaskResourceStatus(task.task_id, ["agents"])}<section class="inspector-section"><header><h3>协作 Agents</h3><span class="ui-badge">${agents.length}</span></header><div class="inspector-list">${agents.length ? renderAgentStrip(task.task_id) : localize('<p class="muted">尚未投放小兵</p>')}</div></section>`;
 
     return;
   }
   const run = sessionUsageRun(task.task_id);
   const presented = presentTaskStatus(task);
-  inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>主 Agent</h3><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header><dl class="inspector-run-meta"><div><dt>任务</dt><dd>${escapeHtml(task.title)}</dd></div><div><dt>运行 ID</dt><dd>${escapeHtml(run?.run_id || "—")}</dd></div></dl>${state.commitment.stage ? `<section class="inspector-run-stage"><span class="workspace-kicker">COMMITMENT</span><strong>${state.commitment.stage}/9 · ${escapeHtml(COMMITMENT_STAGE_NAMES[state.commitment.stage] || "准备中")}</strong><span>${state.commitment.review ? "等待人工确认" : state.commitment.terminalStatus ? presentRunStatus(state.commitment.terminalStatus).label : "正在执行"}</span></section>` : ""}${renderInterruptButton(state.details.get(task.task_id))}</section>`;
+  inspectorContent.innerHTML = localize`<section class="inspector-section"><header><h3>主 Agent</h3><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header><dl class="inspector-run-meta"><div><dt>任务</dt><dd>${escapeHtml(task.title)}</dd></div><div><dt>运行 ID</dt><dd>${escapeHtml(run?.run_id || "—")}</dd></div></dl>${state.commitment.stage ? `<section class="inspector-run-stage"><span class="workspace-kicker">COMMITMENT</span><strong>${state.commitment.stage}/9 · ${escapeHtml(COMMITMENT_STAGE_NAMES[state.commitment.stage] || localize("准备中"))}</strong><span>${state.commitment.review ? localize("等待人工确认") : state.commitment.terminalStatus ? presentRunStatus(state.commitment.terminalStatus).label : localize("正在执行")}</span></section>` : ""}${renderInterruptButton(state.details.get(task.task_id))}</section>`;
   inspectorContent.insertAdjacentHTML("beforeend", window.FocusSessionControls.usage(state.equipment, run, escapeHtml));
   inspectorContent.insertAdjacentHTML("beforeend", renderRunCausality(run));
 }
@@ -1904,7 +1911,7 @@ function updateSkillMenu(input, reset = false) {
     ? Math.min(state.pickerActive[kind], total - 1)
     : -1;
   const commitItem = commitCount
-    ? `<button type="button" id="${kind}SkillOption0" class="skill-option commit-option ${state.pickerActive[kind] === 0 ? "is-active" : ""}" role="option" aria-selected="${state.pickerActive[kind] === 0}" data-action="select-commit" data-picker-kind="${kind}"><span class="skill-option-name">/commit</span><span class="skill-option-description">进入九阶段承诺流程</span></button>`
+    ? localize`<button type="button" id="${kind}SkillOption0" class="skill-option commit-option ${state.pickerActive[kind] === 0 ? "is-active" : ""}" role="option" aria-selected="${state.pickerActive[kind] === 0}" data-action="select-commit" data-picker-kind="${kind}"><span class="skill-option-name">/commit</span><span class="skill-option-description">进入九阶段承诺流程</span></button>`
     : "";
   const options = matches.map((skill, index) => {
     const optionIndex = index + commitCount;
@@ -1979,33 +1986,33 @@ function renderRunMaterialNote(materialId) {
   // 取消勾选只隐藏输入框，备注草稿仍由 run-material-picker 按材料 ID 保留。
   const binding = materialSelection().bindings.find(item => item.materialId === materialId);
   if (!binding) return "";
-  return `<label class="run-material-note"><textarea data-field="run-material-note" rows="2" draggable="false" placeholder="给这份材料添加本轮备注，可留空">${escapeHtml(binding.note)}</textarea></label>`;
+  return localize`<label class="run-material-note"><textarea data-field="run-material-note" rows="2" draggable="false" placeholder="给这份材料添加本轮备注，可留空">${escapeHtml(binding.note)}</textarea></label>`;
 }
 
 function renderMustViewRecovery(detail) {
   const report = detail?.pending_must_view_report;
   if (!report) return "";
   const rows = (Array.isArray(report.materials) ? report.materials : []).map(item => {
-    const reason = item.reason === "unread" ? "模型声明未读到" : "模型缺少逐图表态";
+    const reason = item.reason === "unread" ? localize("模型声明未读到") : localize("模型缺少逐图表态");
     return `<li><strong>${escapeHtml(item.relative_path || item.material_id)}</strong><span>${reason}</span></li>`;
   }).join("");
-  return `<section class="review-panel must-view-report" data-unit-key="must-view-recovery" aria-label="必看图片报告"><header><span class="review-kicker">必看图片</span><h3>需要人工处理</h3><span class="review-badge">已暂停</span></header><ul class="review-draft">${rows || "<li>必看图片报告不完整</li>"}</ul><div class="review-actions"><button class="primary" data-action="retry-must-view">重试</button><button class="text-button danger" data-action="cancel-must-view">取消本轮</button></div></section>`;
+  return localize`<section class="review-panel must-view-report" data-unit-key="must-view-recovery" aria-label="必看图片报告"><header><span class="review-kicker">必看图片</span><h3>需要人工处理</h3><span class="review-badge">已暂停</span></header><ul class="review-draft">${rows || localize("<li>必看图片报告不完整</li>")}</ul><div class="review-actions"><button class="primary" data-action="retry-must-view">重试</button><button class="text-button danger" data-action="cancel-must-view">取消本轮</button></div></section>`;
 }
 
 function composerFeedback(detail, projectionBlocked) {
   const recovery = taskRunOperations?.recovery(state.activeTaskId);
-  if (recovery?.failure?.uncertain === false && !recovery.editing) return { kind: "danger", text: `发送未受理：${recovery.failure.message}` };
+  if (recovery?.failure?.uncertain === false && !recovery.editing) return { kind: "danger", text: localize`发送未受理：${recovery.failure.message}` };
   if (recovery) return { kind: "warning", text: recovery.editing
-    ? "原请求尚未确认是否受理；编辑后重新发送会创建新请求，原请求仍可能执行。"
-    : "尚未确认是否受理。原消息、附件和请求身份已保留，可按原内容重试。" };
+    ? localize("原请求尚未确认是否受理；编辑后重新发送会创建新请求，原请求仍可能执行。")
+    : localize("尚未确认是否受理。原消息、附件和请求身份已保留，可按原内容重试。") };
   const error = state.composerErrors.get(state.activeTaskId);
-  if (error) return { kind: "danger", text: error.startsWith("消息已受理") ? error : `发送失败：${error}` };
-  if (state.mainPreparations.has(state.activeTaskId)) return { kind: "warning", text: "正在准备本次附件，完成后将自动发送…" };
-  if (projectionBlocked) return { kind: "warning", text: "该 Context 需要完成执行投影决断后才能继续。" };
-  if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
-  if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
-  if (detail?.pending_must_view_report) return { kind: "warning", text: "必看图片报告等待重试或取消。" };
-  if (detail?.pending_access_review) return { kind: "warning", text: "存在待批准的本机资源访问请求，请先批准或拒绝。" };
+  if (error) return { kind: "danger", text: error.startsWith("消息已受理") ? error : localize`发送失败：${error}` };
+  if (state.mainPreparations.has(state.activeTaskId)) return { kind: "warning", text: localize("正在准备本次附件，完成后将自动发送…") };
+  if (projectionBlocked) return { kind: "warning", text: localize("该 Context 需要完成执行投影决断后才能继续。") };
+  if (activeTaskHasCommitmentLock()) return { kind: "warning", text: localize("当前任务正在等待 Commitment 审批，请先处理上方审批区。") };
+  if (detail?.pending_compression) return { kind: "warning", text: localize("存在待确认的压缩计划，请先确认或取消。") };
+  if (detail?.pending_must_view_report) return { kind: "warning", text: localize("必看图片报告等待重试或取消。") };
+  if (detail?.pending_access_review) return { kind: "warning", text: localize("存在待批准的本机资源访问请求，请先批准或拒绝。") };
   return null;
 }
 
@@ -2013,7 +2020,7 @@ function renderMainRecovery(taskId) {
   const recovery = taskRunOperations?.recovery(taskId);
   if (!recovery) return "";
   const pending = taskRunOperations.get(taskId).submission?.status === "pending";
-  return `<button type="button" class="text-button" data-action="retry-main" ${pending ? "disabled" : ""}>按原内容重试</button><button type="button" class="text-button" data-action="edit-main" ${pending ? "disabled" : ""}>编辑后重新发送</button>`;
+  return localize`<button type="button" class="text-button" data-action="retry-main" ${pending ? "disabled" : ""}>按原内容重试</button><button type="button" class="text-button" data-action="edit-main" ${pending ? "disabled" : ""}>编辑后重新发送</button>`;
 }
 
 function updateMainRecoveryControls() {
@@ -2027,7 +2034,7 @@ function updateMainRecoveryControls() {
     && !composingMainInputs.has(input)
     && composerDraft.value(taskId, input.value).trim() === recovery.message);
   const send = document.querySelector('[data-action="send-main"]');
-  if (send) send.textContent = state.mainPreparations.has(taskId) ? "等待附件…" : recovery ? (recovery.editing ? (recovery.queued_edit ? "排队下一轮" : "发送新请求") : "按原内容重试") : mainDeliveryRun(taskId) ? "补充当前轮" : uiText("focus.send", "发送");
+  if (send) send.textContent = state.mainPreparations.has(taskId) ? localize("等待附件…") : recovery ? (recovery.editing ? (recovery.queued_edit ? localize("排队下一轮") : localize("发送新请求")) : localize("按原内容重试")) : mainDeliveryRun(taskId) ? localize("补充当前轮") : uiText("focus.send", "发送");
 }
 
 function mainDeliveryRun(taskId = state.activeTaskId) {
@@ -2060,7 +2067,7 @@ setInterval(async () => {
     }
     if (started) { await hydrateActive(taskId); if (state.activeTaskId === taskId && state.view === "focus") renderFocus(); }
   } catch (error) {
-    if (state.activeTaskId === taskId) setStatus(`消息交付状态暂时无法刷新：${error.message}`, true);
+    if (state.activeTaskId === taskId) setStatus(localize`消息交付状态暂时无法刷新：${error.message}`, true);
   } finally { conversationInputPolling = false; }
 }, 1000);
 
@@ -2070,7 +2077,7 @@ async function withdrawQueuedMain(inputId, edit) {
       || mainReference(taskId)
       || taskRunOperations?.recovery(taskId) || materialSelection(taskId).bindings.length
       || state.composerAttachments.get(taskId)?.size)) {
-    return setStatus("请先发送或清空当前输入和附件，再撤回排队消息编辑", true);
+    return setStatus(localize("请先发送或清空当前输入和附件，再撤回排队消息编辑"), true);
   }
   try {
     const row = await api(`/desktop/api/tasks/${taskId}/main/inputs/${inputId}`, { method: "DELETE" });
@@ -2142,7 +2149,7 @@ function renderContextRail(task) {
     if (lifecycle !== "active") {
       // 墓碑：仅当被归档/删除的会话仍被后代引用（有后代）时才保留原位占位；无后代直接消失。
       if (!contextHasDescendants(item.task_id, tree)) return "";
-      const tag = lifecycle === "archived" ? "已归档" : "已删除";
+      const tag = lifecycle === "archived" ? localize("已归档") : localize("已删除");
       return `<div class="context-rail-item is-tombstone" style="--context-depth:${depth}" data-context-depth="${depth}">
         <span class="context-rail-card is-deleted" role="presentation">
           <span class="context-rail-title">${escapeHtml(item.title)}</span>
@@ -2153,14 +2160,14 @@ function renderContextRail(task) {
     return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}">
       <button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}">
         <span class="context-rail-title">${escapeHtml(item.title)}</span>
-        <span class="context-rail-meta">${depth ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")} · ${escapeHtml(item.task_id.slice(0, 8))}${node?.managed_status ? ` · 受管 ${escapeHtml(curatorTrackingLabel(node.managed_status))}${node.managed_health && node.managed_health !== "idle" ? `/${escapeHtml(node.managed_health)}` : ""}` : ""}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · ${uiText("focus.cache", "缓存")} ${cacheRate}</span>
-        ${otherParents ? `<span class="context-rail-parents">另含：${escapeHtml(otherParents)}</span>` : ""}
+        <span class="context-rail-meta">${depth ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")} · ${escapeHtml(item.task_id.slice(0, 8))}${node?.managed_status ? localize` · 受管 ${escapeHtml(curatorTrackingLabel(node.managed_status))}${node.managed_health && node.managed_health !== "idle" ? `/${escapeHtml(node.managed_health)}` : ""}` : ""}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · ${uiText("focus.cache", "缓存")} ${cacheRate}</span>
+        ${otherParents ? localize`<span class="context-rail-parents">另含：${escapeHtml(otherParents)}</span>` : ""}
       </button>
-      ${node?.editable ? `<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
+      ${node?.editable ? localize`<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
     </div>`;
   }).filter(Boolean);
   const cards = cardList.join("");
-  return `<aside class="context-rail" aria-label="Context 树">
+  return localize`<aside class="context-rail" aria-label="Context 树">
     <header class="context-rail-heading"><strong>${uiText("nav.contexts", "上下文")}</strong><span>${cardList.length}</span></header>
     <nav class="context-rail-list" aria-label="当前聊天派生的 Context">
       ${cards}
@@ -2171,16 +2178,16 @@ function renderContextRail(task) {
 
 function renderTaskRail(task) {
   const tasks = state.tasks.filter(item => item.harness_mode !== "assembly" && sessionLifecycle(item) === "active");
-  return `<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(presentTaskStatus(item).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
+  return localize`<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || localize("本地工作区"))} · ${escapeHtml(presentTaskStatus(item).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
 }
 
 function capabilityRefreshSummary(result) {
-  return `已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具、${result.custom_tool_count ?? 0} 个自定义工具`;
+  return localize`已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具、${result.custom_tool_count ?? 0} 个自定义工具`;
 }
 
 function mcpFailureDescription(item) {
-  const scopes = { default: "程序默认", global: "全局", workspace: "工作区", provided: "传入配置" };
-  return `${item.server_name}（${scopes[item.scope] || item.scope}${item.config_path ? ` · ${item.config_path}` : ""}）：${item.reason}；处理：${item.action}`;
+  const scopes = { default: localize("程序默认"), global: localize("全局"), workspace: localize("工作区"), provided: localize("传入配置") };
+  return localize`${item.server_name}（${scopes[item.scope] || item.scope}${item.config_path ? ` · ${item.config_path}` : ""}）：${item.reason}；处理：${item.action}`;
 }
 
 function renderCapabilityRefreshResult(taskId) {
@@ -2189,8 +2196,8 @@ function renderCapabilityRefreshResult(taskId) {
   const failures = result.mcp_failures || [];
   const hasFailures = failures.length > 0 || result.failed_servers.length > 0;
   const details = failures.length ? failures.map(mcpFailureDescription)
-    : result.failed_servers.map(name => `${name}：请检查配置或连接后重试 MCP。`);
-  return `<section class="capability-refresh-result${hasFailures ? " danger" : ""}" role="status" aria-label="能力刷新结果"><strong>${hasFailures ? "MCP 刷新存在失败；" : ""}${escapeHtml(capabilityRefreshSummary(result))}</strong>${details.length ? `<ul>${details.map(text => `<li>${escapeHtml(text)}</li>`).join("")}</ul>` : ""}</section>`;
+    : result.failed_servers.map(name => localize`${name}：请检查配置或连接后重试 MCP。`);
+  return localize`<section class="capability-refresh-result${hasFailures ? " danger" : ""}" role="status" aria-label="能力刷新结果"><strong>${hasFailures ? localize("MCP 刷新存在失败；") : ""}${escapeHtml(capabilityRefreshSummary(result))}</strong>${details.length ? `<ul>${details.map(text => `<li>${escapeHtml(text)}</li>`).join("")}</ul>` : ""}</section>`;
 }
 
 function renderAssemblyTarget(task) {
@@ -2201,7 +2208,7 @@ function renderAssemblyTarget(task) {
     id: state.patrolWorkspace.workspace_id, name: state.patrolWorkspace.display_name, path: state.patrolWorkspace.path,
   });
   if (target.scope === "workspace") workspaces.set(target.workspace_id, { id: target.workspace_id, name: task.workspace_name, path: target.path });
-  return `<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => `<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities" title="刷新所选范围的技能和 MCP，并重载全局自定义工具；下次运行生效，正在运行的 Run 保持原快照">刷新技能 / 自定义工具 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small>${renderCapabilityRefreshResult(task.task_id)}</div>`;
+  return localize`<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => localize`<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities" title="刷新所选范围的技能和 MCP，并重载全局自定义工具；下次运行生效，正在运行的 Run 保持原快照">刷新技能 / 自定义工具 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small>${renderCapabilityRefreshResult(task.task_id)}</div>`;
 }
 
 async function showAssembly(workspaceId = "") {
@@ -2276,7 +2283,7 @@ function renderFocus(task = activeTask()) {
   const projectionStatus = detail.context?.projection_status || "root";
   const projectionBlocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
   const contextBlock = projectionBlocked
-    ? `<section class="context-block-banner"><strong>该 Context 尚未获得安全执行投影</strong><span>${escapeHtml(projectionStatus)}</span><button class="primary" data-action="resume-context-decision">查看并决断</button></section>`
+    ? localize`<section class="context-block-banner"><strong>该 Context 尚未获得安全执行投影</strong><span>${escapeHtml(projectionStatus)}</span><button class="primary" data-action="resume-context-decision">查看并决断</button></section>`
     : "";
   const feedback = composerFeedback(detail, projectionBlocked);
   const previousConversation = app.dataset.taskId === task.task_id ? document.querySelector("#conversation") : null;
@@ -2294,12 +2301,12 @@ function renderFocus(task = activeTask()) {
   const keepEditor = app.dataset.taskId === task.task_id
     && app.querySelector?.(".focus-view")?.dataset?.taskId === task.task_id
     && !!app.querySelector?.("#mainInput");
-  const markup = `
-    <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? "独立会话" : escapeHtml(task.workspace_name || "本地工作区")}</small><h1>${task.harness_mode === "assembly" ? "无工作区模式" : "任务"}</h1><p>${task.harness_mode === "assembly" ? "从一个问题或一份材料开始。" : "一条任务，一条持续会话。"}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
+  const markup = localize`
+    <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? localize("独立会话") : escapeHtml(task.workspace_name || localize("本地工作区"))}</small><h1>${task.harness_mode === "assembly" ? localize("无工作区模式") : localize("任务")}</h1><p>${task.harness_mode === "assembly" ? localize("从一个问题或一份材料开始。") : localize("一条任务，一条持续会话。")}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
         <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
-        ${admission ? `<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-loop">查看任务 Loop 的交付状态</button></section>` : ""}
+        ${admission ? localize`<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-loop">查看任务 Loop 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
           <div class="progress-heading"><strong>任务合同</strong><span id="progressLabel"></span></div>
@@ -2319,7 +2326,7 @@ function renderFocus(task = activeTask()) {
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，输入 @ 引用文件，或 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
               <div id="composerFileMenu" class="composer-file-menu" role="listbox" aria-label="工作区文件" hidden></div>
               ${renderSessionControls(task.task_id)}
-              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? `<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? localize`<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
             <div id="mainSubmissionRecovery" class="main-submission-recovery">${renderMainRecovery(task.task_id)}</div>
@@ -2327,7 +2334,7 @@ function renderFocus(task = activeTask()) {
           </div>
         </div>
       </section>
-      ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
+      ${panelOpen ? localize`<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section></section>`;
   if (keepEditor) {
     patchFocusChrome(markup);
@@ -2407,9 +2414,9 @@ function fileLinkReference(value = {}) {
 
 function openFileLink(reference, taskId = state.activeTaskId) {
   const ref = fileLinkReference(reference);
-  if (!ref.path) return setStatus("文件链接缺少准确路径，无法定位文件", true);
+  if (!ref.path) return setStatus(localize("文件链接缺少准确路径，无法定位文件"), true);
   const task = state.tasks.find(item => item.task_id === taskId);
-  if (!task || (ref.workspace_id && ref.workspace_id !== task.workspace_id)) return setStatus("文件链接的工作区与来源任务不匹配", true);
+  if (!task || (ref.workspace_id && ref.workspace_id !== task.workspace_id)) return setStatus(localize("文件链接的工作区与来源任务不匹配"), true);
   ref.workspace_id ||= task.workspace_id;
   releaseFileLinkPreview();
   state.filesPanel = { ...ref, relative_path: ref.path, task_id: taskId, file_link: true };
@@ -2613,7 +2620,7 @@ function formatBytes(bytes) {
 function renderMessageImages(images) {
   if (!images.length) return "";
   return `<div class="message-images">${images
-    .map(materialId => materialImageMarkup(materialId, "message-image", "图片材料"))
+    .map(materialId => materialImageMarkup(materialId, "message-image", localize("图片材料")))
     .join("")}</div>`;
 }
 
@@ -2641,7 +2648,7 @@ function stripRunMaterialProtocol(text, message) {
 function renderRunMaterialCards(message) {
   const rows = messageMaterialHistory(message);
   if (!rows.length) return "";
-  return `<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : '<small class="muted">无备注</small>'}${item.must_view_requested ? '<small class="ui-badge is-warning">必须看</small>' : ""}${item.current_available === false ? '<small class="muted">当前内容不可用</small>' : ""}</span></article>`).join("")}</section>`;
+  return localize`<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : localize('<small class="muted">无备注</small>')}${item.must_view_requested ? localize('<small class="ui-badge is-warning">必须看</small>') : ""}${item.current_available === false ? localize('<small class="muted">当前内容不可用</small>') : ""}</span></article>`).join("")}</section>`;
 }
 
 function renderContentBlock(block, message = null) {
@@ -2662,7 +2669,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, histo
   const degraded = compressionPanel.degradedParts(message);
   const messageKey = messageKeyOf(message, fallbackKey);
   if (degraded) {
-    return `<article class="work-record message tool" data-message-key="${escapeHtml(messageKey)}"><header class="work-record-header"><span class="work-record-kicker">TOOL</span><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span></header><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
+    return localize`<article class="work-record message tool" data-message-key="${escapeHtml(messageKey)}"><header class="work-record-header"><span class="work-record-kicker">TOOL</span><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span></header><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
   }
   const semantics = contextCuratorPresentation.messageSemantics(message);
   const kind = semantics.kind;
@@ -2685,7 +2692,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, histo
   if (showRoleHeader) {
     header = `<header class="work-record-header"><span class="work-record-kicker">${escapeHtml(semantics.roleLabel)}</span>${associations}</header>`;
   } else if (kind === "system") {
-    header = `<header class="work-record-header"><span class="work-record-kicker">CONTEXT</span><span class="message-role">系统上下文</span>${associations}</header>`;
+    header = localize`<header class="work-record-header"><span class="work-record-kicker">CONTEXT</span><span class="message-role">系统上下文</span>${associations}</header>`;
   }
   const fileContext = fileLinkReference(message.file_reference || message.file_context || {
     workspace_id: message.workspace_id, run_id: message.run_id, slot_id: message.slot_id,
@@ -2706,9 +2713,9 @@ function renderHistoryMessageActions(message, kind, enabled) {
   if (!enabled || message.curation_synthetic || !(message.id || message.message_id)) return copy;
   const action = (name, key, label) => `<button type="button" class="text-button" data-action="${name}">${escapeHtml(uiText(key, label))}</button>`;
   const extra = kind === "human"
-    ? action("edit-history-message", "conversation.edit_resend", "编辑后重新发送") + action("retry-history-message", "conversation.retry_here", "从这里重新尝试")
+    ? action("edit-history-message", "conversation.edit_resend", localize("编辑后重新发送")) + action("retry-history-message", "conversation.retry_here", localize("从这里重新尝试"))
     : kind === "ai" && source.trim()
-      ? action("quote-history-message", "conversation.quote", "引用追问") + action("retry-history-message", "conversation.regenerate", "重新回答") : "";
+      ? action("quote-history-message", "conversation.quote", localize("引用追问")) + action("retry-history-message", "conversation.regenerate", localize("重新回答")) : "";
   if (!extra) return copy;
   return copy ? copy.replace("</div>", `${extra}</div>`) : `<div class="message-actions">${extra}</div>`;
 }
@@ -2751,7 +2758,7 @@ async function openMessageRetry(button, edit) {
   try {
     const snapshot = await api(`/desktop/api/contexts/${task.task_id}/snapshot`);
     if (navigation !== taskSwitchSequence || state.view !== "focus") return;
-    if (!snapshot.checkpoint_id) throw new Error("这条消息尚无已提交的会话快照，请稍后重试");
+    if (!snapshot.checkpoint_id) throw new Error(localize("这条消息尚无已提交的会话快照，请稍后重试"));
     const turn = FocusMessageRetry.selectTurn(snapshot.messages, messageId);
     messageRetryDraft = {
       task, snapshot, turn, edit, navigation, trigger: button, pending: false, context: null, materials: new Map(),
@@ -2785,11 +2792,11 @@ async function submitMessageRetry() {
   try {
     // Freeze the source by checkpoint, never slice the visible/windowed DOM history.
     if (!draft.context) draft.context = await api("/desktop/api/contexts/derive", { method: "POST", body: JSON.stringify({
-      title: `${draft.task.title.slice(0, 180)} · 重试`,
+      title: localize`${draft.task.title.slice(0, 180)} · 重试`,
       sources: [{ context_id: draft.task.task_id, checkpoint_id: draft.snapshot.checkpoint_id }], messages: draft.turn.messages,
     }) });
     const context = draft.context;
-    if (!["valid", "repaired", "approved"].includes(context.projection_status)) throw new Error("该历史上下文需要先处理安全执行投影，请在上下文与派生中查看");
+    if (!["valid", "repaired", "approved"].includes(context.projection_status)) throw new Error(localize("该历史上下文需要先处理安全执行投影，请在上下文与派生中查看"));
     const [history, materials] = await Promise.all([
       api(`/desktop/api/tasks/${draft.task.task_id}/material-history`),
       api(`/desktop/api/tasks/${draft.task.task_id}/materials`),
@@ -2800,7 +2807,7 @@ async function submitMessageRetry() {
     // Material IDs belong to a task. Re-enroll their paths in the branch and carry
     // notes/must-view intent; never silently drop an unavailable attachment.
     for (const binding of bindings) {
-      if (binding.current_available === false) throw new Error(`原提问的材料已不可用：${binding.relative_path}`);
+      if (binding.current_available === false) throw new Error(localize`原提问的材料已不可用：${binding.relative_path}`);
       const original = materials.find(item => item.material_id === binding.material_id);
       if (!draft.materials.has(binding.material_id)) draft.materials.set(binding.material_id, await api(`/desktop/api/tasks/${context.context_id}/materials`, { method: "POST", body: JSON.stringify({ path: binding.relative_path, reading_mode: original?.reading_mode || "full", instruction_mode: original?.instruction_mode || "reference" }) }));
     }
@@ -2859,7 +2866,7 @@ function collectImagesFromMessages(messages, depth = 0) {
 function renderCompressionBlockImages(images) {
   if (!images.length) return "";
   return `<div class="compression-block-images">${images
-    .map(materialId => materialImageMarkup(materialId, "compression-block-image", "被压缩的图片材料"))
+    .map(materialId => materialImageMarkup(materialId, "compression-block-image", localize("被压缩的图片材料")))
     .join("")}</div>`;
 }
 
@@ -2867,9 +2874,9 @@ function renderCompressionDivider(item) {
   // 压缩块/删除墓碑分界标记：原文已在其后原位展开显示；删除无摘要，仅提示
   const dividerKey = item.deleted ? `deleted:${item.block_id || item.count}` : `block:${item.block_id || item.count}`;
   if (item.deleted) {
-    return `<div class="compression-block-divider is-deleted" data-divider-key="${escapeHtml(dividerKey)}"><span><span class="ui-icon is-sm icon-trash-2" aria-hidden="true"></span>已删除 · 来源 ${item.count} 条（模型不可见，可在压缩面板中恢复）</span></div>`;
+    return localize`<div class="compression-block-divider is-deleted" data-divider-key="${escapeHtml(dividerKey)}"><span><span class="ui-icon is-sm icon-trash-2" aria-hidden="true"></span>已删除 · 来源 ${item.count} 条（模型不可见，可在压缩面板中恢复）</span></div>`;
   }
-  return `<div class="compression-block-divider" data-divider-key="${escapeHtml(dividerKey)}">
+  return localize`<div class="compression-block-divider" data-divider-key="${escapeHtml(dividerKey)}">
     <details class="compression-block-summary"><summary><span class="ui-icon is-sm icon-package" aria-hidden="true"></span>压缩块 · 来源 ${item.count} 条</summary><div class="compression-block-summary-body">${escapeHtml(item.summary)}</div></details>
     ${renderCompressionBlockImages(collectImagesFromMessages(item.source))}
   </div>`;
@@ -3059,17 +3066,17 @@ function renderImageMaterial(material) {
   const selection = materialSelection();
   const attached = selection.bindings.some(item => item.materialId === material.material_id);
   const required = selection.requiredImageIds.includes(material.material_id);
-  const reason = material.size_bytes ? "" : "该材料内容为空，无法用于本轮";
-  return `<article class="material-row is-image" draggable="true" data-material-id="${material.material_id}">
+  const reason = material.size_bytes ? "" : localize("该材料内容为空，无法用于本轮");
+  return localize`<article class="material-row is-image" draggable="true" data-material-id="${material.material_id}">
     <header class="material-summary">
       <button class="material-title-button" data-action="preview-image-material" title="放大查看">${materialImageMarkup(material.material_id, "material-thumb", "", null)}<span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>图片材料 · ${formatBytes(material.size_bytes)}</small></span></button>
-      <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
+      <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? localize("收起") : localize("管理")}</button>
     </header>
     <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${attached}"${reason ? " disabled" : ""}>${attached ? "☑" : "☐"} 本轮使用</button><button class="text-button must-view-toggle" data-action="toggle-image-required" aria-pressed="${required}"${!attached || reason ? " disabled" : ""}>${required ? "☑" : "☐"} 必须看</button>${reason ? `<span class="muted tiny">${escapeHtml(reason)}</span>` : ""}</div>
     ${renderRunMaterialNote(material.material_id)}
-    ${open ? `<div class="material-editor">
+    ${open ? localize`<div class="material-editor">
       <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
-      <span class="material-actions"><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? '<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>' : ""}<button class="text-button danger" data-action="delete-material">删除</button></span>${renderMaterialUsageHistory(material.material_id)}</div>` : ""}
+      <span class="material-actions"><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? localize('<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>') : ""}<button class="text-button danger" data-action="delete-material">删除</button></span>${renderMaterialUsageHistory(material.material_id)}</div>` : ""}
   </article>`;
 }
 
@@ -3077,26 +3084,26 @@ function renderMaterial(material) {
   if (material.is_image) return renderImageMaterial(material);
   const open = state.openMaterial === material.material_id;
   const viewable = !!pluginViewForMaterial(material);
-  const reading = material.reading_mode === "full" ? "完整阅读" : "粗略阅读";
-  const instruction = material.instruction_mode === "strict" ? "严格约束" : "参考材料";
-  const retention = material.retention === "irreplaceable" ? "版本保护" : "可移除";
+  const reading = material.reading_mode === "full" ? localize("完整阅读") : localize("粗略阅读");
+  const instruction = material.instruction_mode === "strict" ? localize("严格约束") : localize("参考材料");
+  const retention = material.retention === "irreplaceable" ? localize("版本保护") : localize("可移除");
   const selected = materialSelection().bindings.some(item => item.materialId === material.material_id);
   const unavailable = !material.size_bytes;
-  return `<article class="material-row" draggable="true" data-material-id="${material.material_id}">
+  return localize`<article class="material-row" draggable="true" data-material-id="${material.material_id}">
     <header class="material-summary">
-      <button class="material-title-button" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? "在文件工作台打开" : "查看材料规则"}"><span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${viewable ? "可在文件工作台查看" : "未启用匹配的查看器"}</small></span></button>
-      <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
+      <button class="material-title-button" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? localize("在文件工作台打开") : localize("查看材料规则")}"><span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${viewable ? localize("可在文件工作台查看") : localize("未启用匹配的查看器")}</small></span></button>
+      <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? localize("收起") : localize("管理")}</button>
     </header>
-    <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${selected}"${unavailable ? " disabled" : ""}>${selected ? "☑" : "☐"} 本轮使用</button><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span>${unavailable ? '<span class="muted tiny">内容不可用</span>' : ""}</div>
+    <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${selected}"${unavailable ? " disabled" : ""}>${selected ? "☑" : "☐"} 本轮使用</button><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span>${unavailable ? localize('<span class="muted tiny">内容不可用</span>') : ""}</div>
     ${renderRunMaterialNote(material.material_id)}
-    ${material.needs_confirmation ? `<div class="ui-notice is-warning"><strong>检测到外部删除</strong><span>Focus 已恢复文件，请从版本记录确认内容。</span></div>` : ""}
-    ${open ? `<div class="material-editor">
+    ${material.needs_confirmation ? localize`<div class="ui-notice is-warning"><strong>检测到外部删除</strong><span>Focus 已恢复文件，请从版本记录确认内容。</span></div>` : ""}
+    ${open ? localize`<div class="material-editor">
       <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
       <label>约束<select data-field="instruction_mode"><option value="reference" ${material.instruction_mode === "reference" ? "selected" : ""}>仅供参考</option><option value="strict" ${material.instruction_mode === "strict" ? "selected" : ""}>严格遵守</option></select></label>
       <label>文件规则<select data-field="retention"><option value="removable" ${material.retention === "removable" ? "selected" : ""}>可移除</option><option value="irreplaceable" ${material.retention === "irreplaceable" ? "selected" : ""}>不可遗失</option></select></label>
       <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
-      <span class="material-actions"><button class="primary" data-action="save-material">保存规则</button><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? '<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>' : ""}
-      ${material.retention === "irreplaceable" ? `<button class="text-button" data-action="clear-material">置空</button><button class="text-button" data-action="load-versions">版本</button>` : `<button class="text-button danger" data-action="delete-material">删除</button>`}</span>
+      <span class="material-actions"><button class="primary" data-action="save-material">保存规则</button><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? localize('<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>') : ""}
+      ${material.retention === "irreplaceable" ? localize`<button class="text-button" data-action="clear-material">置空</button><button class="text-button" data-action="load-versions">版本</button>` : localize`<button class="text-button danger" data-action="delete-material">删除</button>`}</span>
       <ul class="version-list" data-versions></ul>${renderMaterialUsageHistory(material.material_id)}
     </div>` : ""}
   </article>`;
@@ -3104,19 +3111,19 @@ function renderMaterial(material) {
 
 function renderMaterialUsageHistory(materialId) {
   const rows = (state.materialHistory.get(state.activeTaskId) || []).filter(item => item.material_id === materialId);
-  if (!rows.length) return '<p class="muted tiny">线程内尚未使用</p>';
-  return `<details class="material-usage-history"><summary>线程内使用记录 · ${rows.length}</summary><ol>${rows.map(item => `<li><span>Run ${escapeHtml(String(item.run_id).slice(0, 8))}${item.must_view_requested ? " · 必须看" : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : '<small class="muted">无备注</small>'}</li>`).join("")}</ol></details>`;
+  if (!rows.length) return localize('<p class="muted tiny">线程内尚未使用</p>');
+  return localize`<details class="material-usage-history"><summary>线程内使用记录 · ${rows.length}</summary><ol>${rows.map(item => `<li><span>Run ${escapeHtml(String(item.run_id).slice(0, 8))}${item.must_view_requested ? localize(" · 必须看") : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : localize('<small class="muted">无备注</small>')}</li>`).join("")}</ol></details>`;
 }
 
 function renderAgentStrip(taskId) {
   const agents = state.agents.get(taskId) || [];
   const warning = agents.some(agent => agent.permissions?.some(permission => permission === "write" || permission === "host_command"))
-    ? `<span class="write-warning">共享宿主机写入：并发冲突采用最后写入者结果</span>` : "";
+    ? localize`<span class="write-warning">共享宿主机写入：并发冲突采用最后写入者结果</span>` : "";
   return warning + agents.map(agent => {
     const status = agent.mode === "context_curator"
       ? curatorStateLabel(agent)
       : presentRunStatus(agent.latest_run?.status || "ready").label;
-    return `<button class="agent-chip" data-action="agent-details" data-agent-id="${agent.agent_id}">${agent.mode === "context_curator" ? "Context 策展 · " : ""}小兵 ${agent.agent_id.slice(0, 5)} · ${escapeHtml(status)}</button>`;
+    return localize`<button class="agent-chip" data-action="agent-details" data-agent-id="${agent.agent_id}">${agent.mode === "context_curator" ? localize("Context 策展 · ") : ""}小兵 ${agent.agent_id.slice(0, 5)} · ${escapeHtml(status)}</button>`;
   }).join("");
 }
 
@@ -3241,7 +3248,7 @@ async function retryAgentDetails() {
   try {
     const run = await api(`/desktop/api/agents/${state.agentDetails.agentId}/retry`, { method: "POST" });
     listenToRun(run);
-    setStatus("已发起小兵重试");
+    setStatus(localize("已发起小兵重试"));
     await refreshAgentDetails();
   } catch (error) { setStatus(error.message, true); }
 }
@@ -3254,17 +3261,17 @@ async function continueAgentDetails() {
     const run = await api(`/desktop/api/agents/${state.agentDetails.agentId}/continue`, { method: "POST", body: JSON.stringify({ message, ...(window.FocusPatrolBranches?.get(state.agentDetails.agentId) || {}) }) });
     listenToRun(run);
     input.value = "";
-    setStatus("已发起小兵继续对话");
+    setStatus(localize("已发起小兵继续对话"));
     await refreshAgentDetails();
   } catch (error) { setStatus(error.message, true); }
 }
 
 async function cancelAgentDetails() {
   const agent = agentFromState(state.agentDetails.agentId);
-  if (!agent?.latest_run) return setStatus("该小兵尚无运行可取消", true);
+  if (!agent?.latest_run) return setStatus(localize("该小兵尚无运行可取消"), true);
   try {
     await api(`/desktop/api/runs/${agent.latest_run.run_id}/cancel`, { method: "POST" });
-    setStatus("已请求取消运行");
+    setStatus(localize("已请求取消运行"));
     await refreshAgentDetails();
   } catch (error) { setStatus(error.message, true); }
 }
@@ -3272,7 +3279,7 @@ async function cancelAgentDetails() {
 async function interruptMainRun() {
   const detail = state.details.get(state.activeTaskId);
   const run = detail?.active_run;
-  if (!run || !["pending", "running"].includes(run.status)) return setStatus("当前没有可中断的主 Agent 运行", true);
+  if (!run || !["pending", "running"].includes(run.status)) return setStatus(localize("当前没有可中断的主 Agent 运行"), true);
   if (state.mainInterrupting) return; // busy 防连点
   state.mainInterrupting = true;
   const button = document.querySelector('[data-action="interrupt-main-run"]');
@@ -3282,14 +3289,14 @@ async function interruptMainRun() {
     // cancel 受理即置 interrupted（DB 立即同步）；仅当竞态窗口内 run 自己先到
     // success/error 等终态（非 interrupted）时才提示"已结束"
     if (payload && payload.status === "interrupted") {
-      setStatus("已请求中断主 Agent，正在停止…");
+      setStatus(localize("已请求中断主 Agent，正在停止…"));
     } else if (payload && !["pending", "running"].includes(payload.status)) {
-      setStatus("运行已结束，无需中断", true);
+      setStatus(localize("运行已结束，无需中断"), true);
     } else {
-      setStatus("已请求中断主 Agent，正在停止…");
+      setStatus(localize("已请求中断主 Agent，正在停止…"));
     }
   } catch (error) {
-    setStatus(error.status === 404 ? "运行不存在（可能已结束）" : error.message, true);
+    setStatus(error.status === 404 ? localize("运行不存在（可能已结束）") : error.message, true);
   } finally {
     state.mainInterrupting = false;
     // The request may outlive a render or a task switch. Restore the currently
@@ -3552,7 +3559,7 @@ function pushCollectedSource(source) {
 function addSessionSource(contextId, title) {
   if (!contextId) return;
   if (uniqueSources().some(s => s.kind === "session" && s.context_id === contextId)) return;
-  pushCollectedSource({ kind: "session", context_id: contextId, title, rawText: `[完整会话] ${title || "会话"}` });
+  pushCollectedSource({ kind: "session", context_id: contextId, title, rawText: localize`[完整会话] ${title || localize("会话")}` });
 }
 
 // 消息卡拖拽/勾选「加入」：部分消息来源（选中的消息 id，可任意多选不连续）。
@@ -3573,11 +3580,11 @@ function addMessagesSource(messageIds) {
 // 且选取不要求连续（间断划选各自成源）。同消息多处文字自然表现为多个独立源。
 function addTextSource(text) {
   const value = (text || "").trim();
-  if (!value) { setStatus("请先在原文中划选文字", true); return; }
+  if (!value) { setStatus(localize("请先在原文中划选文字"), true); return; }
   const messageId = state.memory.textMessageId;
   const range = state.memory.textRange || { start: 0, end: value.length };
   const contextId = state.memory.activeSessionId;
-  if (!messageId || !contextId) { setStatus("请先选择会话与消息再划选文字", true); return; }
+  if (!messageId || !contextId) { setStatus(localize("请先选择会话与消息再划选文字"), true); return; }
   pushCollectedSource({ kind: "text", context_id: contextId, message_id: messageId, ranges: [{ start: range.start, end: range.end }], text: value, rawText: value });
 }
 
@@ -3617,7 +3624,7 @@ function toggleMergeSource(index) {
 function confirmMergeSources() {
   const all = state.memory.collectedSources || [];
   const selected = [...(state.memory.selectedSourcesForMerge || [])].filter(i => i >= 0 && i < all.length).sort((a, b) => a - b);
-  if (selected.length < 2) { setStatus("请至少选择两个来源再合并", true); return; }
+  if (selected.length < 2) { setStatus(localize("请至少选择两个来源再合并"), true); return; }
   const parts = selected.map(i => all[i]);
   const mergedText = parts.map(s => s.rawText || s.text || "").filter(Boolean).join("\n\n");
   const merged = {
@@ -3652,7 +3659,7 @@ function rebuildMemoryContent() {
   const mode = draft.contentMode || "complete";
   if (mode !== "complete") { render(); return; }
   const parts = (state.memory.collectedSources || []).map(s => s.rawText || s.text || "").filter(Boolean);
-  const content = ["# 记忆", "", ...parts].join("\n\n");
+  const content = [localize("# 记忆"), "", ...parts].join("\n\n");
   state.memory = { ...state.memory, draft: { ...draft, content } };
   render();
 }
@@ -3668,10 +3675,10 @@ function editSourceText(index, text) {
 // 把收集来源映射为后端可解析的 source 对象（仅保留后端允许的字段）。
 function memorySourcesForApi(collectedSources, activeSessionId) {
   return (collectedSources || []).map(s => {
-    if (s.kind === "session") return { type: "session", context_id: s.context_id, contextTitle: s.title || "会话" };
-    if (s.kind === "messages") return { type: "messages", context_id: s.context_id, contextTitle: "会话", message_ids: s.message_ids || [] };
+    if (s.kind === "session") return { type: "session", context_id: s.context_id, contextTitle: s.title || localize("会话") };
+    if (s.kind === "messages") return { type: "messages", context_id: s.context_id, contextTitle: localize("会话"), message_ids: s.message_ids || [] };
     if (s.kind === "text") return { type: "text", context_id: s.context_id || activeSessionId, parts: [{ message_id: s.message_id, ranges: s.ranges || [] }] };
-    if (s.kind === "merged") return { type: "manual", text: s.rawText || "", contextTitle: "合并来源" };
+    if (s.kind === "merged") return { type: "manual", text: s.rawText || "", contextTitle: localize("合并来源") };
     return null;
   }).filter(Boolean).map(memorySourceForApi);
 }
@@ -3683,7 +3690,7 @@ async function recompressMemory() {
   const sources = state.memory.collectedSources || [];
   const mode = draft.contentMode || "complete";
   const payloadSources = memorySourcesForApi(sources, state.memory.activeSessionId);
-  if (!payloadSources.length) { setStatus("请先添加至少一个记忆来源", true); return; }
+  if (!payloadSources.length) { setStatus(localize("请先添加至少一个记忆来源"), true); return; }
   const requestId = ++memoryCompressionRequestSequence;
   const viewId = memoryViewRequestSequence;
   const { selectedId, category, activeSessionId } = state.memory;
@@ -3747,19 +3754,19 @@ function syncStrategyImportField(field, value) {
   state.memory.strategyImport = { ...draft, [field]: field === "workspace_id" ? value || null : value, preview: null, error: "" };
   document.querySelector("[data-strategy-import-preview]")?.remove?.();
   const error = document.querySelector("[data-strategy-import-error]");
-  if (error) error.textContent = "内容或设置已更改，请预览后安装。";
+  if (error) error.textContent = localize("内容或设置已更改，请预览后安装。");
 }
 
 async function readStrategyFile(file) {
   if (!file || !state.memory.strategyImport) return;
-  if (file.size > 160000) return setStatus("策略文件不能超过 160 KB", true);
+  if (file.size > 160000) return setStatus(localize("策略文件不能超过 160 KB"), true);
   const draft = state.memory.strategyImport;
   try {
     const markdown = await file.text();
     if (state.memory.strategyImport !== draft) return;
     syncStrategyImportField("markdown", markdown);
     renderMemory();
-  } catch (error) { setStatus(`读取策略失败：${error.message}`, true); }
+  } catch (error) { setStatus(localize`读取策略失败：${error.message}`, true); }
 }
 
 async function previewStrategyImport() {
@@ -3793,7 +3800,7 @@ async function installStrategyImport() {
     }) });
     if (requestId !== strategyImportRequestSequence) { await hydrateMemory(); return; }
     state.memory = { ...state.memory, strategyImport: null, selectedId: result.memory.memory_id, category: "evolution_strategy" };
-    setStatus(result.status === "already_installed" ? "已安装相同策略，保留现有启用设置" : "策略已保存，将从后续新轮次生效");
+    setStatus(result.status === "already_installed" ? localize("已安装相同策略，保留现有启用设置") : localize("策略已保存，将从后续新轮次生效"));
     await hydrateMemory();
   } catch (error) {
     if (requestId === strategyImportRequestSequence && state.memory.strategyImport) state.memory.strategyImport = { ...draft, busy: false, preview: null, error: error.message };
@@ -3827,7 +3834,7 @@ async function generateStrategyDraft() {
   if (!draft || state.memory.strategyAuthoring?.busy) return;
   const sources = memorySourcesForApi(state.memory.collectedSources || [], state.memory.activeSessionId);
   const text = draft.strategy_source || draft.content || "";
-  if (!sources.length && !text.trim()) return setStatus("请先填写经验或选择工作材料", true);
+  if (!sources.length && !text.trim()) return setStatus(localize("请先填写经验或选择工作材料"), true);
   const requestId = ++strategyAuthoringRequestSequence;
   state.memory.strategyAuthoring = { busy: true };
   renderMemory();
@@ -3837,7 +3844,7 @@ async function generateStrategyDraft() {
     if (draft.category !== "evolution_strategy") openMemoryCompose(false);
     state.memory.category = "evolution_strategy";
     state.memory.draft = { ...state.memory.draft, category: "evolution_strategy", title: result.title, strategy: result.strategy, rehearsal_result: null };
-    setStatus("策略草稿已生成，请检查后保存");
+    setStatus(localize("策略草稿已生成，请检查后保存"));
   } catch (error) { if (requestId === strategyAuthoringRequestSequence) setStatus(error.message, true); }
   finally { if (requestId === strategyAuthoringRequestSequence) state.memory.strategyAuthoring = null; if (state.view === "memory") renderMemory(); }
 }
@@ -3860,7 +3867,7 @@ async function saveMemory() {
   const draft = state.memory.draft || {};
   const title = (draft.title || "").trim();
   const content = (draft.content || "").trim();
-  if (!content) { setStatus("记忆内容不能为空", true); return; }
+  if (!content) { setStatus(localize("记忆内容不能为空"), true); return; }
   const sources = state.memory.collectedSources || [];
   const payloadSources = memorySourcesForApi(sources, state.memory.activeSessionId);
   const firstSession = sources.find(s => s.kind === "session");
@@ -3869,7 +3876,7 @@ async function saveMemory() {
     ? (firstSession ? "full_session" : anyText ? "partial_text" : "partial_messages")
     : "manual";
   const body = {
-    title: title || (content.slice(0, 20) || "未命名记忆"),
+    title: title || (content.slice(0, 20) || localize("未命名记忆")),
     content,
     content_mode: draft.contentMode || "complete",
     segments: draft.segments || [],
@@ -3902,7 +3909,7 @@ async function setCurationTrackingState(target) {
       method: "PUT",
       body: JSON.stringify({ state: target }),
     });
-    setStatus(`Context 策展跟踪已${target === "following" ? "恢复" : target === "paused" ? "暂停" : "停止"}`);
+    setStatus(localize`Context 策展跟踪已${target === "following" ? localize("恢复") : target === "paused" ? localize("暂停") : localize("停止")}`);
     await refreshAgentDetails();
   } catch (error) { setStatus(error.message, true); }
 }
@@ -3925,7 +3932,7 @@ function shortCheckpoint(value) {
 
 function renderCurationAudit(curation) {
   const revisions = curation?.revisions || [];
-  if (!revisions.length) return '<p class="muted">尚无策展版本。</p>';
+  if (!revisions.length) return localize('<p class="muted">尚无策展版本。</p>');
   return revisions.map(revision => {
     const dispositions = revision.disposition_manifest || [];
     const summary = dispositions.reduce((counts, item) => {
@@ -3934,16 +3941,16 @@ function renderCurationAudit(curation) {
     }, {});
     const planItemTypes = contextCuratorPresentation.revisionPlanItemTypes(revision);
     const sourceMessages = revision.source_payload?.source_snapshot?.messages || [];
-    return `<details class="curation-revision">
+    return localize`<details class="curation-revision">
       <summary><span>${escapeHtml(shortCheckpoint(revision.source_checkpoint_id))}</span><span class="ui-badge">${escapeHtml(revision.status)}</span></summary>
       <dl class="curation-meta"><div><dt>投影</dt><dd>${escapeHtml(revision.projection_status || "—")}</dd></div><div><dt>发布时间</dt><dd>${escapeHtml(revision.published_at || "—")}</dd></div></dl>
-      <p class="tiny muted">使用 ${summary.used || (summary.retained || 0) + (summary.synthesized || 0)} · 舍弃 ${summary.discarded || 0}${planItemTypes.length ? ` · 计划 ${planItemTypes.map(escapeHtml).join(" / ")}` : ""}</p>
+      <p class="tiny muted">使用 ${summary.used || (summary.retained || 0) + (summary.synthesized || 0)} · 舍弃 ${summary.discarded || 0}${planItemTypes.length ? localize` · 计划 ${planItemTypes.map(escapeHtml).join(" / ")}` : ""}</p>
       ${revision.error ? `<p class="tiny danger">${escapeHtml(revision.error)}</p>` : ""}
-      ${sourceMessages.length ? `<details class="curation-source-evidence"><summary>来源证据 · ${sourceMessages.length} 条</summary><div>${sourceMessages.map(message => `<div><code>${escapeHtml(message.source_message_id || "—")}</code><span>${escapeHtml(message.role || "—")}</span><span>${escapeHtml(compressionPanel.messageText(message).replace(/\s+/g, " ").slice(0, 160))}</span></div>`).join("")}</div></details>` : ""}
+      ${sourceMessages.length ? localize`<details class="curation-source-evidence"><summary>来源证据 · ${sourceMessages.length} 条</summary><div>${sourceMessages.map(message => `<div><code>${escapeHtml(message.source_message_id || "—")}</code><span>${escapeHtml(message.role || "—")}</span><span>${escapeHtml(compressionPanel.messageText(message).replace(/\s+/g, " ").slice(0, 160))}</span></div>`).join("")}</div></details>` : ""}
       <div class="curation-dispositions">${dispositions.map(item => {
         const targets = item.target_message_indexes || (item.target_message_index == null ? [] : [item.target_message_index]);
         const itemTypes = (item.plan_items || []).map(planItem => planItem.plan_item_type).filter(Boolean);
-        return `<div><code>${escapeHtml(item.source_message_id)}</code><span>${escapeHtml(item.action)}</span><span>${escapeHtml(item.reason_category)}${targets.length ? ` · 目标消息 ${targets.map(index => `#${index + 1}`).join(", ")}` : ""}${itemTypes.length ? ` · ${itemTypes.map(escapeHtml).join(" / ")}` : ""}</span></div>`;
+        return `<div><code>${escapeHtml(item.source_message_id)}</code><span>${escapeHtml(item.action)}</span><span>${escapeHtml(item.reason_category)}${targets.length ? localize` · 目标消息 ${targets.map(index => `#${index + 1}`).join(", ")}` : ""}${itemTypes.length ? ` · ${itemTypes.map(escapeHtml).join(" / ")}` : ""}</span></div>`;
       }).join("")}</div>
       <div class="curation-attempts">${contextCuratorPresentation.attemptRows(revision).map(attempt => `<div><span>#${attempt.attempt_number}</span><span>${escapeHtml(attempt.model_name)}</span><span>${escapeHtml(attempt.output_method)}</span><span>${escapeHtml(attempt.status)}</span>${attempt.error_text ? `<span class="danger">${escapeHtml(attempt.error_text)}</span>` : ""}</div>`).join("")}</div>
     </details>`;
@@ -3951,15 +3958,15 @@ function renderCurationAudit(curation) {
 }
 
 function renderCuratorDetails(agent, curation) {
-  if (!curation) return '<p class="muted">加载策展状态中…</p>';
+  if (!curation) return localize('<p class="muted">加载策展状态中…</p>');
   const status = curation.control_state;
   const current = curation.latest_revision;
   const managed = curation.managed_context;
-  return `<section class="curation-detail">
+  return localize`<section class="curation-detail">
     <div class="curation-mode"><span class="ui-badge is-success">Context 策展</span><strong>${escapeHtml(curatorStateLabel(curation))}</strong></div>
     <dl class="curation-meta">
       <div><dt>根 Context</dt><dd>${escapeHtml(curation.root_context?.title || curation.root_context?.context_id || "—")}</dd></div>
-      <div><dt>受管 Context</dt><dd>${escapeHtml(managed?.title || "等待首次发布")}</dd></div>
+      <div><dt>受管 Context</dt><dd>${escapeHtml(managed?.title || localize("等待首次发布"))}</dd></div>
       <div><dt>已观察 checkpoint</dt><dd><code>${escapeHtml(shortCheckpoint(curation.observed_checkpoint_id))}</code></dd></div>
       <div><dt>目标 checkpoint</dt><dd><code>${escapeHtml(shortCheckpoint(curation.desired_checkpoint_id))}</code></dd></div>
       <div><dt>已准备 checkpoint</dt><dd><code>${escapeHtml(shortCheckpoint(curation.prepared_checkpoint_id))}</code></dd></div>
@@ -3967,15 +3974,15 @@ function renderCuratorDetails(agent, curation) {
       <div><dt>处理健康</dt><dd>${escapeHtml(curation.health_state || "—")}</dd></div>
       <div><dt>当前尝试</dt><dd>${current ? `${escapeHtml(current.status)} · ${escapeHtml(shortCheckpoint(current.source_checkpoint_id))}` : "—"}</dd></div>
     </dl>
-    ${curation.last_error ? `<div class="ui-notice is-warning"><strong>最近失败</strong><span>${escapeHtml(curation.last_error)}</span></div>` : ""}
+    ${curation.last_error ? localize`<div class="ui-notice is-warning"><strong>最近失败</strong><span>${escapeHtml(curation.last_error)}</span></div>` : ""}
     <div class="ui-toolbar agent-detail-actions">
-      ${managed ? `<button class="text-button" data-action="open-managed-context" data-context-id="${escapeHtml(managed.context_id)}">打开受管 Context</button>` : ""}
-      ${status === "following" ? '<button class="text-button" data-action="set-curation-state" data-state="paused">暂停</button>' : ""}
-      ${status === "paused" ? '<button class="text-button" data-action="set-curation-state" data-state="following">恢复</button>' : ""}
-      ${["following", "paused"].includes(status) ? '<button class="text-button danger" data-action="set-curation-state" data-state="stopped">停止跟踪</button>' : ""}
-      ${["pending", "running"].includes(agent?.latest_run?.status) ? '<button class="text-button danger" data-action="cancel-agent-details">取消当前尝试</button>' : ""}
+      ${managed ? localize`<button class="text-button" data-action="open-managed-context" data-context-id="${escapeHtml(managed.context_id)}">打开受管 Context</button>` : ""}
+      ${status === "following" ? localize('<button class="text-button" data-action="set-curation-state" data-state="paused">暂停</button>') : ""}
+      ${status === "paused" ? localize('<button class="text-button" data-action="set-curation-state" data-state="following">恢复</button>') : ""}
+      ${["following", "paused"].includes(status) ? localize('<button class="text-button danger" data-action="set-curation-state" data-state="stopped">停止跟踪</button>') : ""}
+      ${["pending", "running"].includes(agent?.latest_run?.status) ? localize('<button class="text-button danger" data-action="cancel-agent-details">取消当前尝试</button>') : ""}
     </div>
-    <section class="curation-audit"><h4>策展版本</h4>${renderCurationAudit(curation)}${curation.next_cursor ? '<button class="text-button" data-action="load-more-curation">加载更早版本</button>' : ""}</section>
+    <section class="curation-audit"><h4>策展版本</h4>${renderCurationAudit(curation)}${curation.next_cursor ? localize('<button class="text-button" data-action="load-more-curation">加载更早版本</button>') : ""}</section>
   </section>`;
 }
 
@@ -4063,17 +4070,17 @@ function taskCardMarkup(task, draftMode = false) {
   const context = tree.find(item => item.context_id === task.task_id);
   const projectionStatus = context?.projection_status || "root";
   const parents = (context?.parents || []).slice(1).map(parent => state.tasks.find(item => item.task_id === parent.context_id)?.title || parent.context_id).join("、");
-  const contextMeta = parents ? `<span class="context-parent-tags">另含：${escapeHtml(parents)}</span>` : "";
+  const contextMeta = parents ? localize`<span class="context-parent-tags">另含：${escapeHtml(parents)}</span>` : "";
   const contextIdentity = context
-    ? `${context.depth ? "派生 Context" : "根 Context"}${!["root", "valid", "repaired", "approved"].includes(projectionStatus) ? ` · ${escapeHtml(projectionStatus)}` : ""}`
-    : "兼容任务";
+    ? `${context.depth ? localize("派生 Context") : localize("根 Context")}${!["root", "valid", "repaired", "approved"].includes(projectionStatus) ? ` · ${escapeHtml(projectionStatus)}` : ""}`
+    : localize("兼容任务");
   const selectable = state.selectionMode;
   const isSelected = state.selectedContextIds.has(task.task_id);
   const cardAction = selectable ? "toggle-select-session" : "task-card";
   const cardClass = `task-card${selectable && isSelected ? " is-selected" : ""}`;
   const selectMarkup = selectable ? `<span class="task-select-mark" aria-hidden="true"><span class="task-select-box"></span></span>` : "";
-  const actionsMarkup = selectable ? "" : `
-    ${sessionLifecycle(task) === "active" ? `
+  const actionsMarkup = selectable ? "" : localize`
+    ${sessionLifecycle(task) === "active" ? localize`
       <details class="task-card-more">
         <summary>更多操作</summary>
         <div class="task-card-actions">
@@ -4087,7 +4094,7 @@ function taskCardMarkup(task, draftMode = false) {
   return `<article class="task-card-shell ${draftMode && !selected ? "dimmed" : ""}" data-context-depth="${context?.depth || 0}">
     <button class="${cardClass}" data-task-id="${task.task_id}" data-action="${cardAction}" ${selectable ? `aria-pressed="${isSelected}"` : ""}>
       <span class="task-card-heading">${selectMarkup}<span class="task-title">${escapeHtml(task.title)}</span><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></span>
-      ${task.active_run && task.latest_result ? `<span class="task-last-result">上次执行：${escapeHtml(presentRunStatus(task.latest_result.status).label)}</span>` : ""}
+      ${task.active_run && task.latest_result ? localize`<span class="task-last-result">上次执行：${escapeHtml(presentRunStatus(task.latest_result.status).label)}</span>` : ""}
       <span class="context-identity">${contextIdentity}</span>
       ${contextMeta}
     </button>
@@ -4122,7 +4129,7 @@ function renderMapGroups(activeTasks) {
   const workspaces = new Map();
   ordered.forEach(task => {
     const tree = state.contextTrees.get(task.workspace_id) || [];
-    const workspace = workspaces.get(task.workspace_id) || { name: task.workspace_name || "本地工作区", roots: new Map() };
+    const workspace = workspaces.get(task.workspace_id) || { name: task.workspace_name || localize("本地工作区"), roots: new Map() };
     const rootId = contextRootId(task, tree);
     if (!workspace.roots.has(rootId)) workspace.roots.set(rootId, []);
     workspace.roots.get(rootId).push(task);
@@ -4130,11 +4137,11 @@ function renderMapGroups(activeTasks) {
   });
   return [...workspaces.entries()].map(([workspaceId, workspace]) => {
     const contextCount = [...workspace.roots.values()].reduce((sum, tasks) => sum + tasks.length, 0);
-    return `<section class="map-workspace-group" data-workspace-id="${escapeHtml(workspaceId)}">
+    return localize`<section class="map-workspace-group" data-workspace-id="${escapeHtml(workspaceId)}">
       <header><div><span class="workspace-kicker">WORKSPACE</span><h2>${escapeHtml(workspace.name)}</h2></div><span class="ui-badge">${contextCount} 个 Context</span></header>
       <div class="map-root-groups">${[...workspace.roots.entries()].map(([rootId, tasks]) => {
         const root = tasks.find(task => task.task_id === rootId) || tasks[0];
-        const headerLabel = tasks.length === 1 ? "仅根 Context" : `${tasks.length - 1} 个派生`;
+        const headerLabel = tasks.length === 1 ? localize("仅根 Context") : localize`${tasks.length - 1} 个派生`;
         return `<section class="map-root-group"><header><strong>${escapeHtml(root?.title || rootId)}</strong><span>${escapeHtml(headerLabel)}</span></header><div class="task-grid">${tasks.map(task => taskCardMarkup(task)).join("")}</div></section>`;
       }).join("")}</div>
     </section>`;
@@ -4212,7 +4219,7 @@ async function hydrateMapPortfolio(workspaceId, force = false) {
     const binding = await loopApi.workspacePatrol(workspaceId);
     const [snapshot, manifest] = binding ? await Promise.all([loopApi.committedLineage(binding.loop_id), loopApi.console(binding.loop_id)]) : [null, null];
     if (owner !== mapPortfolioSequence) return;
-    if (snapshot && snapshot.complete !== true) throw new Error("来源关系尚未完整返回");
+    if (snapshot && snapshot.complete !== true) throw new Error(localize("来源关系尚未完整返回"));
     mapPortfolio = { workspaceId, loading: false, snapshot, manifest, error: null };
   } catch (error) {
     if (owner !== mapPortfolioSequence) return;
@@ -4251,17 +4258,17 @@ function patchMapGraph() {
     if (state.selectionMode) node.setAttribute("aria-pressed", String(state.selectedContextIds.has(node.dataset.contextId)));
   }
   const status = surface.querySelector("[data-map-status]");
-  status.textContent = mapPortfolio.error ? `${mapPortfolio.snapshot ? "未更新，保留上次完整关系。" : "读取失败。"}${mapPortfolio.error}` : mapPortfolio.loading ? "正在读取已提交关系…" : !mapPortfolio.snapshot ? "此工作区尚无已提交 Patrol 关系，可使用折叠/卡片浏览已有任务。" : "";
+  status.textContent = mapPortfolio.error ? `${mapPortfolio.snapshot ? localize("未更新，保留上次完整关系。") : localize("读取失败。")}${mapPortfolio.error}` : mapPortfolio.loading ? localize("正在读取已提交关系…") : !mapPortfolio.snapshot ? localize("此工作区尚无已提交 Patrol 关系，可使用折叠/卡片浏览已有任务。") : "";
   const connection = mapLive?.store.get().connection;
-  if (!status.textContent && ["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) status.textContent = "运行状态连接中断，正在保留上次状态；可刷新重试。";
+  if (!status.textContent && ["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) status.textContent = localize("运行状态连接中断，正在保留上次状态；可刷新重试。");
   status.hidden = !status.textContent;
   const related = surface.querySelector('[data-action="map-related"]');
   related.disabled = !selected || !inspecting;
-  related.textContent = mapRelatedOnly && inspecting ? "恢复全部关系" : "仅看所选关联";
+  related.textContent = mapRelatedOnly && inspecting ? localize("恢复全部关系") : localize("仅看所选关联");
   related.setAttribute("aria-pressed", String(mapRelatedOnly && inspecting));
   const refresh = surface.querySelector('[data-action="refresh-map-portfolio"]');
   refresh.disabled = mapPortfolio.loading || !mapPortfolio.workspaceId;
-  refresh.textContent = mapPortfolio.error ? "重试" : "刷新";
+  refresh.textContent = mapPortfolio.error ? localize("重试") : localize("刷新");
 }
 
 async function inspectMapContext(contextId, trigger, revisionId) {
@@ -4274,8 +4281,8 @@ function inspectMapRelationship(identity, trigger) {
   const workspaceId = mapPortfolio.workspaceId;
   const panel = document.createElement("dialog");
   panel.className = "map-relationship-dialog";
-  panel.setAttribute("aria-label", "已提交来源关系");
-  panel.innerHTML = `<header><h2>已提交来源关系</h2><form method="dialog"><button aria-label="关闭关系检查">×</button></form></header>${window.FocusPortfolioMapView.relationship(mapGraphManifest(), identity)}`;
+  panel.setAttribute("aria-label", localize("已提交来源关系"));
+  panel.innerHTML = localize`<header><h2>已提交来源关系</h2><form method="dialog"><button aria-label="关闭关系检查">×</button></form></header>${window.FocusPortfolioMapView.relationship(mapGraphManifest(), identity)}`;
   app.append(panel);
   panel.addEventListener("close", () => panel.remove(), { once: true });
   panel.addEventListener("click", async event => {
@@ -4301,28 +4308,28 @@ function renderMap(focusKey = null) {
   if (!graphMode) stopMapLive();
   const workspaceId = state.patrolWorkspace?.workspace_id || activeTask()?.workspace_id;
   if (graphMode && workspaceId !== mapPortfolio.workspaceId) void hydrateMapPortfolio(workspaceId);
-  const presentationControls = `<div class="map-presentation-controls">
+  const presentationControls = localize`<div class="map-presentation-controls">
     <div class="map-presentation-switch" role="group" aria-label="全图展示方式">
       <button type="button" data-action="set-map-view" data-map-view="graph" aria-pressed="${graphMode}">Context 关系</button>
       <button type="button" data-action="set-map-view" data-map-view="tree" aria-pressed="${treeMode}">折叠视图</button>
       <button type="button" data-action="set-map-view" data-map-view="cards" aria-pressed="${state.mapViewMode === "cards"}">卡片与生命周期</button>
     </div>
-    ${treeMode ? '<button type="button" class="text-button map-collapse-all" data-action="collapse-map-tree">全部折叠</button>' : ""}
+    ${treeMode ? localize('<button type="button" class="text-button map-collapse-all" data-action="collapse-map-tree">全部折叠</button>') : ""}
   </div>`;
   const batchControls = state.selectionMode
-    ? `<span class="map-selection-info">已选 ${sel} 个会话</span>
+    ? localize`<span class="map-selection-info">已选 ${sel} 个会话</span>
       <button class="text-button" data-action="batch-delete-selected" ${sel ? "" : "disabled"}>删除选中</button>
       <button class="text-button" data-action="batch-cascade-delete-selected" ${sel ? "" : "disabled"}>级联删除</button>
       <button class="text-button" data-action="toggle-selection-mode">取消</button>`
-    : `<button class="text-button" data-action="toggle-selection-mode">批量删除</button>`;
-  const toolbar = `<div class="map-toolbar glass-surface">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>`;
+    : localize`<button class="text-button" data-action="toggle-selection-mode">批量删除</button>`;
+  const toolbar = `<div class="map-toolbar glass-surface">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? localize("已装备小兵 · 选择任务") : localize("装备小兵")}</button>${batchControls}</div>`;
   const mounted = graphMode && app.querySelector(".map-portfolio-surface")?.dataset.workspaceId === (workspaceId || "");
   if (!mounted) {
     mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false;
-    app.innerHTML = `<section class="map-view">
+    app.innerHTML = localize`<section class="map-view">
       <header class="task-page-heading"><div><h1>全图</h1><p>沿精确来源关系检查工作。层次与卡片浏览保留所有工作区操作。</p></div><button data-action="show-patrol">回到 Patrol</button></header>
       ${toolbar}<label class="page-search">搜索历史 <input type="search" data-page-search="map" maxlength="200" value="${escapeHtml(state.mapQuery || "")}" placeholder="消息正文、任务或文件名…"></label>
-      ${graphMode ? `<section class="map-portfolio-surface" data-workspace-id="${escapeHtml(workspaceId || "")}"><header><span>当前工作区 · 已提交来源</span><div><button data-action="map-related" disabled>仅看所选关联</button><button data-action="refresh-map-portfolio">刷新</button></div></header><p data-map-status role="status" hidden></p><div data-map-graph></div><footer class="workbench-legend"><span>已提交来源关系</span><span>所选 Context 的直接关联</span><span>Run 状态以节点为准</span><small>连线可查看来源与目标版本</small></footer></section><aside data-patrol-context class="patrol-context-drawer" aria-label="只读 Context 检查" hidden><div data-patrol-context-content></div></aside>` : `<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : '<p>暂无匹配的活动任务</p>'}</div>`}
+      ${graphMode ? localize`<section class="map-portfolio-surface" data-workspace-id="${escapeHtml(workspaceId || "")}"><header><span>当前工作区 · 已提交来源</span><div><button data-action="map-related" disabled>仅看所选关联</button><button data-action="refresh-map-portfolio">刷新</button></div></header><p data-map-status role="status" hidden></p><div data-map-graph></div><footer class="workbench-legend"><span>已提交来源关系</span><span>所选 Context 的直接关联</span><span>Run 状态以节点为准</span><small>连线可查看来源与目标版本</small></footer></section><aside data-patrol-context class="patrol-context-drawer" aria-label="只读 Context 检查" hidden><div data-patrol-context-content></div></aside>` : `<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : localize('<p>暂无匹配的活动任务</p>')}</div>`}
     </section>`;
     if (graphMode) {
       mapContextInspector = window.FocusContextInspector.create({ api: loopApi, onOpenTask: switchTask, getManifest: mapGraphManifest, onSelectionChange: selected => { if (!selected) mapRelatedOnly = false; patchMapGraph(); } });
@@ -4356,13 +4363,13 @@ function historyHighlighted(text, query = state.mapQuery || "") {
 
 function renderHistorySearch() {
   const search = state.historySearch;
-  app.innerHTML = `<section class="map-view history-search-view">
+  app.innerHTML = localize`<section class="map-view history-search-view">
     <header class="task-page-heading"><div><h1>历史查找</h1><p>搜索消息正文、任务和文件名，包含已归档任务。</p></div><button data-action="clear-history-search">返回全图</button></header>
     <label class="page-search">搜索历史 <input type="search" data-page-search="map" maxlength="200" value="${escapeHtml(state.mapQuery || "")}" placeholder="消息正文、任务或文件名…"></label>
-    <div role="status">${search.loading ? "正在搜索历史…" : search.error ? escapeHtml(search.error) : search.results.length ? `已显示 ${search.results.length} 条匹配${search.hasMore ? "，还有更多结果" : ""}` : "暂无匹配的历史记录"}${search.unavailable ? `<p>有 ${search.unavailable} 个任务正文暂时无法读取，可重试搜索。</p>` : ""}</div>
-    ${search.error || search.unavailable ? '<button data-action="retry-history-search">重试搜索</button>' : ""}
-    <div class="history-results">${search.results.map((hit, index) => `<button class="history-result" data-action="open-history-result" data-result-index="${index}"><span><strong>${escapeHtml(hit.title)}</strong><small>${escapeHtml(hit.workspace_name)} · ${hit.lifecycle === "archived" ? "已归档 · 只读" : "活动任务"} · ${{ task: "任务信息", message: "消息正文", file: "文件" }[hit.kind] || "历史"}</small></span><span class="history-snippet">${historyHighlighted(hit.snippet)}</span></button>`).join("")}</div>
-    ${search.hasMore ? `<button data-action="more-history-results" ${search.loading ? "disabled" : ""}>加载更多结果</button>` : ""}
+    <div role="status">${search.loading ? localize("正在搜索历史…") : search.error ? escapeHtml(search.error) : search.results.length ? localize`已显示 ${search.results.length} 条匹配${search.hasMore ? localize("，还有更多结果") : ""}` : localize("暂无匹配的历史记录")}${search.unavailable ? localize`<p>有 ${search.unavailable} 个任务正文暂时无法读取，可重试搜索。</p>` : ""}</div>
+    ${search.error || search.unavailable ? localize('<button data-action="retry-history-search">重试搜索</button>') : ""}
+    <div class="history-results">${search.results.map((hit, index) => `<button class="history-result" data-action="open-history-result" data-result-index="${index}"><span><strong>${escapeHtml(hit.title)}</strong><small>${escapeHtml(hit.workspace_name)} · ${hit.lifecycle === "archived" ? localize("已归档 · 只读") : localize("活动任务")} · ${{ task: localize("任务信息"), message: localize("消息正文"), file: localize("文件") }[hit.kind] || localize("历史")}</small></span><span class="history-snippet">${historyHighlighted(hit.snippet)}</span></button>`).join("")}</div>
+    ${search.hasMore ? localize`<button data-action="more-history-results" ${search.loading ? "disabled" : ""}>加载更多结果</button>` : ""}
   </section>`;
 }
 
@@ -4389,7 +4396,7 @@ async function loadHistorySearch(append = false) {
     search.unavailable = response.unavailable_context_ids.length;
   } catch (error) {
     if (sequence !== search.sequence) return;
-    search.error = `历史搜索失败：${error.message}`;
+    search.error = localize`历史搜索失败：${error.message}`;
   } finally {
     if (sequence === search.sequence) {
       search.loading = false;
@@ -4433,10 +4440,10 @@ async function openHistory(contextId, targetKey = "", messageId = null) {
       reader.targetKey = detail.entries[targetIndex].key;
       reader.start = Math.max(0, targetIndex - 20);
     } else if (targetKey && !detail.materials.some(item => item.key === targetKey)) {
-      reader.error = "原命中消息已发生变化，正在显示当前保存的历史。";
+      reader.error = localize("原命中消息已发生变化，正在显示当前保存的历史。");
     }
   } catch (error) {
-    if (sequence === reader.sequence) reader.error = `读取历史失败：${error.message}`;
+    if (sequence === reader.sequence) reader.error = localize`读取历史失败：${error.message}`;
   } finally {
     if (sequence === reader.sequence && state.view === "history") {
       reader.loading = false;
@@ -4451,14 +4458,14 @@ async function openHistory(contextId, targetKey = "", messageId = null) {
 function renderHistoryReader() {
   const reader = state.historyReader, detail = reader.detail;
   const entries = detail?.entries || [];
-  app.innerHTML = `<section class="history-reader">
-    <header class="task-page-heading"><div><h1>${escapeHtml(detail?.title || "历史记录")}</h1><p>${detail?.lifecycle === "archived" ? "已归档 · " : ""}只读查看${detail ? ` · ${escapeHtml(detail.workspace_name)}` : ""}</p></div><div><button data-action="back-history-search">返回历史查找</button>${detail?.lifecycle === "active" ? `<button data-action="history-continue" data-context-id="${escapeHtml(detail.context_id)}">继续任务</button>` : ""}</div></header>
-    ${reader.loading ? '<p role="status">正在读取历史…</p>' : ""}
-    ${reader.error ? `<p role="status">${escapeHtml(reader.error)}</p>${!detail ? '<button data-action="retry-history-reader">重试读取</button>' : ""}` : ""}
-    ${detail?.materials.length ? `<section class="history-files" aria-label="相关输入与产物"><h2>相关输入与产物</h2>${detail.materials.map(item => `<div class="history-file ${reader.targetKey === item.key ? "history-target" : ""}" tabindex="-1"><small>${({ input: "输入文件", artifact: "产物", material: "材料" })[item.kind] || "文件"}</small><strong>${historyHighlighted(item.path)}</strong>${item.note ? `<p>${historyHighlighted(item.note)}</p>` : ""}</div>`).join("")}</section>` : ""}
-    ${reader.start ? '<button data-action="history-earlier">查看更早消息</button>' : ""}
-    <div class="history-messages">${entries.slice(reader.start, reader.start + 80).map(entry => `<article class="history-message ${reader.targetKey === entry.key ? "history-target" : ""}" tabindex="-1"><header>${({ human: "你", user: "你", ai: "助手", assistant: "助手", tool: "工具", system: "系统" })[entry.role] || "消息"}${entry.retained_source ? " · 压缩前原文" : ""}</header><div>${historyHighlighted(entry.text)}</div></article>`).join("")}${detail && !entries.length ? "<p>该任务暂无已保存的消息。</p>" : ""}</div>
-    ${reader.start + 80 < entries.length ? '<button data-action="history-later">查看后续消息</button>' : ""}
+  app.innerHTML = localize`<section class="history-reader">
+    <header class="task-page-heading"><div><h1>${escapeHtml(detail?.title || localize("历史记录"))}</h1><p>${detail?.lifecycle === "archived" ? localize("已归档 · ") : ""}只读查看${detail ? ` · ${escapeHtml(detail.workspace_name)}` : ""}</p></div><div><button data-action="back-history-search">返回历史查找</button>${detail?.lifecycle === "active" ? localize`<button data-action="history-continue" data-context-id="${escapeHtml(detail.context_id)}">继续任务</button>` : ""}</div></header>
+    ${reader.loading ? localize('<p role="status">正在读取历史…</p>') : ""}
+    ${reader.error ? `<p role="status">${escapeHtml(reader.error)}</p>${!detail ? localize('<button data-action="retry-history-reader">重试读取</button>') : ""}` : ""}
+    ${detail?.materials.length ? localize`<section class="history-files" aria-label="相关输入与产物"><h2>相关输入与产物</h2>${detail.materials.map(item => `<div class="history-file ${reader.targetKey === item.key ? "history-target" : ""}" tabindex="-1"><small>${({ input: localize("输入文件"), artifact: localize("产物"), material: localize("材料") })[item.kind] || localize("文件")}</small><strong>${historyHighlighted(item.path)}</strong>${item.note ? `<p>${historyHighlighted(item.note)}</p>` : ""}</div>`).join("")}</section>` : ""}
+    ${reader.start ? localize('<button data-action="history-earlier">查看更早消息</button>') : ""}
+    <div class="history-messages">${entries.slice(reader.start, reader.start + 80).map(entry => `<article class="history-message ${reader.targetKey === entry.key ? "history-target" : ""}" tabindex="-1"><header>${({ human: localize("你"), user: localize("你"), ai: localize("助手"), assistant: localize("助手"), tool: localize("工具"), system: localize("系统") })[entry.role] || localize("消息")}${entry.retained_source ? localize(" · 压缩前原文") : ""}</header><div>${historyHighlighted(entry.text)}</div></article>`).join("")}${detail && !entries.length ? localize("<p>该任务暂无已保存的消息。</p>") : ""}</div>
+    ${reader.start + 80 < entries.length ? localize('<button data-action="history-later">查看后续消息</button>') : ""}
   </section>`;
 }
 
@@ -4484,13 +4491,13 @@ async function openContextEditor(contextId) {
   if (!task) return;
   const requestId = ++contextRequestSequence;
   const navigationId = taskSwitchSequence;
-  setStatus("读取 Context checkpoint…");
+  setStatus(localize("读取 Context checkpoint…"));
   try {
     const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
     if (requestId !== contextRequestSequence || navigationId !== taskSwitchSequence) return;
-    if (!snapshot.checkpoint_id) throw new Error("该 Context 尚无可派生的已提交 checkpoint");
+    if (!snapshot.checkpoint_id) throw new Error(localize("该 Context 尚无可派生的已提交 checkpoint"));
     state.contextDraft = {
-      title: `${task.title} · 派生`,
+      title: localize`${task.title} · 派生`,
       workspace_id: task.workspace_id,
       sources: [{ context_id: contextId, checkpoint_id: snapshot.checkpoint_id }],
       sourceSnapshots: [{ context_id: contextId, checkpoint_id: snapshot.checkpoint_id, messages: contextEditor.cloneMessages(snapshot.messages) }],
@@ -4513,7 +4520,7 @@ async function reopenContextDecision(contextId) {
   try {
     const detail = state.details.get(contextId) || await api(`/desktop/api/tasks/${contextId}`);
     const task = state.tasks.find(item => item.task_id === contextId);
-    if (!detail.context || !task) throw new Error("Context 决断数据不存在");
+    if (!detail.context || !task) throw new Error(localize("Context 决断数据不存在"));
     const sources = contextEditor.cloneMessages(detail.context.sources || []);
     const sourceSnapshots = await Promise.all(sources.map(async source => {
       const checkpoint = encodeURIComponent(source.checkpoint_id);
@@ -4553,20 +4560,20 @@ function renderContextDecision(context) {
   if (!context) return "";
   const repairs = (context.repair_manifest || []).filter(item => item.kind !== "regex_flag");
   const repairList = repairs.length
-    ? `<details open><summary>Focus 无损补齐了 ${repairs.length} 处协议结构</summary><pre>${escapeHtml(JSON.stringify(repairs, null, 2))}</pre></details>`
+    ? localize`<details open><summary>Focus 无损补齐了 ${repairs.length} 处协议结构</summary><pre>${escapeHtml(JSON.stringify(repairs, null, 2))}</pre></details>`
     : "";
   if (context.projection_status === "repaired" && !context.editable) {
-    return `<section class="context-decision repaired"><span class="ui-badge is-success">已修复</span><h2>执行投影已安全生成</h2><p>协议结构已补齐，来源消息与用户定义未被静默改写。</p>${repairList}<div class="context-decision-actions ui-action-bar"><span class="muted tiny">可以安全进入派生 Context</span><button class="primary" data-action="open-derived-context">进入新 Context</button></div></section>`;
+    return localize`<section class="context-decision repaired"><span class="ui-badge is-success">已修复</span><h2>执行投影已安全生成</h2><p>协议结构已补齐，来源消息与用户定义未被静默改写。</p>${repairList}<div class="context-decision-actions ui-action-bar"><span class="muted tiny">可以安全进入派生 Context</span><button class="primary" data-action="open-derived-context">进入新 Context</button></div></section>`;
   }
   if (!["approval_required", "rejected", "initialization_failed"].includes(context.projection_status)) return repairList;
-  const issues = (context.issues || []).map(issue => `<article class="context-issue">
+  const issues = (context.issues || []).map(issue => localize`<article class="context-issue">
     <strong>${escapeHtml(issue.reason)}</strong>
     <div class="context-diff"><div><span>原始片段</span><pre>${escapeHtml(JSON.stringify(issue.original, null, 2))}</pre></div><div><span>拟议投影</span><pre>${escapeHtml(JSON.stringify(issue.proposed, null, 2))}</pre></div></div>
   </article>`).join("");
   const actions = context.projection_status === "approval_required"
-    ? `<button class="primary" data-action="accept-context-projection">接受本次降级</button><button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="cancel-context-projection">取消发送</button>`
-    : `<button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="exit-context-editor">关闭</button>`;
-  return `<section class="context-decision blocked"><span class="ui-badge is-warning">需要决断</span><h2>执行投影需要你的确认</h2><p>以下差异会影响 Agent 实际接收的上下文；Focus 不会静默采用降级。</p>${repairList}${issues}<div class="context-decision-actions ui-action-bar"><span class="muted tiny">确认前不会启动新 Context</span><div class="dialog-actions">${actions}</div></div></section>`;
+    ? localize`<button class="primary" data-action="accept-context-projection">接受本次降级</button><button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="cancel-context-projection">取消发送</button>`
+    : localize`<button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="exit-context-editor">关闭</button>`;
+  return localize`<section class="context-decision blocked"><span class="ui-badge is-warning">需要决断</span><h2>执行投影需要你的确认</h2><p>以下差异会影响 Agent 实际接收的上下文；Focus 不会静默采用降级。</p>${repairList}${issues}<div class="context-decision-actions ui-action-bar"><span class="muted tiny">确认前不会启动新 Context</span><div class="dialog-actions">${actions}</div></div></section>`;
 }
 
 function contextDraftLocked(draft = state.contextDraft) {
@@ -4586,15 +4593,15 @@ function contextSourcePanelMarkup(draft) {
   const active = draft.sourceSnapshots?.find(source => source.context_id === draft.activeSourceId) || draft.sourceSnapshots?.[0];
   const tabs = draft.sources.map((source, index) => {
     const task = state.tasks.find(item => item.task_id === source.context_id);
-    return `<span class="context-source-tab-wrap"><button type="button" class="context-source-tab${source.context_id === active?.context_id ? " is-active" : ""}" data-action="context-source-select" data-context-id="${escapeHtml(source.context_id)}">${escapeHtml(task?.title || source.context_id)}</button>${!created && draft.sources.length > 1 ? `<button type="button" class="context-source-remove" data-action="remove-context-source" data-source-index="${index}" aria-label="移除此来源"><span class="ui-icon is-sm icon-x" aria-hidden="true"></span></button>` : ""}</span>`;
+    return `<span class="context-source-tab-wrap"><button type="button" class="context-source-tab${source.context_id === active?.context_id ? " is-active" : ""}" data-action="context-source-select" data-context-id="${escapeHtml(source.context_id)}">${escapeHtml(task?.title || source.context_id)}</button>${!created && draft.sources.length > 1 ? localize`<button type="button" class="context-source-remove" data-action="remove-context-source" data-source-index="${index}" aria-label="移除此来源"><span class="ui-icon is-sm icon-x" aria-hidden="true"></span></button>` : ""}</span>`;
   }).join("");
   const sourceIds = new Set(draft.sources.map(source => source.context_id));
   const tree = state.contextTrees.get(draft.workspace_id) || [];
   const candidates = tree.filter(item => !sourceIds.has(item.context_id)).map(item => {
     const task = state.tasks.find(candidate => candidate.task_id === item.context_id);
     return `<button class="context-source-candidate" style="--context-depth:${item.depth}" data-action="add-context-source" data-context-id="${escapeHtml(item.context_id)}">${escapeHtml(task?.title || item.title)}</button>`;
-  }).join("") || '<span class="muted tiny">没有其他可加入的 Context</span>';
-  return `<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2>已有消息</h2></div><span class="muted tiny">拖到右侧</span></header>
+  }).join("") || localize('<span class="muted tiny">没有其他可加入的 Context</span>');
+  return localize`<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2>已有消息</h2></div><span class="muted tiny">拖到右侧</span></header>
     <div class="context-source-tabs" role="tablist" aria-label="来源 Context">${tabs}</div>
     <div class="context-source-message-list">${contextEditor.renderSourceMessages(active?.messages || [], active?.context_id || "", locked)}</div>
     <details class="context-source-add"${created ? " hidden" : ""}><summary>加入其他来源</summary><div class="context-source-tree">${candidates}</div></details>`;
@@ -4635,16 +4642,16 @@ function updateContextMessageIndices() {
   const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
   rows.forEach((row, index) => {
     row.dataset.contextMessageIndex = String(index);
-    const role = draft.messages[index]?.role || "未指定角色";
+    const role = draft.messages[index]?.role || localize("未指定角色");
     row.querySelector("header strong").textContent = `${String(index + 1).padStart(2, "0")} · ${role}`;
     const input = row.querySelector("[data-context-message-json]");
     if (input) {
       input.dataset.contextMessageIndex = String(index);
-      input.setAttribute("aria-label", `消息 ${index + 1} JSON`);
+      input.setAttribute("aria-label", localize`消息 ${index + 1} JSON`);
     }
   });
   const count = document.querySelector(".context-compose-heading > div > span");
-  if (count) count.textContent = `${draft.messages.length} 条消息`;
+  if (count) count.textContent = localize`${draft.messages.length} 条消息`;
   if (!rows.length && !list.querySelector(".context-empty-drop")) list.insertAdjacentHTML("beforeend", contextEditor.renderMessages([], []));
 }
 
@@ -4654,7 +4661,7 @@ function renderContextEditor(scrollTop = null) {
   ensureContextUiKeys(draft);
   const created = Boolean(draft.context);
   const locked = contextDraftLocked(draft);
-  app.innerHTML = `<section class="context-editor-view">
+  app.innerHTML = localize`<section class="context-editor-view">
     <aside class="context-source-panel">${contextSourcePanelMarkup(draft)}</aside>
     <section class="context-definition-panel">
       <header><div><span class="review-kicker">NEW CONTEXT</span><h1>自由组装</h1></div><button class="text-button" data-action="exit-context-editor">关闭</button></header>
@@ -4663,7 +4670,7 @@ function renderContextEditor(scrollTop = null) {
       <div class="context-message-list" data-context-drop-zone>${contextEditor.renderMessages(draft.messages, draft.uiKeys, draft.expandedKey, locked)}</div>
       ${renderContextDecision(draft.context)}
       <div class="context-undo-toast" hidden><span>已删除消息</span><button type="button" class="text-button" data-action="context-message-undo">撤销</button></div>
-      ${locked ? "" : `<footer><span class="muted tiny">只有右侧内容会成为新 Context；来源始终保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? "重新编译" : "创建 Context"}</button></footer>`}
+      ${locked ? "" : localize`<footer><span class="muted tiny">只有右侧内容会成为新 Context；来源始终保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? localize("重新编译") : localize("创建 Context")}</button></footer>`}
     </section>
   </section>`;
   if (Number.isFinite(scrollTop)) document.querySelector(".context-definition-panel").scrollTop = scrollTop;
@@ -4781,7 +4788,7 @@ function clearContextMessages() {
   draft.uiKeys = [];
   draft.expandedKey = null;
   document.querySelector(".context-message-list").innerHTML = contextEditor.renderMessages([], []);
-  document.querySelector(".context-compose-heading span").textContent = "0 条消息";
+  document.querySelector(".context-compose-heading span").textContent = localize("0 条消息");
 }
 
 async function addContextSource(contextId) {
@@ -4789,7 +4796,7 @@ async function addContextSource(contextId) {
   if (!draft || draft.sources.some(source => source.context_id === contextId)) return;
   try {
     const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
-    if (!snapshot.checkpoint_id) throw new Error("来源 Context 尚无已提交 checkpoint");
+    if (!snapshot.checkpoint_id) throw new Error(localize("来源 Context 尚无已提交 checkpoint"));
     draft.sources.push({ context_id: contextId, checkpoint_id: snapshot.checkpoint_id });
     draft.sourceSnapshots.push({ context_id: contextId, checkpoint_id: snapshot.checkpoint_id, messages: contextEditor.cloneMessages(snapshot.messages) });
     draft.activeSourceId = contextId;
@@ -4801,7 +4808,7 @@ async function submitContext() {
   let draft;
   try { draft = syncContextDraft(); }
   catch (error) { return setStatus(error.message, true); }
-  if (!draft.title) return setStatus("Context 标题不能为空", true);
+  if (!draft.title) return setStatus(localize("Context 标题不能为空"), true);
   try {
     const context = draft.context
       ? await api(`/desktop/api/contexts/${draft.context.context_id}/definition`, { method: "PUT", body: JSON.stringify({ messages: draft.messages }) })
@@ -4849,9 +4856,9 @@ function renderDraft() {
     if (equipment && equipment.dataset.signature !== signature) { equipment.innerHTML = renderEquipment(draft); equipment.dataset.signature = signature; }
     updateTokenState(); return;
   }
-  app.innerHTML = `<section class="draft-view">
+  app.innerHTML = localize`<section class="draft-view">
     <section class="draft-panel">
-      <header class="draft-heading"><span class="ui-meta">${curator ? "跟踪起点" : "来源"} checkpoint ${escapeHtml(draft.source_checkpoint_id || "空历史")}</span><span class="ui-badge is-success">${curator ? "只读策展 · 无通用工具" : "主 Agent 可继续运行"}</span></header>
+      <header class="draft-heading"><span class="ui-meta">${curator ? localize("跟踪起点") : localize("来源")} checkpoint ${escapeHtml(draft.source_checkpoint_id || localize("空历史"))}</span><span class="ui-badge is-success">${curator ? localize("只读策展 · 无通用工具") : localize("主 Agent 可继续运行")}</span></header>
       <nav class="draft-mode-switch" aria-label="Patrol 运行模式">
         <button type="button" class="${curator ? "" : "is-active"}" data-action="set-patrol-mode" data-mode="standard">普通 Patrol</button>
         <button type="button" class="${curator ? "is-active" : ""}" data-action="set-patrol-mode" data-mode="context_curator">Context 策展</button>
@@ -4872,14 +4879,14 @@ function renderDraft() {
 }
 
 function renderStandardDraftSteps(draft) {
-  return `<div id="patrolWorkbench"></div><details class="draft-equipment draft-step" data-step="equipment"><summary>模型与权限 · ${escapeHtml(draft.equipment?.model_name || "默认模型")}</summary><div class="draft-step-body">${renderEquipment(draft)}</div></details>`;
+  return localize`<div id="patrolWorkbench"></div><details class="draft-equipment draft-step" data-step="equipment"><summary>模型与权限 · ${escapeHtml(draft.equipment?.model_name || localize("默认模型"))}</summary><div class="draft-step-body">${renderEquipment(draft)}</div></details>`;
 }
 
 function renderCuratorDraftSteps(draft) {
   const policy = draft.curation_policy || {};
   const root = state.tasks.find(item => item.task_id === draft.root_context_id);
-  return `<section class="draft-step" data-step="objective"><header><span>01</span><div><h2>跟踪来源</h2><p>Patrol 会持续读取这个聊天根的稳定主 checkpoint，而不是冻结当前历史。</p></div></header><div class="draft-step-body">
-    <dl class="curation-meta"><div><dt>聊天根 Context</dt><dd>${escapeHtml(root?.title || draft.root_context_id || "保存后解析")}</dd></div><div><dt>权限边界</dt><dd>只读 · 无技能 · 无通用工具</dd></div></dl>
+  return localize`<section class="draft-step" data-step="objective"><header><span>01</span><div><h2>跟踪来源</h2><p>Patrol 会持续读取这个聊天根的稳定主 checkpoint，而不是冻结当前历史。</p></div></header><div class="draft-step-body">
+    <dl class="curation-meta"><div><dt>聊天根 Context</dt><dd>${escapeHtml(root?.title || draft.root_context_id || localize("保存后解析"))}</dd></div><div><dt>权限边界</dt><dd>只读 · 无技能 · 无通用工具</dd></div></dl>
   </div></section>
   <section class="draft-step" data-step="policy"><header><span>02</span><div><h2>策展策略</h2><p>定义需要保留、合成和舍弃的信息；每次投放后策略会被冻结。</p></div></header><div class="draft-step-body curation-policy-fields">
     <label>策展指令<textarea data-curation-policy="instructions" placeholder="例如：保留目标、约束、已确认决策、有效事实和未完成事项。">${escapeHtml(policy.instructions || "")}</textarea></label>
@@ -4887,21 +4894,21 @@ function renderCuratorDraftSteps(draft) {
     <label>应当舍弃（每行一条）<textarea data-curation-policy="discard_rules">${escapeHtml((policy.discard_rules || []).join("\n"))}</textarea></label>
   </div></section>
   <section class="draft-step" data-step="equipment"><header><span>03</span><div><h2>模型窗口</h2><p>完整根快照必须落在模型窗口内；系统不会静默裁剪来源。</p></div></header><div class="draft-step-body">
-    <label>模型<select data-equipment="model_name">${state.equipment.models.map(model => `<option value="${model.name}" ${model.name === draft.equipment?.model_name ? "selected" : ""}>${escapeHtml(model.display_name)} · ${model.context_window || "未知"}</option>`).join("")}</select></label>
+    <label>模型<select data-equipment="model_name">${state.equipment.models.map(model => `<option value="${model.name}" ${model.name === draft.equipment?.model_name ? "selected" : ""}>${escapeHtml(model.display_name)} · ${model.context_window || localize("未知")}</option>`).join("")}</select></label>
     <p class="tiny muted">运行时固定为 read 权限，不装配 skills、write 或 host_command。</p>
   </div></section>`;
 }
 
 const sourceMeta = {
-  builtin: { label: "内置", className: "tool-source builtin" },
-  custom: { label: "自定义", className: "tool-source custom" },
+  builtin: { get label() { return localize("内置"); }, className: "tool-source builtin" },
+  custom: { get label() { return localize("自定义"); }, className: "tool-source custom" },
   mcp: { label: "MCP", className: "tool-source mcp" },
-  plugin: { label: "插件", className: "tool-source plugin" },
+  plugin: { get label() { return localize("插件"); }, className: "tool-source plugin" },
 };
 
 function renderEquipmentTools() {
-  if (state.equipment.tools_status === "loading") return '<p role="status">正在加载工具目录…</p>';
-  if (state.equipment.tools_status === "error") return `<p role="status">工具目录加载失败：${escapeHtml(state.equipment.tools_error)} <button data-action="retry-equipment">重试</button></p>`;
+  if (state.equipment.tools_status === "loading") return localize('<p role="status">正在加载工具目录…</p>');
+  if (state.equipment.tools_status === "error") return localize`<p role="status">工具目录加载失败：${escapeHtml(state.equipment.tools_error)} <button data-action="retry-equipment">重试</button></p>`;
   const tools = state.equipment.tools || [];
   if (!tools.length) return "";
   const grouped = tools.reduce((map, tool) => {
@@ -4918,7 +4925,7 @@ function renderEquipmentTools() {
         <ul class="equipment-tool-list">${items.map(tool => `<li title="${escapeHtml(String(tool.source || ""))}">${escapeHtml(tool.label || tool.name)}</li>`).join("")}</ul>
       </div>`;
     }).join("");
-  return `<div class="equipment-tools"><span class="tiny muted">工具目录（按来源，执行时校验）</span>${blocks}</div>`;
+  return localize`<div class="equipment-tools"><span class="tiny muted">工具目录（按来源，执行时校验）</span>${blocks}</div>`;
 }
 
 let equipmentLoading = null;
@@ -4929,7 +4936,7 @@ async function hydrateEquipment() {
   equipmentLoading = (async () => {
     try {
       const equipment = await api("/desktop/api/equipment");
-      if (!Array.isArray(equipment.tools)) throw new Error("工具目录响应无效");
+      if (!Array.isArray(equipment.tools)) throw new Error(localize("工具目录响应无效"));
       state.equipment = { ...state.equipment, tools: equipment.tools, tools_status: "loaded", tools_error: null };
       performance.mark("focus:equipment-loaded");
     } catch (error) {
@@ -4950,7 +4957,7 @@ function scoreSource(source) {
 function renderEquipment(draft) {
   const equipment = draft.equipment || {};
   const permissions = equipment.permissions || ["read"];
-  return `<div class="equipment-grid">
+  return localize`<div class="equipment-grid">
     <label>模型<select data-equipment="model_name">${state.equipment.models.map(model => `<option value="${model.name}" ${model.name === equipment.model_name ? "selected" : ""}>${escapeHtml(model.display_name)}</option>`).join("")}</select></label>
     <div><span class="tiny muted">权限</span><div class="check-line">${state.equipment.permissions.map(permission => `<label><input type="checkbox" data-permission="${permission}" ${permissions.includes(permission) ? "checked" : ""}>${permission}</label>`).join("")}</div></div>
     <div><span class="tiny muted">访问模式</span>${renderAccessModePicker("draft")}</div>
@@ -4962,7 +4969,7 @@ function renderEquipment(draft) {
 async function openDraft(taskId) {
   const requestId = ++draftOpenRequestSequence;
   const navigationId = taskSwitchSequence;
-  setStatus("复制 checkpoint…");
+  setStatus(localize("复制 checkpoint…"));
   try {
     const [draft, catalog] = await Promise.all([
       api(`/desktop/api/tasks/${taskId}/drafts/open`, { method: "POST" }),
@@ -4983,7 +4990,7 @@ async function openDraft(taskId) {
 async function quickDeployContextCurator(taskId) {
   if (state.quickCuratingTaskIds.has(taskId)) return;
   state.quickCuratingTaskIds.add(taskId);
-  setStatus("正在启动持续 Context 策展…");
+  setStatus(localize("正在启动持续 Context 策展…"));
   try {
     const run = await api(`/desktop/api/tasks/${taskId}/context-curation/quick-deploy`, {
       method: "POST",
@@ -4992,7 +4999,7 @@ async function quickDeployContextCurator(taskId) {
     listenToRun(run);
     await Promise.all([refreshTasks(), hydrateContextTrees(), hydrateActive(taskId)]);
     if (state.activeTaskId === taskId) render();
-    setStatus("已启动持续 Context 策展 Patrol");
+    setStatus(localize("已启动持续 Context 策展 Patrol"));
   } catch (error) {
     setStatus(error.message, true);
   } finally {
@@ -5063,7 +5070,7 @@ function scheduleDraftSave() {
   const revision = (state.draftSaveRevisions.get(taskId) || 0) + 1;
   state.draftSaveRevisions.set(taskId, revision);
   const indicator = document.querySelector("#draftSaveState");
-  if (indicator) { indicator.textContent = "待保存"; indicator.className = "ui-badge is-warning"; }
+  if (indicator) { indicator.textContent = localize("待保存"); indicator.className = "ui-badge is-warning"; }
   state.saveTimer = setTimeout(() => saveDraft(taskId, { syncDom: false, revision }), 350);
 }
 
@@ -5096,16 +5103,16 @@ async function saveDraft(taskId = state.activeTaskId, options = {}) {
       state.drafts.set(taskId, { ...saved, deployment_id: draft.deployment_id || saved.deployment_id });
       if (state.activeTaskId === taskId && state.view === "draft") {
         const counter = document.querySelector("#tokenCount");
-        if (counter) { counter.textContent = `估算 ${saved.token_estimate} tokens`; updateTokenState(); }
+        if (counter) { counter.textContent = localize`估算 ${saved.token_estimate} tokens`; updateTokenState(); }
         const indicator = document.querySelector("#draftSaveState");
-        if (indicator) { indicator.textContent = "已自动保存"; indicator.className = "ui-badge is-success"; }
+        if (indicator) { indicator.textContent = localize("已自动保存"); indicator.className = "ui-badge is-success"; }
       }
-      setStatus("草稿已保存");
+      setStatus(localize("草稿已保存"));
     }
     return true;
   } catch (error) {
     const indicator = state.activeTaskId === taskId ? document.querySelector("#draftSaveState") : null;
-    if (indicator) { indicator.textContent = "保存失败，可重试"; indicator.className = "ui-badge is-danger"; }
+    if (indicator) { indicator.textContent = localize("保存失败，可重试"); indicator.className = "ui-badge is-danger"; }
     setStatus(error.message, true);
     return false;
   }
@@ -5135,7 +5142,7 @@ async function deployDraft() {
   if (!workbench && draft.mode !== "context_curator" && !draft.final_human_message.trim()) {
     state.deploying = false;
     updateTokenState();
-    return setStatus("最后一条 HumanMessage 不能为空", true);
+    return setStatus(localize("最后一条 HumanMessage 不能为空"), true);
   }
   try {
     draft.deployment_id ||= crypto.randomUUID();
@@ -5186,15 +5193,15 @@ function renderComposerAttachments(taskId) {
     cards.push({ materialId: binding.materialId, material: materials.get(binding.materialId), entry: uploads.find(entry => entry.materialId === binding.materialId) });
   }
   if (!cards.length) return "";
-  return `<span class="composer-attachments-label">本次附件 · ${cards.length}</span><div class="composer-attachment-list">${cards.map(({ entry, material, materialId }) => {
-    const name = material?.relative_path || entry?.file?.name || "附件";
+  return localize`<span class="composer-attachments-label">本次附件 · ${cards.length}</span><div class="composer-attachment-list">${cards.map(({ entry, material, materialId }) => {
+    const name = material?.relative_path || entry?.file?.name || localize("附件");
     const status = material ? "ready" : entry?.status || "preparing";
-    const label = status === "ready" ? "已就绪" : status === "failed" ? "失败" : "准备中";
+    const label = status === "ready" ? localize("已就绪") : status === "failed" ? localize("失败") : localize("准备中");
     const image = entry?.previewUrl ? `<img src="${escapeHtml(entry.previewUrl)}" alt="">` : material?.is_image ? materialImageMarkup(material.material_id, "", "", null) : '<span class="ui-icon icon-file-text" aria-hidden="true"></span>';
-    return `<article class="composer-attachment is-${status}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${materialId ? ` data-composer-material="${escapeHtml(materialId)}"` : ""}>
+    return localize`<article class="composer-attachment is-${status}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${materialId ? ` data-composer-material="${escapeHtml(materialId)}"` : ""}>
       <button type="button" class="composer-attachment-preview" data-action="composer-preview-attachment" aria-label="预览 ${escapeHtml(name)}"${!material && !entry?.previewUrl ? " disabled" : ""}>${image}</button>
       <span class="composer-attachment-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small role="status">${label}${entry?.error ? `：${escapeHtml(entry.error)}` : ""}</small></span>
-      ${status === "failed" ? '<button type="button" class="text-button" data-action="composer-retry-attachment">重试</button>' : ""}
+      ${status === "failed" ? localize('<button type="button" class="text-button" data-action="composer-retry-attachment">重试</button>') : ""}
       <button type="button" class="text-button" data-action="composer-remove-attachment" aria-label="移除 ${escapeHtml(name)}">移除</button></article>`;
   }).join("")}</div>`;
 }
@@ -5255,7 +5262,7 @@ async function prepareMainAttachments(taskId, selection, entries) {
   if (entries.some(entry => !entry.removed && entry.status === "preparing")) {
     state.mainPreparations.set(taskId, { selection });
     if (state.activeTaskId === taskId) {
-      setStatus("正在准备本次附件，完成后将自动发送…");
+      setStatus(localize("正在准备本次附件，完成后将自动发送…"));
       setComposerError(null, taskId);
     }
     try { await Promise.all(entries.map(entry => Promise.race([entry.done, entry.cancelled]))); }
@@ -5265,7 +5272,7 @@ async function prepareMainAttachments(taskId, selection, entries) {
     }
   }
   const failed = entries.filter(entry => !entry.removed && entry.status !== "ready");
-  if (failed.length) throw new Error(`附件准备失败：${failed.map(entry => entry.file?.name || "附件").join("、")}。请重试或移除后发送。`);
+  if (failed.length) throw new Error(localize`附件准备失败：${failed.map(entry => entry.file?.name || localize("附件")).join("、")}。请重试或移除后发送。`);
   for (const entry of entries) {
     if (!entry.removed && !selection.bindings.some(item => item.materialId === entry.materialId)) {
       selection = runMaterialPicker.toggleMaterial(selection, entry.materialId);
@@ -5315,7 +5322,7 @@ async function toggleImageRequired(materialId) {
   const taskId = state.activeTaskId;
   const selection = materialSelection(taskId);
   if (!selection.bindings.some(item => item.materialId === materialId)) {
-    return setStatus("请先把图片选为本轮材料", true);
+    return setStatus(localize("请先把图片选为本轮材料"), true);
   }
   if (!selection.requiredImageIds.includes(materialId)) {
     await api(`/desktop/api/tasks/${taskId}/materials/${materialId}/image-validity`);
@@ -5341,24 +5348,24 @@ function openImageLightbox(url, label) {
   const root = document.querySelector("#overlayRoot");
   if (!root) return;
   // 整层可点即关（含点图片本身），避免用户找不到出口
-  root.innerHTML = `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="${escapeHtml(label)}" data-action="close-lightbox"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
+  root.innerHTML = localize`<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="${escapeHtml(label)}" data-action="close-lightbox"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
 }
 
 async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const task = state.tasks.find(item => item.task_id === taskId);
-  if (!task) return setStatus("当前没有活动任务", true);
+  if (!task) return setStatus(localize("当前没有活动任务"), true);
   adoptCommitmentContext();
   if (!retry && activeTaskHasCommitmentLock()) {
-    return setStatus("存在尚未处理的承诺流程，请先处理审批面板", true);
+    return setStatus(localize("存在尚未处理的承诺流程，请先处理审批面板"), true);
   }
   if (!retry && state.details.get(taskId)?.pending_compression) {
-    return setStatus("存在待确认的压缩请求，请先完成压缩或取消", true);
+    return setStatus(localize("存在待确认的压缩请求，请先完成压缩或取消"), true);
   }
   if (!retry && state.details.get(taskId)?.pending_must_view_report) {
-    return setStatus("存在待处理的必看图片报告，请先重试或取消", true);
+    return setStatus(localize("存在待处理的必看图片报告，请先重试或取消"), true);
   }
   if (!retry && state.accessReviews.panel) {
-    return setStatus("存在待批准的本机资源访问请求，请先批准或拒绝", true);
+    return setStatus(localize("存在待批准的本机资源访问请求，请先批准或拒绝"), true);
   }
   setStatus("");
   const input = document.querySelector("#mainInput");
@@ -5411,7 +5418,7 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
         const focusedDetail = state.details.get(taskId);
         focusedDetail.ui_state = { ...(focusedDetail.ui_state || {}), input: "" };
         persistFocusState();
-        setStatus("后续指令已交给当前空间小兵");
+        setStatus(localize("后续指令已交给当前空间小兵"));
         return;
       }
     } catch (error) {
@@ -5453,7 +5460,7 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
       headers: { "Idempotency-Key": requestId },
       body: frozen.body,
     });
-    if (!run || (!run.run_id && !run.input_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error("未收到有效受理回执");
+    if (!run || (!run.run_id && !run.input_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error(localize("未收到有效受理回执"));
     confirmed = true;
     consumeFileReferences(taskId, submittedFileRefs);
     taskRunOperations?.accept(taskId, requestId, run);
@@ -5476,7 +5483,7 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
         if (unchanged && document.querySelector("#mainInput") === input) input.value = "";
         persistFocusState();
         if (state.view === "focus") renderFocus();
-        setStatus(run.input_id ? window.FocusConversationInputs.labels[run.status] : "消息已受理，交付与执行以实际工作状态为准");
+        setStatus(run.input_id ? window.FocusConversationInputs.labels[run.status] : localize("消息已受理，交付与执行以实际工作状态为准"));
       }
       return;
     }
@@ -5527,9 +5534,9 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
       try { failed = taskRunOperations?.failRecovery(taskId, requestId, error); }
       catch { /* 投递前的冻结快照仍在；保存诊断失败不能丢失原身份。 */ }
     }
-    const feedback = confirmed ? `消息已受理，但本地状态更新失败：${error.message}`
-      : failed?.failure?.uncertain === false ? `发送未受理：${error.message}`
-      : taskRunOperations?.recovery(taskId) ? `尚未确认是否受理：${error.message}` : error.message;
+    const feedback = confirmed ? localize`消息已受理，但本地状态更新失败：${error.message}`
+      : failed?.failure?.uncertain === false ? localize`发送未受理：${error.message}`
+      : taskRunOperations?.recovery(taskId) ? localize`尚未确认是否受理：${error.message}` : error.message;
     if (state.activeTaskId === taskId) setStatus(feedback, true);
     setComposerError(feedback, taskId);
   }
@@ -5539,7 +5546,7 @@ function sendMain(retryOriginal = false, mode = null) {
   const taskId = state.activeTaskId;
   if (!taskId) return Promise.resolve();
   if (taskRunOperations?.get(taskId).submission?.status === "pending") {
-    setStatus("这条消息正在提交，请稍候；其他 Context 仍可独立发送。", false);
+    setStatus(localize("这条消息正在提交，请稍候；其他 Context 仍可独立发送。"), false);
     return Promise.resolve();
   }
   const saved = taskRunOperations?.recovery(taskId);
@@ -5555,8 +5562,8 @@ function sendMain(retryOriginal = false, mode = null) {
 }
 
 const COMMITMENT_STAGE_NAMES = {
-  1: "明确目标", 2: "要求与兼容性", 3: "优先级", 4: "必要输入",
-  5: "技术版本", 6: "官方知识", 7: "合同落盘", 8: "产出合同", 9: "交接准备",
+  get 1() { return localize("明确目标"); }, get 2() { return localize("要求与兼容性"); }, get 3() { return localize("优先级"); }, get 4() { return localize("必要输入"); },
+  get 5() { return localize("技术版本"); }, get 6() { return localize("官方知识"); }, get 7() { return localize("合同落盘"); }, get 8() { return localize("产出合同"); }, get 9() { return localize("交接准备"); },
 };
 const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "Evaluator" };
 const TERMINAL_RUN_STATUSES = new Set(["success", "error", "interrupted", "timeout", "cancelled", "stopped"]);
@@ -5606,7 +5613,7 @@ async function settleRunStream(run, source, ownerTaskId, terminal) {
       && !state.commitment.recovery
       && !detail?.pending_compression
       && !detail?.pending_must_view_report) {
-    setStatus("主 Agent 已中断，可继续对话");
+    setStatus(localize("主 Agent 已中断，可继续对话"));
   } else if (terminal.status === "error" && terminal.error) {
     setStatus(terminal.error, true);
   }
@@ -5632,7 +5639,7 @@ function listenToRun(run) {
     if (!event?.data) return fallback;
     try { return JSON.parse(event.data); }
     catch {
-      runError = "运行流返回了无法解析的数据";
+      runError = localize("运行流返回了无法解析的数据");
       setStatus(runError, true);
       return fallback;
     }
@@ -5653,7 +5660,7 @@ function listenToRun(run) {
       } while (resyncAgain && state.streams.get(run.run_id) === source);
       renderRunUpdate(ownerTaskId);
     })()
-      .catch(error => setStatus(`运行内容补读失败：${error.message}`, true))
+      .catch(error => setStatus(localize`运行内容补读失败：${error.message}`, true))
       .finally(() => { resyncPending = null; });
     return resyncPending;
   });
@@ -5720,14 +5727,14 @@ function listenToRun(run) {
     }
   });
   listen("error", event => {
-    const error = parseEvent(event)?.data?.error || "运行失败";
+    const error = parseEvent(event)?.data?.error || localize("运行失败");
     runError = error;
     syncPatrolRunState(run, "error", error);
     if (ownerTaskId) taskRunOperations?.updateRun(ownerTaskId, run.run_id, { status: "error", error });
     setStatus(error, true);
   });
   listen("end", async event => {
-    const terminal = parseEvent(event, { status: "error", error: "运行流异常结束" });
+    const terminal = parseEvent(event, { status: "error", error: localize("运行流异常结束") });
     if (!terminal.error && runError) terminal.error = runError;
     await settleRunStream(run, source, ownerTaskId, terminal);
   });
@@ -5757,8 +5764,8 @@ function setProgress(stage, visible = true) {
     list.append(item);
   }
   container.querySelector("#progressLabel").textContent = stage
-    ? `${stage}/9 · ${COMMITMENT_STAGE_NAMES[stage] || "正在准备"}`
-    : "正在准备任务合同";
+    ? `${stage}/9 · ${COMMITMENT_STAGE_NAMES[stage] || localize("正在准备")}`
+    : localize("正在准备任务合同");
 }
 
 // === 执行轨迹面板 ===
@@ -5806,10 +5813,10 @@ function beginLeadExecution(taskId) {
       || state.commitment.terminalStatus
       || state.commitment.handoffStarted) return;
   state.commitment.handoffStarted = true;
-  finishTracePanel("承诺已完成");
+  finishTracePanel(localize("承诺已完成"));
   if (state.commitment.tracePanel) state.commitment.tracePanel.open = false;
   setProgress(state.commitment.stage, false);
-  setStatus("Lead Agent 正在执行…");
+  setStatus(localize("Lead Agent 正在执行…"));
   const conversation = conversationNode();
   if (conversation && state.commitment.tracePanel?.isConnected) {
     conversation.prepend(state.commitment.tracePanel);
@@ -5827,6 +5834,7 @@ function ensureTracePanel() {
   if (state.commitment.tracePanel?.isConnected) return;
   const fragment = document.querySelector("#traceTemplate").content.cloneNode(true);
   state.commitment.tracePanel = fragment.querySelector(".trace-panel");
+  ownDynamicLabels(state.commitment.tracePanel);
   state.commitment.traceStartedAt = Date.now();
   state.commitment.traceStreams = new Map();
   clearInterval(state.commitment.traceTimer);
@@ -5843,13 +5851,13 @@ function updateTraceElapsed() {
   const panel = state.commitment.tracePanel;
   if (!panel?.isConnected || !state.commitment.traceStartedAt) return;
   const seconds = Math.max(0, Math.floor((Date.now() - state.commitment.traceStartedAt) / 1000));
-  panel.querySelector(".trace-elapsed").textContent = `已思考 ${seconds} 秒`;
+  panel.querySelector(".trace-elapsed").textContent = localize`已思考 ${seconds} 秒`;
 }
 
 function updateTraceCount() {
   const panel = state.commitment.tracePanel;
   if (!panel?.isConnected) return;
-  panel.querySelector(".trace-count").textContent = `${panel.querySelectorAll(".trace-item").length} 项`;
+  panel.querySelector(".trace-count").textContent = localize`${panel.querySelectorAll(".trace-item").length} 项`;
 }
 
 function isNearBottom(element, threshold = 80) {
@@ -5881,9 +5889,9 @@ function settleCommitmentRun(taskId, terminal) {
   const error = terminal?.error || state.commitment.terminalError || null;
   state.commitment.terminalStatus = status;
   state.commitment.terminalError = error;
-  finishTracePanel(status === "success" ? "已完成" : "运行失败");
+  finishTracePanel(status === "success" ? localize("已完成") : localize("运行失败"));
   setProgress(state.commitment.stage, false);
-  if (status !== "success") setStatus(error || "运行失败", true);
+  if (status !== "success") setStatus(error || localize("运行失败"), true);
   else setStatus("");
 }
 
@@ -5919,7 +5927,7 @@ function appendCommitmentTrace(trace) {
   actor.className = "trace-actor";
   actor.textContent = TRACE_ACTORS[trace.actor] || trace.actor;
   const position = document.createElement("span");
-  position.textContent = `第 ${trace.stage} 步${trace.attempt ? ` · 第 ${trace.attempt} 轮` : ""}`;
+  position.textContent = localize`第 ${trace.stage} 步${trace.attempt ? localize` · 第 ${trace.attempt} 轮` : ""}`;
   meta.append(actor, position);
   const title = document.createElement("strong");
   title.textContent = trace.title;
@@ -5938,7 +5946,7 @@ function appendCommitmentTrace(trace) {
   if (trace.payload !== undefined) {
     const payload = document.createElement("details");
     payload.className = "trace-payload";
-    payload.innerHTML = "<summary>查看输入与输出</summary><pre></pre>";
+    payload.innerHTML = localize("<summary>查看输入与输出</summary><pre></pre>");
     payload.querySelector("pre").textContent = prettyDraft(trace.payload);
     item.append(payload);
   }
@@ -5962,7 +5970,7 @@ function appendTraceOutputDelta(trace, followMessages) {
     item.className = `trace-item trace-${trace.actor} trace-stream-item is-active`;
     item.dataset.actor = trace.actor;
     item.dataset.stage = String(trace.stage);
-    item.innerHTML = `
+    item.innerHTML = localize`
       <div class="trace-meta">
         <span class="trace-actor"></span>
         <span>第 ${trace.stage} 步 · 公开输出流</span>
@@ -5997,7 +6005,7 @@ function completeTraceActivity(trace) {
   }
 }
 
-function finishTracePanel(label = "已完成") {
+function finishTracePanel(label = localize("已完成")) {
   clearInterval(state.commitment.traceTimer);
   state.commitment.traceTimer = null;
   const panel = state.commitment.tracePanel;
@@ -6024,9 +6032,9 @@ function appendCommitmentMessages(batch) {
       state.commitment.messageIds.add(key);
       appendCommitmentTrace({
         actor, stage, attempt,
-        title: `${TRACE_ACTORS[actor] || actor} 收到输入`,
+        title: localize`${TRACE_ACTORS[actor] || actor} 收到输入`,
         status: "running",
-        detail: "已接收当前任务、Supervisor 消息历史与验收条件。",
+        detail: localize("已接收当前任务、Supervisor 消息历史与验收条件。"),
         payload: message,
       });
       return;
@@ -6034,7 +6042,7 @@ function appendCommitmentMessages(batch) {
     if (actor !== "supervisor" && (type.includes("chunk") || !message.id)) {
       appendTraceOutputDelta({
         actor, stage, attempt,
-        title: `${TRACE_ACTORS[actor] || actor} 正在生成`,
+        title: localize`${TRACE_ACTORS[actor] || actor} 正在生成`,
         payload: { stream_id: `${actor}-${stage}-${attempt || 0}`, delta: text },
       }, isNearBottom(conversationNode()));
       return;
@@ -6050,13 +6058,13 @@ function appendCommitmentMessages(batch) {
     state.commitment.messageIds.add(key);
     let payload = message;
     let status = "running";
-    let title = `${TRACE_ACTORS[actor] || actor} 消息`;
+    let title = localize`${TRACE_ACTORS[actor] || actor} 消息`;
     if (type.includes("tool")) {
       try { payload = JSON.parse(text); } catch { payload = message; }
       status = ["approved", "revised"].includes(payload?.status) ? "completed" : "failed";
-      title = "delegate_with_review 最终返回";
+      title = localize("delegate_with_review 最终返回");
     } else if (actor === "supervisor") {
-      title = "Supervisor 委派阶段任务";
+      title = localize("Supervisor 委派阶段任务");
     }
     const messageStage = Number(payload?.stage || message.tool_calls?.[0]?.args?.stage || stage);
     const item = appendCommitmentTrace({
@@ -6081,24 +6089,25 @@ function showReview(payload) {
     review: payload,
   };
   state.commitment.stage = Number(payload.stage || state.commitment.stage);
-  finishTracePanel("等待确认");
+  finishTracePanel(localize("等待确认"));
   if (state.commitment.tracePanel?.isConnected) state.commitment.tracePanel.open = true;
-  setStatus("等待确认", false);
+  setStatus(localize("等待确认"), false);
   setProgress(state.commitment.stage, true);
   removeReviewPanel();
 
   const fragment = document.querySelector("#reviewTemplate").content.cloneNode(true);
   const panel = fragment.querySelector(".review-panel");
+  ownDynamicLabels(panel);
   panel.dataset.recoveryStatus = "resumable";
   panel.dataset.stage = String(payload.stage || 0);
-  panel.querySelector(".review-kicker").textContent = `第 ${payload.stage} 步`;
-  panel.querySelector("h3").textContent = COMMITMENT_STAGE_NAMES[payload.stage] || "人工确认";
+  panel.querySelector(".review-kicker").textContent = localize`第 ${payload.stage} 步`;
+  panel.querySelector("h3").textContent = COMMITMENT_STAGE_NAMES[payload.stage] || localize("人工确认");
   panel.querySelector(".review-draft").textContent = prettyDraft(payload.draft);
   panel.querySelector(".review-error").textContent = payload.error || "";
   const allowed = payload.allowed_decisions || ["approve", "revise"];
   panel.querySelector(".approve-button").hidden = !allowed.includes("approve");
   if (payload.revise_label || !allowed.includes("approve")) {
-    panel.querySelector(".revise-toggle").textContent = payload.revise_label || (payload.stage === 2 ? "解决矛盾" : "提出修订");
+    panel.querySelector(".revise-toggle").textContent = payload.revise_label ? localize(payload.revise_label) : (payload.stage === 2 ? localize("解决矛盾") : localize("提出修订"));
   }
   const contract = payload.draft?.contract_markdown;
   if (payload.stage === 7 && typeof contract === "string") {
@@ -6107,8 +6116,8 @@ function showReview(payload) {
     editor.hidden = false;
     editor.value = contract;
     editor.dataset.original = contract.trim();
-    panel.querySelector(".approve-button").textContent = "确认并写入";
-    panel.querySelector(".revise-toggle").textContent = "反馈重写";
+    panel.querySelector(".approve-button").textContent = localize("确认并写入");
+    panel.querySelector(".revise-toggle").textContent = localize("反馈重写");
   }
   bindReview(panel);
   state.commitment.reviewPanel = panel;
@@ -6120,6 +6129,13 @@ function showReview(payload) {
 function removeReviewPanel() {
   state.commitment.reviewPanel?.remove();
   state.commitment.reviewPanel = null;
+}
+
+function ownDynamicLabels(panel) {
+  for (const node of panel.querySelectorAll(".trace-state, .trace-elapsed, .trace-count, .review-badge, .approve-button, .revise-toggle, .revision-input")) {
+    node.removeAttribute?.("data-i18n");
+    node.removeAttribute?.("data-i18n-placeholder");
+  }
 }
 
 function bindReview(panel) {
@@ -6134,8 +6150,8 @@ function bindReview(panel) {
     if (stage !== 7) return;
     approveButton.textContent =
       contractEditor.value.trim() === contractEditor.dataset.original
-        ? "确认并写入"
-        : "提交编辑并审核";
+        ? localize("确认并写入")
+        : localize("提交编辑并审核");
   };
 
   contractEditor.addEventListener("input", updateContractAction);
@@ -6143,7 +6159,7 @@ function bindReview(panel) {
     if (stage === 7) {
       const contract = contractEditor.value.trim();
       if (!contract) {
-        panel.querySelector(".review-error").textContent = "任务合同不能为空";
+        panel.querySelector(".review-error").textContent = localize("任务合同不能为空");
         return;
       }
       if (contract !== contractEditor.dataset.original) {
@@ -6172,7 +6188,7 @@ function bindReview(panel) {
       mode = button.dataset.mode;
       panel.querySelectorAll(".segmented button").forEach(item => item.classList.toggle("active", item === button));
       input.value = "";
-      input.placeholder = mode === "feedback" ? "输入需要调整的内容" : "输入完整 JSON 替换草稿";
+      input.placeholder = mode === "feedback" ? localize("输入需要调整的内容") : localize("输入完整 JSON 替换草稿");
     });
   });
 
@@ -6186,7 +6202,7 @@ function bindReview(panel) {
     } else {
       try { payload.replacement = JSON.parse(value); }
       catch {
-        panel.querySelector(".review-error").textContent = "替换草稿必须是有效 JSON";
+        panel.querySelector(".review-error").textContent = localize("替换草稿必须是有效 JSON");
         return;
       }
     }
@@ -6199,7 +6215,7 @@ function disableReview(panel) {
   panel.querySelectorAll("button, textarea").forEach(control => { control.disabled = true; });
   panel.classList.add("review-submitted");
   const error = panel.querySelector(".review-error");
-  if (error && !error.textContent) error.textContent = "已提交，审核中…";
+  if (error && !error.textContent) error.textContent = localize("已提交，审核中…");
 }
 
 async function resumeRun(payload) {
@@ -6209,7 +6225,7 @@ async function resumeRun(payload) {
   const task = state.commitment.taskId
     ? state.tasks.find(item => item.task_id === state.commitment.taskId)
     : activeTask();
-  if (!task) return setStatus("当前没有活动任务", true);
+  if (!task) return setStatus(localize("当前没有活动任务"), true);
   state.commitment.busy = true;
   try {
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
@@ -6227,7 +6243,7 @@ async function resumeRun(payload) {
 
 async function resumeMustView(decision) {
   const task = activeTask();
-  if (!task) return setStatus("当前没有活动任务", true);
+  if (!task) return setStatus(localize("当前没有活动任务"), true);
   try {
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
       method: "POST",
@@ -6391,7 +6407,7 @@ async function applyAccessMode(target, mode, taskId) {
 
 // === 本机资源访问批准面板 ===
 
-const ACCESS_OPERATION_FALLBACKS = { read: "读取", write: "写入", command: "执行" };
+const ACCESS_OPERATION_FALLBACKS = { get read() { return localize("读取"); }, get write() { return localize("写入"); }, get command() { return localize("执行"); } };
 
 function accessReviewKey(taskId, payload) {
   const reads = Array.isArray(payload?.reads) ? payload.reads.join("|") : "";
@@ -6591,20 +6607,21 @@ function mountCommitmentRecovery(detail) {
       removeReviewPanel();
       const fragment = document.querySelector("#reviewTemplate").content.cloneNode(true);
       const panel = fragment.querySelector(".review-panel");
+      ownDynamicLabels(panel);
       panel.dataset.stage = String(recovery.stage || 0);
       panel.dataset.recoveryStatus = "processing";
-      panel.querySelector(".review-kicker").textContent = `第 ${recovery.stage} 步`;
-      panel.querySelector("h3").textContent = "人工决定正在处理";
-      panel.querySelector(".review-badge").textContent = "处理中";
+      panel.querySelector(".review-kicker").textContent = localize`第 ${recovery.stage} 步`;
+      panel.querySelector("h3").textContent = localize("人工决定正在处理");
+      panel.querySelector(".review-badge").textContent = localize("处理中");
       panel.querySelector(".review-draft").textContent = prettyDraft(recovery.review?.draft);
-      panel.querySelector(".review-error").textContent = "正在从 checkpoint 继续执行，请等待新的审批或完成结果。";
+      panel.querySelector(".review-error").textContent = localize("正在从 checkpoint 继续执行，请等待新的审批或完成结果。");
       panel.querySelector(".review-actions").remove();
       panel.querySelector(".revision-form").remove();
       panel.querySelector(".review-contract-editor").remove();
       state.commitment.reviewPanel = panel;
       conversationNode()?.append(panel);
       setProgress(state.commitment.stage, true);
-      setStatus("承诺审批处理中");
+      setStatus(localize("承诺审批处理中"));
       scrollConversation();
     }
     return;
@@ -6616,21 +6633,22 @@ function mountCommitmentRecovery(detail) {
   const fragment = document.querySelector("#reviewTemplate").content.cloneNode(true);
   const panel = fragment.querySelector(".review-panel");
   panel.dataset.stage = String(recovery.stage || 0);
+  ownDynamicLabels(panel);
   panel.dataset.recoveryStatus = "orphaned";
-  panel.querySelector(".review-kicker").textContent = `第 ${recovery.stage} 步`;
-  panel.querySelector("h3").textContent = "旧承诺流程无法继续";
-  panel.querySelector(".review-badge").textContent = "需要重开";
+  panel.querySelector(".review-kicker").textContent = localize`第 ${recovery.stage} 步`;
+  panel.querySelector("h3").textContent = localize("旧承诺流程无法继续");
+  panel.querySelector(".review-badge").textContent = localize("需要重开");
   panel.querySelector(".review-draft").textContent = prettyDraft(recovery.review?.draft);
   panel.querySelector(".review-error").textContent =
-    "父图已经越过原来的人工中断，旧决定不能安全恢复。放弃后只会清理承诺子图，现有对话和材料都会保留。";
+    localize("父图已经越过原来的人工中断，旧决定不能安全恢复。放弃后只会清理承诺子图，现有对话和材料都会保留。");
   panel.querySelector(".revision-form").remove();
   panel.querySelector(".review-contract-editor").remove();
   panel.querySelector(".review-actions").innerHTML =
-    '<button class="primary" type="button" data-action="abandon-commitment">放弃旧流程并重开</button>';
+    localize('<button class="primary" type="button" data-action="abandon-commitment">放弃旧流程并重开</button>');
   state.commitment.reviewPanel = panel;
   conversationNode()?.append(panel);
   setProgress(state.commitment.stage, true);
-  setStatus("旧承诺流程需要显式重开", true);
+  setStatus(localize("旧承诺流程需要显式重开"), true);
   scrollConversation();
 }
 
@@ -6639,7 +6657,7 @@ async function abandonCommitment() {
   const task = state.commitment.taskId
     ? state.tasks.find(item => item.task_id === state.commitment.taskId)
     : activeTask();
-  if (!task) return setStatus("当前没有活动任务", true);
+  if (!task) return setStatus(localize("当前没有活动任务"), true);
   const restartMessage = state.commitment.recovery?.restart_message || "/commit ";
   state.commitment.busy = true;
   try {
@@ -6655,7 +6673,7 @@ async function abandonCommitment() {
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
     }
-    setStatus("旧承诺流程已放弃；请确认任务内容后重新发送");
+    setStatus(localize("旧承诺流程已放弃；请确认任务内容后重新发送"));
   } catch (error) {
     setStatus(error.message, true);
   } finally {
@@ -6700,8 +6718,8 @@ function formatTokens(value) {
 }
 
 function compressionRoleLabel(message) {
-  const base = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "系统", tool: "工具" }[message?.role] || message?.role || "消息";
-  return message?.role === "tool" && message.name ? `工具 · ${message.name}` : base;
+  const base = { human: localize("你"), user: localize("你"), ai: localize("助手"), assistant: localize("助手"), system: localize("系统"), tool: localize("工具") }[message?.role] || message?.role || localize("消息");
+  return message?.role === "tool" && message.name ? localize`工具 · ${message.name}` : base;
 }
 
 function compressionBelongsToTask(envelope) {
@@ -6713,7 +6731,7 @@ function compressionBelongsToTask(envelope) {
 }
 
 async function openCompressionView(task, request, quickKeyword, manual = false) {
-  if (!task) return setStatus("当前没有活动任务", true);
+  if (!task) return setStatus(localize("当前没有活动任务"), true);
   if (state.compression.busy && state.compression.taskId === task.task_id) return;
   const requestId = ++compressionRequestSequence;
   const navigationId = taskSwitchSequence;
@@ -6743,11 +6761,11 @@ async function openCompressionView(task, request, quickKeyword, manual = false) 
         if (hitIds.includes(message.id)) indexes.push(index);
       });
       state.compression.selected = new Set(indexes);
-      setStatus(`关键字快捷压缩「${quickKeyword}」共命中 ${indexes.length} 条，请确认后继续`);
+      setStatus(localize`关键字快捷压缩「${quickKeyword}」共命中 ${indexes.length} 条，请确认后继续`);
     } else if (manual) {
-      setStatus("选择需要整理的消息；确认前不会修改上下文");
+      setStatus(localize("选择需要整理的消息；确认前不会修改上下文"));
     } else {
-      setStatus("上下文接近上限，等待压缩确认");
+      setStatus(localize("上下文接近上限，等待压缩确认"));
     }
     state.view = "compress";
     render();
@@ -6777,7 +6795,7 @@ function reconcileCompressionRecovery(detail) {
     const task = state.tasks.find(item => item.task_id === state.activeTaskId);
     return openCompressionView(task, detail.pending_compression || recovery.request);
   }
-  setStatus("压缩请求正在处理，请等待当前运行结束", true);
+  setStatus(localize("压缩请求正在处理，请等待当前运行结束"), true);
 }
 
 function compressionRowPreview(message, isBlock) {
@@ -6786,17 +6804,17 @@ function compressionRowPreview(message, isBlock) {
     const sourceCount = message.compression?.source?.length ?? 0;
     // 压缩块：显示该块的摘要内容（它具体把这段对话浓缩成了什么），而非笼统的"压缩块"标记。
     if (message.compression?.deleted) {
-      return sourceCount ? `已删除 · 来源 ${sourceCount} 条` : "已删除";
+      return sourceCount ? localize`已删除 · 来源 ${sourceCount} 条` : localize("已删除");
     }
     const summary = compressionPanel.messageText(message).replace(/\s+/g, " ").trim();
     if (summary) return summary.slice(0, 140);
-    return sourceCount ? `来源 ${sourceCount} 条` : "（空压缩消息）";
+    return sourceCount ? localize`来源 ${sourceCount} 条` : localize("（空压缩消息）");
   }
-  if (compressionPanel.isProtocolPlaceholder(message)) return "（工具结果已在压缩中省略）";
+  if (compressionPanel.isProtocolPlaceholder(message)) return localize("（工具结果已在压缩中省略）");
   const degraded = compressionPanel.degradedParts(message);
   const raw = degraded ? degraded.content : compressionPanel.messageText(message);
   const text = raw.replace(/\s+/g, " ").trim().slice(0, 140);
-  if (!text) return message.tool_calls?.length ? "（工具调用）" : "（空内容）";
+  if (!text) return message.tool_calls?.length ? localize("（工具调用）") : localize("（空内容）");
   return text;
 }
 
@@ -6824,12 +6842,12 @@ function renderCompressionMessages() {
     const isProtocolPlaceholder = compressionPanel.isProtocolPlaceholder(message);
     const planned = plannedSourceIds.has(message.id);
     return `<label class="compression-message-row${isBlock ? " is-block" : ""}${message.compression?.deleted ? " is-deleted" : ""}${isProtocolPlaceholder ? " is-synthetic" : ""}${planned ? " is-planned" : ""}">
-      <input type="checkbox" data-action="toggle-compress-message" data-index="${index}" ${c.selected.has(index) ? "checked" : ""} ${planned ? "disabled title=\"已加入变更计划\"" : ""}>
+      <input type="checkbox" data-action="toggle-compress-message" data-index="${index}" ${c.selected.has(index) ? "checked" : ""} ${planned ? localize("disabled title=\"已加入变更计划\"") : ""}>
       <span class="compression-index">${String(index + 1).padStart(2, "0")}</span>
       <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
       <span class="compression-body">
         <span class="compression-preview">${isBlock ? `<span class="ui-icon is-sm ${message.compression?.deleted ? "icon-trash-2" : "icon-package"}" aria-hidden="true"></span>` : ""}${escapeHtml(compressionRowPreview(message, isBlock))}</span>
-        ${isBlock ? `<details class="compression-block-source"><summary>展开来源原文</summary><div class="compression-block-source-body">${renderCompressionNested(message.compression.source || [], 1)}</div></details>` : ""}
+        ${isBlock ? localize`<details class="compression-block-source"><summary>展开来源原文</summary><div class="compression-block-source-body">${renderCompressionNested(message.compression.source || [], 1)}</div></details>` : ""}
       </span>
     </label>`;
   }).join("");
@@ -6837,14 +6855,14 @@ function renderCompressionMessages() {
 
 function renderCompressionRanges() {
   const c = state.compression;
-  if (!c.ranges.length) return `<p class="muted">在左侧勾选消息并加入计划或直接删除；确认前当前上下文不会发生任何变化。</p>`;
+  if (!c.ranges.length) return localize`<p class="muted">在左侧勾选消息并加入计划或直接删除；确认前当前上下文不会发生任何变化。</p>`;
   return c.ranges.map((range, rangeIndex) => {
     const indexes = range.source_ids.map(id => c.messages.findIndex(message => message.id === id));
-    const label = indexes.length ? `消息 ${Math.min(...indexes) + 1}~${Math.max(...indexes) + 1}` : "范围";
+    const label = indexes.length ? localize`消息 ${Math.min(...indexes) + 1}~${Math.max(...indexes) + 1}` : localize("范围");
     const singleBlock = range.source_ids.length === 1
       && c.messages.find(message => message.id === range.source_ids[0])?.compression;
     if (range.delete) {
-      return `<article class="compression-range-card is-delete">
+      return localize`<article class="compression-range-card is-delete">
         <header><strong>${label}</strong><span class="muted tiny">${range.source_ids.length} 条消息</span></header>
         <p>从上下文中删除这 ${range.source_ids.length} 条消息（不生成摘要）</p>
         <div class="compression-range-actions">
@@ -6853,21 +6871,21 @@ function renderCompressionRanges() {
         </div>
       </article>`;
     }
-    return `<article class="compression-range-card${range.restore ? " is-restore" : ""}">
+    return localize`<article class="compression-range-card${range.restore ? " is-restore" : ""}">
       <header><strong>${label}</strong><span class="muted tiny">${range.source_ids.length} 条消息</span></header>
       ${range.restore
-        ? `<p>恢复该压缩块的来源原文（撤销此次压缩）</p>
+        ? localize`<p>恢复该压缩块的来源原文（撤销此次压缩）</p>
            <div class="compression-range-actions">
              <button class="text-button" data-action="unrestore-range" data-range-index="${rangeIndex}">改回压缩</button>
              <button class="text-button" data-action="remove-range" data-range-index="${rangeIndex}">移除</button>
            </div>`
-        : `<textarea data-range-index="${rangeIndex}" placeholder="摘要内容（可编辑，也可完全重写）">${escapeHtml(range.replacement)}</textarea>
+        : localize`<textarea data-range-index="${rangeIndex}" placeholder="摘要内容（可编辑，也可完全重写）">${escapeHtml(range.replacement)}</textarea>
            ${range.error ? `<p class="compression-range-error" role="alert">${escapeHtml(range.error)}</p>` : ""}
            <div class="compression-range-actions">
-             <button class="text-button" data-action="summarize-range" data-range-index="${rangeIndex}" ${range.summarizing ? "disabled" : ""}>${range.summarizing ? "生成中…" : range.generated ? "重新生成" : "生成摘要"}</button>
+             <button class="text-button" data-action="summarize-range" data-range-index="${rangeIndex}" ${range.summarizing ? "disabled" : ""}>${range.summarizing ? localize("生成中…") : range.generated ? localize("重新生成") : localize("生成摘要")}</button>
              <button class="text-button danger" data-action="delete-range" data-range-index="${rangeIndex}">删除</button>
              <button class="text-button" data-action="remove-range" data-range-index="${rangeIndex}">移除</button>
-             ${singleBlock ? `<button class="text-button" data-action="restore-range" data-range-index="${rangeIndex}">恢复原消息</button>` : ""}
+             ${singleBlock ? localize`<button class="text-button" data-action="restore-range" data-range-index="${rangeIndex}">恢复原消息</button>` : ""}
            </div>`}
     </article>`;
   }).join("");
@@ -6893,10 +6911,10 @@ function renderCompress() {
   const stats = compressionPanel.beforeAfter(c.messages, c.ranges);
   const usage = c.request?.usage ?? 0;
   const limit = c.request?.limit ?? 0;
-  app.innerHTML = `
+  app.innerHTML = localize`
     <section class="compression-view">
       <header class="compression-heading">
-        <p class="compression-usage">当前用量 <strong>${formatTokens(usage)} / ${formatTokens(limit)} tokens</strong>${c.request ? ` · 触发阈值 ${Math.round((c.request.ratio ?? 0.9) * 100)}%` : ""}</p>
+        <p class="compression-usage">当前用量 <strong>${formatTokens(usage)} / ${formatTokens(limit)} tokens</strong>${c.request ? localize` · 触发阈值 ${Math.round((c.request.ratio ?? 0.9) * 100)}%` : ""}</p>
         <div class="compression-heading-actions"><span class="ui-badge is-warning">确认前不写入</span><button class="text-button" data-action="cancel-compression">取消压缩</button></div>
       </header>
       <div class="compression-panels">
@@ -6915,7 +6933,7 @@ function renderCompress() {
             <span><small>变更前</small><strong>${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</strong></span>
             <span><small>预计变更后</small><strong>${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</strong></span>
           </div>
-          <details class="compression-mapping-details" ${stats.mapping.length ? "open" : ""}><summary>来源映射 · ${stats.mapping.length} 项</summary><ul class="compression-mapping">${stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? "删除" : item.restore ? "恢复原消息" : "压缩块"}</li>`).join("")}</ul></details>
+          <details class="compression-mapping-details" ${stats.mapping.length ? "open" : ""}><summary>来源映射 · ${stats.mapping.length} 项</summary><ul class="compression-mapping">${stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? localize("删除") : item.restore ? localize("恢复原消息") : localize("压缩块")}</li>`).join("")}</ul></details>
           <footer>
             <span class="muted tiny">只有确认后才会写入 checkpoint</span><button class="primary" data-action="confirm-compression" ${compressionReady() ? "" : "disabled"}>确认压缩并继续</button>
           </footer>
@@ -6933,10 +6951,10 @@ function refreshCompressionStats() {
   const statsNode = document.querySelector(".compression-stats");
   const mappingNode = document.querySelector(".compression-mapping");
   if (statsNode) {
-    statsNode.innerHTML = `<span><small>变更前</small><strong>${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</strong></span><span><small>预计变更后</small><strong>${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</strong></span>`;
+    statsNode.innerHTML = localize`<span><small>变更前</small><strong>${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</strong></span><span><small>预计变更后</small><strong>${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</strong></span>`;
   }
   if (mappingNode) {
-    mappingNode.innerHTML = stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? "删除" : item.restore ? "恢复原消息" : "压缩块"}</li>`).join("");
+    mappingNode.innerHTML = stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? localize("删除") : item.restore ? localize("恢复原消息") : localize("压缩块")}</li>`).join("");
   }
   const confirm = document.querySelector('[data-action="confirm-compression"]');
   if (confirm) confirm.disabled = !compressionReady();
@@ -7001,7 +7019,7 @@ async function confirmCompression() {
   const c = state.compression;
   if (c.busy) return;
   const task = state.tasks.find(item => item.task_id === c.taskId) || activeTask();
-  if (!task) return setStatus("当前没有活动任务", true);
+  if (!task) return setStatus(localize("当前没有活动任务"), true);
   const ranges = c.ranges.map(range => range.delete
     ? { source_ids: range.source_ids, delete: true }
     : range.restore
@@ -7023,7 +7041,7 @@ async function confirmCompression() {
       // 快捷 apply 无 run/SSE，需手动重载会话与上下文树，否则压缩块不会立刻显示
       await refreshActiveAfterTxn();
       closeCompressionView();
-      setStatus(keyword ? `已关键字快捷压缩「${keyword}」，上下文已更新` : "上下文整理已提交");
+      setStatus(keyword ? localize`已关键字快捷压缩「${keyword}」，上下文已更新` : localize("上下文整理已提交"));
       return;
     }
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
@@ -7032,12 +7050,12 @@ async function confirmCompression() {
     });
     closeCompressionView();
     listenToRun(run);
-    setStatus("压缩已确认，Agent 继续运行…");
+    setStatus(localize("压缩已确认，Agent 继续运行…"));
   } catch (error) {
     // 上下文已变化（部分消息被折叠进块）：清掉 busy，重新从最新 checkpoint 加载并命中关键词
     if (c.quick && error?.detail?.code === "context_changed") {
       c.busy = false; // 必须清：否则 openCompressionView 开头的忙守卫会短路，刷新不会发生
-      setStatus("上下文已更新，已按最新内容重新加载压缩面板");
+      setStatus(localize("上下文已更新，已按最新内容重新加载压缩面板"));
       return openCompressionView(task, null, c.quick.keyword);
     }
     setStatus(error.message, true);
@@ -7049,14 +7067,14 @@ async function cancelCompression() {
   const c = state.compression;
   if (c.busy) return;
   const task = state.tasks.find(item => item.task_id === c.taskId) || activeTask();
-  if (!task) return setStatus("当前没有活动任务", true);
+  if (!task) return setStatus(localize("当前没有活动任务"), true);
   c.busy = true;
   try {
     if (c.quick || c.manual) {
       // 快捷关键字压缩不经 interrupt/resume 通道（quick-apply 直接写回，无中断可取消）：
       // 取消只需关闭本地面板并清空状态，调用 resume 只会得到 409「无可恢复的承诺流程」。
       closeCompressionView();
-      setStatus(c.manual ? "已取消上下文整理" : "已取消关键字快捷压缩");
+      setStatus(c.manual ? localize("已取消上下文整理") : localize("已取消关键字快捷压缩"));
       return;
     }
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
@@ -7065,7 +7083,7 @@ async function cancelCompression() {
     });
     closeCompressionView();
     listenToRun(run);
-    setStatus("已取消压缩，Agent 原样继续…");
+    setStatus(localize("已取消压缩，Agent 原样继续…"));
   } catch (error) { setStatus(error.message, true); }
   finally { c.busy = false; }
 }
@@ -7144,11 +7162,11 @@ async function handleMaterialAction(button) {
   if (button.dataset.action === "toggle-image-required") { await toggleImageRequired(materialId); return refreshMaterialView(taskId); }
   if (button.dataset.action === "move-material-group") {
     const groups = state.materialGroups.get(state.activeTaskId) || [];
-    if (!groups.length) return setStatus("请先新建自定义分组", true);
-    const requested = prompt(`输入目标分组名称：\n${groups.map(item => item.name).join("、")}`, groups.find(item => item.group_id === material?.custom_group_id)?.name || groups[0].name);
+    if (!groups.length) return setStatus(localize("请先新建自定义分组"), true);
+    const requested = prompt(localize`输入目标分组名称：\n${groups.map(item => item.name).join("、")}`, groups.find(item => item.group_id === material?.custom_group_id)?.name || groups[0].name);
     if (requested === null) return;
     const group = groups.find(item => item.name === requested.trim());
-    if (!group) return setStatus("没有这个分组", true);
+    if (!group) return setStatus(localize("没有这个分组"), true);
     await moveMaterialMembership(materialId, group.group_id);
     return;
   }
@@ -7158,12 +7176,12 @@ async function handleMaterialAction(button) {
   }
   if (button.dataset.action === "preview-image-material") {
     const url = await materialContentLoader.load(state.activeTaskId, materialId);
-    return openImageLightbox(url, material?.relative_path || "图片材料");
+    return openImageLightbox(url, material?.relative_path || localize("图片材料"));
   }
   if (button.dataset.action === "open-material") {
     // f18:材料「查看」→ 右侧文件面板(不再全屏替换)
-    if (!material) return setStatus("材料不存在", true);
-    if (!pluginViewForMaterial(material)) return setStatus("当前没有启用的材料查看器", true);
+    if (!material) return setStatus(localize("材料不存在"), true);
+    if (!pluginViewForMaterial(material)) return setStatus(localize("当前没有启用的材料查看器"), true);
     state.filesPanel = { ...material };
     render();
   }
@@ -7173,13 +7191,13 @@ async function handleMaterialAction(button) {
       const saved = await api(`/desktop/api/materials/${materialId}`, { method: "PUT", body: JSON.stringify(body) });
       Object.assign(material, saved); refreshMaterialView(taskId, true);
     } catch (error) {
-      if (error.status === 409 && error.detail?.code === "git_init_required" && confirm("该文件夹还不是 Git 仓库。是否执行 git init 并启用不可遗失保护？")) {
+      if (error.status === 409 && error.detail?.code === "git_init_required" && confirm(localize("该文件夹还不是 Git 仓库。是否执行 git init 并启用不可遗失保护？"))) {
         const saved = await api(`/desktop/api/materials/${materialId}`, { method: "PUT", body: JSON.stringify({ ...body, confirm_git_init: true }) });
         Object.assign(material, saved); refreshMaterialView(taskId, true);
       } else setStatus(error.message, true);
     }
   }
-  if (button.dataset.action === "clear-material" && confirm("保留文件路径并将内容置空？此操作会保存新版本。")) {
+  if (button.dataset.action === "clear-material" && confirm(localize("保留文件路径并将内容置空？此操作会保存新版本。"))) {
     Object.assign(material, await api(`/desktop/api/materials/${materialId}/clear`, { method: "POST" }));
     state.materialSelections.set(
       taskId,
@@ -7187,7 +7205,7 @@ async function handleMaterialAction(button) {
     );
     refreshMaterialView(taskId, true);
   }
-  if (button.dataset.action === "delete-material" && confirm("删除这个可移除文件？")) {
+  if (button.dataset.action === "delete-material" && confirm(localize("删除这个可移除文件？"))) {
     await api(`/desktop/api/materials/${materialId}`, { method: "DELETE" });
     materialContentLoader.releaseMaterial(taskId, materialId);
     state.materials.set(taskId, state.materials.get(taskId).filter(item => item.material_id !== materialId));
@@ -7199,7 +7217,7 @@ async function handleMaterialAction(button) {
   }
   if (button.dataset.action === "load-versions") {
     const versions = await api(`/desktop/api/materials/${materialId}/versions`);
-    row.querySelector("[data-versions]").innerHTML = versions.map(version => `<li><span>${escapeHtml(version.source)} · ${escapeHtml(version.created_at || "")}</span><button class="text-button" data-action="view-version" data-version-id="${escapeHtml(version.version_id)}">查看此历史版本</button><button class="text-button" data-action="restore-version" data-version-id="${version.version_id}">恢复</button></li>`).join("") || "<li>尚无版本</li>";
+    row.querySelector("[data-versions]").innerHTML = versions.map(version => localize`<li><span>${escapeHtml(version.source)} · ${escapeHtml(version.created_at || "")}</span><button class="text-button" data-action="view-version" data-version-id="${escapeHtml(version.version_id)}">查看此历史版本</button><button class="text-button" data-action="restore-version" data-version-id="${version.version_id}">恢复</button></li>`).join("") || localize("<li>尚无版本</li>");
   }
   if (button.dataset.action === "view-version") {
     return openFileLink({ path: material.relative_path, version_id: button.dataset.versionId, view: "history" }, taskId);
@@ -7247,7 +7265,7 @@ async function dropMaterialMembership(materialId, groupId, beforeMaterialId) {
 }
 
 async function createMaterialGroup() {
-  const name = prompt("新分组名称");
+  const name = prompt(localize("新分组名称"));
   if (name === null || !name.trim()) return;
   await api(`/desktop/api/tasks/${state.activeTaskId}/material-groups`, {
     method: "POST", body: JSON.stringify({ name: name.trim() }),
@@ -7258,7 +7276,7 @@ async function createMaterialGroup() {
 async function renameMaterialGroup(groupId) {
   const group = (state.materialGroups.get(state.activeTaskId) || []).find(item => item.group_id === groupId);
   if (!group) return;
-  const name = prompt("新的分组名称", group.name);
+  const name = prompt(localize("新的分组名称"), group.name);
   if (name === null || !name.trim() || name.trim() === group.name) return;
   await api(`/desktop/api/tasks/${state.activeTaskId}/material-groups/${groupId}`, {
     method: "PUT", body: JSON.stringify({ name: name.trim() }),
@@ -7268,7 +7286,7 @@ async function renameMaterialGroup(groupId) {
 
 async function deleteMaterialGroup(groupId) {
   const group = (state.materialGroups.get(state.activeTaskId) || []).find(item => item.group_id === groupId);
-  if (!group || !confirm(`删除分组“${group.name}”？材料将恢复自动归类，材料本身和历史不会删除。`)) return;
+  if (!group || !confirm(localize`删除分组“${group.name}”？材料将恢复自动归类，材料本身和历史不会删除。`)) return;
   await api(`/desktop/api/tasks/${state.activeTaskId}/material-groups/${groupId}?confirm=true`, { method: "DELETE" });
   await refreshMaterialOrganization();
 }
@@ -7334,7 +7352,7 @@ function contextHasDescendants(contextId, tree) {
 async function archiveContext(contextId, cascade) {
   try {
     await api(`/desktop/api/contexts/${contextId}/archive${cascade ? "?cascade=true" : ""}`, { method: "POST" });
-    setStatus(cascade ? "已级联归档会话" : "已归档会话");
+    setStatus(cascade ? localize("已级联归档会话") : localize("已归档会话"));
     return refreshAfterSessionChange();
   } catch (error) { return setStatus(error.message, true); }
 }
@@ -7342,7 +7360,7 @@ async function archiveContext(contextId, cascade) {
 async function unarchiveContext(contextId) {
   try {
     await api(`/desktop/api/contexts/${contextId}/unarchive`, { method: "POST" });
-    setStatus("已恢复会话");
+    setStatus(localize("已恢复会话"));
     if (settingsDialog?.open) await openSettings();
     return refreshAfterSessionChange();
   } catch (error) { return setStatus(error.message, true); }
@@ -7350,12 +7368,12 @@ async function unarchiveContext(contextId) {
 
 async function deleteContext(contextId, cascade) {
   const message = cascade
-    ? "确定永久删除该会话及其全部派生后代？此操作不可恢复。"
-    : "确定永久删除该会话？此操作不可恢复。";
+    ? localize("确定永久删除该会话及其全部派生后代？此操作不可恢复。")
+    : localize("确定永久删除该会话？此操作不可恢复。");
   if (!confirm(message)) return;
   try {
     await api(`/desktop/api/contexts/${contextId}${cascade ? "?cascade=true" : ""}`, { method: "DELETE" });
-    setStatus(cascade ? "已级联删除会话" : "已删除会话");
+    setStatus(cascade ? localize("已级联删除会话") : localize("已删除会话"));
     if (settingsDialog?.open) void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
     return refreshAfterSessionChange();
   } catch (error) { return setStatus(error.message, true); }
@@ -7386,17 +7404,17 @@ function toggleSelectSession(contextId) {
 
 async function batchDeleteSessions(cascade) {
   const selected = [...state.selectedContextIds];
-  if (!selected.length) { setStatus("请先选中要删除的会话", true); return; }
+  if (!selected.length) { setStatus(localize("请先选中要删除的会话"), true); return; }
   const message = cascade
-    ? `确定永久删除选中的 ${selected.length} 个会话及其全部派生后代？此操作不可恢复。`
-    : `确定永久删除选中的 ${selected.length} 个会话？此操作不可恢复。`;
+    ? localize`确定永久删除选中的 ${selected.length} 个会话及其全部派生后代？此操作不可恢复。`
+    : localize`确定永久删除选中的 ${selected.length} 个会话？此操作不可恢复。`;
   if (!confirm(message)) return;
   try {
     await api("/desktop/api/contexts/batch-delete", {
       method: "POST",
       body: JSON.stringify({ context_ids: selected, cascade }),
     });
-    setStatus(cascade ? "已级联批量删除会话" : "已批量删除会话");
+    setStatus(cascade ? localize("已级联批量删除会话") : localize("已批量删除会话"));
     state.selectionMode = false;
     state.selectedContextIds = new Set();
     return refreshAfterSessionChange();
@@ -7528,7 +7546,7 @@ function modelFlagField(label, field, entry) {
 function renderModelDraft() {
   const entry = modelSettings.snapshot.models[modelSettings.draft.index];
   if (!entry) return "";
-  const adapters = (modelSettings.snapshot.adapters || []).map(adapter => ({ value: adapter.use, label: adapter.label }));
+  const adapters = (modelSettings.snapshot.adapters || []).map(adapter => ({ value: adapter.use, label: localize(adapter.label) }));
   const methods = [{ value: "", label: uiText("settings.model_curation_method_none", "不用于策展") }]
     .concat((modelSettings.snapshot.curation_output_methods || []).map(name => ({ value: name, label: name })));
   const simple = modelSettings.setupMode;
@@ -7551,8 +7569,8 @@ function renderModelDraft() {
       ${modelTextField(uiText("settings.model_field_display_name", "显示名"), "display_name", entry)}
       ${simple ? "" : modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry)}
       ${modelTextField(uiText("settings.model_field_use", "适配器"), "use", entry, { select: adapters })}
-      ${modelTextField("Provider", "provider", entry, { select: [{ value: "", label: "沿用旧适配器映射" }, { value: "openai", label: "OpenAI" }, { value: "deepseek", label: "DeepSeek" }] })}
-      ${modelTextField("API 协议", "protocol", entry, { select: [{ value: "", label: "沿用旧适配器映射" }, { value: "responses", label: "Responses" }, { value: "chat_completions", label: "Chat Completions（兼容）" }] })}
+      ${modelTextField("Provider", "provider", entry, { select: [{ value: "", label: localize("沿用旧适配器映射") }, { value: "openai", label: "OpenAI" }, { value: "deepseek", label: "DeepSeek" }] })}
+      ${modelTextField(localize("API 协议"), "protocol", entry, { select: [{ value: "", label: localize("沿用旧适配器映射") }, { value: "responses", label: "Responses" }, { value: "chat_completions", label: localize("Chat Completions（兼容）") }] })}
       ${modelTextField(uiText("settings.model_field_base_url", "端点"), "base_url", entry)}
       ${modelTextField(uiText("settings.model_field_context_window", "上下文窗口"), "context_window", entry, { type: "number" })}
       ${modelTextField(uiText("settings.model_field_curation_method", "策展输出方式"), "curation_output_method", entry, { select: methods })}
@@ -7607,19 +7625,19 @@ function updateModelService(value) {
   renderModelSettings();
 }
 
-const MODEL_SETUP_CHECKS = [
-  ["chat", "普通调用", "能否正常理解和回答"],
-  ["curation", "策展输出", "能否整理和派生上下文"],
-  ["semantic_index", "自动索引", "能否为后续工作检索上下文"],
+const MODEL_SETUP_CHECKS = () => [
+  ["chat", localize("普通调用"), localize("能否正常理解和回答")],
+  ["curation", localize("策展输出"), localize("能否整理和派生上下文")],
+  ["semantic_index", localize("自动索引"), localize("能否为后续工作检索上下文")],
 ];
 
 function renderModelVerification() {
   const verification = modelSettings.progress || modelSettings.snapshot?.verification;
   if (!verification && !modelSettings.setupMode && !modelSettings.saving) return "";
   const checks = verification?.checks || [];
-  const labels = { pending: "等待中", running: "验证中", passed: "已通过", failed: "失败", interrupted: "未完成" };
+  const labels = { pending: localize("等待中"), running: localize("验证中"), passed: localize("已通过"), failed: localize("失败"), interrupted: localize("未完成") };
   return `<section class="settings-model-verification" aria-label="${uiText("settings.model_checks", "模型验证")}">
-    <ol>${MODEL_SETUP_CHECKS.map(([capability, label, description]) => {
+    <ol>${MODEL_SETUP_CHECKS().map(([capability, label, description]) => {
       const check = checks.find(item => item.capability === capability);
       const status = check?.status || (check ? (check.ok ? "passed" : "failed") : "pending");
       return `<li data-model-check="${capability}" data-check-status="${status}">
@@ -7907,7 +7925,7 @@ async function reverifyModelSettings() {
 }
 
 function interruptedModelVerification() {
-  return { status: "interrupted", ok: false, reason: uiText("settings.model_incomplete", "验证未完成，请重新验证"), checks: MODEL_SETUP_CHECKS.map(([capability]) => {
+  return { status: "interrupted", ok: false, reason: uiText("settings.model_incomplete", "验证未完成，请重新验证"), checks: MODEL_SETUP_CHECKS().map(([capability]) => {
     const check = modelSettings.progress?.checks?.find(item => item.capability === capability);
     return check && ["passed", "failed"].includes(check.status) ? check : { capability, status: "interrupted" };
   }) };
@@ -8045,7 +8063,7 @@ async function openSettings() {
     const list = document.querySelector("#archivedSessions");
     if (list) {
       list.innerHTML = sessions.length
-        ? sessions.map(item => `
+        ? sessions.map(item => localize`
             <div class="archived-session-item" data-context-id="${escapeHtml(item.context_id)}">
               <div class="archived-session-info">
                 <span class="archived-session-title">${escapeHtml(item.title)}</span>
@@ -8141,7 +8159,7 @@ document.addEventListener("click", event => {
 function renderSandboxStatus(status) {
   const prepared = Array.isArray(status?.prepared_workspaces) ? status.prepared_workspaces : [];
   const limitations = Array.isArray(status?.limitations) ? status.limitations : [];
-  return `<p>${escapeHtml(status?.limited_label || "受限后端不可用")}</p>
+  return `<p>${escapeHtml(status?.limited_label || localize("受限后端不可用"))}</p>
     <p>${escapeHtml(uiText("sandbox.unrestricted", "完全访问：未应用文件沙箱"))}</p>
     <h4>${escapeHtml(uiText("sandbox.prepared", "已准备或曾尝试准备的工作区"))}</h4>
     ${prepared.length ? `<ul>${prepared.map(path => `<li><code>${escapeHtml(path)}</code></li>`).join("")}</ul>` : `<p>${escapeHtml(uiText("sandbox.none_prepared", "暂无"))}</p>`}
@@ -8183,18 +8201,18 @@ document.addEventListener("click", event => {
 
 // 全局错误可见化:任何未捕获异常显示在状态栏,避免白屏时无从排查
 window.addEventListener("error", event => {
-  try { setStatus(`页面错误: ${event.message}`, true); } catch { /* 初始阶段无状态栏 */ }
+  try { setStatus(localize`页面错误: ${event.message}`, true); } catch { /* 初始阶段无状态栏 */ }
 });
 window.addEventListener("unhandledrejection", event => {
-  try { setStatus(`未处理 Promise 错误: ${String(event.reason || "").slice(0, 120)}`, true); } catch { /* ignore */ }
+  try { setStatus(localize`未处理 Promise 错误: ${String(event.reason || "").slice(0, 120)}`, true); } catch { /* ignore */ }
 });
 
 function runUiAction(action) {
   return Promise.resolve()
     .then(action)
     .catch(error => {
-      const message = error instanceof Error ? error.message : String(error || "未知错误");
-      setStatus(`页面操作失败: ${message}`, true);
+      const message = error instanceof Error ? error.message : String(error || localize("未知错误"));
+      setStatus(localize`页面操作失败: ${message}`, true);
     });
 }
 
@@ -8300,8 +8318,8 @@ async function handleDocumentClick(event) {
     if (state.loop.loopId !== loopId) return;
     const panel = document.createElement("dialog");
     panel.className = "patrol-dialog glass-surface";
-    panel.setAttribute("aria-label", "事实与来源");
-    panel.innerHTML = `<header><h2>事实与来源</h2><form method="dialog"><button aria-label="关闭">×</button></form></header><div data-patrol-dialog-body>${window.FocusLoopFactsView.renderDetail(detail)}</div>`;
+    panel.setAttribute("aria-label", localize("事实与来源"));
+    panel.innerHTML = localize`<header><h2>事实与来源</h2><form method="dialog"><button aria-label="关闭">×</button></form></header><div data-patrol-dialog-body>${window.FocusLoopFactsView.renderDetail(detail)}</div>`;
     if (detail.file) window.FocusFilePreview?.mountHistory(panel, detail.file, loopId);
     document.body.append(panel);
     panel.addEventListener("close", () => panel.remove(), { once: true });
@@ -8335,7 +8353,7 @@ async function handleDocumentClick(event) {
   if (action === "loop-restore-compression") return runUiAction(async () => {
     await loopApi.restoreCompression(button.dataset.contextId, button.dataset.messageId);
     await loopConsoleController?.selectContext(button.dataset.contextId, { preserveSelection: true, force: true });
-    setStatus("压缩来源已恢复并发布新 Context Revision");
+    setStatus(localize("压缩来源已恢复并发布新 Context Revision"));
   });
   if (action === "loop-load-older") return loopConsoleController?.loadOlder();
   if (action === "loop-load-older-activity") return loopLiveConnection?.loadHistory(true);
@@ -8417,8 +8435,8 @@ async function handleDocumentClick(event) {
       const failures = result.mcp_failures || [];
       const hasFailures = failures.length > 0 || result.failed_servers.length > 0;
       setStatus(hasFailures
-        ? `MCP 刷新存在失败；${capabilityRefreshSummary(result)}，请查看装配区的处理建议`
-        : `${capabilityRefreshSummary(result)}；下次运行生效`, hasFailures);
+        ? localize`MCP 刷新存在失败；${capabilityRefreshSummary(result)}，请查看装配区的处理建议`
+        : localize`${capabilityRefreshSummary(result)}；下次运行生效`, hasFailures);
     } catch (error) { setStatus(error.message, true); }
     finally { button.disabled = false; }
     return;
@@ -8580,7 +8598,7 @@ async function handleDocumentClick(event) {
     if (state.soldierArmed) return openDraft(taskId);
     return switchTask(taskId);
   }
-  if (action === "zoom-image" && button.dataset.imageUrl) return openImageLightbox(button.dataset.imageUrl, "图片");
+  if (action === "zoom-image" && button.dataset.imageUrl) return openImageLightbox(button.dataset.imageUrl, localize("图片"));
   if (action === "close-lightbox") { const root = document.querySelector("#overlayRoot"); if (root) root.innerHTML = ""; return; }
   if (action === "retry-must-view") return resumeMustView("retry");
   if (action === "cancel-must-view") return resumeMustView("cancel");
@@ -9295,13 +9313,13 @@ function serializeWaitDraft(form) {
 }
 async function uploadMaterialFile(file, taskId = state.activeTaskId, entry = null) {
   if (!file) return;
-  if (!taskId) return setStatus("请先选择任务，再添加材料", true);
+  if (!taskId) return setStatus(localize("请先选择任务，再添加材料"), true);
   entry ||= createComposerAttachment(file, taskId);
   if (entry.removed) { entry.finish(); return; }
   try {
     const body = new FormData(); body.append("file", file);
     const material = await api(`/desktop/api/tasks/${taskId}/materials/upload`, { method: "POST", body });
-    if (!material?.material_id) throw new Error("未收到有效的附件回执");
+    if (!material?.material_id) throw new Error(localize("未收到有效的附件回执"));
     const materials = state.materials.get(taskId) || [];
     state.materials.set(taskId, [...materials.filter(item => item.material_id !== material.material_id), material]);
     entry.materialId = material.material_id;
@@ -9342,7 +9360,7 @@ document.addEventListener("change", event => {
   const files = [...(input.files || [])];
   if (!files.length) return;
   const taskId = state.activeTaskId;
-  if (!taskId) return setStatus("请先选择任务，再添加材料", true);
+  if (!taskId) return setStatus(localize("请先选择任务，再添加材料"), true);
   input.value = "";
   queueComposerAttachments(files, taskId);
 });
@@ -9360,7 +9378,7 @@ document.addEventListener("paste", event => {
   const images = [...(event.clipboardData?.items || [])].filter(item => item.type.startsWith("image/"));
   if (!images.length) return;
   event.preventDefault();
-  if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
+  if (!state.activeTaskId) return setStatus(localize("请先选择任务，再粘贴图片"), true);
   const taskId = state.activeTaskId;
   const files = images.map(item => item.getAsFile()).filter(Boolean);
   queueComposerAttachments(files, taskId);
@@ -9399,7 +9417,7 @@ document.addEventListener("drop", event => {
   const files = Array.from(event.dataTransfer.files || []);
   if (!files.length) return;
   const taskId = state.activeTaskId;
-  if (!taskId) return setStatus("请先选择任务，再添加材料", true);
+  if (!taskId) return setStatus(localize("请先选择任务，再添加材料"), true);
   queueComposerAttachments(files, taskId);
 });
 
@@ -9459,12 +9477,17 @@ document.addEventListener("visibilitychange", () => {
 function flushWorkspacePatrol(checkpoint = false) {
   try {
     if (checkpoint) workspacePatrolIntake?.checkpoint();
-    void workspacePatrolIntake?.flush().catch(error => setStatus(`Patrol 草稿保存失败：${error.message}`, true));
-  } catch (error) { setStatus(`Patrol 草稿保存失败：${error.message}`, true); }
+    void workspacePatrolIntake?.flush().catch(error => setStatus(localize`Patrol 草稿保存失败：${error.message}`, true));
+  } catch (error) { setStatus(localize`Patrol 草稿保存失败：${error.message}`, true); }
 }
 window.addEventListener("pagehide", () => { void flushComposerPersist(); flushWorkspacePatrol(true); });
 
 document.addEventListener("focus:languagechange", () => {
+  workspacePatrolPicker?.refreshLanguage();
+  workspacePatrolController?.dispose();
+  workspacePatrolController = null;
+  const shownDraft = document.querySelector('#patrolWorkbench')?.dataset?.draftId;
+  if (shownDraft) window.FocusPatrolWorkbench?.leave(shownDraft);
   render();
   interfaceI18n.apply(document);
   syncLanguageControls();
@@ -9529,7 +9552,7 @@ window.focusDesktop?.notifications?.onTasks(tasks => {
   rail?.querySelectorAll("[data-task-id]").forEach(button => {
     const task = state.tasks.find(item => item.task_id === button.dataset.taskId);
     const status = button.querySelector("small");
-    if (task && status) status.textContent = `${task.workspace_name || "本地工作区"} · ${presentTaskStatus(task).label}`;
+    if (task && status) status.textContent = `${task.workspace_name || localize("本地工作区")} · ${presentTaskStatus(task).label}`;
   });
   // Patch only status badges: polling must not discard composer text or selection.
   app.querySelectorAll(".task-card[data-task-id]").forEach(card => {
@@ -9543,7 +9566,7 @@ window.focusDesktop?.notifications?.onTasks(tasks => {
     if (task.active_run && task.latest_result) {
       const previous = document.createElement("span");
       previous.className = "task-last-result";
-      previous.textContent = `上次执行：${presentRunStatus(task.latest_result.status).label}`;
+      previous.textContent = localize`上次执行：${presentRunStatus(task.latest_result.status).label}`;
       card.append(previous);
     }
   });
@@ -9551,7 +9574,7 @@ window.focusDesktop?.notifications?.onTasks(tasks => {
 async function openTaskNotification(target) {
   await refreshTasks();
   const task = state.tasks.find(item => item.task_id === target.taskId && sessionLifecycle(item) === "active");
-  if (!task) return setStatus("该任务已归档或删除，可在设置中查看归档任务。");
+  if (!task) return setStatus(localize("该任务已归档或删除，可在设置中查看归档任务。"));
   for (const modal of [settingsDialog, dialog]) {
     if (modal?.open) await window.FocusSurfaceTransition.visible(modal, false, { modal: true });
   }

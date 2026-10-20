@@ -95,7 +95,8 @@ function validateTarget(value = {}) {
 }
 
 class DesktopPatrolHost {
-  constructor({ electron, apiBase, desktopDir, icon, limits, openWorkbench, getWorkbench, quit, getModelSettings }) {
+  constructor({ electron, apiBase, desktopDir, icon, limits, openWorkbench, getWorkbench, quit, getModelSettings, translate = source => source }) {
+    this._text = translate;
     this._electron = electron;
     this._apiBase = apiBase;
     this._desktopDir = desktopDir;
@@ -153,13 +154,7 @@ class DesktopPatrolHost {
     });
     this._registerIpc();
     this._tray = new Tray(this._icon);
-    this._tray.setToolTip("Focus · 桌面 Patrol");
-    this._tray.setContextMenu(Menu.buildFromTemplate([
-      { label: "显示机器人", click: () => this.restore() },
-      { label: "打开工作台", click: () => this.openWorkbench() },
-      { type: "separator" },
-      { label: "退出 Focus", click: () => this.requestQuit() },
-    ]));
+    this.refreshLanguage();
     this._tray.on("double-click", () => this.restore());
     await Promise.all([
       this.robot.loadURL(this._url("robot")),
@@ -178,6 +173,17 @@ class DesktopPatrolHost {
     }
     this.robot.showInactive();
     this._raiseSurfaces();
+  }
+
+  refreshLanguage() {
+    if (!this._tray) return;
+    this._tray.setToolTip(this._text("Focus · 桌面 Patrol"));
+    this._tray.setContextMenu(this._electron.Menu.buildFromTemplate([
+      { label: this._text("显示机器人"), click: () => this.restore() },
+      { label: this._text("打开工作台"), click: () => this.openWorkbench() },
+      { type: "separator" },
+      { label: this._text("退出 Focus"), click: () => this.requestQuit() },
+    ]));
   }
 
   accepts(event, roles = ["robot", "panel", "workbench"]) {
@@ -250,15 +256,15 @@ class DesktopPatrolHost {
     this._quitPrompt = (async () => {
       if (this.hasUnconfirmedInput()) {
         const { response } = await this._electron.dialog.showMessageBox({
-          type: "warning", title: "退出 Focus", message: "还有未发送的草稿或尚未确认的发送。",
-          detail: "已保存的草稿和材料将在下次启动恢复；未确认的发送会先核对工作区历史，再由你选择重试。", buttons: ["继续编辑", "退出 Focus"],
+          type: "warning", title: this._text("退出 Focus"), message: this._text("还有未发送的草稿或尚未确认的发送。"),
+          detail: this._text("已保存的草稿和材料将在下次启动恢复；未确认的发送会先核对工作区历史，再由你选择重试。"), buttons: [this._text("继续编辑"), this._text("退出 Focus")],
           defaultId: 0, cancelId: 0, noLink: true,
         });
         if (response !== 1) { this.openPanel(); return false; }
       }
       try { await this.flushRecovery(); }
       catch (error) {
-        await this._electron.dialog.showMessageBox({ type: "error", title: "草稿保存失败", message: "暂时无法保存草稿，请重试后退出。", detail: error.message, buttons: ["继续编辑"] });
+        await this._electron.dialog.showMessageBox({ type: "error", title: this._text("草稿保存失败"), message: this._text("暂时无法保存草稿，请重试后退出。"), detail: error.message, buttons: [this._text("继续编辑")] });
         this.openPanel();
         return false;
       }

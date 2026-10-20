@@ -17,16 +17,22 @@
   if (root) root.FocusPortfolioMapView = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-  const statusLabel = value => ({ active: "已建立", running: "执行中", pending: "待执行", queued: "已排队", paused: "已暂停", success: "有运行结果", failed: "执行失败", error: "执行失败", cancelled: "已取消", stopped: "已停止", retired: "已退出" })[value] || value || "以版本为准";
+  const statusLabel = value => ({ active: localize("已建立"), running: localize("执行中"), pending: localize("待执行"), queued: localize("已排队"), paused: localize("已暂停"), success: localize("有运行结果"), failed: localize("执行失败"), error: localize("执行失败"), cancelled: localize("已取消"), stopped: localize("已停止"), retired: localize("已退出") })[value] || value || localize("以版本为准");
   const geometryApi = () => globalThis.FocusPortfolioMapLayout || require("./portfolio-map-layout.js");
   const layout = (nodes, edges, presentation) => geometryApi().layout(nodes, edges, presentation);
   const runOf = node => node.active_run?.status === "running" ? node.active_run : node.latest_run;
-  const previewLabels = Object.freeze({ waiting: "等待输出", streaming: "实时更新", tool_wait: "等待工具输出", disconnected: "连接中断", unavailable: "预览不可用", ended: "运行已结束" });
+  const previewLabels = Object.freeze({ get waiting() { return localize("等待输出"); }, get streaming() { return localize("实时更新"); }, get tool_wait() { return localize("等待工具输出"); }, get disconnected() { return localize("连接中断"); }, get unavailable() { return localize("预览不可用"); }, get ended() { return localize("运行已结束"); } });
 
   function livePreview() {
-    return '<span class="context-live-preview" data-context-preview data-preview-status="waiting"><span class="context-preview-heading"><svg class="context-preview-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3.5h12a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H8L4 17v-3.5A1.5 1.5 0 0 1 2.5 12V5A1.5 1.5 0 0 1 4 3.5Z M6 7h8 M6 10h5"/></svg><strong class="context-preview-role">等待输出</strong><span class="context-preview-indicator" aria-hidden="true">•••</span></span><span class="context-preview-tail"><span class="context-preview-text"></span></span><span class="context-preview-status">等待输出</span></span>';
+    return localize('<span class="context-live-preview" data-context-preview data-preview-status="waiting"><span class="context-preview-heading"><svg class="context-preview-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3.5h12a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H8L4 17v-3.5A1.5 1.5 0 0 1 2.5 12V5A1.5 1.5 0 0 1 4 3.5Z M6 7h8 M6 10h5"/></svg><strong class="context-preview-role">等待输出</strong><span class="context-preview-indicator" aria-hidden="true">•••</span></span><span class="context-preview-tail"><span class="context-preview-text"></span></span><span class="context-preview-status">等待输出</span></span>');
   }
 
   const mountedPlans = new WeakMap();
@@ -111,7 +117,7 @@
       const point = geometry.positions.get(node.context_id) || { x: 0, y: 0 };
       const run = runOf(node);
       const evidence = [
-        typeof node.counts?.runs === "number" ? `${escape(node.counts.runs)} 次 Run` : "运行记录按需检查",
+        typeof node.counts?.runs === "number" ? localize`${escape(node.counts.runs)} 次 Run` : localize("运行记录按需检查"),
         node.counts?.workspace_changes ? `${escape(node.counts.workspace_changes)} changes` : "",
         node.counts?.artifacts ? `${escape(node.counts.artifacts)} artifacts` : "",
       ].filter(Boolean).join(" · ");
@@ -122,12 +128,12 @@
         const inspected = revisions.get(displayedRevision);
         const generation = inspected?.generation ?? node.revision?.generation ?? "—";
         const historical = node.historical || (selected && displayedRevision !== node.current_revision_id);
-        const status = historical ? "历史来源" : statusLabel(run?.status || node.status);
+        const status = historical ? localize("历史来源") : statusLabel(run?.status || node.status);
         const outgoing = topology.consumers.get(displayedRevision)?.size || 0;
         const incoming = topology.sources.get(displayedRevision)?.size || 0;
-        return `<button type="button" class="portfolio-context-node workbench-node ${card ? "is-card" : "is-point"}${live ? " is-live-card" : ""}${!card && point.x > geometry.width - 220 ? " is-label-left" : ""}${selected ? " is-selected" : ""}${related.has(node.context_id) || highlights.has(node.context_id) ? " is-related" : ""}" style="left:${point.x}px;top:${point.y}px;--context-card-width:${live ? sizes.live.width : sizes.card.width}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}" data-revision-id="${escape(node.current_revision_id || "")}"${live ? ` data-live-run-id="${escape(run.run_id || run.id)}"` : ""} aria-pressed="${selected}" aria-label="${escape(name)} · R${escape(generation)} · ${escape(status)}"${visible(node.context_id) ? "" : " hidden"}><i class="workbench-node-dot is-${escape(historical ? "historical" : run?.status || node.status)}" aria-hidden="true"></i><span class="context-node-eyebrow">${escape(node.context_id.slice(0, 8))} / R${escape(generation)}${live ? '<span class="context-live-state">running</span>' : ""}</span><span class="context-node-top" title="${escape(name || node.context_id)}"><strong>${escape(name || node.context_id)}</strong></span>${live ? livePreview() : `<span class="context-node-meta">${card && selected ? `R${escape(generation)} · ${incoming} 来源 · ${outgoing} 去向` : `${card ? "" : `R${escape(generation)} · `}${escape(status)}`}</span>`}</button>`;
+        return `<button type="button" class="portfolio-context-node workbench-node ${card ? "is-card" : "is-point"}${live ? " is-live-card" : ""}${!card && point.x > geometry.width - 220 ? " is-label-left" : ""}${selected ? " is-selected" : ""}${related.has(node.context_id) || highlights.has(node.context_id) ? " is-related" : ""}" style="left:${point.x}px;top:${point.y}px;--context-card-width:${live ? sizes.live.width : sizes.card.width}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}" data-revision-id="${escape(node.current_revision_id || "")}"${live ? ` data-live-run-id="${escape(run.run_id || run.id)}"` : ""} aria-pressed="${selected}" aria-label="${escape(name)} · R${escape(generation)} · ${escape(status)}"${visible(node.context_id) ? "" : " hidden"}><i class="workbench-node-dot is-${escape(historical ? "historical" : run?.status || node.status)}" aria-hidden="true"></i><span class="context-node-eyebrow">${escape(node.context_id.slice(0, 8))} / R${escape(generation)}${live ? '<span class="context-live-state">running</span>' : ""}</span><span class="context-node-top" title="${escape(name || node.context_id)}"><strong>${escape(name || node.context_id)}</strong></span>${live ? livePreview() : `<span class="context-node-meta">${card && selected ? localize`R${escape(generation)} · ${incoming} 来源 · ${outgoing} 去向` : `${card ? "" : `R${escape(generation)} · `}${escape(status)}`}</span>`}</button>`;
       }
-      return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-eyebrow">${escape(node.context_id.slice(0, 8))}<span><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i>${escape(statusLabel(run?.status || node.status))}</span></span><span class="context-node-top"><strong>${escape(name)}</strong></span><span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${evidence || "暂无运行证据"}</span></button>`;
+      return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-eyebrow">${escape(node.context_id.slice(0, 8))}<span><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i>${escape(statusLabel(run?.status || node.status))}</span></span><span class="context-node-top"><strong>${escape(name)}</strong></span><span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${evidence || localize("暂无运行证据")}</span></button>`;
     };
     const sameTopology = previous?.topology === topology;
     const cards = new Map();
@@ -168,13 +174,13 @@
   }
 
   function render(manifest, selectedId, graphActivity = [], options = {}) {
-    if (!manifest?.nodes?.length) return '<section class="loop-map-empty">尚无 Context</section>';
+    if (!manifest?.nodes?.length) return localize('<section class="loop-map-empty">尚无 Context</section>');
     const plan = prepare(manifest, selectedId, graphActivity, options);
     const { workbench, topology: { geometry }, count } = plan;
     const lines = [...plan.lines.values()].map(item => item.html).join("");
     const activityLines = [...plan.activityLines.values()].map(item => item.html).join("");
     const cards = [...plan.cards.values()].map(item => item.html).join("");
-    return `<section class="portfolio-map${workbench ? " is-workbench" : ""}" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(count)}</strong> 个 Context · 来源关系</span></div><div class="portfolio-map-scroll" tabindex="0" aria-label="上下文图，可用方向键滚动或拖动空白处"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-label="Context 的真实来源关系"><defs><marker id="portfolio-edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0 0, 10 5, 0 10" /></marker></defs>${lines}${activityLines}</svg>${cards}</div></div><div class="portfolio-map-zoom glass-surface"><button data-portfolio-zoom="out" aria-label="缩小图">−</button><span data-portfolio-scale>100%</span><button data-portfolio-zoom="in" aria-label="放大图">＋</button><button data-portfolio-zoom="fit">适应画布</button></div></section>`;
+    return localize`<section class="portfolio-map${workbench ? " is-workbench" : ""}" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(count)}</strong> 个 Context · 来源关系</span></div><div class="portfolio-map-scroll" tabindex="0" aria-label="上下文图，可用方向键滚动或拖动空白处"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-label="Context 的真实来源关系"><defs><marker id="portfolio-edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0 0, 10 5, 0 10" /></marker></defs>${lines}${activityLines}</svg>${cards}</div></div><div class="portfolio-map-zoom glass-surface"><button data-portfolio-zoom="out" aria-label="缩小图">−</button><span data-portfolio-scale>100%</span><button data-portfolio-zoom="in" aria-label="放大图">＋</button><button data-portfolio-zoom="fit">适应画布</button></div></section>`;
   }
 
   function patchPreviews(host, previews = {}) {
@@ -184,7 +190,7 @@
       const preview = node.querySelector("[data-context-preview]");
       if (!preview) continue;
       const status = Object.hasOwn(previewLabels, value.status) ? value.status : "waiting";
-      const role = value.role ? `${value.role}${value.tool_name ? ` · ${value.tool_name}` : ""}` : "等待输出";
+      const role = value.role ? `${value.role}${value.tool_name ? ` · ${value.tool_name}` : ""}` : localize("等待输出");
       const text = Array.from(String(value.text || "")).slice(-4096).join("");
       const notice = String(value.notice || previewLabels[status]);
       if (preview.hidden !== (status === "ended")) preview.hidden = status === "ended";
@@ -201,7 +207,7 @@
     const [sourceId, , targetId] = JSON.parse(identity);
     const edges = manifest.edges.filter(edge => edge.source_context_id === sourceId && edge.target_context_id === targetId);
     const endpoint = (id, revisionId) => `<button data-patrol-edge-context="${escape(id)}" data-revision-id="${escape(revisionId)}">${escape(manifest.nodes.find(node => node.context_id === id)?.title || id)}<small>Revision ${escape(revisionId)}</small></button>`;
-    return `<p>每一条关系对应精确的来源与目标版本。</p><ul class="workbench-edge-list">${edges.map(edge => `<li>${endpoint(edge.source_context_id, edge.source_revision_id)}<span>→</span>${endpoint(edge.target_context_id, edge.target_revision_id)}</li>`).join("")}</ul>`;
+    return localize`<p>每一条关系对应精确的来源与目标版本。</p><ul class="workbench-edge-list">${edges.map(edge => `<li>${endpoint(edge.source_context_id, edge.source_revision_id)}<span>→</span>${endpoint(edge.target_context_id, edge.target_revision_id)}</li>`).join("")}</ul>`;
   }
 
   function bind(host) {

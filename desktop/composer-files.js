@@ -5,6 +5,12 @@
   root.FocusComposerFiles = api;
 })(globalThis, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   function mention(value, caret = value.length) {
     const before = value.slice(0, caret), match = before.match(/(?:^|[\s(])@([^\s@]*)$/);
@@ -16,20 +22,20 @@
       ref.fact_id, ref.revision, ref.result_key, ref.sha256, ref.version_id, ref.start_line, ref.end_line, ref.text]);
   }
   function label(ref) {
-    return `${ref.path.split(/[\\/]/).pop()}${ref.start_line ? ` · 第 ${ref.start_line}–${ref.end_line || ref.start_line} 行` : ""}`;
+    return `${ref.path.split(/[\\/]/).pop()}${ref.start_line ? localize` · 第 ${ref.start_line}–${ref.end_line || ref.start_line} 行` : ""}`;
   }
   function cards(refs) {
-    return refs.map((ref, index) => `<span class="composer-file-card" title="${escape(ref.path)}"><button type="button" data-action="open-composer-file" data-reference-index="${index}">${escape(label(ref))}</button><button type="button" data-action="remove-composer-file" data-reference-index="${index}" aria-label="移除 ${escape(label(ref))}">×</button></span>`).join("");
+    return refs.map((ref, index) => localize`<span class="composer-file-card" title="${escape(ref.path)}"><button type="button" data-action="open-composer-file" data-reference-index="${index}">${escape(label(ref))}</button><button type="button" data-action="remove-composer-file" data-reference-index="${index}" aria-label="移除 ${escape(label(ref))}">×</button></span>`).join("");
   }
   function compose(message, refs) {
     if (!refs.length) return message;
     const blocks = refs.map(ref => {
       const href = ref.path.replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/")
         + (ref.start_line ? `#L${ref.start_line}-L${ref.end_line || ref.start_line}` : "");
-      let block = `引用文件：[${label(ref).replace(/[\\[\]]/g, "\\$&")}](${href})`;
+      let block = localize`引用文件：[${label(ref).replace(/[\\[\]]/g, "\\$&")}](${href})`;
       if (typeof ref.text === "string") {
         const fence = "`".repeat(Array.from(ref.text.matchAll(/`+/g), match => match[0].length + 1).reduce((max, length) => Math.max(max, length), 3));
-        block += `\n以下是引用时的文件内容：\n${fence}\n${ref.text}\n${fence}`;
+        block += localize`\n以下是引用时的文件内容：\n${fence}\n${ref.text}\n${fence}`;
       }
       return block;
     });
@@ -48,7 +54,7 @@
     }
     function paint() {
       menu.hidden = false;
-      menu.innerHTML = results.length ? results.map((ref, i) => `<button type="button" id="fileMention${i}" role="option" aria-selected="${i === active}" class="file-mention-option${i === active ? " is-active" : ""}" data-file-index="${i}">${escape(ref.relative_path || ref.path)}</button>`).join("") : '<div role="status">没有匹配文件</div>';
+      menu.innerHTML = results.length ? results.map((ref, i) => `<button type="button" id="fileMention${i}" role="option" aria-selected="${i === active}" class="file-mention-option${i === active ? " is-active" : ""}" data-file-index="${i}">${escape(ref.relative_path || ref.path)}</button>`).join("") : localize('<div role="status">没有匹配文件</div>');
       input.setAttribute("aria-controls", menu.id);
       input.setAttribute("aria-expanded", "true");
       if (results.length) {
@@ -62,7 +68,7 @@
       current = mention(input.value, input.selectionStart ?? input.value.length);
       if (!current) return;
       const request = ++serial, token = current;
-      menu.hidden = false; menu.innerHTML = '<div role="status">正在搜索工作区文件…</div>';
+      menu.hidden = false; menu.innerHTML = localize('<div role="status">正在搜索工作区文件…</div>');
       input.setAttribute("aria-controls", menu.id); input.setAttribute("aria-expanded", "true");
       timer = setTimeout(async () => {
         try {
@@ -71,7 +77,7 @@
           results = response.files || []; active = 0; paint();
         } catch (error) {
           if (closed || serial !== request) return;
-          menu.innerHTML = `<div role="alert">文件搜索失败：${escape(error.message)}</div>`;
+          menu.innerHTML = localize`<div role="alert">文件搜索失败：${escape(error.message)}</div>`;
           onError(error);
         }
       }, 120);

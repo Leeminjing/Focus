@@ -9,6 +9,82 @@
   const SUPPORTED_LOCALES = new Set(["zh-CN", "en-US"]);
   const messages = Object.freeze({
     "zh-CN": Object.freeze({
+      "startup.note": "你的工作区与 Agent 正在本机准备",
+      "startup.checking": "正在检查本地运行环境",
+      "startup.title": "Focus 正在启动",
+      "panel.older_inputs": "更早的输入",
+      "panel.retry": "重试读取",
+      "panel.results": "工作区已提交结果",
+      "panel.requests": "待处理请求",
+      "panel.delivery": "本次工作交付",
+      "panel.restart": "重新启用",
+      "panel.pause": "暂停",
+      "panel.pause_work": "暂停当前工作",
+      "panel.reload_workspace": "重新读取工作区",
+      "panel.project_folder": "选择项目文件夹",
+      "panel.onboarding": "首次使用引导",
+      "panel.close_version": "关闭版本详情",
+      "panel.versions": "文件版本",
+      "panel.version_details": "文件版本详情",
+      "panel.older_versions": "更早的文件版本",
+      "panel.search": "搜索产物文件名",
+      "panel.search_placeholder": "搜索产物文件名…",
+      "panel.close_versions": "关闭文件版本",
+      "panel.send_shortcut": "发送 · Ctrl+Enter",
+      "panel.shortcut": "Ctrl+Enter 发送",
+      "panel.shortcut_help": "可拖入图片、文字或文件。Enter 换行，Ctrl+Enter 发送。",
+      "panel.reference_version_help": "引用工作区的文件版本",
+      "panel.reference_version": "引用文件版本",
+      "panel.add_material_help": "添加图片、文字或文件，也可以拖入或粘贴截图",
+      "panel.add_material": "添加材料",
+      "panel.clear_reply": "取消指定回复",
+      "panel.fixed_references": "固定文件版本引用",
+      "panel.materials": "待发送参考材料",
+      "panel.references": "引用内容",
+      "panel.placeholder": "有什么想法？",
+      "panel.input": "你的想法或要求",
+      "panel.reconnect": "重连",
+      "panel.bind_help": "绑定工作区后即可发送",
+      "panel.hide": "收起面板",
+      "panel.stop": "停止当前工作",
+      "panel.workbench": "打开工作台",
+      "panel.history": "输入记录",
+      "panel.files": "文件 / 产物",
+      "panel.more": "更多操作",
+      "panel.bind": "绑定工作区",
+      "panel.choose_workspace": "选择工作区文件夹",
+      "panel.collapse": "收起",
+      "panel.hide_robot": "隐藏机器人到托盘",
+      "panel.start": "点击开始",
+      "panel.robot": "Patrol 机器人",
+      "panel.open": "打开 Patrol，拖入图片、文字或文件",
+      "trace.initial_count": "0 项",
+      "trace.initial_elapsed": "已思考 0 秒",
+      "trace.thinking": "思考中",
+      "review.submit": "提交修订",
+      "review.revision_placeholder": "输入需要调整的内容",
+      "review.replace": "替换草稿",
+      "review.feedback": "反馈",
+      "review.revision_mode": "修订方式",
+      "review.revise": "提出修订",
+      "review.approve": "批准并继续",
+      "review.contract_markdown": "任务合同 Markdown",
+      "review.waiting": "等待确认",
+      "settings.storage_maintenance": "长期存储维护",
+      "settings.notifications_help": "优先提醒需要你处理的事项，再提醒任务完成和失败。点击提醒可进入对应任务。",
+      "settings.notifications_enabled": "启用桌面提醒",
+      "settings.notifications": "桌面提醒",
+      "settings.sections": "设置区块",
+      "inspector.close": "关闭任务检查器",
+      "inspector.tabs": "检查器内容",
+      "inspector.title": "任务检查器",
+      "inspector.resize_help": "拖拽调整检查器宽度",
+      "inspector.resize": "调整检查器宽度",
+      "nav.resize_help": "拖拽调整导航宽度",
+      "nav.resize": "调整导航宽度",
+      "nav.patrol_workspace": "Patrol 工作区",
+      "nav.workspace": "选择工作区",
+      "nav.global": "全局导航",
       "patrol.tagline": "说出你的想法，剩下的交给 Patrol。",
       "patrol.clear_draft": "清空输入",
       "patrol.placeholder": "描述你的任务、问题或想法…",
@@ -57,7 +133,7 @@
       "settings.data": "数据",
       "settings.language": "界面语言",
       "settings.language_help": "切换后立即应用，并保存在本机。",
-      "settings.chinese": "中文",
+      "settings.chinese": "简体中文",
       "settings.english": "English",
       "settings.archived": "已归档的会话",
       "settings.archived_help": "归档可恢复；删除需确认",
@@ -250,6 +326,82 @@
       "access.risk_cancel": "取消"
     }),
     "en-US": Object.freeze({
+      "startup.note": "Preparing your workspace and agents locally",
+      "startup.checking": "Checking local runtime",
+      "startup.title": "Starting Focus",
+      "panel.older_inputs": "Earlier inputs",
+      "panel.retry": "Retry loading",
+      "panel.results": "Committed workspace results",
+      "panel.requests": "Pending requests",
+      "panel.delivery": "Work delivery",
+      "panel.restart": "Re-enable",
+      "panel.pause": "Pause",
+      "panel.pause_work": "Pause current work",
+      "panel.reload_workspace": "Reload workspace",
+      "panel.project_folder": "Choose project folder",
+      "panel.onboarding": "First-run guide",
+      "panel.close_version": "Close version details",
+      "panel.versions": "File versions",
+      "panel.version_details": "File version details",
+      "panel.older_versions": "Earlier file versions",
+      "panel.search": "Search output filenames",
+      "panel.search_placeholder": "Search output filenames…",
+      "panel.close_versions": "Close file versions",
+      "panel.send_shortcut": "Send · Ctrl+Enter",
+      "panel.shortcut": "Ctrl+Enter to send",
+      "panel.shortcut_help": "Drop images, text or files. Enter for a new line; Ctrl+Enter to send.",
+      "panel.reference_version_help": "Reference a workspace file version",
+      "panel.reference_version": "Reference file version",
+      "panel.add_material_help": "Add images, text or files; you can also drop or paste screenshots",
+      "panel.add_material": "Add materials",
+      "panel.clear_reply": "Clear reply target",
+      "panel.fixed_references": "Fixed file version references",
+      "panel.materials": "Reference materials to send",
+      "panel.references": "References",
+      "panel.placeholder": "What's on your mind?",
+      "panel.input": "Your ideas or instructions",
+      "panel.reconnect": "Reconnect",
+      "panel.bind_help": "Bind a workspace to start sending",
+      "panel.hide": "Hide panel",
+      "panel.stop": "Stop current work",
+      "panel.workbench": "Open workbench",
+      "panel.history": "Input history",
+      "panel.files": "Files / Outputs",
+      "panel.more": "More actions",
+      "panel.bind": "Bind workspace",
+      "panel.choose_workspace": "Choose workspace folder",
+      "panel.collapse": "Collapse",
+      "panel.hide_robot": "Hide robot to tray",
+      "panel.start": "Click to start",
+      "panel.robot": "Patrol robot",
+      "panel.open": "Open Patrol; drop images, text or files",
+      "trace.initial_count": "0 items",
+      "trace.initial_elapsed": "Thought for 0 seconds",
+      "trace.thinking": "Thinking",
+      "review.submit": "Submit revision",
+      "review.revision_placeholder": "Describe the changes needed",
+      "review.replace": "Replace draft",
+      "review.feedback": "Feedback",
+      "review.revision_mode": "Revision mode",
+      "review.revise": "Request revision",
+      "review.approve": "Approve and continue",
+      "review.contract_markdown": "Task contract Markdown",
+      "review.waiting": "Awaiting confirmation",
+      "settings.storage_maintenance": "Persistent storage maintenance",
+      "settings.notifications_help": "Notifications prioritize items that need your attention, followed by task completion and failure. Click a notification to open its task.",
+      "settings.notifications_enabled": "Enable desktop notifications",
+      "settings.notifications": "Desktop notifications",
+      "settings.sections": "Settings sections",
+      "inspector.close": "Close task inspector",
+      "inspector.tabs": "Inspector content",
+      "inspector.title": "Task inspector",
+      "inspector.resize_help": "Drag to resize inspector",
+      "inspector.resize": "Resize inspector",
+      "nav.resize_help": "Drag to resize navigation",
+      "nav.resize": "Resize navigation",
+      "nav.patrol_workspace": "Patrol workspace",
+      "nav.workspace": "Choose workspace",
+      "nav.global": "Global navigation",
       "patrol.tagline": "Share your thoughts. Let Patrol take it from here.",
       "patrol.clear_draft": "Clear input",
       "patrol.placeholder": "Describe your task, question or idea…",
@@ -298,7 +450,7 @@
       "settings.data": "Data",
       "settings.language": "Interface Language",
       "settings.language_help": "Changes apply immediately and are saved on this device.",
-      "settings.chinese": "中文",
+      "settings.chinese": "Simplified Chinese",
       "settings.english": "English",
       "settings.archived": "Archived Sessions",
       "settings.archived_help": "Archived sessions can be restored; deletion requires confirmation.",
@@ -518,6 +670,34 @@
     return template.replace(/\{(\w+)\}/g, (_match, name) => String(variables[name] ?? `{${name}}`));
   }
 
+  // Gettext-style source messages. Only literal parts are translated; values
+  // supplied by users, files, APIs or model responses never enter the catalog.
+  function translateSource(source) {
+    if (activeLocale !== "en-US") return source;
+    return source.replace(/[^<>"\n\r]*\p{Script=Han}[^<>"\n\r]*/gu, phrase => {
+      const key = phrase.trim();
+      const translated = global.FocusI18nCatalog?.[key];
+      return translated === undefined ? phrase : phrase.replace(key, () => translated);
+    });
+  }
+
+  function text(source, ...values) {
+    if (!Array.isArray(source)) return translateSource(String(source ?? ""));
+    let result = "";
+    for (let i = 0; i < source.length; i += 1) {
+      let part = translateSource(source[i]);
+      // Chinese can abut interpolated words/numbers; English needs a space.
+      if (activeLocale === "en-US" && i > 0 && /^\p{Script=Han}/u.test(source[i]) && /[\w]$/.test(result) && /^\w/.test(part)) part = " " + part;
+      result += part;
+      if (i < values.length) {
+        const value = String(values[i]);
+        if (activeLocale === "en-US" && /\p{Script=Han}$/u.test(source[i]) && /\w$/.test(part) && /^\w/.test(value)) result += " ";
+        result += value;
+      }
+    }
+    return result;
+  }
+
   function apply(root = global.document) {
     if (!root?.querySelectorAll) return;
     root.querySelectorAll("[data-i18n]").forEach(node => {
@@ -529,12 +709,22 @@
     root.querySelectorAll("[data-i18n-placeholder]").forEach(node => {
       node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder));
     });
+    for (const attribute of ["title", "alt"]) {
+      root.querySelectorAll(`[data-i18n-${attribute}]`).forEach(node => {
+        node.setAttribute(attribute, t(node.getAttribute(`data-i18n-${attribute}`)));
+      });
+    }
+    root.querySelectorAll("template").forEach(node => {
+      if (node.content) apply(node.content);
+    });
   }
 
-  function setLocale(value) {
+  function updateLocale(value, persist) {
     if (!SUPPORTED_LOCALES.has(value)) return false;
     activeLocale = value;
-    try { (global.focusDesktop?.preferences || global.localStorage)?.setItem(STORAGE_KEY, value); } catch { /* read-only storage */ }
+    if (persist) {
+      try { (global.focusDesktop?.preferences || global.localStorage)?.setItem(STORAGE_KEY, value); } catch { /* read-only storage */ }
+    }
     syncDocumentLanguage();
     apply();
     global.document?.dispatchEvent?.(new global.CustomEvent("focus:languagechange", {
@@ -543,6 +733,20 @@
     return true;
   }
 
+  function setLocale(value) { return updateLocale(value, true); }
+
+  function receiveLocale(value) {
+    if (value !== activeLocale && SUPPORTED_LOCALES.has(value)) updateLocale(value, false);
+  }
+
+  global.focusDesktop?.preferences?.onChange?.(change => {
+    if (change?.key === STORAGE_KEY) receiveLocale(change.value);
+  });
+  global.addEventListener?.("storage", event => {
+    if (event.key === STORAGE_KEY) receiveLocale(event.newValue);
+  });
+
   syncDocumentLanguage();
-  global.FocusI18n = Object.freeze({ apply, locale, setLocale, t });
+  apply();
+  global.FocusI18n = Object.freeze({ apply, locale, setLocale, t, text });
 })(window);

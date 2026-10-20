@@ -11,6 +11,12 @@
   if (root) root.FocusLoopView = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   const expansionBudget = typeof module === "object" && module.exports ? require("./loop-expansion-budget.js") : globalThis.FocusLoopExpansionBudget;
 
@@ -23,7 +29,7 @@
   function curatorScopeLabel(scope, fallback) {
     if (typeof scope === "string") return scope || fallback;
     if (!scope || typeof scope !== "object") return fallback;
-    const label = scope.role || (scope.mode === "bootstrap" ? "初始 Context" : scope.mode === "lane" ? "Lane" : "");
+    const label = scope.role || (scope.mode === "bootstrap" ? localize("初始 Context") : scope.mode === "lane" ? "Lane" : "");
     return [label, scope.lane_id || scope.context_id].filter(value => typeof value === "string" && value).join(" · ") || fallback;
   }
 
@@ -53,7 +59,7 @@
     if (!loop.grant || !["running", "paused", "waiting_user"].includes(loop.status)) return "";
     const grant = loop.grant;
     const compressionEnabled = (grant.delegable_gates || []).includes("compression") && Boolean(grant.compression_policy?.version);
-    return `<details class="loop-grant"><summary>Delegation 授权与预算</summary><form id="agentLoopGrantForm"><label class="loop-delegation-option"><input name="autonomousCompression" type="checkbox"${compressionEnabled ? " checked" : " disabled"}>允许 Patrol 自主压缩当前 Context（可恢复；取消勾选会立即撤销且不能在此处重新扩大）</label><label>Capabilities（逗号分隔，只能删除）<textarea name="capabilities" required>${list(grant.capabilities)}</textarea></label><label>Context scope（逗号分隔，只能删除）<textarea name="contextScope" required>${list(grant.context_scope)}</textarea></label><label>Permission scope（逗号分隔，只能删除）<textarea name="permissionScope">${list(grant.permission_scope)}</textarea></label><label>Delegable gates（逗号分隔，只能删除）<textarea name="delegableGates">${list(grant.delegable_gates)}</textarea></label><label>更早到期时间（ISO，可留空）<input name="expiresAt" value="${escape(grant.expires_at || "")}"></label><button type="submit">收窄授权并重新观察</button></form><form id="agentLoopBudgetForm"><div class="loop-start-budget">${budgetInputs(grant.budgets || {})}</div><button type="submit">更新预算并重新观察</button></form><button class="text-button danger" type="button" data-action="loop-revoke-grant">撤销 Patrol 授权</button></details>`;
+    return localize`<details class="loop-grant"><summary>Delegation 授权与预算</summary><form id="agentLoopGrantForm"><label class="loop-delegation-option"><input name="autonomousCompression" type="checkbox"${compressionEnabled ? " checked" : " disabled"}>允许 Patrol 自主压缩当前 Context（可恢复；取消勾选会立即撤销且不能在此处重新扩大）</label><label>Capabilities（逗号分隔，只能删除）<textarea name="capabilities" required>${list(grant.capabilities)}</textarea></label><label>Context scope（逗号分隔，只能删除）<textarea name="contextScope" required>${list(grant.context_scope)}</textarea></label><label>Permission scope（逗号分隔，只能删除）<textarea name="permissionScope">${list(grant.permission_scope)}</textarea></label><label>Delegable gates（逗号分隔，只能删除）<textarea name="delegableGates">${list(grant.delegable_gates)}</textarea></label><label>更早到期时间（ISO，可留空）<input name="expiresAt" value="${escape(grant.expires_at || "")}"></label><button type="submit">收窄授权并重新观察</button></form><form id="agentLoopBudgetForm"><div class="loop-start-budget">${budgetInputs(grant.budgets || {})}</div><button type="submit">更新预算并重新观察</button></form><button class="text-button danger" type="button" data-action="loop-revoke-grant">撤销 Patrol 授权</button></details>`;
   }
 
   function startView(context) {
@@ -62,19 +68,19 @@
     const linkedRun = context.latest_direct_user_run?.loop_id || context.active_run?.loop_id;
     const eligibility = context.loop_activation || null;
     const reasonLabel = ({
-      no_direct_user_run: "还没有直接用户 Run",
-      newest_run_already_bound: "最新直接用户 Run 已属于另一个 Loop",
-      newest_run_status_ineligible: "最新直接用户 Run 尚未被执行系统接受",
-      nonterminal_predecessor: "这个 Context 仍有未结束的 Loop",
-    })[eligibility?.reason] || eligibility?.reason || "还没有可用于首轮的直接用户 Run";
+      no_direct_user_run: localize("还没有直接用户 Run"),
+      newest_run_already_bound: localize("最新直接用户 Run 已属于另一个 Loop"),
+      newest_run_status_ineligible: localize("最新直接用户 Run 尚未被执行系统接受"),
+      nonterminal_predecessor: localize("这个 Context 仍有未结束的 Loop"),
+    })[eligibility?.reason] || eligibility?.reason || localize("还没有可用于首轮的直接用户 Run");
     const blockedDetail = eligibility
-      ? [eligibility.candidate_run_id && `候选 Run：${eligibility.candidate_run_id}（${eligibility.candidate_status || "unknown"}）`, eligibility.predecessor_loop_id && `前置 Loop：${eligibility.predecessor_loop_id}`].filter(Boolean).join(" · ")
+      ? [eligibility.candidate_run_id && localize`候选 Run：${eligibility.candidate_run_id}（${eligibility.candidate_status || "unknown"}）`, eligibility.predecessor_loop_id && localize`前置 Loop：${eligibility.predecessor_loop_id}`].filter(Boolean).join(" · ")
       : "";
     const readiness = initialRun
-      ? `<p class="loop-ready" role="status">首轮将绑定直接用户 Run：${escape(initialRun.run_id)}（${escape(initialRun.status || "unknown")}）</p>`
-      : `<div class="loop-start-gate" role="status" data-eligibility-reason="${escape(eligibility?.reason || "unknown")}"><strong>${escape(linkedRun && !eligibility ? "旧 Run 已归属于历史 Loop" : reasonLabel)}</strong>${blockedDetail ? `<small>${escape(blockedDetail)}</small>` : ""}<span>${eligibility?.reason === "nonterminal_predecessor" ? "请先处理或停止现有 Loop；系统不会覆盖它。" : "请回到当前 Context 发送一条新的用户消息，再创建后继 Loop。"}</span><button type="button" data-action="loop-new-run">返回 Context 发送消息</button></div>`;
+      ? localize`<p class="loop-ready" role="status">首轮将绑定直接用户 Run：${escape(initialRun.run_id)}（${escape(initialRun.status || "unknown")}）</p>`
+      : localize`<div class="loop-start-gate" role="status" data-eligibility-reason="${escape(eligibility?.reason || "unknown")}"><strong>${escape(linkedRun && !eligibility ? localize("旧 Run 已归属于历史 Loop") : reasonLabel)}</strong>${blockedDetail ? `<small>${escape(blockedDetail)}</small>` : ""}<span>${eligibility?.reason === "nonterminal_predecessor" ? localize("请先处理或停止现有 Loop；系统不会覆盖它。") : localize("请回到当前 Context 发送一条新的用户消息，再创建后继 Loop。")}</span><button type="button" data-action="loop-new-run">返回 Context 发送消息</button></div>`;
     const editor = globalThis.FocusLoopMissionEditor?.render({ outcome: context.title || "" }) || "";
-    return `<section class="loop-empty"><header><span class="loop-kicker">Context Loop</span><h2>启动长期 Agent Loop</h2><p>用户保留根权力；Portfolio Patrol 在授权范围内持续判断、策展 Context 并发送普通 HumanMessage。</p></header>${readiness}<form id="agentLoopStartForm" class="loop-start-form">${editor}<label class="loop-delegation-option"><input name="autonomousCompression" type="checkbox" checked>允许 Patrol 自主压缩 Context；原文保留可恢复，授权可随时撤销</label><details class="loop-start-options"><summary>授权与资源设置</summary><label class="loop-delegation-option"><input name="isolatedWrites" type="checkbox" checked>允许 Patrol 为并行写实验创建隔离 Git worktree，并在明确选择后采用结果</label><div class="loop-start-budget">${budgetInputs(defaults)}</div></details><p data-loop-start-status role="status"></p><button class="primary" type="submit"${initialRun ? "" : " disabled"}>授权 Patrol 并启动</button></form></section>`;
+    return localize`<section class="loop-empty"><header><span class="loop-kicker">Context Loop</span><h2>启动长期 Agent Loop</h2><p>用户保留根权力；Portfolio Patrol 在授权范围内持续判断、策展 Context 并发送普通 HumanMessage。</p></header>${readiness}<form id="agentLoopStartForm" class="loop-start-form">${editor}<label class="loop-delegation-option"><input name="autonomousCompression" type="checkbox" checked>允许 Patrol 自主压缩 Context；原文保留可恢复，授权可随时撤销</label><details class="loop-start-options"><summary>授权与资源设置</summary><label class="loop-delegation-option"><input name="isolatedWrites" type="checkbox" checked>允许 Patrol 为并行写实验创建隔离 Git worktree，并在明确选择后采用结果</label><div class="loop-start-budget">${budgetInputs(defaults)}</div></details><p data-loop-start-status role="status"></p><button class="primary" type="submit"${initialRun ? "" : " disabled"}>授权 Patrol 并启动</button></form></section>`;
   }
 
   function compressionStatus(related) {
@@ -84,38 +90,38 @@
     if (!pending && !candidate && !resolution) return "";
     const snapshot = related.snapshot || {};
     const status = resolution?.status || candidate?.status || (snapshot.health === "deciding" ? "preparing" : "threshold");
-    const labels = { threshold: "已达到压缩阈值", preparing: "正在准备候选", prepared: "候选已准备", accepted: "已提交", committed: "Kernel 已提交", resuming: "正在恢复 Run", applied: "压缩已应用", superseded: "已被用户或新版本取代", failed: "压缩失败", expired: "候选已过期" };
+    const labels = { threshold: localize("已达到压缩阈值"), preparing: localize("正在准备候选"), prepared: localize("候选已准备"), accepted: localize("已提交"), committed: localize("Kernel 已提交"), resuming: localize("正在恢复 Run"), applied: localize("压缩已应用"), superseded: localize("已被用户或新版本取代"), failed: localize("压缩失败"), expired: localize("候选已过期") };
     const actualReduction = resolution?.actual_reduction;
     const estimatedReduction = candidate?.estimated_reduction;
     const reduction = actualReduction ?? estimatedReduction;
-    const reductionKind = actualReduction == null ? "预计" : "实际";
+    const reductionKind = actualReduction == null ? localize("预计") : localize("实际");
     const decision = (related.audit?.decisions || []).find(item => item.decision_id === resolution?.decision_id);
     const protectedEvidence = candidate?.protection_evidence || [];
     const ranges = candidate?.source_ranges || [];
     const contextId = candidate?.context_id || pending?.payload?.context_id;
-    const detail = candidate || resolution ? `<details><summary>查看压缩证据与恢复入口</summary><dl><div><dt>目标 Context</dt><dd>${escape(contextId || "—")}</dd></div><div><dt>来源范围</dt><dd>${escape(ranges.map(item => `${(item.source_ids || []).length} 条消息`).join("，") || "—")}</dd></div><div><dt>保护锚点</dt><dd>${escape(protectedEvidence.map(item => item.reason).filter(Boolean).join("，") || "未覆盖受保护范围")}</dd></div><div><dt>预计 Token</dt><dd>${escape(candidate ? `${candidate.before_tokens} → ${candidate.after_tokens}` : "—")}</dd></div><div><dt>实际 Token</dt><dd>${escape(resolution?.actual_before_tokens == null || resolution?.actual_after_tokens == null ? "等待稳定 checkpoint 证据" : `${resolution.actual_before_tokens} → ${resolution.actual_after_tokens}`)}</dd></div><div><dt>Patrol 判断</dt><dd>${escape(decision?.rationale || "候选准备中")}</dd></div><div><dt>Kernel / Resume</dt><dd>${escape(resolution ? `${resolution.status}${resolution.run_id ? ` · Run ${resolution.run_id}` : ""}` : "尚未提交")}</dd></div><div><dt>结果 Revision</dt><dd>${escape(resolution?.result_context_revision_id || "—")}</dd></div></dl>${contextId ? `<button type="button" class="text-button" data-action="loop-select-context" data-context-id="${escape(contextId)}">打开完整 Context 会话并查看/恢复来源</button>` : ""}</details>` : "";
-    return `<section class="loop-compression-status is-${escape(status)}" role="status" aria-live="polite"><strong>Patrol Context 压缩 · ${escape(labels[status] || status)}</strong><span>${escape(contextId || "当前 Context")}${Number.isFinite(Number(reduction)) ? ` · ${reductionKind}减少 ${escape(reduction)} tokens` : ""}</span>${candidate ? `<small>${escape(ranges.map(item => `${(item.source_ids || []).length} 条消息`).join("，"))}</small>` : ""}${detail}</section>`;
+    const detail = candidate || resolution ? localize`<details><summary>查看压缩证据与恢复入口</summary><dl><div><dt>目标 Context</dt><dd>${escape(contextId || "—")}</dd></div><div><dt>来源范围</dt><dd>${escape(ranges.map(item => localize`${(item.source_ids || []).length} 条消息`).join("，") || "—")}</dd></div><div><dt>保护锚点</dt><dd>${escape(protectedEvidence.map(item => item.reason).filter(Boolean).join("，") || localize("未覆盖受保护范围"))}</dd></div><div><dt>预计 Token</dt><dd>${escape(candidate ? `${candidate.before_tokens} → ${candidate.after_tokens}` : "—")}</dd></div><div><dt>实际 Token</dt><dd>${escape(resolution?.actual_before_tokens == null || resolution?.actual_after_tokens == null ? localize("等待稳定 checkpoint 证据") : `${resolution.actual_before_tokens} → ${resolution.actual_after_tokens}`)}</dd></div><div><dt>Patrol 判断</dt><dd>${escape(decision?.rationale || localize("候选准备中"))}</dd></div><div><dt>Kernel / Resume</dt><dd>${escape(resolution ? `${resolution.status}${resolution.run_id ? ` · Run ${resolution.run_id}` : ""}` : localize("尚未提交"))}</dd></div><div><dt>结果 Revision</dt><dd>${escape(resolution?.result_context_revision_id || "—")}</dd></div></dl>${contextId ? localize`<button type="button" class="text-button" data-action="loop-select-context" data-context-id="${escape(contextId)}">打开完整 Context 会话并查看/恢复来源</button>` : ""}</details>` : "";
+    return localize`<section class="loop-compression-status is-${escape(status)}" role="status" aria-live="polite"><strong>Patrol Context 压缩 · ${escape(labels[status] || status)}</strong><span>${escape(contextId || localize("当前 Context"))}${Number.isFinite(Number(reduction)) ? localize` · ${reductionKind}减少 ${escape(reduction)} tokens` : ""}</span>${candidate ? `<small>${escape(ranges.map(item => localize`${(item.source_ids || []).length} 条消息`).join("，"))}</small>` : ""}${detail}</section>`;
   }
 
   function missionDeliveryStatus(loop) {
     const delivery = loop.mission_delivery;
     if (!delivery || delivery.state === "not_required") return "";
-    const labels = { pending: "待交付 Primary Context", authorized: "已授权，等待启动 Run", delivered: "已交付并启动 Run", blocked: "交付受阻" };
+    const labels = { pending: localize("待交付 Primary Context"), authorized: localize("已授权，等待启动 Run"), delivered: localize("已交付并启动 Run"), blocked: localize("交付受阻") };
     return `<section class="loop-mission-delivery is-${escape(delivery.state)}" data-mission-delivery="${escape(delivery.state)}" role="status"><strong>Mission R${escape(delivery.mission_revision)} · ${escape(labels[delivery.state] || delivery.state)}</strong>${delivery.reason ? `<span>${escape(delivery.reason)}</span>` : ""}${delivery.run_id ? `<small>Run ${escape(delivery.run_id)}</small>` : ""}</section>`;
   }
 
   function goalDisclosure(loop) {
     const mission = globalThis.FocusLoopMissionEditor?.normalizeMission(loop.mission || { goal: loop.goal }) || { outcome: loop.goal?.goal || "Agent Loop", boundaries: {}, completion_checks: [] };
-    const boundaryGroups = [["允许触及的范围", mission.boundaries.in_scope], ["必须保持", mission.boundaries.required_invariants], ["禁止 / 超范围", mission.boundaries.prohibited_actions]].filter(([, items]) => items?.length);
+    const boundaryGroups = [[localize("允许触及的范围"), mission.boundaries.in_scope], [localize("必须保持"), mission.boundaries.required_invariants], [localize("禁止 / 超范围"), mission.boundaries.prohibited_actions]].filter(([, items]) => items?.length);
     const boundaries = boundaryGroups.map(([title, items]) => `<h4>${escape(title)}</h4><ul>${items.map(item => `<li>${escape(item)}</li>`).join("")}</ul>`).join("");
-    const legacy = mission.boundaries.legacy_text ? `<h4>旧版边界原文</h4><p>${escape(mission.boundaries.legacy_text)}</p>` : "";
-    return `<details class="loop-goal-disclosure"><summary title="${escape(mission.outcome)}">${escape(mission.outcome)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)}</summary><div class="loop-goal-detail"><h3>最终结果</h3><p>${escape(mission.outcome)}</p>${boundaries || legacy ? `<h3>执行边界</h3>${boundaries}${legacy}` : ""}${mission.completion_checks.length ? `<h3>完成检查</h3><ul>${mission.completion_checks.map(item => `<li><code>${escape(item.check_id)}</code> · ${escape(item.claim)} · ${escape(item.user_verification ? "用户确认" : (item.expected_evidence_kinds || []).join(" / "))}</li>`).join("")}</ul>` : ""}</div></details>`;
+    const legacy = mission.boundaries.legacy_text ? localize`<h4>旧版边界原文</h4><p>${escape(mission.boundaries.legacy_text)}</p>` : "";
+    return localize`<details class="loop-goal-disclosure"><summary title="${escape(mission.outcome)}">${escape(mission.outcome)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)}</summary><div class="loop-goal-detail"><h3>最终结果</h3><p>${escape(mission.outcome)}</p>${boundaries || legacy ? localize`<h3>执行边界</h3>${boundaries}${legacy}` : ""}${mission.completion_checks.length ? localize`<h3>完成检查</h3><ul>${mission.completion_checks.map(item => `<li><code>${escape(item.check_id)}</code> · ${escape(item.claim)} · ${escape(item.user_verification ? localize("用户确认") : (item.expected_evidence_kinds || []).join(" / "))}</li>`).join("")}</ul>` : ""}</div></details>`;
   }
 
   function missionHistory(history) {
     const revisions = history?.revisions || [];
     if (!revisions.length) return "";
-    return `<details class="loop-mission-history"><summary>Mission 历史 · ${escape(revisions.length)} 个 revision</summary><div>${revisions.map(item => item.kind === "structured_mission" ? `<article class="loop-mission-history-item${item.active ? " is-active" : ""}"><strong>Mission R${escape(item.revision)}${item.active ? " · 当前" : ""}</strong><p>${escape(item.outcome)}</p></article>` : `<article class="loop-mission-history-item${item.active ? " is-active" : ""}"><strong>旧版 Goal Contract R${escape(item.revision)}${item.active ? " · 当前" : ""}</strong><p>${escape(item.goal)}</p><h4>旧版 Task Contract 原文</h4><pre>${escape(item.task_contract)}</pre></article>`).join("")}</div></details>`;
+    return localize`<details class="loop-mission-history"><summary>Mission 历史 · ${escape(revisions.length)} 个 revision</summary><div>${revisions.map(item => item.kind === "structured_mission" ? `<article class="loop-mission-history-item${item.active ? " is-active" : ""}"><strong>Mission R${escape(item.revision)}${item.active ? localize(" · 当前") : ""}</strong><p>${escape(item.outcome)}</p></article>` : localize`<article class="loop-mission-history-item${item.active ? " is-active" : ""}"><strong>旧版 Goal Contract R${escape(item.revision)}${item.active ? localize(" · 当前") : ""}</strong><p>${escape(item.goal)}</p><h4>旧版 Task Contract 原文</h4><pre>${escape(item.task_contract)}</pre></article>`).join("")}</div></details>`;
   }
 
   function commandBar(loop, consoleState, currentRound) {
@@ -126,7 +132,7 @@
     const controls = loop.status === "running" ? ["pause", "stop"] : loop.status === "paused" ? [...(loop.grant ? ["resume"] : []), "stop"] : loop.status === "waiting_user" ? ["stop"] : [];
     const percent = budgetPercent({ ...usage, ...loop.accounting?.consumption?.occupied }, budgets);
     const round = Number(currentRound || loop.accounting?.started_rounds || usage.rounds || 0);
-    return `<header class="loop-command-bar"><div class="loop-command-title"><h2>Portfolio Map</h2>${goalDisclosure(loop)}</div><div class="loop-command-metrics"><div class="loop-command-metric"><span class="loop-live-dot is-${escape(loop.status)}" aria-hidden="true"></span><div><strong>${escape(loop.status)}</strong><small>Loop 状态</small></div></div><div class="loop-command-metric"><strong>Round ${escape(round)}</strong><small>/ ${escape(budgets.max_rounds || "∞")}</small></div><div class="loop-command-metric"><strong>${escape(contextCount)} 个 Context</strong><small>真实 Portfolio</small></div><div class="loop-command-metric"><strong>Portfolio Patrol</strong><small>${escape(loop.health || "idle")}</small></div><div class="loop-budget-ring" style="--loop-budget-progress:${percent}%" role="img" aria-label="预算已使用 ${percent}%"><span>${percent}%</span></div></div><div class="loop-primary-controls">${controls.map(command => `<button type="button" data-action="loop-control" data-loop-control="${command}">${({ pause: "暂停", resume: "恢复", stop: "停止" })[command]}</button>`).join("")}${terminal ? '<button type="button" data-action="loop-exit">退出当前 Loop</button><button class="primary" type="button" data-action="loop-prepare-new">新建 Loop</button>' : ""}</div></header>`;
+    return localize`<header class="loop-command-bar"><div class="loop-command-title"><h2>Portfolio Map</h2>${goalDisclosure(loop)}</div><div class="loop-command-metrics"><div class="loop-command-metric"><span class="loop-live-dot is-${escape(loop.status)}" aria-hidden="true"></span><div><strong>${escape(loop.status)}</strong><small>Loop 状态</small></div></div><div class="loop-command-metric"><strong>Round ${escape(round)}</strong><small>/ ${escape(budgets.max_rounds || "∞")}</small></div><div class="loop-command-metric"><strong>${escape(contextCount)} 个 Context</strong><small>真实 Portfolio</small></div><div class="loop-command-metric"><strong>Portfolio Patrol</strong><small>${escape(loop.health || "idle")}</small></div><div class="loop-budget-ring" style="--loop-budget-progress:${percent}%" role="img" aria-label="预算已使用 ${percent}%"><span>${percent}%</span></div></div><div class="loop-primary-controls">${controls.map(command => `<button type="button" data-action="loop-control" data-loop-control="${command}">${({ pause: localize("暂停"), resume: localize("恢复"), stop: localize("停止") })[command]}</button>`).join("")}${terminal ? localize('<button type="button" data-action="loop-exit">退出当前 Loop</button><button class="primary" type="button" data-action="loop-prepare-new">新建 Loop</button>') : ""}</div></header>`;
   }
 
   function timeLabel(value) {
@@ -137,12 +143,12 @@
 
   function activityAge(activityAt, createdAt) {
     const source = activityAt || createdAt;
-    if (!source) return "尚无已确认模型或工具活动";
+    if (!source) return localize("尚无已确认模型或工具活动");
     const age = Math.max(0, Date.now() - new Date(source).getTime());
     const stale = Number.isFinite(age) && age >= 300000
-      ? ` · 已 ${Math.floor(age / 60000)} 分钟无新的已确认活动`
+      ? localize` · 已 ${Math.floor(age / 60000)} 分钟无新的已确认活动`
       : "";
-    return `最近确认活动：${timeLabel(source)}${stale}`;
+    return localize`最近确认活动：${timeLabel(source)}${stale}`;
   }
 
   function currentActivity(live) {
@@ -152,7 +158,7 @@
         item.kind === "semantic_index.progress" && item.detail?.round_id === live.round?.entity_id &&
         item.detail?.observation_id === patrol.observation_id);
       if (latestIndex && !["ready", "cancelled"].includes(latestIndex.detail.status)) return {
-        label: "准备上下文索引", summary: latestIndex.summary,
+        label: localize("准备上下文索引"), summary: latestIndex.summary,
         detail: activityAge(latestIndex.occurred_at),
       };
     }
@@ -163,19 +169,19 @@
       const activityAt = active.state.last_activity_at || last?.occurred_at;
       return {
         label: `Context Run · ${active.state.status}`,
-        summary: active.state.last_activity_summary || last?.summary || (active.state.status === "pending" ? "Context Run 已交付，等待执行" : "Context Run 正在执行，等待首个已确认活动"),
+        summary: active.state.last_activity_summary || last?.summary || (active.state.status === "pending" ? localize("Context Run 已交付，等待执行") : localize("Context Run 正在执行，等待首个已确认活动")),
         detail: activityAge(activityAt, active.state.created_at),
       };
     }
     if (patrol) return {
       label: `Patrol · ${patrol.phase || patrol.status}`,
       summary: patrol.safe_summary || patrol.summary || patrol.phase || patrol.status,
-      detail: patrol.wait_reason || `阶段：${patrol.phase || "observing"}`,
+      detail: patrol.wait_reason || localize`阶段：${patrol.phase || "observing"}`,
     };
     return {
-      label: "Loop 状态",
-      summary: live.loop?.state?.waiting_reason || live.loop?.state?.health || "等待首轮活动",
-      detail: "尚无已确认模型或工具活动",
+      label: localize("Loop 状态"),
+      summary: live.loop?.state?.waiting_reason || live.loop?.state?.health || localize("等待首轮活动"),
+      detail: localize("尚无已确认模型或工具活动"),
     };
   }
 
@@ -191,19 +197,19 @@
     const curators = Object.values(live.curators || {}).sort((left, right) => right.updated_sequence - left.updated_sequence);
     const expansions = Object.values(live.expansions || {}).sort((left, right) => right.updated_sequence - left.updated_sequence);
     const connection = state.connection || { status: "idle" };
-    const connectionLabel = ({ live: "实时", syncing: "同步中", connecting: "连接中", reconnecting: "重连中", resyncing: "重同步", idle: "离线" })[connection.status] || connection.status;
+    const connectionLabel = ({ live: localize("实时"), syncing: localize("同步中"), connecting: localize("连接中"), reconnecting: localize("重连中"), resyncing: localize("重同步"), idle: localize("离线") })[connection.status] || connection.status;
     const current = currentActivity(live);
     const rows = entries.map(item => `<li data-event-id="${escape(item.event_id)}"><time>${escape(timeLabel(item.occurred_at))}</time><span>${escape(item.summary)}</span><small>${escape(item.kind)}</small></li>`).join("");
-    const historyControls = history ? `<div class="loop-history-controls">${page.beforeSequence != null ? `<button type="button" class="text-button" data-action="loop-load-older-activity" ${history.loading ? "disabled" : ""}>更早活动</button>` : ""}${history.older ? '<button type="button" class="text-button" data-action="loop-load-latest-activity">返回最新</button>' : ""}${history.loading ? '<span role="status">加载记录中…</span>' : ""}${history.error ? `<span role="status">${escape(history.error)}</span><button type="button" class="text-button" data-action="loop-load-latest-activity">重试</button>` : ""}</div>` : "";
-    const workers = curators.map(item => `<li data-curator-id="${escape(item.entity_id)}"><span class="curator-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(curatorScopeLabel(item.state.scope, item.entity_id))}</strong><small>${escape(item.state.safe_summary || "等待结构化结果")}</small></li>`).join("");
-    const expansionRows = expansions.map(item => `<li data-expansion-id="${escape(item.entity_id)}"><span class="expansion-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(item.state.safe_summary || item.state.independence_key || item.entity_id)}</strong><small>${escape(item.state.blocker_code || item.state.workspace_mode || item.state.level || "等待下一阶段")}</small></li>`).join("");
-    return `<section class="patrol-activity-rail" aria-label="Loop 实时活动"><div class="patrol-activity-now" aria-live="polite" aria-atomic="true"><span class="loop-kicker">Round ${escape(round)} · ${escape(current.label)}</span><strong>${escape(current.summary)}</strong><small>${escape(current.detail)}</small></div><span class="live-connection is-${escape(connection.status)}"><i aria-hidden="true"></i>${escape(connectionLabel)}</span><details class="patrol-activity-drawer"><summary>查看记录</summary><div class="patrol-drawer-panel"><header><div><span class="loop-kicker">Loop Activity</span><h3>Round ${escape(round)} · ${escape(current.label)}</h3></div><span>${escape(patrol?.status || live.loop?.state?.status || "waiting")}</span></header><section><h4>结构化活动</h4><ol>${rows || "<li><span>尚无已提交活动</span></li>"}</ol>${historyControls}</section><section><h4>Context Expansions</h4><ul data-expansion-list>${expansionRows || "<li><span>尚无派生评估</span></li>"}</ul></section><section><h4>并行 Curators</h4><ul data-curator-list>${workers || "<li><span>本轮未分派 Curator</span></li>"}</ul></section></div></details></section>`;
+    const historyControls = history ? `<div class="loop-history-controls">${page.beforeSequence != null ? localize`<button type="button" class="text-button" data-action="loop-load-older-activity" ${history.loading ? "disabled" : ""}>更早活动</button>` : ""}${history.older ? localize('<button type="button" class="text-button" data-action="loop-load-latest-activity">返回最新</button>') : ""}${history.loading ? localize('<span role="status">加载记录中…</span>') : ""}${history.error ? localize`<span role="status">${escape(history.error)}</span><button type="button" class="text-button" data-action="loop-load-latest-activity">重试</button>` : ""}</div>` : "";
+    const workers = curators.map(item => `<li data-curator-id="${escape(item.entity_id)}"><span class="curator-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(curatorScopeLabel(item.state.scope, item.entity_id))}</strong><small>${escape(item.state.safe_summary || localize("等待结构化结果"))}</small></li>`).join("");
+    const expansionRows = expansions.map(item => `<li data-expansion-id="${escape(item.entity_id)}"><span class="expansion-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(item.state.safe_summary || item.state.independence_key || item.entity_id)}</strong><small>${escape(item.state.blocker_code || item.state.workspace_mode || item.state.level || localize("等待下一阶段"))}</small></li>`).join("");
+    return localize`<section class="patrol-activity-rail" aria-label="Loop 实时活动"><div class="patrol-activity-now" aria-live="polite" aria-atomic="true"><span class="loop-kicker">Round ${escape(round)} · ${escape(current.label)}</span><strong>${escape(current.summary)}</strong><small>${escape(current.detail)}</small></div><span class="live-connection is-${escape(connection.status)}"><i aria-hidden="true"></i>${escape(connectionLabel)}</span><details class="patrol-activity-drawer"><summary>查看记录</summary><div class="patrol-drawer-panel"><header><div><span class="loop-kicker">Loop Activity</span><h3>Round ${escape(round)} · ${escape(current.label)}</h3></div><span>${escape(patrol?.status || live.loop?.state?.status || "waiting")}</span></header><section><h4>结构化活动</h4><ol>${rows || localize("<li><span>尚无已提交活动</span></li>")}</ol>${historyControls}</section><section><h4>Context Expansions</h4><ul data-expansion-list>${expansionRows || localize("<li><span>尚无派生评估</span></li>")}</ul></section><section><h4>并行 Curators</h4><ul data-curator-list>${workers || localize("<li><span>本轮未分派 Curator</span></li>")}</ul></section></div></details></section>`;
   }
 
   function connectionNotice(state) {
     const connection = state.connection;
     if (!["syncing", "reconnecting", "resyncing", "unavailable"].includes(connection?.status)) return "";
-    const label = ({ syncing: "Live 同步中", reconnecting: "Live 连接重试中", resyncing: "Live 重同步中", unavailable: "Live 连接不可用" })[connection.status];
+    const label = ({ syncing: localize("Live 同步中"), reconnecting: localize("Live 连接重试中"), resyncing: localize("Live 重同步中"), unavailable: localize("Live 连接不可用") })[connection.status];
     return `<p class="loop-connection-status" role="status">${escape(label)}${connection.error ? `：${escape(connection.error)}` : ""}</p>`;
   }
 
@@ -228,7 +234,7 @@
     const consumption = loop.accounting?.consumption;
     return [["Calls", "model_calls"], ["Input", "input_tokens"], ["Output", "output_tokens"]].map(([label, key]) => {
       if (!consumption) return `<span>${label} ${escape(loop.usage?.[key] || 0)} / ${escape(budgets[`max_${key}`] || "∞")}</span>`;
-      return `<span>${label} 实际 ${escape(consumption.actual?.[key] || 0)} · 未报告预留 ${escape(consumption.unreported_reservations?.[key] || 0)} · 预算占用 ${escape(consumption.occupied?.[key] || 0)} / ${escape(budgets[`max_${key}`] || "∞")}</span>`;
+      return localize`<span>${label} 实际 ${escape(consumption.actual?.[key] || 0)} · 未报告预留 ${escape(consumption.unreported_reservations?.[key] || 0)} · 预算占用 ${escape(consumption.occupied?.[key] || 0)} / ${escape(budgets[`max_${key}`] || "∞")}</span>`;
     }).join("");
   }
 
@@ -248,7 +254,7 @@
   }
 
   function transactionHistory(loop) {
-    return `<details class="loop-round-history"><summary>事务轮次记录</summary><ol>${(loop.accounting?.round_history || []).map(row => `<li>Round ${escape(row.number)} · ${escape(row.status)} · ${row.completed_transaction ? "完整事务" : "未完成事务"}<div>Observation ${escape(row.observation_id || "—")} · Decision ${escape(row.decision_id || "—")}</div>${(row.diagnostics || []).map(code => `<code>${escape(code)}</code>`).join(" ")}</li>`).join("")}</ol></details>`;
+    return localize`<details class="loop-round-history"><summary>事务轮次记录</summary><ol>${(loop.accounting?.round_history || []).map(row => `<li>Round ${escape(row.number)} · ${escape(row.status)} · ${row.completed_transaction ? localize("完整事务") : localize("未完成事务")}<div>Observation ${escape(row.observation_id || "—")} · Decision ${escape(row.decision_id || "—")}</div>${(row.diagnostics || []).map(code => `<code>${escape(code)}</code>`).join(" ")}</li>`).join("")}</ol></details>`;
   }
 
   function render(state, context = {}, consoleState = null, waitUi = {}) {
@@ -264,11 +270,11 @@
     const missionEditor = globalThis.FocusLoopMissionEditor?.render(loop.mission || { goal: loop.goal }) || "";
     const history = missionHistory(related.audit?.mission_history);
     const roundHistory = transactionHistory(loop);
-    const override = ["running", "paused", "waiting_user"].includes(loop.status) ? `<details class="loop-override"><summary>用户接管 / 修订 Mission</summary><form id="agentLoopOverrideForm">${missionEditor}<button class="primary" type="submit">确认新 Mission revision</button></form></details>` : "";
-    const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")} · 已完成事务</span><span>Legacy ${escape(loop.accounting?.legacy_rounds || 0)}</span><span>待清理 ${escape(loop.accounting?.cleanup_pending_runs || 0)}</span><span>预留调用 ${escape(loop.accounting?.reserved_model_calls || 0)}</span><span>用量未知 ${escape(loop.accounting?.unknown_model_attempts || 0)}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span>${consumptionDetails(loop, budgets)}<span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
-    const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || '<section class="loop-console-loading">控制台模块不可用</section>';
+    const override = ["running", "paused", "waiting_user"].includes(loop.status) ? localize`<details class="loop-override"><summary>用户接管 / 修订 Mission</summary><form id="agentLoopOverrideForm">${missionEditor}<button class="primary" type="submit">确认新 Mission revision</button></form></details>` : "";
+    const budgetDetails = localize`<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")} · 已完成事务</span><span>Legacy ${escape(loop.accounting?.legacy_rounds || 0)}</span><span>待清理 ${escape(loop.accounting?.cleanup_pending_runs || 0)}</span><span>预留调用 ${escape(loop.accounting?.reserved_model_calls || 0)}</span><span>用量未知 ${escape(loop.accounting?.unknown_model_attempts || 0)}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span>${consumptionDetails(loop, budgets)}<span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
+    const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || localize('<section class="loop-console-loading">控制台模块不可用</section>');
     const waitRequest = globalThis.FocusLoopWaitRequestView?.render(loop.wait_request, waitUi, escape) || (loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : "");
-    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${connectionNotice(state)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${strategyStatus}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${roundHistory}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
+    return localize`<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${connectionNotice(state)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${strategyStatus}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? localize`<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? localize("完成") : loop.status === "failed" ? localize("失败") : localize("停止")}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${roundHistory}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
   }
 
   function patchLifecycle(container, state) {

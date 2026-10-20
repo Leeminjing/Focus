@@ -143,6 +143,7 @@ body[data-surface=panel] { background:transparent; overflow:hidden; }
 #history summary { cursor:pointer; padding:8px 0 3px; font-size:11px; list-style:none; }
 #receipt { float:right; color:var(--muted); font-size:10px; }
 #history-items:empty::after { content:"还没有输入记录"; display:block; padding:12px 0; }
+html[lang="en-US"] #history-items:empty::after { content:"No input history yet"; }
 #history-items article { padding:10px 0; border-bottom:1px solid var(--line); }
 #history-items pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 6px; font:11px/18px FocusUI,sans-serif; max-height:100px; overflow:auto; }
 #history-items button,#older,#older-versions { font-size:10px; color:var(--accent); padding:5px 0; margin-right:12px; }

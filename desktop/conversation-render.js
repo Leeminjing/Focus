@@ -31,6 +31,12 @@
   if (root) root.FocusConversationRender = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+  // 源文案在渲染时取当前语言；模板插值始终保留原文。
+  function localize(source, ...values) {
+    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
+    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  }
+
 
   const WINDOW_MESSAGES = 80;
   const WINDOW_ROWS = 90;
@@ -230,12 +236,12 @@
     return {
       key: "placeholder",
       html: _unitHtml("placeholder", signature, () => (task.harness_mode === "assembly"
-        ? `<div class="assembly-empty">
+        ? localize`<div class="assembly-empty">
           <p class="assembly-empty-title">从一个问题开始。</p>
           <p>讨论、梳理材料、探索想法。</p>
-          <p>${task.assembly_target?.scope === "workspace" ? "当前装配仅对所选工作区生效。" : "全局装配可供所有工作区使用。"}附加材料与输入按目标独立保存。</p>
+          <p>${task.assembly_target?.scope === "workspace" ? localize("当前装配仅对所选工作区生效。") : localize("全局装配可供所有工作区使用。")}附加材料与输入按目标独立保存。</p>
         </div>`
-        : `<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`)),
+        : localize`<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`)),
     };
   }
 
@@ -243,7 +249,7 @@
     const key = `earlier:${hiddenCount}`;
     return {
       key,
-      html: _unitHtml(key, _join(["earlier", hiddenCount]), () => `<div class="conversation-earlier" data-unit-key="${escapeAttribute(key)}"><button type="button" class="text-button" data-action="load-earlier-conversation">加载更早的 ${hiddenCount} 条消息</button></div>`),
+      html: _unitHtml(key, _join(["earlier", hiddenCount]), () => localize`<div class="conversation-earlier" data-unit-key="${escapeAttribute(key)}"><button type="button" class="text-button" data-action="load-earlier-conversation">加载更早的 ${hiddenCount} 条消息</button></div>`),
     };
   }
 
@@ -263,7 +269,7 @@
       state.sequenceIndex += 1;
       state.units.push({
         key,
-        html: _unitHtml(key, _eventsSignature(events), () => `<section class="conversation-event-sequence" data-unit-key="${escapeAttribute(key)}" role="group" aria-label="执行过程">${events.map(event => _eventRowHtml(event, input)).join("")}</section>`),
+        html: _unitHtml(key, _eventsSignature(events), () => localize`<section class="conversation-event-sequence" data-unit-key="${escapeAttribute(key)}" role="group" aria-label="执行过程">${events.map(event => _eventRowHtml(event, input)).join("")}</section>`),
       });
       eventGroup = [];
     };
@@ -420,7 +426,7 @@
 
   function _reasoningSection(events, event) {
     return event
-      ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${events.renderEvent(event, { previewMode: "latest" })}</section>`
+      ? localize`<section class="conversation-event-sequence" role="group" aria-label="执行过程">${events.renderEvent(event, { previewMode: "latest" })}</section>`
       : "";
   }
 
@@ -457,7 +463,7 @@
 
   function streamingNotice(buffer) {
     if (String(buffer.text ?? "").length <= STREAM_TEXT_LIMIT) return "";
-    return `<div class="streaming-overflow"><span role="status">内容较长，仍在生成</span><button type="button" class="text-button" data-action="expand-stream-content">${buffer.streamExpandedVersion ? "更新完整内容" : "展开完整内容"}</button></div>`;
+    return localize`<div class="streaming-overflow"><span role="status">内容较长，仍在生成</span><button type="button" class="text-button" data-action="expand-stream-content">${buffer.streamExpandedVersion ? localize("更新完整内容") : localize("展开完整内容")}</button></div>`;
   }
 
   function streamingContent(markdown, events, buffer, runId) {
