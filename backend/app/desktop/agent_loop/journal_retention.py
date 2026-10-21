@@ -22,11 +22,11 @@ async def cleanup_boundary(session, loop_id, retention_seconds, *, now=None, lim
     if sequence is None:
         return 1
     boundary = sequence.last_sequence + 1
-    # Every registered consumer must have consumed the prefix. loop_facts is
-    # mandatory even before its first cursor has been created.
+    # Facts and durable work history are mandatory before their first cursor;
+    # all other registered consumers must also have consumed the prefix.
     cursors = dict((await session.execute(select(LoopProjectorCursor.projector_name, LoopProjectorCursor.last_sequence)
                                           .where(LoopProjectorCursor.loop_id == loop_id))).all())
-    if "loop_facts" not in cursors:
+    if not {"loop_facts", "work_timeline"}.issubset(cursors):
         return 1
     boundary = min(boundary, min(cursors.values()) + 1)
     retained = await session.scalar(select(func.min(event.sequence)).where(

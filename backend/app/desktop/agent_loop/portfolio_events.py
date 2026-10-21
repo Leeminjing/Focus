@@ -76,6 +76,7 @@ class ContextPublicationEventRecorder:
                 correlation_id=decision_id,
                 payload={
                     "title": context.title,
+                    "context_labels": {context.task_id: context.title},
                     "current_revision_id": context.current_revision_id,
                     "membership_id": membership.membership_id,
                     "lane_id": membership.lane_id,

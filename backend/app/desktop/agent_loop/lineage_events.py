@@ -39,12 +39,16 @@ class ContextLineageEventRecorder:
         self._journal = journal or LoopEventJournal()
         self._lineage = lineage or ContextLineageResolver()
 
-    async def record_loop_members(self, session: AsyncSession, *, loop_id: str) -> int:
+    async def record_loop_members(self, session: AsyncSession, *, loop_id: str, decision_id: str | None = None) -> int:
         current = await self._member_revisions(session, loop_id)
         if len(current) < 2:
             return 0
         recorded = 0
         for edge in await self._lineage.resolve(session, current):
+            contexts = tuple(await session.scalars(select(DesktopThread).where(
+                DesktopThread.task_id.in_((edge.source_context_id, edge.target_context_id)),
+            )))
+            labels = {context.task_id: context.title for context in contexts}
             await self._journal.append(
                 session,
                 loop_id,
@@ -53,7 +57,8 @@ class ContextLineageEventRecorder:
                     entity_type=self.ENTITY_TYPE,
                     entity_id=edge.entity_id,
                     entity_revision=edge.target_generation,
-                    payload=edge.payload(),
+                    correlation_id=decision_id,
+                    payload={**edge.payload(), "context_labels": labels},
                     idempotency_key=f"context-lineage:{edge.entity_id}:{edge.target_revision_id}",
                 ),
             )

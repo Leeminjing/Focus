@@ -111,6 +111,8 @@ class InterventionLifecycleRepository:
                 correlation_id=intent.correlation_id,
                 payload={
                     "intent_id": intent.intent_id,
+                    **({"content": intent.content[:2000], "occurred_at": intent.created_at.isoformat()} if target == "submitted" else {}),
+                    "round_id": intent.observed_round_id if target != "submitted" else None,
                     "origin": intent.origin_kind,
                     "scope": intent.scope,
                     "intent_kind": intent.intent_kind,

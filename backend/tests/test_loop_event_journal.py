@@ -116,6 +116,7 @@ def test_concurrent_append_replay_idempotency_and_retention(tmp_path: Path) -> N
             async with sessions.begin() as session:
                 await journal.configure_retention(session, loop_id, 0)
                 session.add(LoopProjectorCursor(loop_id=loop_id, projector_name="loop_facts", last_sequence=13))
+                session.add(LoopProjectorCursor(loop_id=loop_id, projector_name="work_timeline", last_sequence=13))
                 await session.flush()
                 removed = await journal.prune(session, loop_id, now=datetime.now(UTC) + timedelta(seconds=1))
                 assert removed == 13

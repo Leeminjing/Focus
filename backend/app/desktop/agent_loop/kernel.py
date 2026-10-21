@@ -256,6 +256,9 @@ class LoopKernel:
         from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
 
         await self._address_user_intents(session, round_row.round_id)
+        from backend.app.desktop.agent_loop.timeline_events import record_work_decision
+
+        await record_work_decision(session, decision)
         await RoundStateEventRecorder().record(session, round_row)
         await LoopLifecycleEventRecorder().record(session, loop)
         await self._event(session, loop.loop_id, "LoopDecisionAuthorized" if deferred else "LoopDecisionCommitted",

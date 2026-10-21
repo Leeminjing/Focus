@@ -174,6 +174,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             dispatcher,
         )
         app.state.agent_loop_fact_projector = FactProjector(sessions, app.state.checkpointer)
+        from backend.app.desktop.agent_loop.timeline_projector import WorkTimelineProjector
+
+        app.state.agent_loop_timeline_projector = WorkTimelineProjector(sessions)
         from backend.app.desktop.agent_loop.task_progress.runtime import (
             TaskProgressRuntime,
         )
@@ -192,6 +195,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             portfolio_publications=app.state.agent_loop_publication_queue,
             context_runs=app.state.agent_loop_context_runs,
             fact_projector=app.state.agent_loop_fact_projector,
+            timeline_projector=app.state.agent_loop_timeline_projector,
             task_progress=app.state.agent_loop_task_progress,
             run_manager=service.run_manager,
             workspace_cleanup=LoopWorkspaceCleanup(sessions),
