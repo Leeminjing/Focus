@@ -259,6 +259,8 @@ Skills and MCP support global and workspace scopes:
 
 Skills with the same name resolve in **workspace → global → built-in** priority order. MCP configuration is merged in **application defaults → global → workspace** order. Changes apply to subsequent assembly; active Runs retain their assembled tools and explicitly selected Skill snapshots.
 
+Focus includes [`focus-skill-to-strategy`](skills/public/focus-skill-to-strategy/SKILL.md) by default. Type `/` in the composer to select it, provide a source `SKILL.md`, and ask to migrate it. The skill converts methods for organizing contexts and inheriting evidence into a Strategy while preserving execution instructions in the original Skill. Preview and install the generated `STRATEGY.md` through **Memory → Strategy → Import strategy**. To disable the built-in version, set `skills.focus-skill-to-strategy.enabled` to `false` in the global or workspace `extensions_config.json`.
+
 The “No workspace” mode also lets you select a global or specific-workspace assembly target and configure capabilities in its corresponding conversation.
 
 ## How it works

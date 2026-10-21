@@ -83,7 +83,8 @@ def test_refresh_reloads_added_changed_removed_tools_and_keeps_existing_graph(mo
         assert old_node.tools_by_name["removed"].invoke({"text": "x"}) == "old:x"
         assert registry.get_tool_registry() is not old_registry
         assert result["custom_tool_count"] == 2
-        assert result["skills"] == [] and result["mcp_tool_count"] == 0
+        assert [skill["name"] for skill in result["skills"]] == ["focus-skill-to-strategy"]
+        assert result["mcp_tool_count"] == 0
         assert result["failed_servers"] == [] and result["mcp_failures"] == []
         assert refresh_calls == [(str(workspace), True)]
 

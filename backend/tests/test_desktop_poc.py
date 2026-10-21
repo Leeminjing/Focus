@@ -733,7 +733,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until, mo
         catalog = client.get(
             f"/desktop/api/tasks/{task['task_id']}/skills", headers=SESSION
         ).json()
-        assert [skill["name"] for skill in catalog["skills"]] == ["one", "two"]
+        assert [skill["name"] for skill in catalog["skills"]] == ["focus-skill-to-strategy", "one", "two"]
 
         runs_before = client.portal.call(_run_count, service, task["task_id"])
         unavailable_main = client.post(

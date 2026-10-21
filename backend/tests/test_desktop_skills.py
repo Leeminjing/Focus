@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from backend.app.desktop.skills import build_task_skill_catalog, describe_task_skill_catalog, resolve_task_skills
 
 
@@ -74,3 +76,66 @@ def test_global_skills_are_shared_and_workspace_overrides_stay_local(tmp_path, m
     assert f"Location: {a / '.agents' / 'skills' / 'shared' / 'SKILL.md'}" in result
     snapshots, _ = resolve_task_skills(catalog, ["shared"])
     assert snapshots[0]["content"] == catalog["shared"].metadata.skill_file.read_text(encoding="utf-8")
+
+
+def test_bundled_migration_skill_is_available_outside_focus_checkout(tmp_path, monkeypatch):
+    from focus.skills.types import SkillCategory
+    from focus.tools.builtins.describe_skill_tool import build_describe_skill_tool
+
+    home = tmp_path / "global"
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    for workspace in (home, tmp_path / "project-a", tmp_path / "project-b"):
+        catalog = build_task_skill_catalog(workspace)
+        skill = catalog["focus-skill-to-strategy"]
+        assert skill.metadata.category == SkillCategory.PUBLIC
+        location = skill.metadata.skill_file
+        assert location.is_file() and not location.is_relative_to(tmp_path)
+        described = build_describe_skill_tool(describe_task_skill_catalog(catalog)).invoke(
+            {"name": "focus-skill-to-strategy"}
+        )
+        assert f"Location: {location}" in described
+        snapshots, unavailable = resolve_task_skills(catalog, ["focus-skill-to-strategy"])
+        assert unavailable == []
+        assert snapshots == [{"name": skill.name, "content": location.read_text(encoding="utf-8")}]
+
+
+@pytest.mark.parametrize("scope", ["global", "workspace"])
+def test_bundled_migration_skill_can_be_disabled(tmp_path, monkeypatch, scope):
+    home, workspace = tmp_path / "global", tmp_path / "project"
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
+    assert "focus-skill-to-strategy" in build_task_skill_catalog(workspace)
+    config = (home if scope == "global" else workspace / ".focus") / "extensions_config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"skills": {"focus-skill-to-strategy": {"enabled": False}}}), encoding="utf-8")
+
+    catalog = build_task_skill_catalog(workspace)
+    assert "focus-skill-to-strategy" not in catalog
+    snapshots, unavailable = resolve_task_skills(catalog, ["focus-skill-to-strategy"])
+    assert snapshots == [] and unavailable == ["focus-skill-to-strategy"]
+    if scope == "workspace":
+        assert "focus-skill-to-strategy" in build_task_skill_catalog(tmp_path / "other")
+
+
+def test_custom_migration_skill_overrides_bundle_only_in_its_scope(tmp_path, monkeypatch):
+    home, workspace = tmp_path / "global", tmp_path / "project"
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
+    name = "focus-skill-to-strategy"
+    assert name in build_task_skill_catalog(workspace)
+    _skill(home / ".agents" / "skills", name, name, "global migration method")
+    _skill(workspace / ".agents" / "skills", name, name, "workspace migration method")
+
+    assert build_task_skill_catalog(workspace)[name].description == "workspace migration method"
+    assert build_task_skill_catalog(tmp_path / "other")[name].description == "global migration method"
+
+
+def test_bundled_migration_template_is_importable_by_focus(tmp_path, monkeypatch):
+    from backend.app.desktop.strategy_packages import parse_strategy
+
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(tmp_path / "global"))
+    content = build_task_skill_catalog(tmp_path / "project")["focus-skill-to-strategy"].content
+    template = content.split("```markdown\n", 1)[1].split("```", 1)[0]
+    package = parse_strategy(template)
+    assert package.metadata.id == "your-namespace/your-method"
+    assert package.metadata.schema_version == "focus.strategy/v1"
+    assert set(package.strategy.model_dump()) == {"applicability", "evolution", "inheritance"}

@@ -256,6 +256,8 @@ Skill 与 MCP 支持全局和工作区范围：
 
 同名 Skill 按 **工作区 → 全局 → 内置** 的优先级解析；MCP 配置按 **程序默认 → 全局 → 工作区** 逐层合并。配置变更用于后续装配，正在执行的 Run 保留已装配的工具与手选 Skill 快照。
 
+Focus 默认提供内置 Skill [`focus-skill-to-strategy`](skills/public/focus-skill-to-strategy/SKILL.md)。在输入框输入 `/` 选择它，提供源 `SKILL.md` 并要求迁移，即可把跨 Context 的工作组织与证据继承方法转换为 Strategy，纯执行方法继续保留在原 Skill 中。生成的 `STRATEGY.md` 可在 **记忆库 → Strategy → 导入策略** 中预览并安装。可在全局或工作区的 `extensions_config.json` 中设置 `skills.focus-skill-to-strategy.enabled: false` 停用内置版本。
+
 在“无工作区模式”中，也可以选择全局或指定工作区作为装配目标，并在对应会话中配置相关能力。
 
 ## 工作原理

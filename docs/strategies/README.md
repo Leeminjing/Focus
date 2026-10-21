@@ -21,6 +21,12 @@ Strategy 是一份可分享的上下文演化方法：规定什么工作局面�
 
 用户可以直接说“这次按‘先验证关键假设’推进”，也可以只表达目标。策略只影响工作安排，不要求用户操作 Context ID 或手动分配线程。
 
+## 从已有 Skill 迁移
+
+Focus 内置 [`focus-skill-to-strategy`](../../skills/public/focus-skill-to-strategy/SKILL.md)，默认在所有工作区可用。在输入框输入 `/` 选择此 Skill，再提供源 `SKILL.md`，例如：“把这个 TDD Skill 迁移成适合 Focus 单入口的 Strategy。”
+
+迁移器区分具体执行、跨 Context 的工作组织和证据继承。纯执行 Skill 会得到不适合迁移的说明；适合迁移时生成 `assessment.md`、`STRATEGY.md` 和包含“应采用、不应采用、收到新反馈”场景的 `migration-tests.md`，保留原 Skill。生成文件通过上面的导入入口预览、安装；预演结果不代表已经真实执行。
+
 ## v1 文件格式
 
 ```markdown

@@ -1,5 +1,9 @@
 {
-  "skills": {},
+  "skills": {
+    "focus-skill-to-strategy": {
+      "enabled": true
+    }
+  },
   "mcpServers": {
     "playwright": {
       "enabled": true,
