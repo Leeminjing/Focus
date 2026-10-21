@@ -16,6 +16,7 @@ import backend.app.desktop.agent_loop.models
 import backend.app.desktop.agent_loop.patrol_session_models
 import backend.app.desktop.agent_loop.projection_models
 import backend.app.desktop.agent_loop.task_progress.models
+import backend.app.desktop.agent_loop.timeline_models
 import backend.app.desktop.agent_loop.wait_models
 import backend.app.desktop.context_curation.models
 import backend.app.desktop.conversation_inputs

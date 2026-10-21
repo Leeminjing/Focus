@@ -11,6 +11,7 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
 const loops = new Map();
 const records = new Map();
 const streams = new Map();
+const timelines = new Map();
 let sequence = 0;
 window.patrolFixture = {
   requests: [], releaseBootstrap: null,
@@ -26,6 +27,14 @@ window.patrolFixture = {
   lineage: { roots: {}, nodes: [], edges: [], complete: true },
   emit(loopId, entity_type, entity_id, entity_revision, payload) {
     const event = { event_id: `event-${++sequence}`, loop_id: loopId, sequence, kind: `${entity_type}.updated`, entity_type, entity_id, entity_revision, payload, occurred_at: new Date().toISOString(), schema_version: 1 };
+    if (entity_type === "fact" && payload.kind !== "tool") {
+      const entries = timelines.get(loopId) || [];
+      if (!entries.some(entry => entry.fact_id === entity_id && entry.fact_revision === entity_revision)) entries.push({ entry_id: event.event_id, source_event_id: event.event_id, sequence,
+        category: "fact", kind: "fact.upserted", fact_id: entity_id, fact_revision: entity_revision,
+        title: payload.title, summary: payload.summary, context_ids: payload.context_id ? [payload.context_id] : [],
+        recorded_at: event.occurred_at, references: { state: payload.status, file: window.FocusLoopFactsView.fileReference(payload) } });
+      timelines.set(loopId, entries);
+    }
     streams.get(loopId)?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
   },
 };
@@ -60,6 +69,13 @@ window.fetch = async (input, options = {}) => {
   }
   const prefix = "/desktop/api/agent-loops";
   if (path === `${prefix}/budget-presets`) return json(require("./workspace-patrol-budget-fixture.cjs"));
+  const timeline = path.match(/\/agent-loops\/([^/]+)\/timeline$/);
+  if (timeline) {
+    let rows = (timelines.get(timeline[1]) || []).filter(row => !url.searchParams.get("category") || row.category === url.searchParams.get("category"));
+    if (url.searchParams.has("after")) rows = rows.filter(row => row.sequence > Number(url.searchParams.get("after")));
+    if (url.searchParams.has("before")) rows = rows.filter(row => row.sequence < Number(url.searchParams.get("before")));
+    return json({entries:rows, next_before:null, next_after:sequence, projected_through:sequence, source_sequence:sequence, has_more:false});
+  }
   if (path === '/desktop/api/contexts/batch-delete' && window.patrolFixture.mapDeletes) {
     const body = JSON.parse(options.body);
     window.patrolFixture.mapDeletes.push(body);

@@ -65,6 +65,7 @@ def test_retention_preserves_pins_consumers_evidence_failures_and_high_water(tmp
                 await journal.configure_retention(session, loop, 0)
                 assert await journal.prune(session, loop, now=now) == 0
                 session.add(LoopProjectorCursor(loop_id=loop, projector_name="loop_facts", last_sequence=4))
+                session.add(LoopProjectorCursor(loop_id=loop, projector_name="work_timeline", last_sequence=4))
                 await session.execute(update(LoopJournalEvent).where(LoopJournalEvent.event_id == events[2].event_id)
                                       .values(retained_until=now + timedelta(days=1)))
             async with sessions.begin() as session:
@@ -117,6 +118,7 @@ def test_preview_is_single_use_rechecks_pins_and_saves_checkpoint(tmp_path):
                 await session.execute(update(LoopJournalEvent).where(LoopJournalEvent.loop_id == loop)
                                       .values(occurred_at=datetime.now(UTC) - timedelta(days=100)))
                 session.add(LoopProjectorCursor(loop_id=loop, projector_name="loop_facts", last_sequence=4))
+                session.add(LoopProjectorCursor(loop_id=loop, projector_name="work_timeline", last_sequence=4))
             plan = await service.preview()
             assert next(row for row in plan["loops"] if row["loop_id"] == loop)["events"] == 4
             async with sessions.begin() as session:

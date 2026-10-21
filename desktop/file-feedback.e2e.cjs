@@ -41,8 +41,8 @@ if (!process.versions.electron) {
     await run(`document.querySelector('[data-patrol-composer] [data-patrol-details]').click();for(const fact of files)patrolFixture.emit('loop-file-test','fact',fact.fact_id,2,fact);`);
     await until('document.querySelectorAll(".file-fact").length===9');
     await until('!document.querySelector("[data-patrol-details-content]").inert');
-    const density = await run(`(()=>{const s=document.querySelector('[data-patrol-facts]');s.style.flex='none';s.style.height='420px';s.scrollTop=0;const r=s.getBoundingClientRect();return [...s.children].filter(n=>n.getBoundingClientRect().height===60&&n.getBoundingClientRect().top>=r.top&&n.getBoundingClientRect().bottom<=r.bottom).length})()`);
-    assert.ok(density >= 6, `only ${density} rows`);
+    const density = await run(`(()=>{const s=document.querySelector('[data-patrol-facts]');s.style.flex='none';s.style.height='420px';s.scrollTop=0;const r=s.getBoundingClientRect();return [...s.children].filter(n=>n.getBoundingClientRect().top>=r.top&&n.getBoundingClientRect().bottom<=r.bottom).length})()`);
+    assert.ok(density >= 2, `only ${density} timeline entries with sources and evidence`);
     await run(`document.querySelector('[data-patrol-facts]').scrollTop=60;patrolFixture.emit('loop-file-test','fact','f0',2,files[0]);patrolFixture.emit('loop-file-test','fact','f9',2,{...files[8],fact_id:'f9'})`);
     await until('document.querySelectorAll(".file-fact").length===10');
     assert.equal(await run(`document.querySelector('[data-patrol-facts]').scrollTop`),60);

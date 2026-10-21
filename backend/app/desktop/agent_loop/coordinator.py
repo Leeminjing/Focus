@@ -631,6 +631,7 @@ class LoopCoordinatorRuntime:
         task_progress=None,
         run_manager=None,
         workspace_cleanup=None,
+        timeline_projector=None,
     ) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
@@ -646,6 +647,7 @@ class LoopCoordinatorRuntime:
         self._task_progress = task_progress
         self._run_manager = run_manager
         self._workspace_cleanup = workspace_cleanup
+        self._timeline_projector = timeline_projector
         self._poll_seconds = poll_seconds
         self._max_concurrent_loops = max(1, max_concurrent_loops)
         self._supervisor: LoopSupervisor | None = None
@@ -710,6 +712,8 @@ class LoopCoordinatorRuntime:
                       SupervisorComponent("cognition_cancellations", self._drain_preemptions, self._poll_seconds)]
         if self._task_progress is not None:
             components.append(SupervisorComponent("task_progress", self._task_progress.drain, self._poll_seconds))
+        if self._timeline_projector is not None:
+            components.append(SupervisorComponent("work_timeline", self._timeline_projector.drain, self._poll_seconds))
         if self._compression_resolutions is not None:
             components.append(SupervisorComponent("compression_resolutions", self._compression_resolutions.drain, self._poll_seconds))
         if self._maintenance is not None:

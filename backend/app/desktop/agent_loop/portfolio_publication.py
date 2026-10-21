@@ -224,7 +224,7 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             decision_id=decision.decision_id,
             directive_ids=tuple(self._directive_ids),
         )
-        await self._lineage_events.record_loop_members(session, loop_id=loop.loop_id)
+        await self._lineage_events.record_loop_members(session, loop_id=loop.loop_id, decision_id=decision.decision_id)
 
     @staticmethod
     async def _validate_authority(session, loop, round_row, grant, controls) -> None:

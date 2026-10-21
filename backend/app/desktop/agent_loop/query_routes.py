@@ -128,6 +128,24 @@ async def context_conversation(
         )
 
 
+@loop_query_router.get("/agent-loops/{loop_id}/timeline")
+async def loop_work_timeline(
+    loop_id: str, request: Request,
+    before: int | None = Query(default=None, ge=1),
+    after: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=80, ge=1, le=200),
+    category: str | None = None, context_id: str | None = None,
+    round_id: str | None = None, intent_id: str | None = None,
+) -> dict:
+    from backend.app.desktop.agent_loop.timeline_query import WorkTimelineQuery
+
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await WorkTimelineQuery().read(
+            session, loop_id, before=before, after=after, limit=limit,
+            category=category, context_id=context_id, round_id=round_id, intent_id=intent_id,
+        )
+
+
 @loop_query_router.get("/agent-loops/{loop_id}/facts")
 async def loop_facts(
     loop_id: str,

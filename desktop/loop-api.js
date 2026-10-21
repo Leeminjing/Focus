@@ -127,6 +127,13 @@
         if (options.limit) query.set("limit", String(options.limit));
         return request(`/${encodeURIComponent(loopId)}/contexts/${encodeURIComponent(contextId)}/conversation${query.size ? `?${query}` : ""}`, { signal: options.signal });
       },
+      timeline: (loopId, options = {}) => {
+        const query = new URLSearchParams();
+        for (const [key, name] of Object.entries({ before: "before", after: "after", limit: "limit", category: "category", contextId: "context_id", roundId: "round_id", intentId: "intent_id" })) {
+          if (options[key] !== undefined && options[key] !== null && options[key] !== "") query.set(name, String(options[key]));
+        }
+        return request(`/${encodeURIComponent(loopId)}/timeline${query.size ? `?${query}` : ""}`, { signal: options.signal });
+      },
       facts: (loopId, options = {}) => {
         const query = new URLSearchParams();
         if (options.contextId) query.set("context_id", options.contextId);
