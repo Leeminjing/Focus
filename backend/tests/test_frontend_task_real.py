@@ -67,7 +67,7 @@ def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch
     env["FOCUS_MAP_REAL"] = json.dumps({"workspace_id": task["workspace_id"], "context_id": context_id, "revision_id": revision_id})
     with ASGIHTTPBridge(http, headers=SESSION, traffic=traffic) as bridge:
         env["FOCUS_TASK_REAL_URL"] = bridge.url
-        result = subprocess.run([str(electron), str(repo / "desktop/frontend-task-real.e2e.cjs")], cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=80)
+        result = subprocess.run([str(electron), str(repo / "desktop/tests/e2e/frontend-task-real.e2e.cjs")], cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=80)
         assert result.returncode == 0, result.stdout + result.stderr + str(traffic[-25:])
         ui = json.loads(result_file.read_text(encoding="utf-8"))
         assert ui["map"] == {"context_id": context_id, "revision_id": revision_id, "opened_task_id": context_id}

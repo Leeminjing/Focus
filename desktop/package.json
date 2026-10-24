@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "Focus 全图巡逻小兵桌面 PoC",
-  "main": "main.cjs",
+  "main": "src/main/main.cjs",
   "scripts": {
-    "build:patrol-editor": "node build-patrol-editor.cjs",
+    "build:patrol-editor": "node scripts/build-patrol-editor.cjs",
+    "test": "node scripts/run-tests.cjs",
+    "test:native": "node --test src/main/windows-sandbox/native.test.mjs",
     "start": "electron .",
     "install:electron": "install-electron",
     "dev": "cd .. && python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765"

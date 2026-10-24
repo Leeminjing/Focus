@@ -1,0 +1,985 @@
+/*
+ * 本文件对外提供 Loop Mission、Store/Console Store、API/完整会话协议、连接提示、Portfolio、事实和终止态的回归测试。
+ * 输入为重复/乱序事件、千条会话页、模拟 fetch、Lane revisions 和多父边；输出为幂等 cursor、固定
+ * 消息窗口、视口恢复、正确请求与完整 secondary source 断言。具体工作流为
+ * 直接加载无 DOM UMD 模块并调用纯函数；示例：`node --test desktop/src/renderer/features/loop/agent-loop-modules.test.js`。
+ * 原文空白保持、失败重放同一身份、交付生命周期及历史缺决策诊断均依据实际合同断言；来源边按完整 Revision 对账，紧凑横向节点的目的由只读检查承接，Observation 覆盖和分页分开。
+ */
+
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const LoopApi = require("./loop-api.js");
+const LoopStore = require("./loop-store.js");
+const MissionEditor = require("./loop-mission-editor.js");
+globalThis.FocusLoopMissionEditor = MissionEditor;
+const LoopView = require("./loop-view.js");
+const ConsoleStore = require("./loop-console-store.js");
+const PortfolioMap = require("../map/portfolio-map-view.js");
+const PatrolView = require("../patrol/workspace/workspace-patrol-view.js");
+const ObservationView = require("../patrol/workspace/observation-view.js");
+const Conversation = require("../context/context-conversation-view.js");
+const Facts = require("./loop-facts-view.js");
+const ConsoleController = require("./loop-console-controller.js");
+
+test("historical missing decision is visible without counting a complete transaction", () => {
+  const html = LoopView.render({ snapshot: { loop_id: "l1", status: "paused", usage: { rounds: 0 },
+    accounting: { round_history: [{ number: 13, status: "superseded", observation_id: null,
+      decision_id: null, completed_transaction: false, diagnostics: ["missing_patrol_decision"] }] } } });
+  assert.match(html, /Round 13 · superseded · 未完成事务/);
+  assert.match(html, /missing_patrol_decision/);
+  assert.match(html, /Observation — · Decision —/);
+});
+
+test("direct user delivery displays durable acceptance without claiming a running Run", () => {
+  const manifest = { nodes: [{ context_id: "c1", topic: "主 Context", status: "active" }], user_intents: [
+    { intent_id: "u1", intent_kind: "direct_message", context_id: "c1", delivery_state: "accepted", resulting_run_id: null },
+  ] };
+  let html = Conversation.render({ manifest, selectedContextId: "c1", interventionMode: "direct_context_message" });
+  assert.match(html, /已受理 · 待观察授权/);
+  assert.match(html, /当前没有运行中的 Context Run/);
+  assert.doesNotMatch(html, /立即启动/);
+  manifest.user_intents[0] = { ...manifest.user_intents[0], delivery_state: "run_started", resulting_run_id: "r1" };
+  html = Conversation.render({ manifest, selectedContextId: "c1", interventionMode: "direct_context_message" });
+  assert.match(html, /data-delivery-state="run_started"/);
+  assert.match(html, /运行中.*Run r1/);
+});
+
+test("direct user controller shares in-flight submission and reuses identity after failure", async () => {
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  const manifest = { loop_id: "l1", initial_context_id: "c1", status: "running", nodes: [{ context_id: "c1", revision: { revision_id: "v1" } }] };
+  const calls = [];
+  let rejectSubmission;
+  let first = true;
+  const controller = ConsoleController.create({ store, api: {
+    console: async () => manifest,
+    conversation: async () => ({ context_id: "c1", revision: { revision_id: "v1" }, messages: [] }),
+    facts: async () => ({ facts: [] }),
+    directMessage: async (contextId, content, requestId) => {
+      calls.push({ contextId, content, requestId });
+      if (first) { first = false; await new Promise((resolve, reject) => { rejectSubmission = reject; }); }
+      return { intent_id: "u1", delivery_state: "accepted", run_id: null };
+    },
+  } });
+  await controller.load("l1");
+  const original = "  保留原文\n\n";
+  const one = controller.submit(original);
+  const two = controller.submit(original);
+  assert.equal(calls.length, 1);
+  rejectSubmission(new Error("connection lost after acceptance"));
+  const failed = await Promise.allSettled([one, two]);
+  assert.deepEqual(failed.map(item => item.status), ["rejected", "rejected"]);
+  await controller.submit(original);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].content, original);
+  controller.destroy();
+});
+
+test("waiting controls and consumption reflect durable lifecycle and occupied budget", () => {
+  const loop = { loop_id: "waiting", status: "waiting_user", usage: { model_calls: 7 },
+    grant: { budgets: { max_model_calls: 10 } }, accounting: { consumption: {
+      actual: { model_calls: 3 }, unreported_reservations: { model_calls: 4 }, occupied: { model_calls: 7 },
+    } } };
+  const html = LoopView.render({ snapshot: loop });
+  assert.match(html, /data-loop-control="stop"/);
+  assert.doesNotMatch(html, /data-loop-control="pause"/);
+  assert.match(html, /Calls 实际 3 · 未报告预留 4 · 预算占用 7 \/ 10/);
+  assert.match(html, /aria-label="预算已使用 70%"/);
+});
+
+
+test("mission editor separates outcome boundaries and evidence-backed checks", () => {
+  const mission = MissionEditor.buildMission({
+    outcome: "交付 Live Loop",
+    in_scope: ["Loop 页面"],
+    required_invariants: ["保留 Kernel 权威"],
+    prohibited_actions: ["伪造活动"],
+    completion_checks: [{ check_id: "tests", claim: "测试通过", evidence: "test", required: true }],
+  });
+  assert.equal(mission.outcome, "交付 Live Loop");
+  assert.deepEqual(mission.boundaries.required_invariants, ["保留 Kernel 权威"]);
+  assert.deepEqual(mission.completion_checks[0].expected_evidence_kinds, ["test"]);
+  assert.match(MissionEditor.render(mission), /最终结果/);
+  assert.match(MissionEditor.render(mission), /执行边界/);
+  assert.match(MissionEditor.render(mission), /完成检查/);
+  assert.match(MissionEditor.render(mission), /aria-label="最终结果"/);
+  assert.match(MissionEditor.render(mission), /aria-label="允许触及的范围"/);
+  assert.match(MissionEditor.render(mission), /aria-label="必须保持的不变量"/);
+  assert.match(MissionEditor.render(mission), /aria-label="禁止或超范围动作"/);
+  assert.doesNotMatch(MissionEditor.render(mission), /Task Contract/);
+});
+
+
+test("mission editor rejects identical text across semantic roles", () => {
+  assert.throws(() => MissionEditor.buildMission({
+    outcome: "测试通过",
+    required_invariants: ["保留 Kernel"],
+    completion_checks: [{ check_id: "tests", claim: "测试通过", evidence: "test" }],
+  }), /不能同时属于最终结果和完成检查/);
+});
+
+
+test("store replays cursor events once and reconciles stale controls", () => {
+  const store = LoopStore.create();
+  store.load({ loop_id: "l1", status: "running" });
+  store.beginControl("pause");
+  store.apply([{ event_id: "e1", cursor: 1, type: "Started" }, { event_id: "e1", cursor: 1, type: "Started" }]);
+  store.apply([{ event_id: "old", cursor: 0 }, { event_id: "e2", cursor: 2 }]);
+  store.reconcile({ loop_id: "l1", status: "paused" });
+  assert.equal(store.get().events.length, 2);
+  assert.equal(store.get().cursor, 2);
+  assert.equal(store.get().pendingControl, null);
+  assert.equal(store.get().snapshot.status, "paused");
+});
+
+
+test("api sends session header and cursor", async () => {
+  const calls = [];
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => [] };
+  });
+  await api.events("loop one", 7);
+  assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/loop%20one/events?after=7");
+  assert.equal(calls[0].options.headers["X-Focus-Session"], "secret");
+});
+
+test("api preserves a plain-text HTTP failure instead of exposing JSON syntax errors", async () => {
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async () => new Response("Internal Server Error", {
+    status: 500,
+    statusText: "Internal Server Error",
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  }));
+  await assert.rejects(api.start({}), error => {
+    assert.equal(error.status, 500);
+    assert.match(error.message, /Internal Server Error/);
+    assert.doesNotMatch(error.message, /Unexpected token|JSON/);
+    return true;
+  });
+});
+
+
+test("api sends grant mutations through the authority boundary", async () => {
+  const calls = [];
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({ loop_id: "l1" }) };
+  });
+  await api.mutateGrant("loop one", { command: "revoke" });
+  assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/loop%20one/grant");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { command: "revoke" });
+});
+
+test("api activates an explicitly confirmed mission revision", async () => {
+  const calls = [];
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({ loop_id: "l1", goal_revision: 2 }) };
+  });
+  const mission = { outcome: "完成发布", boundaries: {}, completion_checks: [{ check_id: "tests", claim: "测试通过", expected_evidence_kinds: ["test"] }] };
+  await api.reviseMission("loop one", mission);
+  assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/loop%20one/missions");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { confirmation: "activate", mission });
+});
+
+
+test("api reads an immutable historical revision outside the Loop route prefix", async () => {
+  const calls = [];
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({ ref: { revision_id: "r one" } }) };
+  });
+  const revision = await api.revision("r one");
+  assert.equal(calls[0].url, "http://focus/desktop/api/context-revisions/r%20one");
+  assert.equal(revision.ref.revision_id, "r one");
+});
+
+
+test("console api exposes topology, paginated conversation, facts and scoped intervention", async () => {
+  const calls = [];
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options = {}) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => url.endsWith("/tasks/c%2F1") ? { ui_state: { _main_run_equipment: { permissions: ["read"], skills: ["testing"], access_mode: "workspace" } } } : {} };
+  });
+  await api.console("l 1");
+  await api.conversation("l 1", "c/1", { before: 48, limit: 24 });
+  await api.facts("l 1", { contextId: "c/1", kind: "test" });
+  await api.intervene("l 1", { mode: "patrol_context_intent", context_id: "c/1", content: "Run tests" });
+  await api.directMessage("c/1", "Continue the run", "stable-user-request");
+  await api.restoreCompression("c/1", "compressed-message");
+  assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/l%201/console");
+  assert.match(calls[1].url, /conversation\?before=48&limit=24$/);
+  assert.match(calls[2].url, /facts\?context_id=c%2F1&kind=test$/);
+  assert.deepEqual(JSON.parse(calls[3].options.body), { mode: "patrol_context_intent", context_id: "c/1", content: "Run tests" });
+  assert.equal(calls[4].url, "http://focus/desktop/api/tasks/c%2F1/main/runs");
+  assert.deepEqual(JSON.parse(calls[4].options.body), { message: "Continue the run", idempotency_key: "stable-user-request" });
+  assert.equal(calls[5].url, "http://focus/desktop/api/compression/quick-apply");
+  assert.deepEqual(JSON.parse(calls[5].options.body).ranges, [{ source_ids: ["compressed-message"], restore: true }]);
+});
+
+
+test("console store prepends history without duplicating message indices", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1" }] });
+  store.loadConversation({ context_id: "c1", messages: [{ index: 2 }, { index: 3 }], range: { start: 2, end: 4 }, has_more: true, next_before: 2 });
+  store.prependConversation({ context_id: "c1", messages: [{ index: 0 }, { index: 1 }, { index: 2 }], range: { start: 0, end: 3 }, has_more: false, next_before: null });
+  assert.deepEqual(store.get().conversation.messages.map(item => item.index), [0, 1, 2, 3]);
+  assert.equal(store.get().conversation.has_more, false);
+});
+
+
+test("console store takes topology edges from the live projection once a snapshot exists", () => {
+  const LiveSelectors = require("./loop-live-selectors.js");
+  const projection = lastSequence => ({
+    loop_id: "l1",
+    last_sequence: lastSequence,
+    loop: { entity_id: "l1", revision: 1, updated_sequence: 1, state: { status: "running", health: "observing" } },
+    round: null,
+    contexts: {
+      c1: { entity_id: "c1", revision: 1, updated_sequence: 1, state: { title: "Primary", role: "primary" } },
+      c2: { entity_id: "c2", revision: 1, updated_sequence: 2, state: { title: "Derived", role: "contributor" } },
+    },
+    lineage: {
+      "c1:c1": { entity_id: "c1:c1", revision: 2, updated_sequence: 2, state: { source_context_id: "c1", target_context_id: "c1" } },
+      "c1:c2": { entity_id: "c1:c2", revision: 2, updated_sequence: 3, state: { source_context_id: "c1", target_context_id: "c2", source_revision_id: "r1", target_revision_id: "r2" } },
+    },
+    runs: {}, curators: {}, expansions: {}, directives: {}, facts: {}, wait_requests: {}, wait_responses: {},
+    activity_timeline: [], unknown_kinds: [], diagnostics: {},
+  });
+  const store = ConsoleStore.create();
+  store.loadManifest({
+    initial_context_id: "c1",
+    nodes: [{ context_id: "c1" }],
+    edges: [{ source_context_id: "stale", target_context_id: "c1" }],
+  });
+
+  store.projectLive(projection(7), LiveSelectors);
+  assert.deepEqual(store.get().manifest.nodes.map(node => node.context_id), ["c1", "c2"], "Live 投影必须补齐新派生的 Context 节点");
+  assert.deepEqual(store.get().manifest.edges, [
+    { source_context_id: "c1", target_context_id: "c2", source_revision_id: "r1", target_revision_id: "r2" },
+  ], "有快照后拓扑边必须改由 Live 投影的 lineage 提供，并取代 manifest 里的一次性边集合");
+
+  const early = ConsoleStore.create();
+  early.loadManifest({
+    initial_context_id: "c1",
+    nodes: [{ context_id: "c1" }],
+    edges: [{ source_context_id: "c9", target_context_id: "c1" }],
+  });
+  early.projectLive(projection(0), LiveSelectors);
+  assert.deepEqual(early.get().manifest.edges, [{ source_context_id: "c9", target_context_id: "c1" }], "尚无快照时保留 manifest 的边，避免首帧丢掉派生关系");
+});
+
+
+test("console store keeps a fixed message bound while paging through thousands of messages", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1", revision: { revision_id: "r1" } }] });
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r1" }, total: 1000, messages: Array.from({ length: 48 }, (_, offset) => ({ index: 952 + offset })), range: { start: 952, end: 1000 } });
+  for (let end = 952; end > 0; end -= 48) {
+    const start = Math.max(0, end - 48);
+    store.mergeConversation({ context_id: "c1", revision: { revision_id: "r1" }, total: 1000, messages: Array.from({ length: end - start }, (_, offset) => ({ index: start + offset })), range: { start, end } }, "older");
+    assert.ok(store.get().conversation.messages.length <= ConsoleStore.MAX_CONVERSATION_MESSAGES);
+  }
+  assert.equal(store.get().conversation.range.start, 0);
+  assert.equal(store.get().conversation.has_more, false);
+  assert.equal(store.get().conversation.has_newer, true);
+  assert.equal(store.get().conversation.messages.length, ConsoleStore.MAX_CONVERSATION_MESSAGES);
+});
+
+
+test("console store restores each revision window and viewport when returning to a Context", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({
+    initial_context_id: "c1",
+    nodes: [
+      { context_id: "c1", revision: { revision_id: "r1" } },
+      { context_id: "c2", revision: { revision_id: "r2" } },
+    ],
+  });
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r1" }, total: 4, messages: [{ index: 2 }, { index: 3 }], range: { start: 2, end: 4 } });
+  store.saveViewport("c1", { scrollTop: 321 });
+  store.selectContext("c2");
+  store.loadConversation({ context_id: "c2", revision: { revision_id: "r2" }, total: 1, messages: [{ index: 0 }], range: { start: 0, end: 1 } });
+  store.saveViewport("c2", { scrollTop: 17 });
+  store.selectContext("c1");
+  assert.deepEqual(store.get().conversation.messages.map(item => item.index), [2, 3]);
+  assert.equal(store.get().conversationViewport.scrollTop, 321);
+});
+
+test("live revision change invalidates only the historical conversation window", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1", revision: { revision_id: "r1" } }] });
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r1" }, messages: [{ index: 0, message: { content: "old" } }], total: 1 });
+  const selectors = {
+    selectContextCards: () => [{ id: "c1", current_revision_id: "r2", title: "Context", status: "active" }],
+    selectLineage: () => [],
+    selectFacts: () => [],
+    selectPatrol: () => null,
+    selectGraphActivity: () => [],
+    selectCausality: () => [],
+  };
+  store.projectLive({ loop_id: "loop", last_sequence: 2, loop: { state: { status: "running" } }, round: null }, selectors);
+  assert.equal(store.get().conversation, null);
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r1" }, messages: [{ index: 0, message: { content: "stale" } }], total: 1 });
+  assert.equal(store.get().conversation, null);
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r2" }, messages: [{ index: 0, message: { content: "new" } }], total: 1 });
+  assert.equal(store.get().conversation.revision.revision_id, "r2");
+});
+
+
+test("console store paginates facts without duplicating stable fact ids", () => {
+  const store = ConsoleStore.create();
+  store.loadFacts({ facts: [{ fact_id: "f3" }, { fact_id: "f4" }], range: { start: 2, end: 4 }, has_more: true, next_before: 2 });
+  store.prependFacts({ facts: [{ fact_id: "f1" }, { fact_id: "f2" }, { fact_id: "f3" }], range: { start: 0, end: 3 }, has_more: false, next_before: null });
+  assert.deepEqual(store.get().facts.facts.map(item => item.fact_id), ["f1", "f2", "f3", "f4"]);
+  assert.equal(store.get().facts.has_more, false);
+});
+
+
+test("console controller batches bursty store changes into one animation frame", () => {
+  const originalFrame = global.requestAnimationFrame;
+  const originalCancel = global.cancelAnimationFrame;
+  const frames = [];
+  global.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  global.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  let renders = 0;
+  const controller = ConsoleController.create({ api: {}, store, onChange: () => { renders += 1; } });
+  try {
+    store.setFactFilter("test");
+    store.setFactScope("all");
+    store.setMessageFilter("tool");
+    assert.equal(frames.length, 1);
+    frames.shift()();
+    assert.equal(renders, 1);
+  } finally {
+    controller.destroy();
+    global.requestAnimationFrame = originalFrame;
+    global.cancelAnimationFrame = originalCancel;
+  }
+});
+
+
+test("console controller ignores a stale conversation after rapid Context selection", async () => {
+  const originalFrame = global.requestAnimationFrame;
+  const originalCancel = global.cancelAnimationFrame;
+  global.requestAnimationFrame = callback => { callback(); return 1; };
+  global.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  let slow = false;
+  let release;
+  const api = {
+    console: async () => ({ initial_context_id: "c1", nodes: [{ context_id: "c1" }, { context_id: "c2" }], edges: [] }),
+    facts: async () => ({ facts: [] }),
+    conversation: async (_loopId, contextId) => {
+      if (slow && contextId === "c1") await new Promise(resolve => { release = resolve; });
+      return { context_id: contextId, messages: [], range: { start: 0, end: 0 }, has_more: false };
+    },
+  };
+  const controller = ConsoleController.create({ api, store });
+  try {
+    await controller.load("l1");
+    store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1", revision: { revision_id: "r2" } }, { context_id: "c2" }], edges: [] });
+    slow = true;
+    const stale = controller.selectContext("c1");
+    const current = controller.selectContext("c2");
+    await current;
+    release();
+    await stale;
+    assert.equal(store.get().selectedContextId, "c2");
+    assert.equal(store.get().conversation.context_id, "c2");
+  } finally {
+    controller.destroy();
+    global.requestAnimationFrame = originalFrame;
+    global.cancelAnimationFrame = originalCancel;
+  }
+});
+
+
+test("console controller follows the fact run cursor and prepends older evidence", async () => {
+  const originalFrame = global.requestAnimationFrame;
+  const originalCancel = global.cancelAnimationFrame;
+  global.requestAnimationFrame = callback => { callback(); return 1; };
+  global.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  const beforeValues = [];
+  const api = {
+    console: async () => ({ initial_context_id: "c1", nodes: [{ context_id: "c1" }], edges: [] }),
+    conversation: async () => ({ context_id: "c1", revision: { revision_id: "r1" }, messages: [], range: { start: 0, end: 0 }, has_more: false }),
+    facts: async (_loopId, options) => {
+      beforeValues.push(options.before ?? null);
+      return options.before == null
+        ? { facts: [{ fact_id: "f2" }], range: { start: 1, end: 2 }, has_more: true, next_before: 1 }
+        : { facts: [{ fact_id: "f1" }], range: { start: 0, end: 1 }, has_more: false, next_before: null };
+    },
+  };
+  const controller = ConsoleController.create({ api, store });
+  try {
+    await controller.load("l1");
+    await controller.loadOlderFacts();
+    assert.deepEqual(beforeValues, [null, 1]);
+    assert.deepEqual(store.get().facts.facts.map(item => item.fact_id), ["f1", "f2"]);
+  } finally {
+    controller.destroy();
+    global.requestAnimationFrame = originalFrame;
+    global.cancelAnimationFrame = originalCancel;
+  }
+});
+
+
+test("console controller reloads authoritative facts for type and abnormal status filters", async () => {
+  const originalFrame = global.requestAnimationFrame;
+  const originalCancel = global.cancelAnimationFrame;
+  global.requestAnimationFrame = callback => { callback(); return 1; };
+  global.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  const requests = [];
+  const api = {
+    console: async () => ({ initial_context_id: "c1", nodes: [{ context_id: "c1" }], edges: [] }),
+    conversation: async () => ({ context_id: "c1", revision: { revision_id: "r1" }, messages: [], range: { start: 0, end: 0 }, has_more: false }),
+    facts: async (_loopId, options) => {
+      requests.push({ kind: options.kind ?? null, status: options.status ?? null, outcomeStatus: options.outcomeStatus ?? null });
+      return { facts: [], range: { start: 0, end: 0 }, has_more: false, next_before: null };
+    },
+  };
+  const controller = ConsoleController.create({ api, store });
+  try {
+    await controller.load("l1");
+    await controller.setFactFilter("test");
+    await controller.setFactStatus("failed");
+    assert.deepEqual(requests, [
+      { kind: null, status: null, outcomeStatus: null },
+      { kind: "test", status: null, outcomeStatus: null },
+      { kind: "test", status: null, outcomeStatus: "failed" },
+    ]);
+  } finally {
+    controller.destroy();
+    global.requestAnimationFrame = originalFrame;
+    global.cancelAnimationFrame = originalCancel;
+  }
+});
+
+
+test("console controller binds and disconnects native pagination and resize observers", () => {
+  const originals = {
+    frame: global.requestAnimationFrame,
+    cancel: global.cancelAnimationFrame,
+    intersection: global.IntersectionObserver,
+    resize: global.ResizeObserver,
+  };
+  global.requestAnimationFrame = callback => { callback(); return 1; };
+  global.cancelAnimationFrame = () => {};
+  const intersections = [];
+  const resizes = [];
+  global.IntersectionObserver = class {
+    constructor(callback, options) { this.callback = callback; this.options = options; this.disconnected = false; intersections.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  };
+  global.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; this.disconnected = false; resizes.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  };
+  const historySentinel = {};
+  const newerSentinel = {};
+  const factSentinel = {};
+  const transcript = {
+    dataset: { contextId: "c1" },
+    scrollTop: 0,
+    querySelector: selector => ({
+      "[data-loop-history-sentinel]": historySentinel,
+      "[data-loop-newer-sentinel]": newerSentinel,
+    })[selector] || null,
+  };
+  const factList = { querySelector: selector => selector === "[data-loop-fact-sentinel]" ? factSentinel : null };
+  const layout = { style: { gridTemplateColumns: "", removeProperty() {} }, getBoundingClientRect: () => ({ left: 0, width: 1000 }) };
+  const listeners = new Map();
+  const handle = {
+    addEventListener(type, callback) { listeners.set(type, callback); },
+    removeEventListener(type) { listeners.delete(type); },
+    setAttribute() {},
+    hasPointerCapture() { return false; },
+  };
+  const container = {
+    querySelector(selector) {
+      return ({
+        ".loop-console-main": layout,
+        "[data-loop-console-resizer]": handle,
+        "[data-loop-transcript]": transcript,
+        "[data-loop-fact-list]": factList,
+      })[selector] || null;
+    },
+  };
+  const store = ConsoleStore.create();
+  const controller = ConsoleController.create({ api: {}, store });
+  try {
+    controller.bind(container);
+    assert.equal(intersections.length, 3);
+    assert.equal(intersections[0].options.root, transcript);
+    assert.equal(intersections[1].options.root, transcript);
+    assert.equal(intersections[2].options.root, factList);
+    assert.equal(resizes.length, 1);
+    assert.equal(resizes[0].target, layout);
+  } finally {
+    controller.destroy();
+    assert.ok(intersections.every(observer => observer.disconnected));
+    assert.ok(resizes.every(observer => observer.disconnected));
+    global.requestAnimationFrame = originals.frame;
+    global.cancelAnimationFrame = originals.cancel;
+    global.IntersectionObserver = originals.intersection;
+    global.ResizeObserver = originals.resize;
+  }
+});
+
+
+test("portfolio, conversation and facts views expose selected Context without polluting message body", () => {
+  const manifest = { health: "observing", nodes: [{ context_id: "c1", title: "Tests", topic: "Testing", purpose: "Verify failures", status: "active", revision: { generation: 2 }, counts: { runs: 3 } }], edges: [] };
+  const map = PortfolioMap.render(manifest, "c1");
+  assert.match(map, /Testing/);
+  assert.match(map, /data-action="loop-select-context"/);
+  const state = { manifest, selectedContextId: "c1", interventionMode: "direct_context_message", messageFilter: "all", messageSearch: "", factFilter: "all", factScope: "current", conversation: { revision: { generation: 2 }, total: 2, has_more: false, messages: [{ index: 0, message: { role: "human", content: "Run tests" }, provenance: { source_kind: "delegated_patrol" } }, { index: 1, message: { id: "compressed-1", role: "human", content: "Prior summary", compression: { source: [{ id: "old-1", role: "tool", content: "large output" }] } } }] }, facts: { facts: [{ fact_id: "f1", context_id: "c1", kind: "test", status: "verified", title: "测试结果", summary: "12 passed", metrics: { passed: 12, failed: 0, skipped: 0, count_status: "exact" }, evidence: { message_id: "m1" } }] } };
+  const conversation = Conversation.render(state);
+  assert.match(conversation, /固定 Revision 历史会话/);
+  assert.match(conversation, /Patrol delegated/);
+  assert.match(conversation, />Run tests</);
+  assert.match(conversation, /data-action="loop-restore-compression"/);
+  assert.match(conversation, /data-context-id="c1" data-message-id="compressed-1"/);
+  const facts = Facts.render(state);
+  assert.match(facts, /12 passed/);
+});
+
+
+test("portfolio map renders every source edge for a multi-parent Context", () => {
+  const manifest = {
+    health: "observing",
+    nodes: [
+      { context_id: "implementation", topic: "Implementation", purpose: "Build", status: "active", counts: {} },
+      { context_id: "testing", topic: "Testing", purpose: "Verify", status: "active", counts: {} },
+      { context_id: "release", topic: "Release", purpose: "Synthesize", status: "active", counts: {} },
+    ],
+    edges: [
+      { source_context_id: "implementation", target_context_id: "release" },
+      { source_context_id: "testing", target_context_id: "release" },
+    ],
+  };
+  const html = PortfolioMap.render(manifest, "release");
+  assert.equal((html.match(/<path /g) || []).length, 2);
+  assert.match(html, /3<\/strong> 个 Context · 来源关系/);
+});
+
+
+test("portfolio node and conversation header render a shared descriptor only once", () => {
+  const descriptor = "建立一个可构建、可安装、可加载的 Obsidian 插件最小仓库骨架和测试基线";
+  const manifest = { health: "observing", nodes: [{ context_id: "c1", title: descriptor, topic: descriptor, purpose: descriptor, status: "active", revision: { generation: 1 }, counts: { runs: 1 } }], edges: [] };
+
+  const map = PortfolioMap.render(manifest, "c1");
+  assert.equal(map.split(descriptor).length - 1, 1, "拓扑图节点不得重复渲染同一段描述");
+  assert.doesNotMatch(map, /context-node-purpose/);
+
+  const state = { manifest, selectedContextId: "c1", interventionMode: "direct_context_message", messageFilter: "all", messageSearch: "", factFilter: "all", factScope: "current", conversation: { revision: { generation: 1 }, total: 1, has_more: false, messages: [] } };
+  const conversation = Conversation.render(state);
+  assert.equal(conversation.split(descriptor).length - 1, 1, "会话页头不得重复渲染同一段描述");
+  assert.match(conversation, /条消息/);
+
+  const distinct = PortfolioMap.render({ health: "observing", nodes: [{ context_id: "c2", topic: "Testing", purpose: "Verify failures", status: "active", counts: {} }], edges: [] }, "c2");
+  assert.doesNotMatch(distinct, /context-node-purpose/, "紧凑节点将目的保留在按需检查中");
+  const inspection = PatrolView.context({context_id:"c2"}, {title:"Testing",purpose:"Verify failures"}, "overview");
+  assert.match(inspection, /Verify failures/, "独立目的在概要检查中仍可访问");
+});
+
+
+test("portfolio map derives layers from cross-context edges and renders direction", () => {
+  const manifest = {
+    health: "observing",
+    nodes: [
+      { context_id: "primary", topic: "Primary execution", purpose: "Primary execution", status: "active", counts: {} },
+      { context_id: "derived", topic: "Derived work", purpose: "Derived work", status: "active", counts: {} },
+      { context_id: "isolated", topic: "Independent work", purpose: "Independent work", status: "active", counts: {} },
+    ],
+    edges: [
+      { source_context_id: "primary", target_context_id: "primary", target_revision_id: "rev-self" },
+      { source_context_id: "primary", target_context_id: "derived", target_revision_id: "rev-derived" },
+    ],
+  };
+  const html = PortfolioMap.render(manifest, "derived");
+
+  assert.equal((html.match(/data-edge-id=/g) || []).length, 1, "自环不得作为拓扑连线渲染");
+  assert.match(html, /<title>primary → rev-derived<\/title>/);
+  assert.match(html, /marker-end="url\(#portfolio-edge-arrow\)"/, "派生连线必须带方向标记");
+  const leftOf = id => {
+    const tag = new RegExp(`<button[^>]*data-context-id="${id}"[^>]*>`).exec(html)[0];
+    return Number(/left:(\d+)px/.exec(tag)[1]);
+  };
+  assert.ok(leftOf("derived") > leftOf("primary"), "横向派生层级必须严格深于来源");
+  assert.equal(leftOf("isolated"), leftOf("primary"), "不参与任何派生依赖的 Context 必须稳定落在根层");
+});
+
+
+test("distinct source revisions keep exact edges across repeated DOM reconciliation", () => {
+  const previousDocument = global.document;
+  const document = require("../../../../tests/helpers/test-dom.cjs").createDocument();
+  global.document = document;
+  const host = document.createElement("div");
+  const manifest = {
+    nodes: [{context_id:"A", title:"A"}, {context_id:"B", title:"B"}],
+    edges: ["A1", "A2"].map(source_revision_id => ({source_context_id:"A", source_revision_id, target_context_id:"B", target_revision_id:"B1"})),
+  };
+  try {
+    host.innerHTML = PortfolioMap.render(manifest);
+    for (let index = 0; index < 4; index++) {
+      assert.equal(PortfolioMap.reconcile(host, manifest), true);
+      const edges = host.querySelectorAll("path[data-edge-id]");
+      assert.equal(edges.length, 2);
+      assert.equal(new Set(edges.map(edge => edge.getAttribute("data-edge-id"))).size, 2);
+      assert.deepEqual(edges.map(edge => edge.querySelector("title").textContent).sort(), ["A1 → B1", "A2 → B1"]);
+    }
+    PortfolioMap.reconcile(host, {...manifest, edges:[manifest.edges[1]]});
+    assert.equal(host.querySelectorAll("path[data-edge-id]").length, 1);
+    assert.equal(host.querySelector("path[data-edge-id] title").textContent, "A2 → B1");
+  } finally { global.document = previousDocument; }
+});
+
+test("Observation distinguishes inventory pagination from source and history completeness", () => {
+  const summary = {
+    observation_id:"O1", round_number:1, availability:"available", evidence_visible:true,
+    frozen_at:"2026-10-10T00:00:00Z", previous_progress:{progress_id:"P0",item_count:0,history_complete:false},
+    sources:{total:1,complete:false}, lineage:{node_count:1,edge_count:0,complete:true},
+  };
+  const html = ObservationView.render(summary, {sources:{items:[{kind:"test",source_id:"S1"}],total:1,has_more:false}});
+  assert.match(html, /冻结来源覆盖：不完整/);
+  assert.match(html, /前序历史覆盖：不完整/);
+  assert.match(html, /来源关系覆盖：完整/);
+  assert.match(html, /当前冻结清单已读取 1 \/ 1 项/);
+  assert.doesNotMatch(html, /加载下一页/);
+  const legacy = ObservationView.render({...summary,availability:"legacy",sources:{total:0},previous_progress:{item_count:0},lineage:{node_count:0}});
+  assert.match(legacy, /冻结来源覆盖：未确认/);
+  assert.match(legacy, /前序历史覆盖：未确认/);
+  assert.match(legacy, /不使用当前 Progress 回填/);
+});
+
+test("api replays persisted SSE frames by cursor", async () => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('id: e8\nevent: RoundObserved\ndata: {"event_id":"e8","cursor":8,"type":"RoundObserved"}\n\n'));
+      controller.close();
+    },
+  });
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async () => ({ ok: true, body }));
+  const received = [];
+  const cursor = await api.stream("l1", 7, events => received.push(...events));
+  assert.equal(cursor, 8);
+  assert.equal(received[0].event_id, "e8");
+});
+
+
+test("loop view exposes every hard portfolio budget", () => {
+  const start = LoopView.render(null, { title: "Ship Focus", active_run: { run_id: "run-initial" } });
+  assert.match(start, /name="autonomousCompression" type="checkbox" checked/);
+  assert.match(start, /原文保留可恢复，授权可随时撤销/);
+  for (const field of ["maxRounds", "maxDurationSeconds", "maxModelCalls", "maxInputTokens", "maxOutputTokens", "maxRetries", "maxLanes", "maxContexts", "maxProviders", "maxNewLanesPerRound", "maxConcurrentRuns", "maxNoProgress"]) {
+    assert.match(start, new RegExp(`name="${field}"`));
+  }
+  assert.doesNotMatch(start, /disabled>授权 Patrol 并启动/);
+  const terminalStart = LoopView.render(null, { title: "Ship Focus", latest_direct_user_run: { run_id: "run-finished", status: "success" } });
+  assert.match(terminalStart, /run-finished（success）/);
+  assert.doesNotMatch(terminalStart, /disabled>授权 Patrol 并启动/);
+  const dashboard = LoopView.render({
+    snapshot: {
+      loop_id: "l1", status: "running", health: "observing", holder_id: "patrol:l1",
+      goal_revision: 1, authority_revision: 1, goal: { goal: "Ship Focus" },
+      usage: { rounds: 2, duration_seconds: 90, model_calls: 4, input_tokens: 512, output_tokens: 128, retries: 1, lanes: 3, contexts: 5, providers: 2 },
+      grant: { capabilities: ["continue_context"], context_scope: ["c1"], permission_scope: ["read"], delegable_gates: [], budgets: { max_rounds: 20, max_duration_seconds: 3600, max_model_calls: 200, max_input_tokens: 10000, max_output_tokens: 2000, max_retries: 4, max_lanes: 8, max_contexts: 16, max_providers: 4, max_new_lanes_per_round: 3, max_concurrent_runs: 4, max_no_progress: 3 } },
+    },
+    related: {},
+  });
+  for (const label of ["Rounds 2 / 20", "Duration 90 / 3600s", "Calls 4 / 200", "Input 512 / 10000", "Output 128 / 2000", "Retries 1 / 4", "Lanes 3 / 8", "Contexts 5 / 16", "Providers 2 / 4", "撤销 Patrol 授权"]) {
+    assert.match(dashboard, new RegExp(label));
+  }
+});
+
+test("loop view shows a connection failure separately from a running Loop", () => {
+  const base = {
+    snapshot: { loop_id: "l1", status: "running", health: "observing", goal_revision: 1, authority_revision: 1, usage: {}, grant: { budgets: {} } },
+    related: {},
+  };
+  const disconnected = LoopView.render({ ...base, connection: { status: "reconnecting", error: "HTTP 500" } });
+  assert.match(disconnected, /data-loop-status="running"/);
+  assert.match(disconnected, /Live 连接重试中：HTTP 500/);
+  const recovered = LoopView.render({ ...base, connection: { status: "live", error: null } });
+  assert.doesNotMatch(recovered, /loop-connection-status/);
+});
+
+test("loop view shows one active mission revision and labels legacy history", () => {
+  const html = LoopView.render({
+    snapshot: {
+      loop_id: "mission-history", status: "running", health: "observing", active_mission_revision: 2, goal_revision: 2, authority_revision: 3, usage: {},
+      mission: { revision: 2, outcome: "交付 Live Loop", boundaries: { in_scope: [], required_invariants: [], prohibited_actions: [] }, completion_checks: [{ check_id: "tests", claim: "测试通过", expected_evidence_kinds: ["test"] }] },
+      grant: { capabilities: [], context_scope: [], permission_scope: [], delegable_gates: [], budgets: {} },
+    },
+    related: { audit: { runs: [], mission_history: { active_revision: 2, revisions: [
+      { kind: "structured_mission", revision: 2, active: true, outcome: "交付 Live Loop" },
+      { kind: "legacy_goal_contract", revision: 1, active: false, goal: "旧目标", task_contract: "旧 Task Contract 原文" },
+    ] } } },
+  }, {}, { manifest: { nodes: [] } });
+  assert.match(html, /交付 Live Loop · Mission R2/);
+  assert.match(html, /tests/);
+  assert.match(html, /Mission R2 · 当前/);
+  assert.match(html, /旧版 Goal Contract R1/);
+  assert.match(html, /旧 Task Contract 原文/);
+  assert.equal((html.match(/· 当前/g) || []).length, 1);
+});
+
+test("loop view exposes autonomous compression status without injecting it into conversation", () => {
+  const html = LoopView.render({
+    snapshot: {
+      loop_id: "l-compression", status: "running", health: "resuming", goal_revision: 1, authority_revision: 1,
+      goal: { goal: "Long task" }, usage: {},
+      grant: { capabilities: ["apply_context_compression"], context_scope: ["context-1"], permission_scope: ["read"], delegable_gates: ["compression"], compression_policy: { version: 1 }, budgets: {} },
+    },
+    related: { audit: {
+      pending_decisions: [{ pending_decision_id: "pending-1", kind: "compression", status: "resolving", payload: { context_id: "context-1" } }],
+      decisions: [{ decision_id: "decision-1", rationale: "Keep this execution identity and remove obsolete debugging history." }],
+      compression_candidates: [{ candidate_id: "candidate-1", context_id: "context-1", status: "accepted", estimated_reduction: 1400, before_tokens: 2000, after_tokens: 600, protection_evidence: [{ reason: "current_direct_user_message", overlap: false }], source_ranges: [{ source_ids: ["m1", "m2"] }] }],
+      compression_resolutions: [{ resolution_id: "resolution-1", decision_id: "decision-1", run_id: "run-1", status: "resuming", actual_before_tokens: null, actual_after_tokens: null, actual_reduction: null }],
+    } },
+  }, {}, { manifest: { nodes: [] } });
+  assert.match(html, /Patrol Context 压缩 · 正在恢复 Run/);
+  assert.match(html, /预计减少 1400 tokens/);
+  assert.match(html, /等待稳定 checkpoint 证据/);
+  assert.match(html, /current_direct_user_message/);
+  assert.match(html, /Keep this execution identity/);
+  assert.match(html, /打开完整 Context 会话并查看\/恢复来源/);
+  assert.match(html, /允许 Patrol 自主压缩当前 Context/);
+  assert.doesNotMatch(html, /Delegated HumanMessage.*compression/s);
+});
+
+test("loop view labels checkpoint-derived compression usage as actual", () => {
+  const html = LoopView.render({
+    snapshot: {
+      loop_id: "l-compression", status: "running", health: "observing", goal_revision: 1, authority_revision: 1,
+      goal: { goal: "Long task" }, usage: {}, grant: { budgets: {} },
+    },
+    related: { audit: {
+      compression_candidates: [{ candidate_id: "candidate-1", context_id: "context-1", status: "accepted", estimated_reduction: 1400, before_tokens: 2000, after_tokens: 600, source_ranges: [{ source_ids: ["m1", "m2"] }] }],
+      compression_resolutions: [{ resolution_id: "resolution-1", status: "applied", actual_before_tokens: 1800, actual_after_tokens: 320, actual_reduction: 1480 }],
+    } },
+  }, {}, { manifest: { nodes: [] } });
+  assert.match(html, /实际减少 1480 tokens/);
+  assert.match(html, /1800 → 320/);
+  assert.doesNotMatch(html, /等待稳定 checkpoint 证据/);
+});
+
+
+test("loop view keeps long goals compact and terminal history has explicit exits", () => {
+  const longGoal = "修复 Teleport Kubernetes Service 中 kubectl exec 交互会话失败及相关 Forwarder 生命周期问题。".repeat(8);
+  const state = {
+    snapshot: {
+      loop_id: "terminal-loop",
+      status: "stopped",
+      health: "idle",
+      goal_revision: 1,
+      authority_revision: 1,
+      goal: { goal: longGoal, task_contract: "保留现有行为", acceptance_criteria: [{ criterion_id: "c1", text: "测试通过" }] },
+      usage: { rounds: 1, model_calls: 3, contexts: 1 },
+      grant: { budgets: { max_rounds: 20, max_model_calls: 150 } },
+    },
+    related: {},
+  };
+  const html = LoopView.render(state, {}, { manifest: { nodes: [{ context_id: "root" }] } });
+  assert.match(html, /<h2>Portfolio Map<\/h2>/);
+  assert.match(html, /<details class="loop-goal-disclosure">/);
+  assert.doesNotMatch(html, new RegExp(`<h2>${longGoal}`));
+  assert.match(html, /data-action="loop-exit"/);
+  assert.match(html, /data-action="loop-prepare-new"/);
+  assert.match(html, /退出不会删除审计记录/);
+});
+
+
+test("terminal conversation is read-only and a successor needs an unbound direct run", () => {
+  const manifest = { nodes: [{ context_id: "c1", title: "Primary", purpose: "Execute", status: "success", counts: {} }] };
+  const terminal = Conversation.render({
+    manifest,
+    selectedContextId: "c1",
+    terminal: true,
+    interventionMode: "direct_context_message",
+    messageFilter: "all",
+    messageSearch: "",
+    conversation: { messages: [], range: { start: 0 }, total: 0, has_more: false },
+  });
+  assert.match(terminal, /历史只读/);
+  assert.doesNotMatch(terminal, /id="loopInterventionForm"/);
+
+  const blocked = LoopView.render(null, { title: "Next", latest_direct_user_run: { run_id: "used", origin: "direct_user", loop_id: "old-loop" } });
+  assert.match(blocked, /旧 Run 已归属于历史 Loop/);
+  assert.match(blocked, /disabled>授权 Patrol 并启动/);
+  const ready = LoopView.render(null, { title: "Next", latest_direct_user_run: { run_id: "fresh", origin: "direct_user", loop_id: null } });
+  assert.match(ready, /fresh（unknown）/);
+  assert.doesNotMatch(ready, /disabled>授权 Patrol 并启动/);
+});
+
+test("option 3 renders committed Patrol activity and connection recovery without hiding the workspace", () => {
+  const state = {
+    snapshot: {
+      loop_id: "l1", status: "running", health: "observing", waiting_reason: null,
+      mission: { outcome: "交付 Live Loop", boundaries: {}, completion_checks: [] },
+      active_mission_revision: 1, goal_revision: 1, authority_revision: 1,
+      usage: { rounds: 12, contexts: 3 }, grant: { budgets: { max_rounds: 20 }, capabilities: [], context_scope: [], permission_scope: [], delegable_gates: [] },
+    },
+    related: {},
+    connection: { status: "resyncing" },
+    live: {
+      round: { state: { number: 12 } },
+      patrol_session: { state: { phase: "curating", status: "running", safe_summary: "向 3 个 Curator 分派证据检查", wait_reason: null } },
+      curators: {
+        a: { updated_sequence: 5, state: { state: "analyzing", scope: "testing", safe_summary: "检查失败测试" } },
+        b: { updated_sequence: 4, state: { state: "reading", scope: "implementation", safe_summary: "读取 workspace" } },
+      },
+      activity_timeline: [{ event_id: "e5", entity_type: "curator", kind: "curator.analyzing", summary: "Testing Curator 正在分析", occurred_at: "2026-09-19T10:31:07Z" }],
+    },
+  };
+  const html = LoopView.render(state, {}, { manifest: { nodes: [], edges: [] }, facts: { facts: [] }, graphActivity: [] });
+  assert.match(html, /patrol-activity-rail/);
+  assert.match(html, /向 3 个 Curator 分派证据检查/);
+  assert.match(html, /查看记录/);
+  assert.match(html, /Testing Curator 正在分析/);
+  assert.match(html, /重同步/);
+});
+
+test("Curator activity formats structured scopes and escapes labels", () => {
+  const html = LoopView.render({
+    snapshot: { loop_id: "l1", status: "running" },
+    live: { curators: {
+      root: { entity_id: "root", updated_sequence: 4, state: { state: "reading", scope: { mode: "bootstrap", context_id: "context-root", revision_id: "rev-root", role: null } } },
+      lane: { entity_id: "lane", updated_sequence: 3, state: { state: "analyzing", scope: { mode: "lane", lane_id: "lane-tests", context_id: "context-tests", revision_id: "rev-tests", role: "<Testing>" } } },
+      legacy: { entity_id: "legacy", updated_sequence: 2, state: { state: "reading", scope: "implementation" } },
+      empty: { entity_id: "fallback", updated_sequence: 1, state: { state: "queued", scope: {} } },
+    } },
+  });
+  assert.match(html, /<strong>初始 Context · context-root<\/strong>/);
+  assert.match(html, /<strong>&lt;Testing&gt; · lane-tests<\/strong>/);
+  assert.match(html, /<strong>implementation<\/strong>/);
+  assert.match(html, /<strong>fallback<\/strong>/);
+  assert.doesNotMatch(html, /\[object Object\]|<Testing>/);
+});
+
+test("index preparation shows the current frozen observation stage and excludes stale progress", () => {
+  const progress = (observationId, summary) => ({ event_id: summary, kind: "semantic_index.progress", entity_type: "loop_activity",
+    summary, occurred_at: "2026-10-17T01:00:00Z", detail: { observation_id: observationId, round_id: "r1", index_phase: "local", status: "running" } });
+  const state = { snapshot: { loop_id: "l1", status: "running" }, live: {
+    round: { entity_id: "r1", state: { number: 1 } },
+    patrol_session: { state: { phase: "dispatching_curators", observation_id: "o1", safe_summary: "准备分派 Curator" } },
+    activity_timeline: [progress("o1", "局部投影 · 局部 2/4 段"), progress("old", "旧版本进度")],
+  } };
+  const html = LoopView.render(state);
+  assert.match(html, /准备上下文索引/);
+  assert.match(html, /<strong>局部投影 · 局部 2\/4 段<\/strong>/);
+  state.live.activity_timeline[0].detail.status = "ready";
+  assert.match(LoopView.render(state), /<strong>准备分派 Curator<\/strong>/);
+});
+
+test("first round displays committed Context Run activity before Patrol exists", () => {
+  const html = LoopView.render({
+    snapshot: {
+      loop_id: "loop-first", status: "running", health: "waiting_runs",
+      mission: { outcome: "测试", boundaries: {}, completion_checks: [] },
+      goal_revision: 1, authority_revision: 1,
+      usage: { rounds: 0, contexts: 1 },
+      grant: { budgets: { max_rounds: 5 }, capabilities: [], context_scope: [], permission_scope: [], delegable_gates: [] },
+    },
+    related: {},
+    connection: { status: "reconnecting" },
+    live: {
+      round: { state: { number: 1 } },
+      patrol_session: null,
+      runs: { "run-1": { entity_id: "run-1", updated_sequence: 4, state: { status: "running", last_activity_at: "2026-09-27T11:38:55Z", last_activity_summary: "pytest 正在执行" } } },
+      activity_timeline: [{ event_id: "e1", kind: "context.tool.started", entity_type: "tool", summary: "pytest 正在执行", occurred_at: "2026-09-27T11:38:55Z", detail: { run_id: "run-1" } }],
+      curators: {}, expansions: {},
+    },
+  }, {}, { manifest: { nodes: [{ context_id: "c1" }] } });
+  assert.match(html, /Context Run · running/);
+  assert.match(html, /Round 1/);
+  assert.match(html, /pytest 正在执行/);
+  assert.match(html, /最近确认活动/);
+  assert.match(html, /重连中/);
+});
+
+test("connection heartbeat does not reset the five minute Run inactivity warning", () => {
+  const originalNow = Date.now;
+  Date.now = () => Date.parse("2026-09-27T11:45:00Z");
+  try {
+    const html = LoopView.render({
+      snapshot: {
+        loop_id: "loop-idle", status: "running", health: "waiting_runs",
+        mission: { outcome: "测试", boundaries: {}, completion_checks: [] },
+        goal_revision: 1, authority_revision: 1, usage: { rounds: 1, contexts: 1 },
+        grant: { budgets: { max_rounds: 5 }, capabilities: [], context_scope: [], permission_scope: [], delegable_gates: [] },
+      },
+      related: {}, connection: { status: "live" },
+      live: {
+        round: { state: { number: 1 } }, patrol_session: null,
+        runs: { "run-1": { entity_id: "run-1", updated_sequence: 3, state: { status: "running", last_activity_at: "2026-09-27T11:38:55Z", last_activity_summary: "模型已完成一次响应" } } },
+        activity_timeline: [{ event_id: "heartbeat", entity_type: "transport", kind: "transport.heartbeat", summary: "connected", occurred_at: "2026-09-27T11:44:59Z" }],
+        curators: {}, expansions: {},
+      },
+    }, {}, { manifest: { nodes: [{ context_id: "c1" }] } });
+    assert.match(html, /已 6 分钟无新的已确认活动/);
+    assert.match(html, /实时/);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("Mission delivery status distinguishes pending, authorized, delivered and concrete blocker", () => {
+  const base = {
+    loop_id: "loop-mission", status: "running", health: "observing",
+    mission: { outcome: "交付插件", boundaries: {}, completion_checks: [] },
+    active_mission_revision: 2, goal_revision: 2, authority_revision: 1,
+    usage: { rounds: 1, contexts: 1 },
+    grant: { budgets: { max_rounds: 50 }, capabilities: [], context_scope: [], permission_scope: [], delegable_gates: [] },
+  };
+  const render = mission_delivery => LoopView.render({ snapshot: { ...base, mission_delivery }, related: {} }, {}, { manifest: { nodes: [], edges: [] }, facts: { facts: [] } });
+  assert.match(render({ state: "pending", mission_revision: 2 }), /待交付 Primary Context/);
+  assert.match(render({ state: "authorized", mission_revision: 2 }), /已授权，等待启动 Run/);
+  assert.match(render({ state: "delivered", mission_revision: 2, run_id: "run-2" }), /已交付并启动 Run/);
+  const blocked = render({ state: "blocked", mission_revision: 2, reason: "continue_context_not_authorized" });
+  assert.match(blocked, /交付受阻/);
+  assert.match(blocked, /continue_context_not_authorized/);
+  assert.doesNotMatch(blocked, /请用户重新说明目标/);
+});
+
+test("option 3 shows three simultaneous Context states and real directive causality", () => {
+  const manifest = {
+    health: "observing",
+    nodes: [
+      { context_id: "c1", title: "Implementation", status: "active", latest_run: { run_id: "r1", status: "running", origin: "patrol", input_tokens: 10, output_tokens: 5 }, counts: {} },
+      { context_id: "c2", title: "Testing", status: "active", latest_run: { run_id: "r2", status: "pending", origin: "patrol", input_tokens: 20, output_tokens: 7 }, counts: {} },
+      { context_id: "c3", title: "Review", status: "active", latest_run: { run_id: "r3", status: "success", origin: "user", input_tokens: 5, output_tokens: 3 }, counts: {} },
+    ],
+    edges: [],
+  };
+  const html = PortfolioMap.render(manifest, "c2", [{ id: "d1", state: "delivered", origin: "patrol", target_context_id: "c2", run: { status: "running" } }]);
+  for (const status of ["执行中", "待执行", "有运行结果"]) assert.ok(html.includes(status), status);
+  assert.equal((html.match(/class="portfolio-context-node/g) || []).length, 3);
+  assert.match(html, /data-directive-id="d1"/);
+  assert.match(html, /directive-path is-delivered is-active/);
+});
+
+test("option 3 conversation causality and facts use stable committed identities", () => {
+  const conversation = Conversation.render({
+    manifest: { nodes: [{ context_id: "c1", title: "Testing", topic: "Testing", purpose: "Verify", status: "active", counts: {} }] },
+    selectedContextId: "c1",
+    conversation: { messages: [], range: { start: 0, end: 0 }, total: 0 },
+    causality: [{ entity_type: "directive", kind: "directive.authorized", summary: "Kernel 已授权" }],
+    messageFilter: "all", messageSearch: "", interventionMode: "direct_context_message",
+  });
+  const facts = Facts.render({ facts: { facts: [{ fact_id: "f1", revision: 3, context_id: "c1", kind: "test", status: "verified", title: "Regression", summary: "18 passed" }] }, factFilter: "all", factStatus: "all", factScope: "all" });
+  assert.match(conversation, /Live causality/);
+  assert.match(conversation, /Kernel 已授权/);
+  assert.match(facts, /data-fact-id="f1"/);
+  assert.match(facts, /data-fact-revision="3"/);
+});

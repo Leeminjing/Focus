@@ -34,7 +34,7 @@
 
 ## 启动准备与耗时记录
 
-安装及 `focus update` 安装依赖后，通过 `desktop/startup-runtime.cjs --prepare <python> <home>`
+安装及 `focus update` 安装依赖后，通过 `desktop/src/main/startup-runtime.cjs --prepare <python> <home>`
 检查 Python 桌面依赖、Git 和 Docker Compose，并保存已经确认的 Python 绝对路径。
 源码开发直接启动 Electron 时，首次启动自动完成同样的准备。
 
@@ -98,7 +98,7 @@ ready 并退出（已提前迁移测试库，关闭自动 Loop 调度，使用�
 验证命令：
 
 ```powershell
-node --test desktop/startup-runtime.test.cjs desktop/startup-ui.test.cjs desktop/startup-lifecycle.test.cjs desktop/managed-distribution.test.cjs desktop/update-lock.test.cjs desktop/bootstrap-loading.test.cjs desktop/composer-draft.test.cjs desktop/desktop-patrol-host.test.cjs desktop/window-material.test.cjs
+node --test desktop/src/main/startup-runtime.test.cjs desktop/tests/integration/startup-ui.test.cjs desktop/tests/integration/startup-lifecycle.test.cjs desktop/tests/integration/managed-distribution.test.cjs desktop/tests/integration/update-lock.test.cjs desktop/tests/integration/bootstrap-loading.test.cjs desktop/src/renderer/features/conversation/composer-draft.test.cjs desktop/src/main/desktop-patrol-host.test.cjs desktop/src/main/window-material.test.cjs
 $env:PYTHONPATH = "$PWD/backend/packages/harness;$PWD"
 python -m pytest backend/tests/test_desktop_startup_database.py -q
 ```
@@ -107,7 +107,7 @@ python -m pytest backend/tests/test_desktop_startup_database.py -q
 Patrol、按需工作台和第二实例；数据库测试使用独立 PostgreSQL 测试库，验证真实迁移后
 head 检查、空库/多头、连接拒绝及读取 revision 图时不加载桌面后端。
 
-额外运行 `desktop/f20-architecture-guard.test.cjs` 时，现有 HTML 脚本版本号与其硬编码
+额外运行 `desktop/tests/integration/f20-architecture-guard.test.cjs` 时，现有 HTML 脚本版本号与其硬编码
 断言不一致而失败。使用 `git show HEAD:<file>` 的原始测试与源码也复现相同断言失败，
 确认早于本次修改；本轮未调整该前端断言。
 
@@ -126,7 +126,7 @@ localStorage。`FOCUS_ELECTRON_USER_DATA` 可显式指定该用户数据目录�
 回归命令：
 
 ```powershell
-node --test desktop/main-request-storage.test.cjs desktop/task-run-operations.test.cjs desktop/app-main-retry.test.cjs
+node --test desktop/src/main/main-request-storage.test.cjs desktop/src/renderer/features/conversation/task-run-operations.test.cjs desktop/src/renderer/app/app-main-retry.test.cjs
 ```
 
 测试运行真实 app.js 发送入口、preload 桥和临时磁盘仓库；模拟跨端口重启、回执丢失与投递中

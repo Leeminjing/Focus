@@ -14,7 +14,7 @@
 
 后端入口为 `POST /desktop/api/tasks/{task_id}/main/inputs`，接受 `mode`、可选 `target_run_id` 和 `run: MainRunCreate`，并要求 `Idempotency-Key`。GET 同路径读取状态，DELETE `/{input_id}` 撤回尚未启动的队列消息。
 
-验证：`python -m pytest backend/tests/test_conversation_inputs.py -q`、`node --test desktop/conversation-inputs.test.cjs`、`node desktop/conversation-inputs.e2e.cjs`。
+验证：`python -m pytest backend/tests/test_conversation_inputs.py -q`、`node --test desktop/src/renderer/features/conversation/conversation-inputs.test.cjs`、`node desktop/tests/e2e/conversation-inputs.e2e.cjs`。
 
 2026-10-18 验证记录：
 

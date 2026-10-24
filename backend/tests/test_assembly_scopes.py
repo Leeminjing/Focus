@@ -110,7 +110,7 @@ def _assert_windows_ui(http, workspace_a, workspace_b, path_b, tmp_path):
     env.pop("ELECTRON_RUN_AS_NODE", None)
     with ASGIHTTPBridge(http, headers=SESSION) as bridge:
         env["FOCUS_TASK_REAL_URL"] = bridge.url
-        result = subprocess.run([str(electron), str(root / "desktop/assembly-scopes.e2e.cjs")], cwd=root,
+        result = subprocess.run([str(electron), str(root / "desktop/tests/e2e/assembly-scopes.e2e.cjs")], cwd=root,
                                 env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "ASSEMBLY_SCOPES_UI_PASS" in result.stdout

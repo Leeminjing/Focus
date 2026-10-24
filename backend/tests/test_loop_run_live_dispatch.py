@@ -471,7 +471,7 @@ def test_one_run_reaches_live_sse_and_real_electron_before_settlement(tmp_path: 
             env["FOCUS_LOOP_E2E_RESULT_FILE"] = str(result_path)
             desktop_log = (tmp_path / "desktop.log").open("w", encoding="utf-8")
             desktop = subprocess.Popen(
-                [str(electron.resolve()), str(repo / "desktop" / "loop-first-round-ui.e2e.cjs"), str(screenshot)],
+                [str(electron.resolve()), str(repo / "desktop" / "tests/e2e/loop-first-round-ui.e2e.cjs"), str(screenshot)],
                 cwd=repo, env=env, stdout=desktop_log, stderr=subprocess.STDOUT,
             )
 

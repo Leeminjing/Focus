@@ -228,7 +228,7 @@ def test_parallel_contexts_real_run_sse_and_browser(client, tmp_path, monkeypatc
         with ASGIHTTPBridge(http, headers=SESSION, traffic=traffic) as bridge:
             env["FOCUS_TASK_REAL_URL"] = bridge.url
             print(f"REAL_PREVIEW_URL={bridge.url}", flush=True)
-            result = subprocess.run([str(electron), str(repo / "desktop/running-context-real.e2e.cjs")], cwd=repo, env=env,
+            result = subprocess.run([str(electron), str(repo / "desktop/tests/e2e/running-context-real.e2e.cjs")], cwd=repo, env=env,
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=110)
             assert result.returncode == 0, result.stdout + result.stderr + str(traffic[-30:])
             ui = json.loads(result_file.read_text(encoding="utf-8"))

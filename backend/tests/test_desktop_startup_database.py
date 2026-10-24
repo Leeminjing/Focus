@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, text
 
 
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("desktop_database_state", ROOT / "desktop/database-state.py")
+spec = importlib.util.spec_from_file_location("desktop_database_state", ROOT / "desktop/scripts/database-state.py")
 database_state = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(database_state)
 

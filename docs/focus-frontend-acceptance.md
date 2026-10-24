@@ -121,8 +121,8 @@ TaskProgress 精确历史参数、事实 outcome_status 过滤和统一当前脱
 $env:PYTHONPATH = Join-Path (Get-Location) 'backend/packages/harness'
 $env:PYTHONIOENCODING = 'utf-8'
 python -m pytest backend/tests/test_observation_inspection.py backend/tests/test_frontend_migration_real.py backend/tests/test_frontend_task_real.py -q -p no:cacheprovider --basetemp .tmp-focus-frontend-review
-node --test desktop/composer-draft.test.cjs desktop/access-approval.test.cjs desktop/run-material-ui.test.cjs desktop/workspace-patrol-page.test.cjs desktop/f20-architecture-guard.test.cjs
-node --test desktop/i18n.test.cjs desktop/material-grouping.test.cjs desktop/context-curator-presentation.test.cjs desktop/loop-successor-view.test.cjs desktop/loop-authorization-error.test.cjs
+node --test desktop/src/renderer/features/conversation/composer-draft.test.cjs desktop/src/renderer/features/conversation/access-approval.test.cjs desktop/src/renderer/features/materials/run-material-ui.test.cjs desktop/tests/integration/workspace-patrol-page.test.cjs desktop/tests/integration/f20-architecture-guard.test.cjs
+node --test desktop/src/renderer/shared/i18n/i18n.test.cjs desktop/src/renderer/features/materials/material-grouping.test.cjs desktop/src/renderer/features/context/context-curator-presentation.test.cjs desktop/src/renderer/features/loop/loop-successor-view.test.cjs desktop/src/renderer/features/loop/loop-authorization-error.test.cjs
 openspec validate refactor-focus-patrol-first-frontend --strict
 ```
 

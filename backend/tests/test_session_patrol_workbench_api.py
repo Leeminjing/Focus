@@ -489,7 +489,7 @@ def test_electron_workbench_with_actual_api_sources_and_deployment(client, tmp_p
     env = dict(os.environ); env.pop("ELECTRON_RUN_AS_NODE", None)
     env.update(FOCUS_PATROL_TEST_URL=f"http://127.0.0.1:{bridge.server_port}", FOCUS_PATROL_TEST_FIXTURE=str(fixture))
     try:
-        result = subprocess.run(["node", str(root / "desktop/node_modules/electron/cli.js"), str(root / "desktop/patrol-workbench-api.e2e.cjs")], cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        result = subprocess.run(["node", str(root / "desktop/node_modules/electron/cli.js"), str(root / "desktop/tests/e2e/patrol-workbench-api.e2e.cjs")], cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         assert result.returncode == 0, result.stdout + result.stderr
         assert '"definition_edit":true' in result.stdout and len(requests) == 1
     finally:

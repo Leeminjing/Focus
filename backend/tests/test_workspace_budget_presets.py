@@ -60,7 +60,7 @@ def test_public_catalog_and_offline_ui_fixture_match():
     response = TestClient(app).get("/desktop/api/agent-loops/budget-presets")
     assert response.status_code == 200
     assert response.json() == {"default": "normal", "presets": PRESETS}
-    fixture = Path(__file__).parents[2] / "desktop" / "workspace-patrol-budget-fixture.cjs"
+    fixture = Path(__file__).parents[2] / "desktop" / "tests/fixtures/workspace-patrol-budget-fixture.cjs"
     completed = subprocess.run(["node", "-e", "process.stdout.write(JSON.stringify(require(process.argv[1])))", str(fixture)], capture_output=True, encoding="utf-8", check=True)
     assert json.loads(completed.stdout) == response.json()
 

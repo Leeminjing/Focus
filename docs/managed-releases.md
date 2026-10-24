@@ -15,12 +15,12 @@ The README bootstrap URLs download the `install.ps1` / `install.sh` assets of th
 2. Run the release transaction tests and the disposable PostgreSQL drill. On Windows:
 
    ```powershell
-   node --test desktop/managed-update.test.cjs desktop/managed-distribution.test.cjs desktop/update-lock.test.cjs desktop/startup-ui.test.cjs
+   node --test desktop/tests/integration/managed-update.test.cjs desktop/tests/integration/managed-distribution.test.cjs desktop/tests/integration/update-lock.test.cjs desktop/tests/integration/startup-ui.test.cjs
    $env:FOCUS_UPDATE_POSTGRES_TEST = '1'
-   node --test desktop/managed-update-postgres.test.cjs
+   node --test desktop/tests/integration/managed-update-postgres.test.cjs
    ```
 
-   On macOS use `FOCUS_UPDATE_POSTGRES_TEST=1 node --test desktop/managed-update-postgres.test.cjs`. The drill requires Docker and an installed desktop Python environment (`FOCUS_TEST_PYTHON` can select it). It creates a uniquely named disposable PostgreSQL container, applies real migrations, checks the real Gateway, and restores Context, Revision and run rows after destructive schema changes. It never uses the desktop database.
+   On macOS use `FOCUS_UPDATE_POSTGRES_TEST=1 node --test desktop/tests/integration/managed-update-postgres.test.cjs`. The drill requires Docker and an installed desktop Python environment (`FOCUS_TEST_PYTHON` can select it). It creates a uniquely named disposable PostgreSQL container, applies real migrations, checks the real Gateway, and restores Context, Revision and run rows after destructive schema changes. It never uses the desktop database.
 
 3. On both Windows and macOS, accept a clean install and an upgrade from the previous stable release in a disposable OS account. Keep a Context, an immutable Revision, and run history in the old installation and verify them after success and injected migration/health failures. Include a forced termination after migration, followed by `focus update` to recover. Confirm that a direct Electron launch is refused while updating.
 4. Create the `vX.Y.Z` tag on the accepted commit and a draft GitHub Release. Attach that commit's `install.ps1` and `install.sh`. Publish as the latest stable release only after the OS acceptance checks pass. Do not move an existing tag or publish a prerelease as stable.

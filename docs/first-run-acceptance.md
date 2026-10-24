@@ -37,11 +37,11 @@
 - `backend/tests/test_model_settings.py`：仅轮换凭据后，用真实模型工厂检查每个共享条目取得新 Key。
 - `backend/tests/test_model_setup.py`：真实 SDK 请求序列化与策展引擎，HTTP 传输使用合成响应；覆盖 Chat Completions / Responses 及三种输出方式、故障诊断、脱敏和保存回滚。
 - `backend/tests/test_model_settings_api.py`：真实 Gateway 与隔离 PostgreSQL，验证缺失/占位凭据和损坏模型目录的启动、读取和修复。联网能力在上一组测试中验证。
-- `desktop/model-settings-ui.test.cjs`：自动打开模型设置、预选编辑条目、保存结果与失败提示、重复刷新保留未保存密钥。
-- `desktop/desktop-patrol-host.test.cjs`、`desktop/first-run-settings.test.cjs`、`desktop/desktop-patrol-refresh.test.cjs`：首次路由、验证失败门禁、中断恢复、取消目录选择后的重试与第一次显式发送。
-- `desktop/first-run-ui.test.cjs`：真实 Electron 加载生产工作台、preload 和机器人面板，经隔离 HTTP 验证失败/成功及目录取消/重选后，走到第一次发送；不使用真实 Provider 或系统目录选择器。
-- `desktop/model-settings-save.test.cjs`：默认选择互斥与取消恢复、按来源保留和提交密钥、共享变量、保存失败重试与删除清理。
-- `desktop/model-setup-ui.test.cjs`：简化输入、高级修复、三项进度、只验证重试、网络中断和显式开始入口。
+- `desktop/tests/integration/model-settings-ui.test.cjs`：自动打开模型设置、预选编辑条目、保存结果与失败提示、重复刷新保留未保存密钥。
+- `desktop/src/main/desktop-patrol-host.test.cjs`、`desktop/tests/integration/first-run-settings.test.cjs`、`desktop/src/renderer/features/patrol/companion/desktop-patrol-refresh.test.cjs`：首次路由、验证失败门禁、中断恢复、取消目录选择后的重试与第一次显式发送。
+- `desktop/tests/integration/first-run-ui.test.cjs`：真实 Electron 加载生产工作台、preload 和机器人面板，经隔离 HTTP 验证失败/成功及目录取消/重选后，走到第一次发送；不使用真实 Provider 或系统目录选择器。
+- `desktop/tests/integration/model-settings-save.test.cjs`：默认选择互斥与取消恢复、按来源保留和提交密钥、共享变量、保存失败重试与删除清理。
+- `desktop/tests/integration/model-setup-ui.test.cjs`：简化输入、高级修复、三项进度、只验证重试、网络中断和显式开始入口。
 
 ## 文件阅读与回答链接
 
@@ -55,4 +55,4 @@
 
 来源投影只读取已提交 revision 的谱系和服务端 Run，不采信正文自行声明的文件来源。谱系查询每页缓存，并限制深度 32、来源版本 64；超限同样显示来源不可验证。
 
-自动化覆盖：`desktop/artifact-drawer.test.cjs` 的二进制 PDF 入口回归、`desktop/desktop-patrol-refresh.test.cjs` 的正文链接和失败提示、`desktop/desktop-patrol-ui.test.cjs` 的真实 Electron 翻页/中文空格链接/原生操作、`backend/tests/test_conversation_file_sources.py` 的跨执行与派生来源，以及 `backend/tests/test_file_link_identity.py`、`backend/tests/test_file_preview.py` 的实际路径与版本校验。Electron 使用隔离 HTTP fixture；它不替代安装包的真实文件验收。
+自动化覆盖：`desktop/src/renderer/features/files/artifact-drawer.test.cjs` 的二进制 PDF 入口回归、`desktop/src/renderer/features/patrol/companion/desktop-patrol-refresh.test.cjs` 的正文链接和失败提示、`desktop/tests/integration/desktop-patrol-ui.test.cjs` 的真实 Electron 翻页/中文空格链接/原生操作、`backend/tests/test_conversation_file_sources.py` 的跨执行与派生来源，以及 `backend/tests/test_file_link_identity.py`、`backend/tests/test_file_preview.py` 的实际路径与版本校验。Electron 使用隔离 HTTP fixture；它不替代安装包的真实文件验收。

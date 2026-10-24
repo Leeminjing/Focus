@@ -15,7 +15,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[3]
-DESKTOP_DIR = ROOT / "desktop"
+DESKTOP_DIR = ROOT / "desktop" / "src" / "renderer"
 
 
 def mount_desktop(app) -> None:

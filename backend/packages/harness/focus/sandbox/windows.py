@@ -231,11 +231,11 @@ class WindowsAclBackend:
 
     @staticmethod
     def _default_runner() -> Path:
-        return Path(__file__).resolve().parents[5] / "desktop" / "windows-sandbox-run.mjs"
+        return Path(__file__).resolve().parents[5] / "desktop" / "src/main/windows-sandbox-run.mjs"
 
     @staticmethod
     def _default_native_module() -> Path:
-        return Path(__file__).resolve().parents[5] / "desktop" / "windows-sandbox" / "win32.mjs"
+        return Path(__file__).resolve().parents[5] / "desktop" / "src/main/windows-sandbox" / "win32.mjs"
 
     @staticmethod
     def _default_koffi_package() -> Path:
@@ -243,7 +243,7 @@ class WindowsAclBackend:
 
     @staticmethod
     def _default_grant_helper() -> Path:
-        return Path(__file__).resolve().parents[5] / "desktop" / "windows-sandbox-grant.mjs"
+        return Path(__file__).resolve().parents[5] / "desktop" / "src/main/windows-sandbox-grant.mjs"
 
     @staticmethod
     def _result(

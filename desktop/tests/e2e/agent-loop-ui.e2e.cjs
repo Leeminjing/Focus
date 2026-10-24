@@ -1,0 +1,238 @@
+/*
+ * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程、终止态退出与后继 Loop 激活回归。
+ * 输入为确定性 Loop/Console API、真实 index.html/app.js 与结构化 Mission 表单动作；输出为 Context 图、完整会话、
+ * 三类介入、自主压缩阈值到 resume 后续轮次、来源恢复、恢复重连、类型化等待按钮响应、用户确认 Mission 修订、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
+ * 完整交互并检查请求与 DOM，并执行停止 Loop、在同一 Context 发送新直接用户消息、授权和观察后继 Loop；设置 `FOCUS_AGENT_LOOP_SCREENSHOT` 时输出真实页面截图供设计 QA 使用。
+ * 示例：`npx electron agent-loop-ui.e2e.cjs`。
+ * 切页恢复断言等待权威 Live snapshot 应用完成；DOM 出现只代表兼容视图就绪，不代表游标同步完成。
+ * 用户原文双提交只受理一次，accepted 未冒充 Run，重绘后的当前表单成功清空。
+ */
+"use strict";
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { app, BrowserWindow } = require("electron");
+
+const userData = path.join(os.tmpdir(), `focus-agent-loop-ui-${process.pid}`);
+fs.mkdirSync(userData, { recursive: true });
+app.setPath("userData", userData);
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("no-sandbox");
+
+async function waitFor(win, expression, label) {
+  await win.webContents.executeJavaScript(`new Promise(async (resolve, reject) => {
+    for (let count = 0; count < 250; count += 1) {
+      if (${expression}) return resolve();
+      await new Promise(next => setTimeout(next, 20));
+    }
+    reject(new Error(${JSON.stringify(label)}));
+  })`);
+}
+
+async function run() {
+  const win = new BrowserWindow({
+    show: Boolean(process.env.FOCUS_AGENT_LOOP_SCREENSHOT),
+    width: 1440,
+    height: 960,
+    webPreferences: {
+      preload: path.join(__dirname, "../fixtures/agent-loop-test-preload.cjs"),
+      contextIsolation: false,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: false,
+    },
+  });
+  win.webContents.on("console-message", (_event, _level, message) => console.log(`renderer: ${message}`));
+  win.webContents.on("preload-error", (_event, preloadPath, error) => console.error(`preload-error ${preloadPath}: ${error.stack || error}`));
+  await win.loadFile(path.join(__dirname, "../../src/renderer/index.html"));
+  await waitFor(win, "typeof openLoopView === 'function' && Boolean(state.activeTaskId)", "Desktop 初始化超时");
+
+  const started = await win.webContents.executeJavaScript(`(async () => {
+    state.activeTaskId = 'root';
+    await hydrateActive('root');
+    await openLoopView();
+    const form = document.querySelector('#agentLoopStartForm');
+    form.querySelector('[data-mission-outcome]').value = '交付 Context-governed Agent Loop';
+    form.querySelector('[data-mission-boundary="required_invariants"]').value = '保持单 Patrol 权威';
+    form.querySelector('[data-check-claim]').value = '多 Context 可并行推进并通过完整回归';
+    form.elements.maxRounds.value = '80';
+    form.elements.maxModelCalls.value = '300';
+    form.elements.maxLanes.value = '12';
+    form.elements.maxContexts.value = '24';
+    form.elements.maxProviders.value = '5';
+    form.elements.maxConcurrentRuns.value = '6';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && !document.querySelector('.loop-dashboard')?.textContent.includes('压缩已应用'); count += 1) await new Promise(next => setTimeout(next, 20));
+    return { body: window.__agentLoopTest.startBody, text: document.querySelector('.loop-dashboard')?.textContent || '', stored: localStorage.getItem('focus-agent-loop:root') };
+  })()`);
+  if (!started.stored || started.body?.initial_run_id !== "run-initial" || started.body?.budgets?.max_contexts !== 24 || started.body?.budgets?.max_providers !== 5 || started.body?.budgets?.max_model_calls !== 300) throw new Error(`启动或预算契约失败: ${JSON.stringify(started)}`);
+  for (const text of ["round-12", "observing", "继续实现", "测试与故障分析", "架构审查", "需求偏航检查", "Patrol delegated", "暂停修改代码", "Input 14192", "Output 2304", "Retries 2", "Contexts 5 / 24", "Providers 2 / 5", "撤销 Patrol 授权"]) if (!started.text.includes(text)) throw new Error(`Loop 控制台缺少 ${text}`);
+  const compression = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('[data-action="loop-select-context"][data-context-id="root"]').click();
+    for (let count = 0; count < 150 && !document.querySelector('[data-action="loop-restore-compression"]'); count += 1) await new Promise(next => setTimeout(next, 20));
+    const before = document.querySelector('.loop-dashboard')?.textContent || '';
+    document.querySelector('[data-action="loop-restore-compression"]').click();
+    for (let count = 0; count < 150 && window.__agentLoopTest.restores.length === 0; count += 1) await new Promise(next => setTimeout(next, 20));
+    for (let count = 0; count < 150 && (document.querySelector('[data-action="loop-restore-compression"]') || document.querySelectorAll('[data-loop-transcript] .loop-message').length < 4); count += 1) await new Promise(next => setTimeout(next, 20));
+    return { before, restores: window.__agentLoopTest.restores, transcript: document.querySelector('[data-loop-transcript]')?.textContent || '' };
+  })()`);
+  if (!compression.before.includes("压缩已应用") || !compression.before.includes("5100 tokens") || compression.restores[0]?.ranges?.[0]?.restore !== true || !compression.transcript.includes("third failed trace")) throw new Error(`自主压缩、续跑或来源恢复失败: ${JSON.stringify(compression)}`);
+  if (process.env.FOCUS_AGENT_LOOP_SCREENSHOT) {
+    await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[data-action="loop-select-context"][data-context-id="child"]').click();
+      for (let count = 0; count < 150 && !document.querySelector('[data-loop-transcript]')?.textContent.includes('12 passed'); count += 1) await new Promise(next => setTimeout(next, 20));
+      await new Promise(next => requestAnimationFrame(() => requestAnimationFrame(next)));
+    })()`);
+    const screenshotPath = path.resolve(process.env.FOCUS_AGENT_LOOP_SCREENSHOT);
+    fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+    fs.writeFileSync(screenshotPath, (await win.webContents.capturePage()).toPNG());
+  }
+
+  const interventions = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('[data-action="loop-select-context"][data-context-id="child"]').click();
+    for (let count = 0; count < 150 && !document.querySelector('[data-loop-transcript]')?.textContent.includes('12 passed'); count += 1) await new Promise(next => setTimeout(next, 20));
+    let form = document.querySelector('#loopInterventionForm');
+    form.elements.content.value = '直接继续测试修复';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.directMessages.length === 0; count += 1) await new Promise(next => setTimeout(next, 20));
+    for (let count = 0; count < 150 && document.querySelector('#loopInterventionForm')?.elements.content.value; count += 1) await new Promise(next => setTimeout(next, 20));
+    for (let count = 0; count < 150 && !document.querySelector('.context-conversation')?.textContent.includes('已受理 · 待观察授权'); count += 1) await new Promise(next => setTimeout(next, 20));
+    const acceptedText = document.querySelector('.context-conversation')?.textContent || '';
+    if (window.__agentLoopTest.directMessages.length !== 1 || document.querySelector('#loopInterventionForm')?.elements.content.value !== ''
+        || !acceptedText.includes('已受理 · 待观察授权')) throw new Error('原文提交合同失败: ' + JSON.stringify({count:window.__agentLoopTest.directMessages.length, draft:document.querySelector('#loopInterventionForm')?.elements.content.value, acceptedText}));
+    document.querySelector('[data-action="loop-intervention-mode"][data-mode="patrol_context_intent"]').click();
+    form = document.querySelector('#loopInterventionForm');
+    form.elements.content.value = '这个 Context 只分析测试失败';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.interventions.length < 1; count += 1) await new Promise(next => setTimeout(next, 20));
+    document.querySelector('[data-action="loop-intervention-mode"][data-mode="patrol_portfolio_intent"]').click();
+    form = document.querySelector('#loopInterventionForm');
+    form.elements.content.value = '整体保留测试和架构两个方向';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.interventions.length < 2; count += 1) await new Promise(next => setTimeout(next, 20));
+    return { direct: window.__agentLoopTest.directMessages, intents: window.__agentLoopTest.interventions, text: document.querySelector('.loop-dashboard')?.textContent || '' };
+  })()`);
+  if (interventions.direct[0]?.context_id !== "child" || interventions.intents[0]?.mode !== "patrol_context_intent" || interventions.intents[0]?.context_id !== "child" || interventions.intents[1]?.mode !== "patrol_portfolio_intent" || interventions.intents[1]?.context_id !== null || !interventions.text.includes("12 passed")) throw new Error(`三类介入或完整会话失败: ${JSON.stringify(interventions)}`);
+
+  const resumed = await win.webContents.executeJavaScript(`(async () => {
+    state.view = 'focus'; render();
+    await openLoopView();
+    for (let count = 0; count < 150 && (!document.querySelector('.loop-dashboard') || loopStore.get().cursor !== window.__agentLoopTest.liveSequence); count += 1) await new Promise(next => setTimeout(next, 20));
+    return { loopId: state.loop.loopId, cursor: loopStore.get().cursor, text: document.querySelector('.loop-dashboard')?.textContent || '' };
+  })()`);
+  if (!resumed.loopId || resumed.cursor !== 2 || !resumed.text.includes("已放弃探索")) throw new Error(`离开后恢复或事件重连失败: ${JSON.stringify(resumed)}`);
+
+  const adjusted = await win.webContents.executeJavaScript(`(async () => {
+    const form = document.querySelector('#agentLoopBudgetForm');
+    form.elements.maxOutputTokens.value = '700000';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.grantMutations.length === 0; count += 1) await new Promise(next => setTimeout(next, 20));
+    return { mutations: window.__agentLoopTest.grantMutations, revision: loopStore.get().snapshot.authority_revision };
+  })()`);
+  if (adjusted.mutations[0]?.command !== "adjust_budgets" || adjusted.mutations[0]?.budgets?.max_output_tokens !== 700000 || adjusted.revision !== 2) throw new Error(`授权预算变更失败: ${JSON.stringify(adjusted)}`);
+
+  const memoryRetry = await win.webContents.executeJavaScript(`(async () => {
+    const request = { request_id: 'memory-wait', revision: 3, kind: 'recovery_action', status: 'open', created_by: 'progress-memory', prompt: '任务记忆沉淀受阻', response_mode: 'action', scope: { component: 'progress_memory', observation_id: 'frozen-input' }, response_contract: { actions: [{ action: 'retry', label: '重试任务记忆' }, { action: 'stop', label: '停止 Loop' }] } };
+    window.__agentLoopTest.snapshot = { ...window.__agentLoopTest.snapshot, status: 'waiting_user', health: 'progress_blocked', wait_request: request };
+    await openLoopView();
+    for (let count = 0; count < 150 && !document.querySelector('[data-wait-action="retry"]'); count += 1) await new Promise(next => setTimeout(next, 20));
+    document.querySelector('[data-wait-action="retry"]').click();
+    for (let count = 0; count < 150 && (window.__agentLoopTest.waitResponses.length !== 1 || loopStore.get().snapshot.status !== 'running'); count += 1) await new Promise(next => setTimeout(next, 20));
+    return { responses: window.__agentLoopTest.waitResponses, status: loopStore.get().snapshot.status, roundId: loopStore.get().snapshot.current_round_id };
+  })()`);
+  if (memoryRetry.responses.length !== 1 || memoryRetry.responses[0].request_id !== "memory-wait" || memoryRetry.responses[0].request_revision !== 3 || memoryRetry.responses[0].answer?.action !== "retry" || !memoryRetry.responses[0].idempotency_key || memoryRetry.status !== "running" || memoryRetry.roundId !== "round-12") throw new Error(`记忆恢复按钮未提交唯一响应或改变 Round: ${JSON.stringify(memoryRetry)}`);
+
+  const takeover = await win.webContents.executeJavaScript(`(async () => {
+    window.__agentLoopTest.snapshot = { ...window.__agentLoopTest.snapshot, status: 'waiting_user', health: 'blocked', waiting_reason: '必须由用户决定是否接受冲突结果' };
+    await openLoopView();
+    const form = document.querySelector('#agentLoopOverrideForm');
+    form.querySelector('[data-mission-outcome]').value = '优先完成测试与发布';
+    form.querySelector('[data-mission-boundary="required_invariants"]').value = '停止非关键优化';
+    form.querySelector('[data-check-claim]').value = '测试通过';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && !document.querySelector('.loop-dashboard')?.textContent.includes('优先完成测试与发布'); count += 1) await new Promise(next => setTimeout(next, 20));
+    return { overrides: window.__agentLoopTest.overrides, snapshot: loopStore.get().snapshot, text: document.querySelector('.loop-dashboard')?.textContent || '' };
+  })()`);
+  if (takeover.overrides.length !== 1 || takeover.snapshot.goal_revision !== 2 || takeover.snapshot.authority_revision !== 3 || takeover.snapshot.status !== "running") throw new Error(`用户接管优先级失败: ${JSON.stringify(takeover)}`);
+
+  const completed = await win.webContents.executeJavaScript(`(() => {
+    const final = { ...window.__agentLoopTest.snapshot, status: 'completed', health: 'idle', current_round_id: 'round-14', final_result: { final_path: [{ context_id: 'root', revision_id: 'root-r7' }], unadopted_lanes: [{ lane_id: 'abandoned', context_id: 'extra-1', reason: '未采用探索' }] } };
+    window.__agentLoopTest.snapshot = final;
+    loopStore.reconcile(final);
+    loopStore.reconcileRelated({ ...loopStore.get().related });
+    renderLoop();
+    return { text: document.querySelector('.loop-dashboard')?.textContent || '', controls: document.querySelectorAll('[data-action="loop-control"]').length, result: loopStore.get().snapshot.final_result };
+  })()`);
+  if (completed.controls !== 0 || completed.result.final_path[0].revision_id !== "root-r7" || completed.result.unadopted_lanes[0].lane_id !== "abandoned" || !completed.text.includes("completed")) throw new Error(`完成与未采用路径保留失败: ${JSON.stringify(completed)}`);
+
+  const exited = await win.webContents.executeJavaScript(`(async () => {
+    const exit = document.querySelector('[data-action="loop-exit"]');
+    const readonlyBefore = !document.querySelector('#loopInterventionForm') && document.querySelector('.loop-intervention.is-readonly');
+    exit.click();
+    for (let count = 0; count < 150 && !document.querySelector('.loop-empty'); count += 1) await new Promise(next => setTimeout(next, 20));
+    state.view = 'focus';
+    render();
+    await openLoopView();
+    for (let count = 0; count < 150 && !document.querySelector('.loop-empty'); count += 1) await new Promise(next => setTimeout(next, 20));
+    return {
+      readonlyBefore: Boolean(readonlyBefore),
+      loopId: state.loop.loopId,
+      stored: localStorage.getItem('focus-agent-loop:root'),
+      hasStart: Boolean(document.querySelector('#agentLoopStartForm')),
+      startDisabled: document.querySelector('#agentLoopStartForm button[type="submit"]')?.disabled,
+      guidance: document.querySelector('.loop-start-gate')?.textContent || '',
+    };
+  })()`);
+  if (!exited.readonlyBefore || exited.loopId !== null || exited.stored !== null || !exited.hasStart || !exited.startDisabled || !exited.guidance.includes("新的用户消息")) throw new Error(`终止 Loop 退出、重新进入或后继 Run 门禁失败: ${JSON.stringify(exited)}`);
+
+  const firstSuccessor = await win.webContents.executeJavaScript(`(async () => {
+    state.view = 'focus';
+    render();
+    const input = document.querySelector('#mainInput');
+    input.value = '为同一个 Context 创建后继 Loop';
+    document.querySelector('[data-action="send-main"]').click();
+    for (let count = 0; count < 150 && window.__agentLoopTest.latestRunId === 'run-initial'; count += 1) await new Promise(next => setTimeout(next, 20));
+    await openLoopView();
+    for (let count = 0; count < 150 && !document.querySelector('#agentLoopStartForm'); count += 1) await new Promise(next => setTimeout(next, 20));
+    const form = document.querySelector('#agentLoopStartForm');
+    form.querySelector('[data-mission-outcome]').value = '验证后继 Loop';
+    form.querySelector('[data-check-claim]').value = '后继 Loop 成功启动';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.startBodies.length < 2; count += 1) await new Promise(next => setTimeout(next, 20));
+    return { bodies: window.__agentLoopTest.startBodies, snapshot: window.__agentLoopTest.snapshot, text: document.querySelector('.loop-dashboard')?.textContent || '' };
+  })()`);
+  if (firstSuccessor.bodies.length !== 2 || firstSuccessor.bodies[1].initial_run_id === "run-initial" || firstSuccessor.bodies[1].loop_id === firstSuccessor.bodies[0].loop_id || firstSuccessor.snapshot.status !== "running" || !firstSuccessor.text.includes("验证后继 Loop")) throw new Error(`同一 Context 的首个后继 Loop 激活失败: ${JSON.stringify(firstSuccessor)}`);
+
+  const stoppedSuccessor = await win.webContents.executeJavaScript(`(async () => {
+    await controlLoop('stop');
+    for (let count = 0; count < 150 && window.__agentLoopTest.snapshot?.status !== 'stopped'; count += 1) await new Promise(next => setTimeout(next, 20));
+    await exitAgentLoop(true);
+    const input = document.querySelector('#mainInput');
+    input.value = '停止后继续在同一 Context 工作';
+    document.querySelector('[data-action="send-main"]').click();
+    const priorRunId = window.__agentLoopTest.startBodies[1].initial_run_id;
+    for (let count = 0; count < 150 && window.__agentLoopTest.latestRunId === priorRunId; count += 1) await new Promise(next => setTimeout(next, 20));
+    await openLoopView();
+    for (let count = 0; count < 150 && !document.querySelector('#agentLoopStartForm'); count += 1) await new Promise(next => setTimeout(next, 20));
+    const form = document.querySelector('#agentLoopStartForm');
+    form.querySelector('[data-mission-outcome]').value = '停止后再次授权后继 Loop';
+    form.querySelector('[data-check-claim]').value = '无需重启应用即可运行';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.startBodies.length < 3; count += 1) await new Promise(next => setTimeout(next, 20));
+    return { controls: window.__agentLoopTest.controls, bodies: window.__agentLoopTest.startBodies, snapshot: window.__agentLoopTest.snapshot, loopId: state.loop.loopId, text: document.querySelector('.loop-dashboard')?.textContent || '' };
+  })()`);
+  const predecessor = stoppedSuccessor.bodies[1];
+  const successor = stoppedSuccessor.bodies[2];
+  if (!stoppedSuccessor.controls.includes("stop") || stoppedSuccessor.bodies.length !== 3 || successor.initial_run_id === predecessor.initial_run_id || successor.loop_id === predecessor.loop_id || stoppedSuccessor.snapshot.status !== "running" || stoppedSuccessor.loopId !== successor.loop_id || !stoppedSuccessor.text.includes("停止后再次授权后继 Loop")) throw new Error(`停止、发送新消息与再次授权后继 Loop 失败: ${JSON.stringify(stoppedSuccessor)}`);
+
+  console.log("agent-loop-ui-e2e: 启动离开、重连、多 Lane、委托来源、接管、等待、完成、停止与后继激活通过");
+  win.destroy();
+}
+
+app.whenReady().then(run).then(() => app.quit()).catch(error => {
+  console.error(error.stack || error);
+  app.exit(1);
+});

@@ -34,8 +34,8 @@ loop-live-selectors loop-live-store loop-mission-editor
 SOURCE_FILES = (
     *(f"backend/app/desktop/agent_loop/{name}.py" for name in AGENT_LOOP_MODULES),
     *(f"backend/tests/{name}.py" for name in LOOP_TEST_MODULES),
-    *(f"desktop/{name}.js" for name in DESKTOP_MODULES),
-    "desktop/styles/loop-console.css",
+    *(f"desktop/src/renderer/features/loop/{name}.js" for name in DESKTOP_MODULES),
+    "desktop/src/renderer/features/loop/loop-console.css",
 )
 
 
@@ -62,7 +62,7 @@ def test_live_api_transport_does_not_own_domain_overlay_queries() -> None:
 
 
 def test_desktop_composition_root_does_not_reclaim_live_domain_logic() -> None:
-    source = (ROOT / "desktop/app.js").read_text(encoding="utf-8")
+    source = (ROOT / "desktop/src/renderer/app/app.js").read_text(encoding="utf-8")
     for forbidden in ("function startLoopStream", "function scheduleLoopRefresh", "function scheduleLoopPoll", "loopStore.apply(", "loopApi.events("):
         assert forbidden not in source
     assert "loopConnection.start(loopId).catch" in source

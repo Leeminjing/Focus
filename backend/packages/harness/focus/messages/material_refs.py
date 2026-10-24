@@ -22,7 +22,7 @@
 具体工作流:
     (1) 标记形态为 `【图片N material_id=<id>】`：对人可读、对模型可读、对正则可解析
     (2) material_ref_ids 全量扫描文本，允许一条消息引用多张图片
-    (3) 前端 desktop/app.js 内的正则必须与本文件保持一致，两侧改动需同步
+    (3) 前端 desktop/src/renderer/app/app.js 内的正则必须与本文件保持一致，两侧改动需同步
 
 示例:
     format_material_ref(1, "ab12") → "【图片1 material_id=ab12】"

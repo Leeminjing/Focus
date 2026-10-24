@@ -41,7 +41,7 @@ Shell 仅在 Git 路径集合可读取且进程清理得到确认时比较文件
 
 比较限制为两侧文本长度合计 2,097,152 个 UTF-16 代码单元、100,000 行、2,000,000 次搜索操作和 250,000 个回溯条目；触及上限时停止比较并提示查看完整版本，不生成近似增减统计。渲染最多显示 1,000 行变更块内容及 1,000 行折叠内容，两类字符预算分别为 120,000 和 60,000，单行最多显示 2,000 字符；截断有明确说明，成功完成比较后的统计始终包含全部变更。
 
-`node --test desktop/file-diff.test.cjs` 验证 1,000 行中只改第 100、900 行时得到两个变更块、实际新增和删除各两行，并覆盖行号偏移、重复行、换行、转义、大文件限制及桌面版本页签集成。
+`node --test desktop/src/renderer/features/files/file-diff.test.cjs` 验证 1,000 行中只改第 100、900 行时得到两个变更块、实际新增和删除各两行，并覆盖行号偏移、重复行、换行、转义、大文件限制及桌面版本页签集成。
 
 ## 迁移与实现收敛
 
@@ -81,7 +81,7 @@ python -m pytest backend/tests/test_evolution_strategies.py backend/tests/test_l
 python -m pytest backend/tests/test_live_file_versions.py backend/tests/test_feedback_context_evolution.py backend/tests/test_workspace_patrol.py -q --tb=short --disable-warnings
 python -m pytest backend/tests/test_context_expansion_kernel.py::test_multi_source_failure_analysis_commits_exact_four_role_provenance backend/tests/test_context_expansion_kernel.py::test_read_only_expansion_retries_atomically_and_dispatches_once_after_restart backend/tests/test_context_expansion_kernel.py::test_read_only_expansion_can_be_authorized_while_source_run_is_active -q --tb=short --disable-warnings
 python -m pytest backend/tests/test_complete_semantic_context_derivation.py backend/tests/test_semantic_context_planning.py backend/tests/test_mission_retrieval.py backend/tests/test_expansion_resource_policy.py backend/tests/test_completion_artifact_content.py backend/tests/test_execution_attempt_audit.py backend/tests/test_loop_materialized_facts.py -q --tb=short --disable-warnings
-node --test desktop/file-feedback.e2e.cjs desktop/file-feedback.test.cjs desktop/workspace-patrol-inputs.test.cjs desktop/loop-live-projection.test.js
+node --test desktop/tests/e2e/file-feedback.e2e.cjs desktop/src/renderer/features/files/file-feedback.test.cjs desktop/src/renderer/features/patrol/workspace/workspace-patrol-inputs.test.cjs desktop/src/renderer/features/loop/loop-live-projection.test.js
 openspec validate add-context-evolution-and-file-feedback --strict
 ```
 

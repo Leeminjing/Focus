@@ -26,12 +26,12 @@ SOURCE_FILES = (
     "backend/app/desktop/run_orchestration/admission.py",
     "backend/app/desktop/run_orchestration/assembler.py",
     "backend/app/desktop/run_orchestration/dispatch.py",
-    "desktop/task-run-operations.js",
-    "desktop/loop-wait-request-view.js",
-    "desktop/http-response.js",
-    "desktop/loop-api.js",
-    "desktop/app.js",
-    "desktop/test-helper.cjs",
+    "desktop/src/renderer/features/conversation/task-run-operations.js",
+    "desktop/src/renderer/features/loop/loop-wait-request-view.js",
+    "desktop/src/renderer/shared/http/http-response.js",
+    "desktop/src/renderer/features/loop/loop-api.js",
+    "desktop/src/renderer/app/app.js",
+    "desktop/tests/helpers/test-helper.cjs",
 )
 
 
@@ -50,13 +50,13 @@ def test_persistence_normalizer_has_no_orm_dependency() -> None:
 
 
 def test_frontend_operation_store_has_no_dom_dependency() -> None:
-    source = (ROOT / "desktop/task-run-operations.js").read_text(encoding="utf-8")
+    source = (ROOT / "desktop/src/renderer/features/conversation/task-run-operations.js").read_text(encoding="utf-8")
     assert "document." not in source
     assert "innerHTML" not in source
 
 
 def test_response_decoder_has_no_dom_or_loop_dependency() -> None:
-    source = (ROOT / "desktop/http-response.js").read_text(encoding="utf-8")
+    source = (ROOT / "desktop/src/renderer/shared/http/http-response.js").read_text(encoding="utf-8")
     for forbidden in ("document.", "window.", "innerHTML", "FocusLoopApi"):
         assert forbidden not in source
 

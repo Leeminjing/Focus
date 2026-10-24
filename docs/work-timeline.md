@@ -98,9 +98,9 @@ version inspector and support ordinary input references.
 - `backend/tests/test_work_timeline.py`: PostgreSQL ordering, concurrent/repeated
   consumption, keyset paging, filters, API permission/parameter checks, atomic
   retry, real input/decision links, source deletion and migration round trip.
-- `desktop/work-timeline.test.cjs`: stable entry identity, DOM/scroll retention,
+- `desktop/src/renderer/features/files/work-timeline.test.cjs`: stable entry identity, DOM/scroll retention,
   stale filter responses, escaping and retry behavior.
-- `desktop/work-timeline.e2e.py --output <directory>`: headless Playwright using
+- `desktop/tests/e2e/work-timeline.e2e.py --output <directory>`: headless Playwright using
   production assets and fixture HTTP. Covers all three filters, earlier pages,
   exact historical evidence, input/Context navigation, draft/focus preservation,
   incremental insertion, read failure and desktop/mobile screenshots. This is a

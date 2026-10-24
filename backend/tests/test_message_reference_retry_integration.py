@@ -86,7 +86,7 @@ def test_frontend_reference_retry_passes_real_backend_validation(action, monkeyp
         try:
             with ASGIHTTPBridge(client) as bridge:
                 result = subprocess.run(["node", str(Path(__file__).parents[2] / "desktop" /
-                    "message-reference-retry.integration.cjs"), bridge.url, source, action],
+                    "tests/e2e/message-reference-retry.integration.cjs"), bridge.url, source, action],
                     capture_output=True, text=True, encoding="utf-8", timeout=30)
             assert result.returncode == 0, result.stdout + result.stderr
             receipt = json.loads(result.stdout)
@@ -140,7 +140,7 @@ def test_frontend_reference_retry_passes_real_backend_validation(action, monkeyp
                 assert inherited.status_code == 200, inherited.text
                 with ASGIHTTPBridge(client) as bridge:
                     nested = subprocess.run(["node", str(Path(__file__).parents[2] / "desktop" /
-                        "message-reference-retry.integration.cjs"), bridge.url, inherited.json()["context_id"],
+                        "tests/e2e/message-reference-retry.integration.cjs"), bridge.url, inherited.json()["context_id"],
                         "retry", source], capture_output=True, text=True, encoding="utf-8", timeout=30)
                 assert nested.returncode == 0, nested.stdout + nested.stderr
                 assert json.loads(nested.stdout)["message_reference"] == selected

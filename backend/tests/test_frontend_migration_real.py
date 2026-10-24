@@ -89,7 +89,7 @@ def test_real_patrol_frontend_intake_frozen_inspection_and_pause(tmp_path):
                     await asyncio.sleep(0.1)
                 else:
                     raise AssertionError("隔离服务启动超时")
-                desktop = subprocess.Popen([str(electron), str(repo / "desktop/frontend-migration-real.e2e.cjs")], cwd=repo, env=env, stdout=desktop_log, stderr=subprocess.STDOUT)
+                desktop = subprocess.Popen([str(electron), str(repo / "desktop/tests/e2e/frontend-migration-real.e2e.cjs")], cwd=repo, env=env, stdout=desktop_log, stderr=subprocess.STDOUT)
                 ready = await wait_result("ready")
                 loop_id = ready["loop_id"]
                 async with sessions() as session:

@@ -222,7 +222,7 @@ class Installation {
     const electron = path.join(this.appDir, "desktop/node_modules/electron");
     const executable = fs.readFileSync(path.join(electron, "path.txt"), "utf8").trim();
     if (!executable || !fs.existsSync(path.join(electron, "dist", executable))) throw new Error("Electron executable is missing.");
-    this.run(process.execPath, [path.join(this.appDir, "desktop/startup-runtime.cjs"), "--prepare", this.python, this.home],
+    this.run(process.execPath, [path.join(this.appDir, "desktop/src/main/startup-runtime.cjs"), "--prepare", this.python, this.home],
       { env: { ...this.env, PYTHONPATH: process.env.PYTHONPATH } });
   }
   migrate() {

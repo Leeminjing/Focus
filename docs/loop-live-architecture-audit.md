@@ -25,7 +25,7 @@
 
 记录的例外：
 
-- `desktop/app.js`、`backend/app/gateway/app.py` 和若干既有领域文件包含本次变更前已有的必要运行时说明；本次没有向文件中部新增解释性注释，也没有为了形式要求删除仍在解释安全/兼容不变量的既有注释。
+- `desktop/src/renderer/app/app.js`、`backend/app/gateway/app.py` 和若干既有领域文件包含本次变更前已有的必要运行时说明；本次没有向文件中部新增解释性注释，也没有为了形式要求删除仍在解释安全/兼容不变量的既有注释。
 - ORM registry 的 `# noqa: F401`、类型检查抑制和测试 fixture 标记属于工具指令，不作为业务注释。
 - OpenSpec、迁移说明和 Markdown 文档不受“源文件仅文件头注释”限制。
 

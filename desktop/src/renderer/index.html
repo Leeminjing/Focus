@@ -1,0 +1,304 @@
+<!doctype html>
+<!--
+  本文件提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
+  输出为受内容安全策略保护的六项主导航、默认 Patrol、传统任务三栏、Loop Portfolio 控制台、检查器、
+  材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载 Expansion 预算模块、无状态 UI、共享 Run 订阅/短预览、共享图纯布局、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，加载独立 Patrol 文档/来源/编排/交互/检查/分支模块，最后启动 app.js。
+  示例：浏览器加载 index.html 后由 app.js 挂载 #app。
+  工作区输入编排与材料预览由共享 intake/preview 加载，原生宿主将输入入口转给独立机器人面板。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src 'self' blob:; connect-src 'self' http: https: ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>Focus</title>
+  <link rel="icon" href="./assets/focus-icon.png">
+  <link rel="stylesheet" href="./shared/styles/styles.css">
+  <link rel="stylesheet" href="./shared/styles/gateway-recovery.css">
+  <link rel="stylesheet" href="./features/skills/skill-picker.css">
+  <link rel="stylesheet" href="./features/settings/session-controls.css">
+  <link rel="stylesheet" href="./shared/styles/tokens.css">
+  <link rel="stylesheet" href="./shared/styles/base.css">
+  <link rel="stylesheet" href="./shared/styles/icons.css">
+  <link rel="stylesheet" href="./shared/styles/components.css">
+  <link rel="stylesheet" href="./shared/styles/shell.css">
+  <link rel="stylesheet" href="./shared/styles/views.css?v=20261017-attachments">
+  <link rel="stylesheet" href="./features/map/map-collapsible-view.css?v=20260902">
+  <link rel="stylesheet" href="./features/conversation/conversation-events.css">
+  <link rel="stylesheet" href="./features/files/round-changes.css">
+  <link rel="stylesheet" href="./features/patrol/avatar/patrol-avatar.css?v=20260905b">
+  <link rel="stylesheet" href="./features/loop/loop-console.css?v=20260916b">
+  <link rel="stylesheet" href="./shared/styles/workspace-patrol.css?v=20261009-filesystem">
+  <link rel="stylesheet" href="./features/patrol/workspace/workspace-patrol-feedback.css">
+  <link rel="stylesheet" href="./features/files/artifact-drawer.css">
+  <link rel="stylesheet" href="./features/patrol/workspace/patrol-input-references.css">
+  <link rel="stylesheet" href="./shared/styles/message-reading.css">
+  <link rel="stylesheet" href="./features/files/file-preview.css">
+  <link rel="stylesheet" href="./features/conversation/composer-files.css">
+</head>
+<body>
+  <div class="app-frame">
+    <header class="app-header">
+      <button class="app-mark" data-action="toggle-nav-collapse" aria-controls="appNavigation" aria-expanded="true" aria-label="收起导航" data-i18n-aria-label="nav.collapse"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"></button>
+      <strong class="shell-brand">Focus<span>.</span></strong>
+      <div class="shell-task-context" aria-live="polite">
+        <strong id="shellTaskTitle" data-i18n="header.no_task">尚未选择任务</strong>
+        <span id="shellTaskMeta" data-i18n="header.workbench">本地 Agent 工作台</span>
+      </div>
+      <button class="quiet-button" data-action="new-task"><span class="ui-icon is-sm icon-plus" aria-hidden="true"></span><span data-i18n="header.new_task">新增任务</span></button>
+    </header>
+    <section id="accessPending" class="access-pending" role="region" aria-label="后台执行主体的本机资源请求" data-i18n-aria-label="access.background_title" hidden></section>
+    <div class="app-shell">
+      <nav id="appNavigation" class="app-navigation glass-surface" aria-label="全局导航" data-i18n-aria-label="nav.global">
+        <button class="shell-workspace-button" data-action="show-patrol" data-patrol-switch><strong id="shellWorkspaceName" data-i18n="nav.workspace">选择工作区</strong><span data-i18n="nav.patrol_workspace">Patrol 工作区</span></button>
+        <button class="app-nav-item" data-action="show-patrol" data-nav-key="patrol"><span class="app-nav-label">Patrol</span></button>
+        <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
+          <span class="app-nav-label" data-i18n="nav.tasks">任务</span>
+        </button>
+        <button class="app-nav-item" data-action="show-map" data-nav-key="map">
+          <span class="app-nav-label" data-i18n="nav.map">全图</span>
+        </button>
+        <button class="app-nav-item" data-action="show-plugins" data-nav-key="plugins">
+          <span class="app-nav-label" data-i18n="nav.plugins">插件</span>
+        </button>
+        <button class="app-nav-item" data-action="show-assembly" data-nav-key="assembly">
+          <span class="app-nav-label" data-i18n="nav.assembly">无工作区模式</span>
+        </button>
+        <button class="app-nav-item" data-action="show-memory" data-nav-key="memory">
+          <span class="app-nav-label" data-i18n="nav.memory">记忆库</span>
+        </button>
+        <button class="app-nav-item app-nav-settings" data-action="open-settings" aria-label="设置" data-i18n-aria-label="nav.settings">
+          <span class="ui-icon is-sm icon-settings" aria-hidden="true"></span>
+          <span class="app-nav-label" data-i18n="nav.settings">设置</span>
+        </button>
+        <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
+      </nav>
+      <div class="shell-resizer shell-resizer-nav" role="separator" aria-orientation="vertical" aria-label="调整导航宽度" title="拖拽调整导航宽度" data-i18n-aria-label="nav.resize" data-i18n-title="nav.resize_help"></div>
+      <section class="app-workspace">
+        <main id="app" tabindex="-1" aria-live="polite"></main>
+      </section>
+      <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度" data-i18n-aria-label="inspector.resize" data-i18n-title="inspector.resize_help"></div>
+      <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden data-i18n-aria-label="inspector.title">
+        <div class="inspector-tabs glass-surface" role="tablist" aria-label="检查器内容" data-i18n-aria-label="inspector.tabs">
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
+          <button data-action="close-inspector" aria-label="关闭任务检查器" data-i18n-aria-label="inspector.close">×</button>
+        </div>
+        <div id="inspectorContent" class="inspector-content"></div>
+      </aside>
+    </div>
+    <span id="zoomAnnouncement" class="visually-hidden" role="status" aria-live="polite"></span>
+    <div id="overlayRoot" class="overlay-root" aria-live="polite"></div>
+  </div>
+  <dialog id="taskDialog">
+    <form method="dialog" id="taskForm" class="dialog-form">
+      <h2 data-i18n="dialog.new_task">新增工作区任务</h2>
+      <label><span data-i18n="dialog.workspace_folder">工作区文件夹</span>
+        <span class="path-picker"><input id="workspacePath" required><button type="button" data-action="pick-workspace" data-i18n="dialog.choose">选择</button></span>
+      </label>
+      <label><span data-i18n="dialog.task_title">任务标题</span><input id="threadTitle" value="新任务" required></label>
+      <div class="dialog-actions"><button type="button" value="cancel" data-action="close-task-dialog" data-i18n="dialog.cancel">取消</button><button class="primary" type="submit" value="default" data-i18n="dialog.create">创建</button></div>
+    </form>
+  </dialog>
+  <dialog id="settingsDialog" class="settings-dialog">
+    <header class="settings-dialog-head glass-surface">
+      <div>
+        <h2 data-i18n="settings.title">设置</h2>
+        <span class="muted tiny" data-i18n="settings.subtitle">Focus 桌面配置</span>
+      </div>
+      <button class="quiet-button" data-action="close-settings" aria-label="关闭" data-i18n-aria-label="settings.close"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
+    </header>
+    <nav class="settings-sections" role="tablist" aria-label="设置区块" data-i18n-aria-label="settings.sections">
+      <button role="tab" data-action="settings-tab" data-settings-tab="general" aria-selected="true" class="is-active" data-i18n="settings.general">常规</button>
+      <button role="tab" data-action="settings-tab" data-settings-tab="models" aria-selected="false" data-i18n="settings.models">模型</button>
+      <button role="tab" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
+    </nav>
+    <section class="settings-pane" data-settings-pane="general">
+      <h3 data-i18n="settings.notifications">桌面提醒</h3>
+      <label><input id="taskNotificationsEnabled" type="checkbox" checked><span data-i18n="settings.notifications_enabled">启用桌面提醒</span></label>
+      <p class="muted tiny" data-i18n="settings.notifications_help">优先提醒需要你处理的事项，再提醒任务完成和失败。点击提醒可进入对应任务。</p>
+      <h3 data-i18n="settings.language">界面语言</h3>
+      <div class="settings-language-options" role="radiogroup" aria-label="界面语言" data-i18n-aria-label="settings.language">
+        <button type="button" data-action="set-language" data-locale="zh-CN" data-i18n="settings.chinese">中文</button>
+        <button type="button" data-action="set-language" data-locale="en-US" data-i18n="settings.english">English</button>
+      </div>
+      <p class="muted tiny settings-language-help" data-i18n="settings.language_help">切换后立即应用，并保存在本机。</p>
+      <h3 data-i18n="settings.new_session_mode">新会话默认文件模式</h3>
+      <select id="newSessionAccessMode" aria-label="新会话默认文件模式" data-i18n-aria-label="settings.new_session_mode">
+        <option value="read-only" data-i18n="access.mode_read_only">只读执行</option>
+        <option value="workspace-write" data-i18n="access.mode_workspace_write">工作区可写</option>
+        <option value="danger-full-access" data-i18n="access.mode_danger_full_access">未应用文件沙箱</option>
+      </select>
+      <p class="muted tiny" data-i18n="settings.new_session_mode_help">只影响之后创建的会话；现有会话模式保持不变。</p>
+      <h3 data-i18n="settings.sandbox_status">Windows 文件沙箱</h3>
+      <div id="sandboxStatusHost" class="sandbox-status-host"></div>
+      <h3 data-i18n="shell_recovery.title">Shell 异常恢复</h3>
+      <p id="shellRecoveryFeedback" role="status" aria-live="polite"></p>
+      <div id="shellRecoveryHost" class="sandbox-status-host" aria-live="polite"></div>
+    </section>
+    <section class="settings-pane" data-settings-pane="models" hidden>
+      <h3 data-i18n="settings.models">模型</h3>
+      <p class="muted tiny" data-i18n="settings.models_help">模型条目、默认选择与密钥都在这里配置；保存后立即生效，并逐项验证普通调用、策展输出和自动索引。</p>
+      <div id="modelSettingsHost" class="model-settings-host" data-i18n-aria-label="settings.models" aria-label="模型"></div>
+    </section>
+    <section class="settings-pane" data-settings-pane="data" hidden>
+      <h3 data-i18n="settings.data">数据</h3>
+      <section id="storageSettingsHost" class="settings-data-section" aria-label="长期存储维护" data-i18n-aria-label="settings.storage_maintenance"></section>
+      <section class="settings-data-section">
+        <header><strong data-i18n="settings.archived">已归档的会话</strong><span class="muted tiny" data-i18n="settings.archived_help">归档可恢复；删除需确认</span></header>
+        <div id="archivedSessions" class="archived-session-list"></div>
+      </section>
+    </section>
+    <div class="settings-dialog-actions"><button class="text-button" data-action="close-settings" data-i18n="settings.close">关闭</button></div>
+  </dialog>
+  <template id="reviewTemplate">
+    <article class="review-panel">
+      <header>
+        <div>
+          <span class="review-kicker"></span>
+          <h3></h3>
+        </div>
+        <span class="review-badge" data-i18n="review.waiting">等待确认</span>
+      </header>
+      <pre class="review-draft"></pre>
+      <textarea class="review-contract-editor" aria-label="任务合同 Markdown" hidden data-i18n-aria-label="review.contract_markdown"></textarea>
+      <p class="review-error" role="alert"></p>
+      <div class="review-actions">
+        <button class="primary approve-button" type="button" data-i18n="review.approve">批准并继续</button>
+        <button class="text-button revise-toggle" type="button" data-i18n="review.revise">提出修订</button>
+      </div>
+      <form class="revision-form" hidden>
+        <div class="segmented" role="group" aria-label="修订方式" data-i18n-aria-label="review.revision_mode">
+          <button class="active" type="button" data-mode="feedback" data-i18n="review.feedback">反馈</button>
+          <button type="button" data-mode="replacement" data-i18n="review.replace">替换草稿</button>
+        </div>
+        <textarea class="revision-input" rows="4" placeholder="输入需要调整的内容" data-i18n-placeholder="review.revision_placeholder"></textarea>
+        <div class="revision-footer">
+          <button class="text-button cancel-revision" type="button" data-i18n="access.risk_cancel">取消</button>
+          <button class="primary" type="submit" data-i18n="review.submit">提交修订</button>
+        </div>
+      </form>
+    </article>
+  </template>
+  <template id="accessReviewTemplate">
+    <article class="access-review-panel" data-subject="main">
+      <header>
+        <div>
+          <span class="access-review-kicker" data-i18n="access.panel_title">本机资源访问请求</span>
+          <h3 class="access-review-subject"></h3>
+        </div>
+        <span class="access-review-badge" data-i18n="access.badge">等待批准</span>
+      </header>
+      <dl class="access-review-fields"></dl>
+      <p class="access-review-error" role="alert"></p>
+      <div class="access-review-actions">
+        <button class="primary approve-once-button" type="button" data-access-action="approve_once" data-i18n="access.approve_once">仅允许这一次</button>
+        <button class="text-button reject-button" type="button" data-access-action="reject" data-i18n="access.reject">拒绝</button>
+        <button class="text-button" type="button" data-access-action="cancel" data-i18n="access.cancel">取消</button>
+        <button class="text-button switch-full-button" type="button" data-access-action="switch_full" data-i18n="access.switch_requested">修改常驻模式</button>
+      </div>
+      <section class="access-review-risk" hidden></section>
+    </article>
+  </template>
+  <template id="traceTemplate">
+    <details class="trace-panel is-live" open>
+      <summary>
+        <span class="trace-summary-title">
+          <span class="trace-live-dot" aria-hidden="true"></span>
+          <span class="trace-state" data-i18n="trace.thinking">思考中</span>
+        </span>
+        <span class="trace-summary-meta">
+          <span class="trace-elapsed" data-i18n="trace.initial_elapsed">已思考 0 秒</span>
+          <span class="trace-count" data-i18n="trace.initial_count">0 项</span>
+        </span>
+      </summary>
+      <ol class="trace-list"></ol>
+    </details>
+  </template>
+  <template id="emptyTemplate">
+    <section class="empty-state"><h1 data-i18n="empty.title">建立第一个工作区任务</h1><p data-i18n="empty.body">一个全图单元由本地工作区文件夹和线程共同组成。</p><button class="primary" data-action="new-task" data-i18n="empty.choose_folder">选择文件夹</button></section>
+  </template>
+  <script src="./vendor/markdown-it.min.js"></script>
+  <script src="./shared/markdown/message-reading.js"></script>
+  <script src="./shared/i18n/i18n-catalog.js"></script>
+  <script src="./shared/i18n/i18n.js"></script>
+  <script src="./features/skills/skill-picker.js"></script>
+  <script src="./features/context/context-editor.js"></script>
+  <script src="./features/context/compression-panel.js?v=20260905c"></script>
+  <script src="./features/conversation/keyword-command.js?v=20260901"></script>
+  <script src="./features/plugins/plugin-view.js"></script>
+  <script src="./features/memory/memory.js?v=20261017-strategy"></script>
+  <script src="./features/conversation/conversation-events.js"></script>
+  <script src="./features/conversation/conversation-reconciler.js?v=20260907a"></script>
+  <script src="./features/conversation/conversation-render.js"></script>
+  <script src="./features/conversation/conversation-view.js"></script>
+  <script src="./features/context/context-curator-presentation.js?v=20260906a"></script>
+  <script src="./features/patrol/avatar/patrol-presence.js?v=20260905b"></script>
+  <script src="./features/patrol/avatar/patrol-avatar.js?v=20260905b"></script>
+  <script src="./features/map/map-collapsible-view.js?v=20260902"></script>
+  <script src="./features/materials/image-material-picker.js?v=20260912b"></script>
+  <script src="./features/materials/run-material-picker.js?v=20260913a"></script>
+  <script src="./features/materials/material-grouping.js?v=20260913a"></script>
+  <script src="./features/materials/material-content-loader.js?v=20260912a"></script>
+  <script src="./features/conversation/access-mode.js?v=20260928a"></script>
+  <script src="./features/conversation/access-approval.js"></script>
+  <script src="./features/conversation/composer-draft.js"></script>
+  <script src="./features/conversation/composer-files.js"></script>
+  <script src="./features/conversation/conversation-reference.js"></script>
+  <script src="./features/conversation/message-retry.js"></script>
+  <script src="./features/conversation/task-run-operations.js?v=20260920a"></script>
+  <script src="./shared/runtime/run-stream-subscriptions.js"></script>
+  <script src="./features/context/running-context-preview.js"></script>
+  <script src="./features/context/context-run-previews.js"></script>
+  <script src="./features/loop/loop-live-schema.js?v=20260919a"></script>
+  <script src="./features/loop/loop-live-reducer.js?v=20260919a"></script>
+  <script src="./features/loop/loop-live-selectors.js?v=20260919a"></script>
+  <script src="./features/loop/loop-live-store.js?v=20260919a"></script>
+  <script src="./features/loop/loop-live-connection.js?v=20260919a"></script>
+  <script src="./features/loop/loop-legacy-connection.js?v=20260919a"></script>
+  <script src="./shared/http/http-response.js?v=20260920a"></script>
+  <script src="./features/loop/loop-api.js?v=20260920a"></script>
+  <script src="./features/loop/loop-wait-recovery.js?v=20260927a"></script>
+  <script src="./features/loop/loop-wait-request-view.js?v=20260920a"></script>
+  <script src="./features/loop/loop-mission-editor.js?v=20260919a"></script>
+  <script src="./features/loop/loop-store.js?v=20260915a"></script>
+  <script src="./features/loop/loop-console-store.js?v=20260916a"></script>
+  <script src="./features/loop/loop-console-controller.js?v=20260916a"></script>
+  <script src="./features/map/portfolio-map-layout.js"></script>
+  <script src="./features/map/portfolio-map-view.js?v=20260916b"></script>
+  <script src="./features/context/context-conversation-view.js?v=20260916b"></script>
+  <script src="./features/files/file-links.js"></script><script src="./features/files/file-preview.js"></script>
+  <script src="./features/loop/loop-facts-view.js?v=20260916b"></script>
+  <script src="./features/files/work-timeline.js"></script>
+  <script src="./features/files/round-changes.js"></script>
+  <script src="./features/files/artifact-drawer.js"></script>
+  <script src="./features/loop/loop-console-view.js?v=20260916b"></script>
+  <script src="./features/loop/loop-expansion-budget.js?v=20260926a"></script>
+  <script src="./features/loop/loop-view.js?v=20261017-strategy"></script>
+  <script src="./shared/ui/surface-transition.js"></script>
+  <script src="./features/patrol/workspace/workspace-patrol-inputs.js"></script>
+  <script src="./features/patrol/workspace/workspace-patrol-feedback.js"></script>
+  <script src="./features/patrol/workspace/patrol-browser-recovery.js"></script>
+  <script src="./features/patrol/workspace/workspace-patrol-intake.js"></script>
+  <script src="./features/patrol/workspace/workspace-patrol-material-preview.js"></script>
+  <script src="./features/patrol/workspace/patrol-input-references.js"></script>
+  <script src="./features/patrol/workspace/workspace-patrol-view.js"></script>
+  <script src="./features/patrol/workspace/observation-view.js?v=20261017-strategy"></script>
+  <script src="./features/context/context-inspector.js"></script>
+  <script src="./features/patrol/workspace/workspace-patrol-picker.js"></script>
+  <script src="./features/patrol/workspace/workspace-patrol-controller.js"></script>
+  <link rel="stylesheet" href="./features/patrol/editor/patrol-workbench.css">
+  <script src="./features/patrol/editor/patrol-authoring.js"></script>
+  <script src="./features/patrol/editor/patrol-document.js"></script>
+  <script src="./features/patrol/editor/patrol-json-editor.bundle.js"></script>
+  <script src="./features/patrol/editor/patrol-cards.js"></script><script src="./features/patrol/editor/patrol-viewport.js"></script><script src="./features/patrol/editor/patrol-ui.js"></script><script src="./features/patrol/editor/patrol-source-controller.js"></script><script src="./features/patrol/editor/patrol-source-browser.js"></script><script src="./features/patrol/editor/patrol-assembly-view.js"></script><script src="./features/patrol/editor/patrol-interactions.js"></script><script src="./features/patrol/editor/patrol-review-panel.js"></script><script src="./features/patrol/editor/patrol-workbench.js"></script>
+  <script src="./features/patrol/editor/patrol-branches.js"></script>
+  <script src="./features/settings/storage-settings.js"></script>
+  <script src="./features/conversation/conversation-inputs.js"></script>
+  <script src="./features/settings/session-controls.js"></script>
+  <script src="./app/app.js?v=20261018-session-controls"></script>
+  <script src="./app/gateway-recovery.js"></script>
+</body>
+</html>
