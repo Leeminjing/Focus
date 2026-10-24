@@ -3,7 +3,7 @@
 工作流为装配共享 intake 和预览模块，显式发送后读取既有 Live；示例：desktop-patrol.html?surface=panel。
 -->
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"><link rel="stylesheet" href="./styles/workspace-patrol-budget.css"><link rel="stylesheet" href="./file-preview.css"><link rel="stylesheet" href="./styles/patrol-input-references.css">
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"><link rel="stylesheet" href="./file-preview.css"><link rel="stylesheet" href="./styles/patrol-input-references.css">
   <link rel="stylesheet" href="./styles/message-reading.css"><link rel="stylesheet" href="./styles/gateway-recovery.css"></head>
 <body>
   <link rel="stylesheet" href="./styles/workspace-patrol-feedback.css">
@@ -29,7 +29,6 @@
       <section id="version-detail" aria-label="文件版本详情" hidden data-i18n-aria-label="panel.version_details"><header><strong data-i18n="panel.versions">文件版本</strong><button type="button" id="close-version-detail" aria-label="关闭版本详情" data-i18n-aria-label="panel.close_version"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><div id="version-body"></div></section>
       <div class="panel-feedback"><div class="panel-feedback-content">
       <section id="first-goal" aria-label="首次使用引导" hidden data-i18n-aria-label="panel.onboarding"><p id="first-goal-help" role="status"></p><button id="first-goal-folder" type="button" data-i18n="panel.project_folder">选择项目文件夹</button></section>
-      <div id="task-budget"></div>
       <p id="error" role="alert" hidden></p>
       <button id="retry-workspace" type="button" hidden data-i18n="panel.reload_workspace">重新读取工作区</button>
       <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden data-i18n="panel.reconnect">重连</button><button id="toggle-work" type="button" aria-label="暂停当前工作" hidden disabled data-i18n-aria-label="panel.pause_work" data-i18n="panel.pause">暂停</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
@@ -49,6 +48,6 @@
   <script src="./vendor/markdown-it.min.js"></script>
   <script src="./message-reading.js"></script><script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script><script src="./file-preview.js"></script><script src="./loop-facts-view.js"></script><script src="./work-timeline.js"></script><script src="./desktop-patrol-references.js"></script>
   <script src="./patrol-browser-recovery.js"></script>
-  <script src="./file-links.js"></script><script src="./artifact-drawer.js"></script><script src="./patrol-input-references.js"></script><script src="./workspace-patrol-budget.js"></script><script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
+  <script src="./file-links.js"></script><script src="./artifact-drawer.js"></script><script src="./patrol-input-references.js"></script><script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
   <script src="./gateway-recovery.js"></script>
 </body></html>

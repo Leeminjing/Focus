@@ -63,15 +63,6 @@
     $("#first-goal-folder").hidden = !!workspace;
     $("#instruction").placeholder = onboarding ? localize("你想在这个项目中完成什么？") : localize("有什么想法？");
   }
-  let budget = null;
-  function resetBudget() {
-    budget?.dispose();
-    $("#task-budget").hidden = !workspace;
-    $("#task-budget").innerHTML = FocusWorkspacePatrolBudget.markup();
-    budget = FocusWorkspacePatrolBudget.create({ host: $("#task-budget"), api,
-      getDraft: () => draftStore().get().draft, editDraft: patch => draftStore().edit(patch), onError: fail });
-    budget.update(null);
-  }
   function enqueue(action) { commandQueue = commandQueue.then(action).catch(fail); return commandQueue; }
   function element(tag, text, parent) { const node = document.createElement(tag); node.textContent = text; parent?.append(node); return node; }
   function action(text, parent, handler) { const button = element("button", text, parent); button.type = "button"; button.addEventListener("click", () => { void Promise.resolve().then(handler).catch(fail); }); return button; }
@@ -167,7 +158,6 @@
     } finally { if (token === generation) notify(); }
   }
   function renderInput(model) {
-    budget?.syncDraft();
     if ($("#instruction").value !== model.draft.content) $("#instruction").value = model.draft.content;
     preview.render(model.draft);
     references.render(model.draft);
@@ -270,7 +260,6 @@
     references.close();
     artifacts.reset();
     $("#reference-file").disabled = !bound;
-    resetBudget();
     fail(null);
     if (bound) { intake.remember(bound); intake.claimUnbound(bound.workspace_id); }
     $("#binding-name").textContent = bound ? bound.display_name : localize("绑定工作区");
@@ -446,7 +435,6 @@
     }
     const { projection } = live.get();
     if (!projection || projection.loop_id !== loopId) return;
-    budget?.update(projection);
     renderRequests(projection);
     const progress = projection.task_progress?.state?.document?.items || [];
     const verified = progress.filter(item => item.state === "completed" && item.support === "supported").length;
@@ -565,9 +553,8 @@
     const before = draftStore().get().cursor;
     if (before) void readHistory(before);
   });
-  resetBudget();
   watchDraft();
-  const sizeObserver = new ResizeObserver(() => {
+  const resizePanel = () => {
     const detail = !$("#version-detail").hidden, beside = detail && matchMedia("(min-width:580px)").matches;
     const popupHeight = [$("#version-picker"),$("#version-detail"),$(".artifact-drawer")].reduce((sum,node) => sum + (node.hidden || (beside && node.id === "version-detail") ? 0 : node.offsetHeight + 8),0);
     const shellStyle = getComputedStyle($(".panel-shell"));
@@ -580,7 +567,9 @@
     const gutter = parseFloat(getComputedStyle(host).paddingTop);
     const height = Math.round(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 56 : 0)+gutter*2);
     if (bridge?.enabled) void bridge.resizePanel({height,width:(detail || artifacts.isOpen() ? 590 : host.dataset.reading === "true" ? 520 : 288)+gutter*2,animate:!matchMedia("(prefers-reduced-motion:reduce)").matches}).catch(fail);
-  });
+  };
+  const sizeObserver = new ResizeObserver(resizePanel);
+  $(".panel-menu").addEventListener("toggle", resizePanel);
   sizeObserver.observe(host);
   sizeObserver.observe($(".panel-content"));
   sizeObserver.observe($("#compose"));
@@ -638,5 +627,5 @@
   const flush = () => { void intake.flush().catch(fail); };
   document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
   window.addEventListener("pagehide", () => { try { intake.checkpoint(); } catch (error) { fail(error); } flush(); });
-  window.addEventListener("beforeunload", () => { budget?.dispose(); sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
+  window.addEventListener("beforeunload", () => { sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });

@@ -45,7 +45,6 @@
     let unlisten = null;
     let materialPreview = null;
     let historyReferences = null;
-    let budget = null;
     let artifacts = null;
     let timeline = null;
 
@@ -504,7 +503,6 @@
     }
     const patchInputs = model => {
       if (!host) return;
-      budget?.syncDraft();
       const historyChanged = renderedHistoryRevision !== model.historyRevision;
       patchHistory(model);
       patchHistoryActions(model);
@@ -599,7 +597,6 @@
       projection = next;
       timeline?.sync(loopId, next);
       patchRecovery();
-      budget?.update(next);
       for (const [id] of waitUi) {
         if (!projection.wait_requests[id] || !["open", "resolving"].includes(projection.wait_requests[id].state.status)) waitUi.delete(id);
       }
@@ -826,9 +823,6 @@
           host.querySelector("[data-patrol-file-body]").innerHTML = root.FocusLoopFactsView.renderFile({ ...detail.file, fact_id: file.fact_id, revision: file.revision });
           host.querySelector("[data-patrol-file-detail]").hidden = false;
         } });
-      const budgetHost = host.querySelector("[data-patrol-budget]");
-      if (budgetHost) budget = root.FocusWorkspacePatrolBudget.create({ host: budgetHost, api,
-        getDraft: () => inputs.get().draft, editDraft: patch => inputs.edit(patch), onError: error, canChooseInitial: !onCompose });
       if (onCompose) {
         host.querySelector("[data-patrol-composer]").classList.add("is-remote-composer");
         host.querySelector("[data-patrol-type]").hidden = true;
@@ -924,7 +918,6 @@
     function leave() {
       timeline?.dispose(); timeline = null;
       artifacts?.dispose(); artifacts = null;
-      budget?.dispose(); budget = null;
       if (graphFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(graphFrame);
       graphFrame = null; lineagePending = false;
       materialPreview?.dispose(); materialPreview = null;

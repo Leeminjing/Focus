@@ -105,6 +105,8 @@ if (!process.versions.electron) {
         authority_revision: authorityRevision, created_at: new Date(Date.now() - 600000).toISOString(),
         grant: { status: "active", budgets: activeBudget }, usage: { model_calls: 40, input_tokens: 100000, output_tokens: 5000, rounds: 5, retries: 0 } }),
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
+      interventions: inputProcessingResult ? Object.fromEntries((history.get("workspace-a") || []).map(row => [row.intent_id,
+        { ...entity(row.intent_id, { state: "addressed" }), revision: loopRevision }])) : {},
       contexts: completed ? { "context-answer": entity("context-answer", { context_id: "context-answer", title: "截图问题", current_revision_id: answerRevision }) } : {},
       task_progress: { ...entity(loopId, { generation: 0, document: { items: progressRevision > 1 ? [{ state: "completed", support: "supported" }] : [] } }), revision: progressRevision },
       facts: completed ? { [fileRef.fact_id]: entity(fileRef.fact_id, { ...fileRef, kind:"artifact", file:fileRef }), "report-file": entity("report-file", reportFile) } : {},
@@ -251,6 +253,7 @@ if (!process.versions.electron) {
       assert.ok(host.accepts(event)); return exits[operation](reference);
     });
     ipcMain.handle("focus:select-workspace", () => selectedPath);
+    ipcMain.handle("focus:gateway-status", () => ({ status: "ready", error: null, revision: 1 }));
     ipcMain.handle("focus:open-external", (_event, url) => { externalLinks.push(url); return true; });
     ipcMain.handle("focus:file-action", (event, request) => { assert.ok(host.accepts(event)); sharedActions.push(request); return true; });
     app.on("web-contents-created", (_event, contents) => {
@@ -337,10 +340,7 @@ if (!process.versions.electron) {
     await capture(host.panel, "desktop-unbound-preview");
     await run(host.panel, "document.querySelector('#binding').click()");
     await waitFor(host.panel, "document.querySelector('#binding').textContent.includes('设计工作区 A')", "绑定工作区失败");
-    await waitFor(host.panel, "!document.querySelector('[data-budget-preset]').disabled", "预算预设未加载");
-    assert.match(await run(host.panel, "document.querySelector('[data-budget-summary]').textContent"), /普通任务.*30 分钟.*2 项并行/);
-    await run(host.panel, "document.querySelector('[data-budget-preset]').value='long'; document.querySelector('[data-budget-preset]').dispatchEvent(new Event('change'))");
-    assert.match(await run(host.panel, "document.querySelector('[data-budget-summary]').textContent"), /长任务.*120 分钟.*4 项并行/);
+    assert.equal(await run(host.panel, "document.querySelector('[data-patrol-budget], #task-budget')"), null);
     assert.equal(requests.length, 0);
     await run(host.panel, `(() => { const input = document.querySelector('#instruction'); input.value = '解释这段参考资料'; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',ctrlKey:true,isComposing:true,bubbles:true})); })()`);
     await delay(80);
@@ -351,7 +351,7 @@ if (!process.versions.electron) {
     assert.equal(requests.length, 1);
     assert.equal(uploads.length, 2);
     assert.equal(requests[0].body.content, "解释这段参考资料");
-    assert.equal(requests[0].body.budget_preset, "long");
+    assert.equal(requests[0].body.budget_preset, undefined);
     assert.equal(requests[0].body.attachments[0].source_kind, "text");
     assert.equal(requests[0].body.attachments[1].source_kind, "image");
     await run(host.panel,"document.querySelector('#toggle-history').click()");
@@ -379,14 +379,9 @@ if (!process.versions.electron) {
     await capture(host.panel,"desktop-sent-attachment-preview");
     await run(host.panel,"document.querySelector('#toggle-history').click()");
     assert.doesNotMatch(await run(host.panel, "document.querySelector('#status').textContent"), /已完成/);
-    await waitFor(host.panel, "!document.querySelector('[data-budget-increase]').hidden", "运行预算未显示");
-    await run(host.panel, "document.querySelector('[data-patrol-budget] details').open=true; document.querySelector('[data-budget-preset]').value='normal'; document.querySelector('[data-budget-preset]').dispatchEvent(new Event('change')); document.querySelector('[data-budget-increase]').click()");
-    await waitFor(host.panel, "document.querySelector('[data-budget-message]').textContent.includes('本次预算已增加')", "追加预算失败");
-    assert.equal(grantChanges.length, 1);
-    assert.equal(grantChanges[0].command, "increase_budget");
-    assert.match(await run(host.panel, "document.querySelector('[data-budget-details]').textContent"), /已结算 40.*上限 500.*剩余 460/);
-    await capture(host.panel, "desktop-running-budget");
-    await run(host.panel, "document.querySelector('[data-patrol-budget] details').open=false");
+    assert.equal(await run(host.panel, "document.querySelector('[data-patrol-budget], [data-budget-preset], [data-budget-increase]')"), null);
+    assert.equal(grantChanges.length, 0);
+    await capture(host.panel, "desktop-running");
     // Exercise the production API and Live connection, holding back the state
     // update until HTTP acceptance has been observed by the renderer.
     for (const [command, target, label] of [["pause", "paused", "继续"], ["resume", "running", "暂停"], ["stop", "stopped", "暂停"]]) {
