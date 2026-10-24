@@ -9,8 +9,8 @@
 import asyncio
 from types import SimpleNamespace
 
-from backend.app.desktop.models import SessionAccessModeUpdate
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.api.schemas import SessionAccessModeUpdate
+from backend.app.desktop.composition.service import DesktopService
 from focus.security.policy import AccessMode
 
 

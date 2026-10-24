@@ -20,18 +20,12 @@ from sqlalchemy import delete, select
 os.environ.setdefault("OPENAI_API_KEY", "context-curator-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
-from backend.app.desktop.context_curator import (  # noqa: E402
+from backend.app.desktop.contexts.curator import (  # noqa: E402
     CurationEngineError,
     CurationEngineResult,
     CuratedContextPlan,
 )
-from backend.app.desktop.models import (  # noqa: E402
-    DesktopRun,
-    DesktopWorkspace,
-    PatrolContextAttempt,
-    PatrolContextBinding,
-    PatrolContextRevision,
-)
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace, PatrolContextAttempt, PatrolContextBinding, PatrolContextRevision
 from backend.app.gateway.app import app  # noqa: E402
 
 
@@ -185,7 +179,7 @@ def _create_root_and_curator(client: TestClient, tmp_path: Path, suffix: str):
 def test_direct_curator_deploys_publishes_audits_and_keeps_following(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     monkeypatch.setattr(engine_module.CurationEngine, "curate", _successful_curate)
     with TestClient(app, client=("127.0.0.1", 51000)) as client:
@@ -251,7 +245,7 @@ def test_direct_curator_deploys_publishes_audits_and_keeps_following(
 def test_running_managed_context_does_not_stop_following_patrol(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     monkeypatch.setattr(engine_module.CurationEngine, "curate", _successful_curate)
     with TestClient(app, client=("127.0.0.1", 51011)) as client:
@@ -318,7 +312,7 @@ def test_running_managed_context_does_not_stop_following_patrol(
 def test_quick_curator_uses_domain_defaults_and_is_idempotent(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     monkeypatch.setattr(engine_module.CurationEngine, "curate", _successful_curate)
     with TestClient(app, client=("127.0.0.1", 51010)) as client:
@@ -369,7 +363,7 @@ def test_quick_curator_uses_domain_defaults_and_is_idempotent(
 def test_observation_commits_before_nul_safe_projection(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     monkeypatch.setattr(engine_module.CurationEngine, "curate", _successful_curate)
     with TestClient(app, client=("127.0.0.1", 51001)) as client:
@@ -409,7 +403,7 @@ def test_observation_commits_before_nul_safe_projection(
 def test_projection_failure_does_not_roll_back_observed_target(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     monkeypatch.setattr(engine_module.CurationEngine, "curate", _successful_curate)
     with TestClient(app, client=("127.0.0.1", 51005)) as client:
@@ -447,7 +441,7 @@ def test_projection_failure_does_not_roll_back_observed_target(
 def test_paused_observation_coalesces_to_latest_checkpoint_on_resume(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     monkeypatch.setattr(engine_module.CurationEngine, "curate", _successful_curate)
     with TestClient(app, client=("127.0.0.1", 51006)) as client:
@@ -495,7 +489,7 @@ def test_paused_observation_coalesces_to_latest_checkpoint_on_resume(
 def test_capability_failure_can_retry_same_revision_after_configuration_fix(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     calls = 0
 
@@ -541,7 +535,7 @@ def test_capability_failure_can_retry_same_revision_after_configuration_fix(
 def test_transient_provider_failure_uses_bounded_backoff_without_duplicate_revision(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     calls = 0
 
@@ -572,7 +566,7 @@ def test_transient_provider_failure_uses_bounded_backoff_without_duplicate_revis
 def test_compiler_rejection_retains_raw_and_parsed_attempt_evidence(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     async def duplicate_evidence(_self, _model_name, payload):
         source_id = payload["source_snapshot"]["messages"][0]["source_message_id"]
@@ -608,7 +602,7 @@ def test_compiler_rejection_retains_raw_and_parsed_attempt_evidence(
 def test_no_change_advances_source_without_rewriting_managed_context(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     calls = 0
 
@@ -672,7 +666,7 @@ def test_no_change_advances_source_without_rewriting_managed_context(
 def test_restart_reconciles_actual_root_head_not_stale_desired(
     tmp_path, monkeypatch, wait_until
 ):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     monkeypatch.setattr(engine_module.CurationEngine, "curate", _successful_curate)
     with TestClient(app, client=("127.0.0.1", 51004)) as client:

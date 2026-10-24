@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.context_recovery import (
+from backend.app.desktop.patrol.agent_loop.context_recovery import (
     ContextRecoveryAuthorityError,
     ContextRecoveryAuthorityValidator,
     ContextRecoveryOpportunityContract,
@@ -23,20 +23,20 @@ from backend.app.desktop.agent_loop.context_recovery import (
     ContextRecoveryOpportunityRepository,
     ContextRecoveryPlanCompiler,
 )
-from backend.app.desktop.agent_loop.patrol import PatrolContractViolation
-from backend.app.desktop.agent_loop.patrol_contract import PatrolDecisionContract
-from backend.app.desktop.agent_loop.schemas import (
+from backend.app.desktop.patrol.agent_loop.patrol import PatrolContractViolation
+from backend.app.desktop.patrol.agent_loop.patrol_contract import PatrolDecisionContract
+from backend.app.desktop.patrol.agent_loop.schemas import (
     LoopObservationEnvelope,
     PATROL_MODEL_ACTION_ADAPTER,
 )
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     MultiSourceEvidence,
     NamespacedMessageRef,
     SourceMessageEvidence,
     SourceRevisionEvidence,
     compile_lane,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionPayloadMode,
     ContextRevisionRef,
 )

@@ -4,6 +4,10 @@
 具体工作流为通过 runtime_postgres_database 创建和清理本次完整迁移库，保留真实运行图、请求组装与持久 checkpoint，
 只替换模型响应；全库 Worker 不读取其他用例遗留任务。示例：pytest 本文件 -q。
 """
+
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
 import asyncio
 import uuid
 import pytest
@@ -11,7 +15,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessageChunk
 from sqlalchemy import select, text
 from backend.app.gateway.app import app
-from backend.app.desktop.models import PatrolDeploymentDefinition, PatrolDraft, DesktopRun
+from backend.app.desktop.persistence.models import PatrolDeploymentDefinition, PatrolDraft, DesktopRun
 from focus.models.responses import FocusResponsesChatModel
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -45,7 +49,7 @@ def open_draft(http, task):
 
 
 def save(http, draft, document, **extra):
-    from backend.app.desktop.session_patrol.contracts import AuthoringDocument
+    from backend.app.desktop.patrol.session_patrol.contracts import AuthoringDocument
     document = {**document, "schema_version": 2}
     document = AuthoringDocument.model_validate(document).model_dump(mode="json")
     return http.put(f"/desktop/api/drafts/{draft['draft_id']}", headers=SESSION, json={
@@ -226,8 +230,8 @@ def test_complete_budget_and_empty_deployment(client):
 def test_resume_uses_original_run_and_exact_interrupted_graph(client, monkeypatch):
     from langchain.agents.middleware import AgentMiddleware
     from langgraph.types import interrupt
-    import backend.app.desktop.service as service_module
-    original = service_module.make_lead_agent
+    import backend.app.desktop.composition.service as service_module
+    original = _desktop_conversations_compression_service.make_lead_agent
     class PauseBeforeSampling(AgentMiddleware):
         async def abefore_model(self, state, runtime):
             interrupt({"type": "patrol_test_review"})
@@ -235,7 +239,8 @@ def test_resume_uses_original_run_and_exact_interrupted_graph(client, monkeypatc
     async def factory(**kwargs):
         kwargs["additional_middlewares"] = [*kwargs.get("additional_middlewares", []), PauseBeforeSampling()]
         return await original(**kwargs)
-    monkeypatch.setattr(service_module, "make_lead_agent", factory)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', factory)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', factory)
     http, task, _, requests = client
     draft = open_draft(http, task)
     assert save(http, draft, {"schema_version": 2, "entries": []}).status_code == 200
@@ -262,7 +267,7 @@ def test_resume_uses_original_run_and_exact_interrupted_graph(client, monkeypatc
 def test_source_versions_runtime_images_and_path_boundary(client):
     from datetime import UTC, datetime
     from langchain_core.messages import HumanMessage, SystemMessage
-    from backend.app.desktop.context_evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
     from focus.history import serialize_history_message, content_hash
     http, task, path, requests = client
     repository = ContextRevisionRepository()
@@ -407,7 +412,7 @@ def test_new_model_tool_call_executes_once_after_simulated_history(client, monke
 def test_startup_configuration_change_does_not_sample(client, monkeypatch):
     http, task, _, requests = client
     service = app.state.desktop_service
-    original = service._build_agent_factory
+    original = service.agent_factory._build_agent_factory
     gate = http.portal.call(asyncio.Event)
     def build(*args, **kwargs):
         factory = original(*args, **kwargs)
@@ -418,7 +423,7 @@ def test_startup_configuration_change_does_not_sample(client, monkeypatch):
             await gate.wait()
             return await factory()
         return paused
-    monkeypatch.setattr(service, "_build_agent_factory", build)
+    monkeypatch.setattr(service.agent_factory, "_build_agent_factory", build)
     draft = open_draft(http, task)
     assert save(http, draft, {"schema_version": 2, "entries": []}).status_code == 200
     plan = http.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION).json()
@@ -502,7 +507,7 @@ def test_patrol_resume_keeps_uncertain_tool_ledger_and_never_repeats_effect(clie
     from pathlib import Path
     from langchain_core.outputs import ChatGenerationChunk
     from langgraph.types import interrupt
-    from backend.app.desktop.execution_attempts import ToolExecutionLedger
+    from backend.app.desktop.runs.execution_attempts import ToolExecutionLedger
     http, task, path, requests = client
     path.joinpath("uncertain.txt").write_text("外部效果只发生一次", encoding="utf-8")
     effects = []
@@ -548,17 +553,18 @@ def test_legacy_interrupt_keeps_original_namespace_without_new_definition(client
     import time
     from langchain.agents.middleware import AgentMiddleware
     from langgraph.types import interrupt
-    from backend.app.desktop.models import PatrolAgent
-    from backend.app.desktop.run_orchestration.models import RunDispatch
-    import backend.app.desktop.service as service_module
-    original = service_module.make_lead_agent
+    from backend.app.desktop.persistence.models import PatrolAgent
+    from backend.app.desktop.runs.orchestration.models import RunDispatch
+    import backend.app.desktop.composition.service as service_module
+    original = _desktop_conversations_compression_service.make_lead_agent
     class PauseLegacy(AgentMiddleware):
         async def abefore_model(self, state, runtime):
             interrupt({"type": "legacy_test"})
     async def factory(**kwargs):
         kwargs["additional_middlewares"] = [*kwargs.get("additional_middlewares", []), PauseLegacy()]
         return await original(**kwargs)
-    monkeypatch.setattr(service_module, "make_lead_agent", factory)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', factory)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', factory)
     http, task, path, requests = client
     identity = uuid.uuid4().hex; namespace = "legacy-patrol:"+identity
     async def seed():
@@ -672,7 +678,7 @@ def test_continue_keeps_pinned_checkpoint_when_another_run_advances_after_admiss
     source = wait_run(http, deployed.json()["run_id"])
     service = app.state.desktop_service
     gate = http.portal.call(asyncio.Event)
-    original = service._build_agent_factory
+    original = service.agent_factory._build_agent_factory
     paused_once = {"value": False}
     def build(*args, **kwargs):
         factory = original(*args, **kwargs)
@@ -684,7 +690,7 @@ def test_continue_keeps_pinned_checkpoint_when_another_run_advances_after_admiss
             await gate.wait()
             return await factory()
         return paused
-    monkeypatch.setattr(service, "_build_agent_factory", build)
+    monkeypatch.setattr(service.agent_factory, "_build_agent_factory", build)
     branch = {"run_id": source["run_id"], "checkpoint_id": source["final_checkpoint_id"]}
     first = http.post(f"/desktop/api/agents/{source['agent_id']}/continue", headers=SESSION, json={**branch, "message": "PINNED_OLD"})
     assert first.status_code == 200, first.text
@@ -709,7 +715,7 @@ def test_continue_keeps_pinned_checkpoint_when_another_run_advances_after_admiss
 def test_contract_rewrite_and_ordered_roles_reach_actual_request_without_approval(client, provider):
     from datetime import UTC, datetime
     from langchain_core.messages import HumanMessage
-    from backend.app.desktop.context_evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
     from focus.history import serialize_history_message, content_hash
     http, task, _, requests = client
     service = app.state.desktop_service
@@ -750,7 +756,7 @@ def test_contract_rewrite_and_ordered_roles_reach_actual_request_without_approva
     assert requests[-1] == plan["request"]
     async def unchanged_source():
         async with service.session_factory() as session:
-            from backend.app.desktop.context_evolution.reader import ContextRevisionReader
+            from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
             reader = ContextRevisionReader(ContextRevisionRepository(), service.checkpointer)
             history = await reader.read(session, ref, "execution")
             assert content_hash(history.messages) == original_hash

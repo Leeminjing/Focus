@@ -28,23 +28,23 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import LoopCoordinator
-from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.lineage_events import ContextLineageEventRecorder
-from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection
-from backend.app.desktop.agent_loop.live_projection_reducer import LoopLiveProjectionReducer
-from backend.app.desktop.agent_loop.live_snapshot_overlay import LoopLiveProjectionOverlay
-from backend.app.desktop.agent_loop.models import (
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.queries.console_query import LoopConsoleQueryService
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.journal.lineage_events import ContextLineageEventRecorder
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_contract import LoopLiveProjection
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_reducer import LoopLiveProjectionReducer
+from backend.app.desktop.patrol.agent_loop.projections.live_snapshot_overlay import LoopLiveProjectionOverlay
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopAction,
     LoopContextMembership,
     LoopDecision,
     LoopDirective,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextLineageResolver,
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -54,8 +54,8 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.context_evolution.models import ContextRevision
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.contexts.evolution.models import ContextRevision
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 from test_agent_loop_round_liveness import _seed_loop, _stop
 
@@ -590,8 +590,8 @@ def test_same_context_revision_records_no_lineage_event(tmp_path: Path) -> None:
 def test_loop_entry_points_record_lineage_facts() -> None:
     """Loop 纳成员（创建）与发布 portfolio 两条入口都必须登记成员派生事实。"""
 
-    root = Path(__file__).resolve().parents[2] / "backend" / "app" / "desktop" / "agent_loop"
-    for name in ("service.py", "portfolio_publication.py"):
+    root = Path(__file__).resolve().parents[2] / "backend" / "app" / "desktop" / "patrol" / "agent_loop"
+    for name in ("service.py", "curation/portfolio_publication.py"):
         source = (root / name).read_text(encoding="utf-8")
         assert "record_loop_members" in source, f"{name} 必须在 Loop 拓扑变化时登记 lineage 事实"
 

@@ -9,7 +9,7 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ContextSynthesisClaim, ContextSynthesisValidator, ContextSynthesisWorkerDraft
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ContextSynthesisClaim, ContextSynthesisValidator, ContextSynthesisWorkerDraft
 from backend.tests.test_synthesis_claim_feedback import _inputs, _service
 
 

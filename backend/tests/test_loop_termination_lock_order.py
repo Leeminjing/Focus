@@ -18,12 +18,12 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlocker
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopRound
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
+from backend.app.desktop.patrol.agent_loop.resources.budgets import LoopBudgetGuard
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ExpansionBlocker
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDecision, LoopRound
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_context_expansion_kernel import _create_lane_intent, _grant_create_lane_and_add_active_run

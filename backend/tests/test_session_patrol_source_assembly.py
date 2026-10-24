@@ -9,7 +9,7 @@ from copy import deepcopy
 
 import pytest
 from backend.tests.test_session_patrol_workbench_api import client as client, open_draft, save, SESSION
-from backend.app.desktop.session_patrol.source_projection import project_authoring_sources, freeze_authoring_sources, source_fingerprint
+from backend.app.desktop.patrol.session_patrol.source_projection import project_authoring_sources, freeze_authoring_sources, source_fingerprint
 from focus.history import FocusItem
 
 
@@ -115,7 +115,7 @@ def test_directory_query_and_cursor_are_scoped(client):
     import uuid
     from langchain_core.messages import HumanMessage
     from backend.app.gateway.app import app
-    from backend.app.desktop.context_evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
     from focus.history import serialize_history_message, content_hash
     http, task, _, _ = client
     async def seed():
@@ -170,8 +170,8 @@ def test_preview_paging_selection_and_query_cursor_share_one_snapshot(client, mo
 
 
 def test_diagnostics_locate_actual_fields_and_offer_applicable_actions():
-    from backend.app.desktop.session_patrol.contracts import AuthoringDocument
-    from backend.app.desktop.session_patrol.compiler import compile_document
+    from backend.app.desktop.patrol.session_patrol.contracts import AuthoringDocument
+    from backend.app.desktop.patrol.session_patrol.compiler import compile_document
     document = AuthoringDocument.model_validate({"entries": [
         {"entry_id": "bad", "kind": "function_call", "payload": {"name": "read", "call_id": "bad", "arguments": "{bad"}},
         {"entry_id": "waiting", "kind": "function_call", "payload": {"name": "read", "call_id": "waiting", "arguments": "{}"}},
@@ -208,7 +208,7 @@ def test_provider_projection_failure_is_global_without_fake_entry_identity(clien
 def test_import_commit_failure_rolls_back_entries_references_and_revision(client, monkeypatch):
     from sqlalchemy.ext.asyncio import AsyncSession
     from backend.app.gateway.app import app
-    from backend.app.desktop.models import PatrolDraft
+    from backend.app.desktop.persistence.models import PatrolDraft
     http, task, path, _ = client
     draft = open_draft(http, task)
     endpoint = f"/desktop/api/drafts/{draft['draft_id']}"

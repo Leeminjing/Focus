@@ -14,8 +14,8 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.desktop.agent_loop.live_routes import _sse, live_loop_router, live_loop_stream
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventEnvelope, EventVisibility, LiveEventAuthorizationPolicy
+from backend.app.desktop.patrol.agent_loop.live.live_routes import _sse, live_loop_router, live_loop_stream
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventEnvelope, EventVisibility, LiveEventAuthorizationPolicy
 
 
 def test_live_stream_rejects_malformed_cursor() -> None:

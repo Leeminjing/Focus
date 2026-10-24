@@ -99,7 +99,7 @@ class DocxSessionManager:
         return get_session_factory()
 
     async def _workspace(self, session: Any, task_id: str) -> str:
-        from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+        from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
         task = await session.get(DesktopThread, task_id)
         if not task:

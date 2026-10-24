@@ -13,7 +13,7 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     LanePlan,
     MultiSourceEvidence,
     NamespacedMessageRef,
@@ -21,7 +21,7 @@ from backend.app.desktop.context_curation import (
     SourceMessageEvidence,
     SourceRevisionEvidence,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionPayloadMode,
     ContextRevisionRef,
 )

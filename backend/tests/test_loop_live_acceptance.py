@@ -22,49 +22,49 @@ from focus.runtime.stream_bridge.schemas import StreamEvent
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import (
+from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
     LoopCreateRequest,
     LoopKernel,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.curator_assignments import (
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.patrol.agent_loop.curation.curator_assignments import (
     CuratorAssignmentRepository,
 )
-from backend.app.desktop.agent_loop.directive_causality import (
+from backend.app.desktop.patrol.agent_loop.execution.directive_causality import (
     DirectiveCausalityRecorder,
 )
-from backend.app.desktop.agent_loop.directive_lifecycle import (
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import (
     DirectiveLifecycleRepository,
 )
-from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
-from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRevision
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.live_projection_projector import (
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopWaveDispatcher
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact, LoopFactRevision
+from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import (
     LoopLiveSnapshotProjector,
 )
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.models import (
     LoopContextMembership,
     LoopDirective,
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.patrol_runtime import (
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
     CuratorCoordinationStage,
     PatrolSessionLifecycle,
 )
-from backend.app.desktop.agent_loop.patrol_session_state import (
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import (
     PatrolActivity,
     PatrolPhase,
 )
-from backend.app.desktop.agent_loop.portfolio_events import (
+from backend.app.desktop.patrol.agent_loop.journal.portfolio_events import (
     PortfolioPublicationEventRecorder,
 )
-from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBridge
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.patrol.agent_loop.execution.run_activity_bridge import LoopRunActivityBridge
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -72,7 +72,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -198,7 +198,7 @@ async def _seed_contexts(sessions, tmp_path, workspace_id, context_ids, revision
 
 
 async def _seed_memberships(sessions, loop_id, round_id, context_ids, roles):
-    from backend.app.desktop.agent_loop.rounds import current_frontier_hash
+    from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import current_frontier_hash
 
     async with sessions.begin() as session:
         for context_id, role in zip(context_ids[1:], roles[1:], strict=True):

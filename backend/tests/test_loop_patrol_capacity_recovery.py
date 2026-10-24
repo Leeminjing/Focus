@@ -17,26 +17,26 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import round_orchestration as module
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.decision_context import DecisionSupplementRepository, PatrolDecisionContext
-from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopObservation, LoopPatrolAttempt, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.observation import observation_hash
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView, PatrolWorkerReadRequest
-from backend.app.desktop.agent_loop.patrol_request_capacity import PatrolRequestCapacity
-from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage
-from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssignment, LoopPatrolSession
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
-from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
-from backend.app.desktop.agent_loop.ownership import KernelFencingRejected
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator, PatrolCognitiveStep, StructuredPatrolDecisionModel
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, RevokeLoopGrantRequest
-from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
-from backend.app.desktop.agent_loop.context_expansion.candidate_paging import ProviderRequestWindowError
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded, IndexModelBudget
+from backend.app.desktop.patrol.agent_loop.rounds import round_orchestration as module
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.decisions.decision_context import DecisionSupplementRepository, PatrolDecisionContext
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopObservation, LoopPatrolAttempt, LoopRound, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import PatrolReadView, PatrolWorkerReadRequest
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_request_capacity import PatrolRequestCapacity
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import CuratorCoordinationStage
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopCuratorAssignment, LoopPatrolSession
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import PatrolActivity, PatrolPhase
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_repository import PatrolSessionRepository
+from backend.app.desktop.patrol.agent_loop.governance.ownership import KernelFencingRejected
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator, PatrolCognitiveStep, StructuredPatrolDecisionModel
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope, RevokeLoopGrantRequest
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
+from backend.app.desktop.patrol.agent_loop.context_expansion.candidate_paging import ProviderRequestWindowError
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded, IndexModelBudget
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_round_task_progress import _Checkpointer

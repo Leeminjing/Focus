@@ -8,15 +8,15 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
-from backend.app.desktop.agent_loop.budget_presets import initial_budgets
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import (
+from backend.app.desktop.patrol.agent_loop.resources.budget_presets import initial_budgets
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import (
     BudgetedIndexModel,
     IndexBudgetExceeded,
     IndexModelBudget,
 )
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
-from backend.app.desktop.agent_loop.usage import LoopUsageDelta
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import resolve_expansion_resources
+from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
 from backend.tests.config_helpers import app_config_for
 
 
@@ -49,7 +49,7 @@ def test_normal_budget_releases_each_reported_production_attempt(monkeypatch):
                 }
                 return AIMessage(content=json.dumps({"answer": "ok"}))
 
-        monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model",
+        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model",
                             lambda **kwargs: Provider())
         config = app_config_for("budget-test", None)
         config.models[0].curation_output_method = "prompt_json"
@@ -84,7 +84,7 @@ def test_each_reported_retry_is_released_before_the_next_attempt(monkeypatch, va
                 body = {"answer": "ok"} if validation_failure or calls == 7 else {"invalid": True}
                 return AIMessage(content=json.dumps(body))
 
-        monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model",
+        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model",
                             lambda **kwargs: Provider())
         config = app_config_for("budget-test", None)
         config.models[0].curation_output_method = "prompt_json"
@@ -240,13 +240,13 @@ def test_refund_preserves_frozen_usage_unlimited_and_actual_overruns(unlimited):
 def test_normal_budget_full_index_cold_append_and_cache(tmp_path, monkeypatch, production_model):
     from sqlalchemy import select
 
-    from backend.app.desktop.agent_loop.context_expansion.interpretation_record import RevisionInterpretationProposal
-    from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-    from backend.app.desktop.agent_loop.context_expansion.portfolio_index import PortfolioSemanticIndexService
-    from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+    from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import RevisionInterpretationProposal
+    from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+    from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import PortfolioSemanticIndexService
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
         SemanticClaimSupportProposal, SemanticProjectionProposal,
     )
-    from backend.app.desktop.agent_loop.models import LoopBudgetUsage
+    from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
     from backend.tests.incremental_index_support import Checkpoints, ModelProbe, messages, observation, revision
     from backend.tests.test_incremental_index_real_model import observed_model_factory
     from backend.tests.test_incremental_revision_index import exercise
@@ -276,7 +276,7 @@ def test_normal_budget_full_index_cold_append_and_cache(tmp_path, monkeypatch, p
                     }
                     return AIMessage(content=result.model_dump_json())
 
-            monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model",
+            monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model",
                                 lambda **kwargs: Provider())
             service = PortfolioSemanticIndexService(sessions, Checkpoints(),
                 semantic_projector_factory=observed_model_factory(config, "semantic_index_projector", [], attempts),

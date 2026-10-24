@@ -20,16 +20,16 @@ from test_round_task_progress import _Checkpointer
 from progress_test_support import register_progress
 from test_round_memory_boundaries import _next_round
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import validation_diagnostic
-from backend.app.desktop.agent_loop.task_progress.contracts import ProgressCandidate, canonical_hash
-from backend.app.desktop.agent_loop.task_progress.candidate_contract import CandidateValidationError, candidate_schema
-from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import interpretation_payload
-from backend.app.desktop.agent_loop.task_progress.consolidation import TaskProgressConsolidator
-from backend.app.desktop.agent_loop.task_progress.models import LoopProgressReceipt, LoopProgressWork
-from backend.app.desktop.agent_loop.task_progress.repository import ProgressPublicationRejected, TaskProgressRepository
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime, _SYSTEM
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import validation_diagnostic
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import ProgressCandidate, canonical_hash
+from backend.app.desktop.patrol.agent_loop.task_progress.candidate_contract import CandidateValidationError, candidate_schema
+from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import interpretation_payload
+from backend.app.desktop.patrol.agent_loop.task_progress.consolidation import TaskProgressConsolidator
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressReceipt, LoopProgressWork
+from backend.app.desktop.patrol.agent_loop.task_progress.repository import ProgressPublicationRejected, TaskProgressRepository
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime, _SYSTEM
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -366,7 +366,7 @@ def test_distinct_reference_failures_keep_same_work_history_across_restart(tmp_p
 @pytest.mark.parametrize("capacity", ["too_small", "fits"])
 def test_full_request_input_budget_is_checked_and_reserved(tmp_path, monkeypatch, capacity):
     async def run():
-        from backend.app.desktop.agent_loop import structured_worker
+        from backend.app.desktop.patrol.agent_loop.workers import structured_worker
         from focus.messages.usage import estimate_raw_tokens
         from focus.models.responses import FocusResponsesChatModel
         from focus.models.provider_contract import ProviderContract

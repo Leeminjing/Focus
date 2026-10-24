@@ -7,11 +7,11 @@ import uuid
 
 import pytest
 
-from backend.app.desktop.agent_loop.input_feedback import PatrolInputFeedbackReader
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopDecision, LoopObservation, LoopRound
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.models import DesktopRun, DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop.inputs.input_feedback import PatrolInputFeedbackReader
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopDecision, LoopObservation, LoopRound
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
 from backend.tests.test_workspace_patrol import _setup
 from backend.tests.test_workspace_patrol_decisions import _decision, _prepare
 
@@ -133,7 +133,7 @@ def test_history_returns_exact_applied_disposition_and_evidence(tmp_path, dispos
             assert (await service.history(other, intent_ids=[first["intent_id"]]))["items"] == []
             from fastapi import FastAPI
             from httpx import ASGITransport, AsyncClient
-            from backend.app.desktop.agent_loop.routes import agent_loop_router
+            from backend.app.desktop.patrol.agent_loop.routes import agent_loop_router
 
             app = FastAPI()
             app.include_router(agent_loop_router)

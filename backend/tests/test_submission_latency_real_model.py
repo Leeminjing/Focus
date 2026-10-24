@@ -18,16 +18,16 @@ import pytest
 from sqlalchemy import select
 
 from backend.app.gateway.app import app
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.agent_loop.submission_latency import (
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+from backend.app.desktop.patrol.agent_loop.diagnostics.submission_latency import (
     CommittedSubmissionProbe, SCENARIOS, SubmissionSample, measure_submission, summarize,
 )
-from backend.app.desktop.agent_loop.context_expansion.models import LoopContextDerivationArtifact
-from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolBootstrap
-from backend.app.desktop.context_evolution.schemas import ContextRevisionOriginKind, ContextRevisionSourceContract
-from backend.app.desktop.models import DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextDerivationArtifact
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
+from backend.app.desktop.contexts.evolution.schemas import ContextRevisionOriginKind, ContextRevisionSourceContract
+from backend.app.desktop.persistence.models import DesktopWorkspace
 
 pytestmark = [pytest.mark.usefixtures("isolated_postgres_database"), pytest.mark.skipif(
     os.environ.get("FOCUS_SUBMISSION_REAL_MODEL") != "1", reason="explicit real-provider end-to-end benchmark",

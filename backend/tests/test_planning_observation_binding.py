@@ -18,22 +18,22 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.artifact_repository import SemanticDerivationArtifactRepository
-from backend.app.desktop.agent_loop.context_expansion.models import LoopPlanningRetrievalSession
-from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import LaneAdviceProposal, PlannerQueryProposal, PlannerReadProposal
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import PortfolioIndexCatalog
-from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
-from backend.app.desktop.agent_loop.models import LoopWorkerRequest
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.worker_attempts import WorkerAttemptRejected
-from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
+from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import SemanticDerivationArtifactRepository
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopPlanningRetrievalSession
+from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import LaneAdviceProposal, PlannerQueryProposal, PlannerReadProposal
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import PortfolioIndexCatalog
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import resolve_expansion_resources
+from backend.app.desktop.patrol.agent_loop.models import LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.workers.worker_attempts import WorkerAttemptRejected
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_context_expansion_kernel import _source_ref
 from backend.tests.test_patrol_session import _persist_observation
 from backend.tests.test_round_task_progress import _Checkpointer
-from backend.app.desktop.evolution_strategies import strategy_catalog
+from backend.app.desktop.capabilities.evolution_strategies import strategy_catalog
 from focus.history import content_hash
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -262,10 +262,10 @@ def test_new_observation_rejects_old_worker_checkpoint(tmp_path):
 
 
 def test_old_identity_cache_is_retained_but_never_used_for_new_planning(tmp_path):
-    from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
-    from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import RetrievalBackedCognitiveAdvisor
-    from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import PlanningRetrievalSession, PlanningRetrievalSessionController, RetrievalBudget
-    from backend.app.desktop.agent_loop.expansion_resource_policy import FrozenExpansionResources
+    from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
+    from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import RetrievalBackedCognitiveAdvisor
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import PlanningRetrievalSession, PlanningRetrievalSessionController, RetrievalBudget
+    from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import FrozenExpansionResources
 
     async def run():
         async with _case(tmp_path) as case:

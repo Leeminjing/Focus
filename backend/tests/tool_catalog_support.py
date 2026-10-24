@@ -5,6 +5,9 @@
 示例：service = desktop_service(config)；graph = await service._build_agent_factory(... )()。
 """
 
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+
 import json
 
 import httpx
@@ -14,8 +17,8 @@ from langchain_core.tools import StructuredTool
 import focus.agents.lead.agent as lead
 import focus.plugins as plugins
 import focus.tools.tools as discovery
-import backend.app.desktop.service as desktop
-from backend.app.desktop.collab import AgentCollab
+import backend.app.desktop.composition.service as desktop
+from backend.app.desktop.agents.collaboration import AgentCollab
 from focus.config import AppConfig
 from focus.config.commitment_config import CommitmentConfig
 from focus.config.compression_config import CompressionConfig
@@ -100,5 +103,5 @@ def install_fixture(monkeypatch, registry, model, *, custom=(), mcp=()):
     monkeypatch.setattr(lead, "create_chat_model", lambda **kwargs: model)
     monkeypatch.setattr(discovery, "_custom_tools", custom_tools)
     monkeypatch.setattr(discovery, "_mcp_tools", mcp_tools)
-    monkeypatch.setattr(desktop, "DurableInboxMiddleware", lambda *args: IsolatedInbox())
-    monkeypatch.setattr(desktop, "ModelAttemptMiddleware", lambda *args: IsolatedAttempt())
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'DurableInboxMiddleware', lambda *args: IsolatedInbox())
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'ModelAttemptMiddleware', lambda *args: IsolatedAttempt())

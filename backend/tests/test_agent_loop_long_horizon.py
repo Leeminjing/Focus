@@ -20,8 +20,8 @@ from completion_evidence_support import claim_verifier, record_verified_fixture
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import (
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
     CompletionEvidenceService,
     CompletionVerificationContract,
@@ -30,7 +30,7 @@ from backend.app.desktop.agent_loop import (
     LoopKernel,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopContextMembership,
     LoopDirective,
@@ -38,7 +38,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopWorkerRequest,
     MessageProvenance,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -47,8 +47,8 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

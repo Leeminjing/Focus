@@ -9,13 +9,13 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.models import LoopAction, LoopDecision, LoopDirective, LoopObservation, LoopRound
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.submission_latency import CommittedSubmissionProbe
-from backend.app.desktop.context_evolution.models import ContextPublicationReceipt
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.run_orchestration.models import RunDispatch
+from backend.app.desktop.patrol.agent_loop.models import LoopAction, LoopDecision, LoopDirective, LoopObservation, LoopRound
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.diagnostics.submission_latency import CommittedSubmissionProbe
+from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.runs.orchestration.models import RunDispatch
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

@@ -12,17 +12,17 @@ import importlib
 from focus.persistence.base import Base
 from sqlalchemy import CheckConstraint, UniqueConstraint
 
-from backend.app.desktop import persistence_registry
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.persistence import registry as persistence_registry
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
     ContextRevisionProjectionStatus,
 )
-from backend.app.desktop.context_evolution.models import (
+from backend.app.desktop.contexts.evolution.models import (
     ContextRevision,
     ContextRevisionSource,
 )
-from backend.app.desktop.models import DesktopThread
+from backend.app.desktop.persistence.models import DesktopThread
 
 
 def test_context_revision_tables_register_once() -> None:

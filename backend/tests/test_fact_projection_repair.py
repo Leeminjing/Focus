@@ -16,17 +16,17 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRelationship, LoopFactRevision
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.journal_models import LoopProjectorCursor
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure, LoopProjectionUnitOutcome
-from backend.app.desktop.agent_loop.projection_recovery import ProjectionRecoveryRepository
-from backend.app.desktop.agent_loop.projection_routes import projection_router
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact, LoopFactRelationship, LoopFactRevision
+from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopProjectorCursor
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.patrol.agent_loop.projections.projection_models import LoopProjectionFailure, LoopProjectionUnitOutcome
+from backend.app.desktop.patrol.agent_loop.recovery.projection_recovery import ProjectionRecoveryRepository
+from backend.app.desktop.patrol.agent_loop.projections.projection_routes import projection_router
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -284,7 +284,7 @@ def test_normal_projection_obeys_sequence_when_transaction_time_decreases(tmp_pa
                         kind="context.test.completed", entity_type="test_result", entity_id="same-test",
                         entity_revision=revision, payload={"context_id": env.context_id, "summary": str(revision), "status": "success"},
                         idempotency_key=f"ordered-{revision}")))
-                from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
+                from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
                 later = await session.get(LoopJournalEvent, events[1].event_id)
                 later.occurred_at = events[0].occurred_at - timedelta(minutes=1)
             await env.projector.project_loop(env.loop_id)

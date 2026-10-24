@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 
 from backend.tests.runtime_context_support import tool_runtime
-from backend.app.desktop.domain_evidence.tests import TestResultParser
+from backend.app.desktop.runs.evidence.tests import TestResultParser
 from focus.security.policy import AccessMode
 from focus.tools.builtins.workspace_tools import powershell
 

@@ -11,10 +11,10 @@ import os
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.compiler import ContextExpansionPlanCompiler
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlocker, ExpansionOpportunity
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ContextSynthesisClaim
-from backend.app.desktop.context_curation import MaterialEvidenceRef, MissionEvidenceRef, RunResultEvidenceRef, WorkspaceEffectEvidenceRef
+from backend.app.desktop.patrol.agent_loop.context_expansion.compiler import ContextExpansionPlanCompiler
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ExpansionBlocker, ExpansionOpportunity
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ContextSynthesisClaim
+from backend.app.desktop.contexts.curation import MaterialEvidenceRef, MissionEvidenceRef, RunResultEvidenceRef, WorkspaceEffectEvidenceRef
 from backend.tests._semantic_context_fixtures import single_source_fixture
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_synthesis_claim_feedback import _compiler_observation, _service

@@ -13,19 +13,19 @@ import pytest
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import CandidateEvidenceIdentity, CognitivePlanResult, ContextSemanticManifest, EvidenceRequirement, WorkContextSpec, stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionStage
-from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion, LoopContextDerivationArtifact
-from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.agent_loop.models import LoopDirective, LoopDecision, LoopPatrolAttempt, AgentLoop
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import CandidateEvidenceIdentity, CognitivePlanResult, ContextSemanticManifest, EvidenceRequirement, WorkContextSpec, stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.coordinator import ContextExpansionStage
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextExpansion, LoopContextDerivationArtifact
+from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.patrol.agent_loop.models import LoopDirective, LoopDecision, LoopPatrolAttempt, AgentLoop
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_loop_mission_bootstrap import _seed_greeting_loop, _FrozenCheckpointer, _script_first_patrol
-from backend.app.desktop.context_evolution import ContextRevisionRef
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

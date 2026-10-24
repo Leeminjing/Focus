@@ -37,7 +37,7 @@ import os
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
-import backend.app.desktop.persistence_registry  # noqa: F401
+import backend.app.desktop.persistence.registry  # noqa: F401
 from focus.persistence.base import Base
 
 # Alembic Config 对象

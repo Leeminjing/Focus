@@ -15,11 +15,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.context_service import ContextService
-from backend.app.desktop.conversation_inputs import ConversationInputs
-from backend.app.desktop.message_reference import project_message_reference
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.routes import desktop_router
+from backend.app.desktop.contexts.service import ContextService
+from backend.app.desktop.conversations.inputs import ConversationInputs
+from backend.app.desktop.conversations.message_reference import project_message_reference
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.api.routes import desktop_router
 from backend.tests.http_asgi_bridge import ASGIHTTPBridge
 from focus.config.app_config import AppConfig
 

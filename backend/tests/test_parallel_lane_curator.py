@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     CurationAttempt,
     CurationLane,
     CurationProgram,
@@ -31,11 +31,11 @@ from backend.app.desktop.context_curation import (
     PortfolioRevision,
     WorkerReviewVerdict,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionPayloadMode,
     ContextRevisionRef,
 )
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

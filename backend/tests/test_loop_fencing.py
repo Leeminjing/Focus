@@ -16,13 +16,13 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCoordinator, LoopCreateRequest, LoopKernel, PatrolDecisionIntent
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopCoordinatorLease, LoopRound
-from backend.app.desktop.agent_loop.ownership import KernelFencingRejected, LoopFencingGuard
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCoordinator, LoopCreateRequest, LoopKernel, PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopCoordinatorLease, LoopRound
+from backend.app.desktop.patrol.agent_loop.governance.ownership import KernelFencingRejected, LoopFencingGuard
+from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.tests.loop_run_boundary_support import freeze_patrol_intent
 
 
@@ -71,9 +71,9 @@ def test_monotonic_token_and_commit_time_rejection(tmp_path) -> None:
             )
             kernel = LoopKernel(sessions, require_fencing=True)
             intent = await freeze_patrol_intent(sessions, intent)
-            from backend.app.desktop.agent_loop.models import LoopObservation
-            from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-            from backend.app.desktop.agent_loop.patrol import PortfolioPatrol
+            from backend.app.desktop.patrol.agent_loop.models import LoopObservation
+            from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+            from backend.app.desktop.patrol.agent_loop.patrol import PortfolioPatrol
 
             async with sessions() as session:
                 observation = LoopObservationEnvelope.model_validate((await session.get(LoopObservation, intent.observation_id)).envelope)

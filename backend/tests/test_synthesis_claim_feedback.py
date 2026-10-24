@@ -14,12 +14,12 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import TypeAdapter
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import EvidenceRequirement, ResolvedEvidenceBundle, ResolvedEvidenceItem, WorkContextSpec, stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ClaimSupportProposal, ContextSynthesisValidator
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.observation import LoopObservationBuilder
-from backend.app.desktop.context_curation import EvidenceRef, MissionEvidenceRef, MultiSourceEvidence, StructuredEvidence, evidence_ref_key
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import EvidenceRequirement, ResolvedEvidenceBundle, ResolvedEvidenceItem, WorkContextSpec, stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ClaimSupportProposal, ContextSynthesisValidator
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.observations.builder import LoopObservationBuilder
+from backend.app.desktop.contexts.curation import EvidenceRef, MissionEvidenceRef, MultiSourceEvidence, StructuredEvidence, evidence_ref_key
 from backend.tests._semantic_context_fixtures import single_source_fixture
 from backend.tests.config_helpers import app_config_for
 
@@ -118,7 +118,7 @@ def _service(monkeypatch, *, synthesis_error=None, verifier_error=None, persiste
                 response = {"assessments": assessments}
             return AIMessage(content=json.dumps(response))
 
-    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: Provider())
+    monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider())
     synthesis = RoleBoundStructuredModel(config, "dossier_synthesizer", max_attempts=2)
     verifier = RoleBoundStructuredModel(config, "claim_verifier", max_attempts=2)
     return StructuredContextSynthesisService(synthesis, verifier), spec, bundle, synthesis, verifier, calls

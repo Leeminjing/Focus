@@ -16,12 +16,12 @@ from fastapi import HTTPException
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import AgentLoopService, LoopAuthorityService, LoopCreateRequest
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopRound
-from backend.app.desktop.agent_loop.schemas import AdjustLoopBudgetsRequest, NarrowLoopGrantRequest, RevokeLoopGrantRequest
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopAuthorityService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopRound
+from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest, NarrowLoopGrantRequest, RevokeLoopGrantRequest
+from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

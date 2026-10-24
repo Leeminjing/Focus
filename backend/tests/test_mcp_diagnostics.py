@@ -228,7 +228,7 @@ def test_empty_and_disabled_configs_are_healthy(tmp_path, isolated_mcp):
 
 @pytest.mark.parametrize("broken_file", [False, True])
 def test_refresh_service_serializes_configuration_failure(tmp_path, isolated_mcp, broken_file):
-    from backend.app.desktop.service import DesktopService
+    from backend.app.desktop.composition.service import DesktopService
 
     _write(tmp_path / "global" / "extensions_config.json", {
         "broken": {"enabled": True, "type": "stdio", "description": "test"},
@@ -248,8 +248,8 @@ def test_refresh_service_serializes_configuration_failure(tmp_path, isolated_mcp
         return [{"name": "shared", "description": "still available"}]
 
     service.session_factory = session
-    service._get_task_entities = entities
-    service.list_task_skills = skills
+    service.workspaces._get_task_entities = entities
+    service.capabilities.list_task_skills = skills
     result = asyncio.run(service.refresh_task_capabilities("task"))
     assert result["mcp_tool_count"] == 0
     assert result["failed_servers"] == (["extensions_config.json"] if broken_file else ["broken"])

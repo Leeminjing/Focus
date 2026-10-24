@@ -46,12 +46,12 @@ class _Checkpointer:
 async def _memory(sessions, args, signals):
     from focus.runtime.runs.usage import ModelUsage
 
-    from backend.app.desktop.agent_loop.task_progress.contracts import (
+    from backend.app.desktop.patrol.agent_loop.task_progress.contracts import (
         ProgressCandidate,
         SourceAssessment,
         canonical_hash,
     )
-    from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
+    from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
 
     class Model:
         context_window_tokens = 100000
@@ -99,7 +99,7 @@ async def _memory(sessions, args, signals):
 
 
 async def _facts(sessions, args, signals):
-    from backend.app.desktop.agent_loop.fact_projector import FactProjector
+    from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
 
     projector = FactProjector(sessions, _Checkpointer())
     materialize = projector._event_materializer.materialize
@@ -123,8 +123,8 @@ async def _facts(sessions, args, signals):
 
 
 async def _legacy(sessions, args, signals):
-    import backend.app.desktop.agent_loop.service as service_module
-    from backend.app.desktop.agent_loop.models import AgentLoop
+    import backend.app.desktop.patrol.agent_loop.service as service_module
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop
 
     async with sessions() as session:
         loop = await session.get(AgentLoop, args.loop_id)
@@ -142,14 +142,14 @@ async def _legacy(sessions, args, signals):
 
 
 async def _portfolio(sessions, args, signals):
-    from backend.app.desktop.agent_loop.models import AgentLoop
-    from backend.app.desktop.context_curation import (
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+    from backend.app.desktop.contexts.curation import (
         AtomicPortfolioPublisher,
         PortfolioControlRevisions,
         PortfolioRevision,
         PortfolioSuperseded,
     )
-    from backend.app.desktop.context_evolution import ContextRevisionRepository
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository
 
     async with sessions() as session:
         portfolio = await session.get(PortfolioRevision, args.entity_id)
@@ -178,16 +178,16 @@ async def _portfolio(sessions, args, signals):
 async def _frozen_cognition(sessions, args, signals):
     import uuid
 
-    from backend.app.desktop.agent_loop.decision_context import (
+    from backend.app.desktop.patrol.agent_loop.decisions.decision_context import (
         DecisionSupplementRepository,
         PatrolDecisionContext,
     )
-    from backend.app.desktop.agent_loop.models import LoopObservation, LoopWorkerRequest
-    from backend.app.desktop.agent_loop.observation import observation_hash
-    from backend.app.desktop.agent_loop.observation_capture import (
+    from backend.app.desktop.patrol.agent_loop.models import LoopObservation, LoopWorkerRequest
+    from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+    from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
         LoopObservationService,
     )
-    from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
+    from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
 
     async with sessions() as session:
         stored = await session.get(LoopObservation, args.entity_id)

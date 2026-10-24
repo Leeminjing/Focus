@@ -9,7 +9,7 @@ import io
 
 import pytest
 
-from backend.app.desktop.service import estimate_tokens
+from backend.app.desktop.runs.estimates import estimate_tokens
 from focus.config.app_config import AppConfig
 from config_helpers import app_config_for as _app_config
 from focus.messages import (

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
-from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
+from backend.app.desktop.patrol.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
 
 
 def test_workspace_cleanup_runs_without_active_loop_supervisors():

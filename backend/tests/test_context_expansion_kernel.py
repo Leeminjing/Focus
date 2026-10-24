@@ -31,15 +31,15 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop, _stop
 
-from backend.app.desktop.agent_loop import (
+from backend.app.desktop.patrol.agent_loop import (
     LoopKernel,
     LoopWaveDispatcher,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
     SemanticDerivationArtifactRepository,
 )
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     ContextSemanticManifest,
     DerivationStageRecord,
     EvidenceRequirement,
@@ -48,44 +48,44 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     SemanticEvidenceUnit,
     WorkContextSpec,
 )
-from backend.app.desktop.agent_loop.context_expansion.coordinator import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.coordinator import (
     ContextExpansionStage,
 )
-from backend.app.desktop.agent_loop.context_expansion.models import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopContextDerivationArtifact,
     LoopContextExpansion,
 )
-from backend.app.desktop.agent_loop.context_expansion.repository import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.repository import (
     ContextExpansionRepository,
 )
-from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import (
     LaneAdviceProposal,
     PlannerQueryProposal,
     PlannerReadProposal,
     RetrievalBackedCognitiveAdvisor,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
     AuthorizedSemanticRetriever,
     PlanningRetrievalSession,
     PortfolioIndexCatalog,
     RetrievalBudget,
 )
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.expansion_resource_policy import (
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import (
     ExpansionResourcePolicy,
     resolve_expansion_resources,
 )
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.live_projection_projector import (
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import (
     LoopLiveSnapshotProjector,
 )
-from backend.app.desktop.agent_loop.live_snapshot_overlay import (
+from backend.app.desktop.patrol.agent_loop.projections.live_snapshot_overlay import (
     LoopLiveProjectionOverlay,
 )
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopContextMembership,
     LoopDelegationGrant,
@@ -93,28 +93,28 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.patrol_runtime import PatrolSessionLifecycle
-from backend.app.desktop.agent_loop.patrol_session_state import (
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import PatrolSessionLifecycle
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import (
     PatrolActivity,
     PatrolPhase,
 )
-from backend.app.desktop.agent_loop.portfolio_publication import (
+from backend.app.desktop.patrol.agent_loop.curation.portfolio_publication import (
     LoopPortfolioAuthorityHook,
     LoopPortfolioPublicationService,
 )
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
-from backend.app.desktop.agent_loop.schemas import (
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
+from backend.app.desktop.patrol.agent_loop.schemas import (
     LoopBudgetContract,
     LoopObservationEnvelope,
 )
-from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
+from backend.app.desktop.contexts.curation import (
     ComposeMessage,
     CreateLanePlan,
     CurationLane,
     NamespacedMessageRef,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -122,7 +122,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -1234,8 +1234,8 @@ def test_compiler_blocker_keeps_undecided_round_and_terminal_history_prevents_re
 
 
 async def _grant_create_lane_and_add_active_run(sessions, seeded: dict) -> None:
-    from backend.app.desktop.agent_loop.models import LoopObservation
-    from backend.app.desktop.agent_loop.observation import observation_hash
+    from backend.app.desktop.patrol.agent_loop.models import LoopObservation
+    from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
 
     seeded["observation_id"] = uuid.uuid4().hex
     envelope = _expansion_observation(seeded)

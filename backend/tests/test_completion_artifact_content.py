@@ -18,15 +18,15 @@ from langchain_core.messages import ToolMessage
 import pytest
 from sqlalchemy import select, text
 
-from backend.app.desktop.agent_loop.completion_admission import CompletionRequestAdmission
-from backend.app.desktop.agent_loop.completion_evidence_catalog import CompletionEvidenceCatalog
-from backend.app.desktop.agent_loop.completion_sources import CompletionSourceRejection
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound, LoopWorkerRequest
-from backend.app.desktop.domain_evidence.artifacts import ArtifactObservationRecorder
-from backend.app.desktop.domain_evidence.identity import canonical_hash
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.models import DesktopRun, DesktopWorkspace, ToolExecutionAttempt
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.completion.completion_admission import CompletionRequestAdmission
+from backend.app.desktop.patrol.agent_loop.completion.completion_evidence_catalog import CompletionEvidenceCatalog
+from backend.app.desktop.patrol.agent_loop.completion.completion_sources import CompletionSourceRejection
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound, LoopWorkerRequest
+from backend.app.desktop.runs.evidence.artifacts import ArtifactObservationRecorder
+from backend.app.desktop.runs.evidence.identity import canonical_hash
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace, ToolExecutionAttempt
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 from backend.tests.test_loop_worker_recovery import _case, _step
 from focus.history import content_hash, serialize_history_message
 
@@ -166,12 +166,12 @@ def test_invalid_body_is_not_available(tmp_path, monkeypatch, change):
 
 def test_full_artifact_capacity_rejects_before_provider_or_reservation(tmp_path, monkeypatch):
     async def run():
-        from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+        from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
             await _artifact(sessions, fixture, '甲' * 100000)
             runtime._app_config.models[0].context_window = 16384
             runtime._app_config.models[0].curation_max_output_tokens = 512
-            from backend.app.desktop.agent_loop.completion import CompletionCandidateValidator
+            from backend.app.desktop.patrol.agent_loop.completion.service import CompletionCandidateValidator
             original_admit = CompletionCandidateValidator.admit
             baseline_checks = []
             async def guard(candidate, model, schema, system, payload):
@@ -230,8 +230,8 @@ def test_legacy_unknown_does_not_retroactively_gain_body_and_new_unknown_is_dedu
 @pytest.mark.parametrize('change', ['content', 'proof'])
 def test_new_body_candidate_and_final_record_recheck_actual_source(tmp_path, monkeypatch, change):
     async def run():
-        from backend.app.desktop.agent_loop.completion import CompletionCandidateValidator, CompletionEvidenceService
-        from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, CompletionVerificationResult
+        from backend.app.desktop.patrol.agent_loop.completion.service import CompletionCandidateValidator, CompletionEvidenceService
+        from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract, CompletionVerificationResult
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
             path, key, frozen = await _artifact(sessions, fixture, 'trusted full body')
             request = (await runtime._claim_many(1, fixture['loop_id']))[0]
@@ -245,7 +245,7 @@ def test_new_body_candidate_and_final_record_recheck_actual_source(tmp_path, mon
                 require_artifact_content=True)
             await candidate.validate(proposal)
             async with sessions.begin() as session:
-                from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
+                from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
                 mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == loop.loop_id))
                 mission.completion_checks = [{'check_id': 'files', 'claim': 'actual body', 'required': True,
                     'expected_evidence_kinds': ['artifact']}]
@@ -270,8 +270,8 @@ def test_new_body_candidate_and_final_record_recheck_actual_source(tmp_path, mon
 def test_real_worker_receives_redacted_body_and_records_independent_artifact_result(tmp_path, monkeypatch):
     async def run():
         from langchain_core.messages import AIMessage
-        from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-        from backend.app.desktop.agent_loop.models import CompletionVerification
+        from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
+        from backend.app.desktop.patrol.agent_loop.models import CompletionVerification
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
             secret = 'artifact-key-private-value'
             body = '正式独立 Context 结论\ncan_start: 条件一成立，条件二成立\n' + secret

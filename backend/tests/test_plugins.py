@@ -762,12 +762,12 @@ def test_plugins_routes_serve_registry_data(monkeypatch):
     registry.register(_manifest("p1", provides=["tool"]), PluginDeclaration(tools=[plugin_browser]))
     registry.resolve_dependencies()
     registry.trace("hook.before_model", "p1", "success", 1.0)
-    monkeypatch.setattr("backend.app.desktop.plugins_routes.get_plugin_registry", lambda: registry)
+    monkeypatch.setattr("backend.app.desktop.api.plugins.get_plugin_registry", lambda: registry)
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from backend.app.desktop.plugins_routes import plugins_router
+    from backend.app.desktop.api.plugins import plugins_router
 
     app = FastAPI()
     app.include_router(plugins_router)
@@ -913,7 +913,7 @@ def test_reload_reports_activation_boundary_without_remounting_assets(tmp_path, 
     from fastapi.testclient import TestClient
 
     from backend.app.desktop.app import mount_plugin_assets
-    from backend.app.desktop.plugins_routes import plugins_router
+    from backend.app.desktop.api.plugins import plugins_router
 
     monkeypatch.setattr(plugins, "_registries", {})
     monkeypatch.setattr(plugins, "_plugin_roots", lambda root=None: ("test", [tmp_path / "plugins"]))

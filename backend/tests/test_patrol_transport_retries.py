@@ -6,8 +6,8 @@ import json
 import httpx
 import pytest
 
-from backend.app.desktop.agent_loop import round_orchestration as module
-from backend.app.desktop.agent_loop.round_orchestration import StructuredPatrolDecisionModel
+from backend.app.desktop.patrol.agent_loop.rounds import round_orchestration as module
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import StructuredPatrolDecisionModel
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_patrol_failure_diagnostics import _observation
 from focus.models.factory import create_chat_model
@@ -159,12 +159,12 @@ def test_owned_patrol_retries_preserve_authority_accounting_and_single_commit(tm
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-    from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-    from backend.app.desktop.agent_loop.directive_equipment import resolve_context_equipment
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
-    from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopCoordinatorFence, LoopDecision, LoopDelegationGrant, LoopDirective, LoopObservation, LoopPatrolAttempt, LoopRound
-    from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+    from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+    from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+    from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_context_equipment
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopCoordinatorFence, LoopDecision, LoopDelegationGrant, LoopDirective, LoopObservation, LoopPatrolAttempt, LoopRound
+    from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
     from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
     from backend.tests.test_round_task_progress import _Checkpointer
 

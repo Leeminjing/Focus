@@ -17,14 +17,14 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopRound
-from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopRound
+from backend.app.desktop.persistence.models import DesktopRun
 from backend.tests.test_loop_round_progress_admission import _prepare, _intent
 from backend.tests.test_loop_worker_recovery import _case, _step
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
-from backend.app.desktop.agent_loop.rounds import RoundStallLimits, terminate_stalled_rounds
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import RoundStallLimits, terminate_stalled_rounds
 
 
 pytestmark = pytest.mark.usefixtures('runtime_postgres_database')

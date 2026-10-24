@@ -1,0 +1,98 @@
+r"""本文件对外提供 definition revision 的非路由 LangGraph checkpoint 写入端口与实现。
+
+输入为尚无 checkpoint 的 shadow `ContextRevisionRef`、无损协议合法 execution 前缀、可选真实运行后缀、
+graph factory 和 checkpointer；输出为精确 checkpoint id 与初始前缀消息 id。具体工作流为强制 shadow
+thread/namespace，用 NamespacedCheckpointer 把物理 namespace 映射成根图视角，依次反序列化并写入
+策展前缀与后缀，同时从 canonical 合同生成兼容镜像及 typed 来源，再从已持久化 state 返回执行身份；不读取或覆盖活动 Context，也不把持久化 namespace
+误判成子图路径。
+示例：`checkpoint_id, ids = await writer.write(shadow_ref, messages)`。
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Awaitable, Callable, Protocol
+
+from backend.app.desktop.contexts.evolution.schemas import ContextRevisionRef
+from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
+from focus.history import deserialize_history_messages, legacy_to_items, validate_items
+from focus.history.bridge import branch_messages, checkpoint_records, synchronize_items
+from focus.history.task_contract import task_contract_state_update
+
+
+class ContextCheckpointWriter(Protocol):
+    async def write(
+        self,
+        shadow_ref: ContextRevisionRef,
+        execution_messages: tuple[dict[str, Any], ...],
+        suffix_messages: tuple[dict[str, Any], ...] = (),
+    ) -> tuple[str, tuple[str, ...]]: ...
+
+
+class LangGraphContextCheckpointWriter:
+    def __init__(
+        self,
+        graph_factory: Callable[[], Awaitable[Any]],
+        checkpointer: Any,
+    ) -> None:
+        self._graph_factory = graph_factory
+        self._checkpointer = checkpointer
+
+    async def write(
+        self,
+        shadow_ref: ContextRevisionRef,
+        execution_messages: tuple[dict[str, Any], ...],
+        suffix_messages: tuple[dict[str, Any], ...] = (),
+    ) -> tuple[str, tuple[str, ...]]:
+        self._require_shadow_identity(shadow_ref)
+        graph = await self._graph_factory()
+        graph.checkpointer = NamespacedCheckpointer(
+            self._checkpointer, shadow_ref.checkpoint_ns
+        )
+        messages = deserialize_history_messages(deepcopy(list(execution_messages)))
+        for raw, message in zip(execution_messages, messages):
+            if raw.get("curation_synthetic"):
+                message.additional_kwargs["curation_synthetic"] = True
+        suffix = deserialize_history_messages(deepcopy(list(suffix_messages)))
+        validate_items(legacy_to_items([*execution_messages, *suffix_messages]))
+        config = {
+            "configurable": {
+                "thread_id": shadow_ref.execution_thread_id,
+            }
+        }
+        rebuilt = branch_messages([*messages, *suffix])
+        for index, message in enumerate(rebuilt):
+            if message.id is None:
+                message.id = f"{shadow_ref.revision_id}:message:{index}"
+        updated_config = await graph.aupdate_state(config, {
+            **task_contract_state_update({"messages": rebuilt}),
+            "messages": rebuilt,
+            "execution_items": synchronize_items(None, rebuilt),
+            "world_state_snapshot": None,
+            "request_manifest": None,
+        })
+        state = await graph.aget_state(updated_config)
+        checkpoint_id = state.config.get("configurable", {}).get("checkpoint_id")
+        if not checkpoint_id:
+            raise RuntimeError("写入 shadow Context checkpoint 后未返回 checkpoint_id")
+        initial_ids = tuple(
+            message.id
+            for message in state.values.get("messages", [])[: len(branch_messages(messages))]
+            if message.id
+        )
+        return checkpoint_id, initial_ids
+
+    async def read_records(self, ref: ContextRevisionRef) -> tuple[dict, ...]:
+        checkpoint = await self._checkpointer.aget_tuple(ref.checkpoint_config())
+        if checkpoint is None or checkpoint.config["configurable"].get("checkpoint_id") != ref.checkpoint_id:
+            raise RuntimeError("shadow checkpoint 不存在或身份不匹配")
+        return checkpoint_records(checkpoint.checkpoint.get("channel_values", {}))
+
+    @staticmethod
+    def _require_shadow_identity(ref: ContextRevisionRef) -> None:
+        if not ref.execution_thread_id.startswith("shadow:"):
+            raise ValueError("definition candidate 必须使用不可路由 shadow thread")
+        if ref.checkpoint_ns != "context-revision-shadow":
+            raise ValueError("definition candidate 必须使用 shadow checkpoint namespace")
+        if ref.checkpoint_id is not None:
+            raise ValueError("写入前 shadow revision 不得已有 checkpoint_id")

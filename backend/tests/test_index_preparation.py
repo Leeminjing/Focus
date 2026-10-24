@@ -5,15 +5,15 @@ import asyncio
 import pytest
 from sqlalchemy import func, select
 
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded
-from backend.app.desktop.agent_loop.context_expansion.index_prewarm import LocalIndexPrewarmer
-from backend.app.desktop.agent_loop.context_expansion.index_progress import IndexProgressReporter
-from backend.app.desktop.agent_loop.context_expansion.index_scheduling import IndexModelSlots
-from backend.app.desktop.agent_loop.context_expansion.models import LoopSegmentProjectionRecord, LoopSemanticIndexArtifact
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection
-from backend.app.desktop.agent_loop.live_projection_reducer import LoopLiveProjectionReducer
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDelegationGrant
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_prewarm import LocalIndexPrewarmer
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_progress import IndexProgressReporter
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_scheduling import IndexModelSlots
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopSegmentProjectionRecord, LoopSemanticIndexArtifact
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_contract import LoopLiveProjection
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_reducer import LoopLiveProjectionReducer
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDelegationGrant
 from backend.tests.incremental_index_support import ModelProbe, messages, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 
@@ -192,7 +192,7 @@ def test_progress_is_replayable_and_old_observation_is_ignored(tmp_path):
             ).order_by(LoopJournalEvent.sequence)))
         assert len(rows) == 2
         # Use the public journal envelope and reducer, as reconnect snapshots do.
-        from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+        from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
         async with sessions() as session:
             events = await LoopEventJournal().read(session, seed["loop_id"], after_sequence=0, limit=1000)
         projection = LoopLiveProjection(loop_id=seed["loop_id"])

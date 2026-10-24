@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import asyncio
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     EvidenceRequirement,
     ExpansionOpportunity,
     WorkContextSpec,
 )
-from backend.app.desktop.agent_loop.context_expansion.coordinator import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.coordinator import (
     ContextExpansionCoordinator,
 )
-from backend.app.desktop.agent_loop.context_expansion.policy import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.policy import (
     ExpansionAdmissionPolicy,
 )
 from backend.tests.semantic_manifest_support import (

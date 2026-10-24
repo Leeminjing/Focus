@@ -8,12 +8,12 @@ import asyncio
 import pytest
 from focus.runtime.runs.usage import ModelUsage
 
-from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import LaneAdviceProposal, RetrievalBackedCognitiveAdvisor
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import LaneAdviceProposal, RetrievalBackedCognitiveAdvisor
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
     AuthorizedSemanticRetriever, PlanningRetrievalSession, PlanningRetrievalSessionController, SemanticRetrievalQuery,
 )
 from backend.tests.test_expansion_resource_policy import _new_v2_session
-from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import ExpansionResourcePolicy
 
 
 def _prepared():

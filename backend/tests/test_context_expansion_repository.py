@@ -16,22 +16,22 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     DerivationStageRecord,
     EvidenceRequirement,
     ExpansionOpportunity,
     WorkContextSpec,
 )
-from backend.app.desktop.agent_loop.context_expansion.models import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopContextExpansion,
     LoopContextExpansionTransition,
 )
-from backend.app.desktop.agent_loop.context_expansion.repository import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.repository import (
     ContextExpansionRepository,
     ExpansionRepositoryRejected,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -39,7 +39,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

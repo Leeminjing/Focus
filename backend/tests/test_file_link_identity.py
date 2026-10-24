@@ -9,9 +9,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
-from backend.app.desktop.file_links import file_link_router
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace, DesktopRun, DesktopMaterial, MaterialVersion
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.api.file_links import file_link_router
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace, DesktopRun, DesktopMaterial, MaterialVersion
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
 
 class Session:
@@ -50,7 +50,7 @@ def files(tmp_path):
     rows = [workspace, task, slot]
     app = FastAPI()
     app.include_router(file_link_router, prefix="/desktop/api")
-    from backend.app.desktop.file_routes import file_router
+    from backend.app.desktop.api.files import file_router
     app.include_router(file_router, prefix="/desktop/api")
     session = Session(rows)
     app.state.desktop_service = SimpleNamespace(session_factory=lambda: session)
@@ -171,10 +171,10 @@ def test_missing_history_never_reads_latest(files):
 
 
 def test_fact_history_uses_persisted_revision(files, monkeypatch):
-    from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRevision
-    from backend.app.desktop.agent_loop.models import AgentLoop
-    from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-    from backend.app.desktop.agent_loop.live_access import LoopLiveAccessPolicy
+    from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact, LoopFactRevision
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+    from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+    from backend.app.desktop.patrol.agent_loop.live.live_access import LoopLiveAccessPolicy
 
     client, _, _, session, run = files
     fact = LoopFact(fact_id="fact", loop_id="loop", fact_type="artifact", current_revision=2)

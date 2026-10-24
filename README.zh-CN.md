@@ -282,9 +282,9 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 
 | 目录 | 内容 |
 | --- | --- |
-| [backend/app/desktop/agent_loop](backend/app/desktop/agent_loop/) | Patrol、轮次、任务进度、执行协调与完成检查。 |
-| [backend/app/desktop/context_evolution](backend/app/desktop/context_evolution/) | Context 版本、来源关系与演化图谱。 |
-| [backend/app/desktop/workspace_coordination](backend/app/desktop/workspace_coordination/) | 工作区访问、隔离与结果采用。 |
+| [backend/app/desktop/patrol/agent_loop](backend/app/desktop/patrol/agent_loop/) | Patrol、轮次、任务进度、执行协调与完成检查。 |
+| [backend/app/desktop/contexts/evolution](backend/app/desktop/contexts/evolution/) | Context 版本、来源关系与演化图谱。 |
+| [backend/app/desktop/workspaces/coordination](backend/app/desktop/workspaces/coordination/) | 工作区访问、隔离与结果采用。 |
 | [backend/packages/harness/focus](backend/packages/harness/focus/) | Agent 运行时、模型、工具、Skill、MCP 与持久化。 |
 | [desktop](desktop/) | 桌面壳、机器人入口与工作台。 |
 

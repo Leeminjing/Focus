@@ -83,7 +83,7 @@ async function run(){
  await shot('01-empty-shell');
  await win.webContents.executeJavaScript(String.raw`(()=>{
   const entries=[['developer','你负责检查这个问题：核对任务事实与运行状态，保留工具交换的语义。'],['user','帮我分析 Focus 的上下文编译与 Provider 投影链路。'],['assistant','我会读取架构实现，检查输入保真与执行边界。']].map(([role,content],i)=>({entry_id:'m'+i,kind:'message',payload:{role,content}}));
-  entries.push({entry_id:'call',kind:'function_call',payload:{name:'read_file',call_id:'architecture-read',arguments:'{\n  "path": "backend/app/desktop/session_patrol/compiler.py"\n}'}},{entry_id:'output',kind:'function_call_output',payload:{call_id:'architecture-read',output:'读取结果：AuthoringDocument → FocusItem → 实际模型请求。'}});
+  entries.push({entry_id:'call',kind:'function_call',payload:{name:'read_file',call_id:'architecture-read',arguments:'{\n  "path": "backend/app/desktop/patrol/session_patrol/compiler.py"\n}'}},{entry_id:'output',kind:'function_call_output',payload:{call_id:'architecture-read',output:'读取结果：AuthoringDocument → FocusItem → 实际模型请求。'}});
   wb.doc.append(entries);wb.renderList();wb.list.scrollTop=0;
  })()`);await shot('02-mixed-shell');
  await win.webContents.executeJavaScript('wb._locate("call")');await shot('09-tool-group-shell');

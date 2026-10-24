@@ -13,11 +13,11 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRepository, StaleDispatchFence
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.run_orchestration.models import RunDispatch
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRepository, StaleDispatchFence
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.orchestration.models import RunDispatch
 from backend.tests.test_run_dispatch_durability import _run
 
 pytestmark = pytest.mark.usefixtures("runtime_postgres_database")

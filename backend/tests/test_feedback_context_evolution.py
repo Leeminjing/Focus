@@ -19,31 +19,31 @@ from backend.tests.test_workspace_patrol import _setup
 from backend.tests.test_workspace_patrol_decisions import _prepare, _decision, _use, _checkpointers
 from backend.tests.loop_run_boundary_support import freeze_patrol_intent, start_loop_run
 from backend.tests.test_loop_execution_ownership import _admit_run
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher, LoopRunWorkspaceBinder
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
-from backend.app.desktop.agent_loop.context_expansion.contracts import EvidenceRequirement, WorkContextSpec, ResolvedEvidenceItem, ResolvedEvidenceBundle, ExpansionOpportunity, SpawnContextIntent
-from backend.app.desktop.agent_loop.context_expansion.compiler import DeterministicExpansionPlanCompiler
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
-from backend.app.desktop.agent_loop.context_expansion.quality_verifier import DeterministicTestContextQualityService
-from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpusReader
-from backend.app.desktop.context_curation import MultiSourceEvidence, SourceRevisionEvidence, StructuredEvidence, compile_lane
-from backend.app.desktop.context_evolution import ContextEvolutionService, ContextRevisionSourceContract
-from backend.app.desktop.context_evolution.schemas import ContextRevisionOriginKind
-from backend.app.desktop.models import DesktopThread, DesktopRun
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.run_orchestration.outbox import RunOutboxConsumer
-from backend.app.desktop.execution_attempts import ToolExecutionLedger
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.domain_evidence.file_reads import FileVersionReader
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopWaveDispatcher, LoopRunWorkspaceBinder
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import EvidenceRequirement, WorkContextSpec, ResolvedEvidenceItem, ResolvedEvidenceBundle, ExpansionOpportunity, SpawnContextIntent
+from backend.app.desktop.patrol.agent_loop.context_expansion.compiler import DeterministicExpansionPlanCompiler
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality_verifier import DeterministicTestContextQualityService
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpusReader
+from backend.app.desktop.contexts.curation import MultiSourceEvidence, SourceRevisionEvidence, StructuredEvidence, compile_lane
+from backend.app.desktop.contexts.evolution import ContextEvolutionService, ContextRevisionSourceContract
+from backend.app.desktop.contexts.evolution.schemas import ContextRevisionOriginKind
+from backend.app.desktop.persistence.models import DesktopThread, DesktopRun
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.orchestration.outbox import RunOutboxConsumer
+from backend.app.desktop.runs.execution_attempts import ToolExecutionLedger
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.runs.evidence.file_reads import FileVersionReader
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 from backend.tests.runtime_context_support import tool_runtime
 from focus.tools.builtins.workspace_tools import write_file
 from focus.security.context import security_context_of

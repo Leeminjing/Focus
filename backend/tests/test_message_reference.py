@@ -10,9 +10,9 @@ from langchain_core.messages import convert_to_messages
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from backend.app.desktop.message_reference import project_message_reference
-from backend.app.desktop.models import MainRunCreate
-from backend.app.desktop.routes import start_main_run
+from backend.app.desktop.conversations.message_reference import project_message_reference
+from backend.app.desktop.api.schemas import MainRunCreate
+from backend.app.desktop.api.runs import start_main_run
 
 
 def reference(text="Redis 🔒"):
@@ -56,7 +56,7 @@ def test_reference_survives_ui_snapshot_without_exposing_other_metadata():
 
 
 def test_reference_in_compressed_history_requires_exact_provenance():
-    from backend.app.desktop.message_reference import contains_message_reference
+    from backend.app.desktop.conversations.message_reference import contains_message_reference
 
     history = [{"compression": {"source": [{"compression": {"source": [
         {"additional_kwargs": {"message_reference": reference()}}
@@ -91,7 +91,7 @@ def test_route_passes_reference_to_execution_and_rejects_cross_task():
 
 
 def test_current_run_delivery_projects_reference_and_keeps_context_provenance(monkeypatch):
-    from backend.app.desktop import conversation_input_delivery as delivery
+    from backend.app.desktop.conversations import input_delivery as delivery
 
     routing = SimpleNamespace(task_id="task", run_id="active")
     monkeypatch.setattr(delivery, "security_context_of", lambda context: SimpleNamespace(routing=routing))
@@ -109,7 +109,7 @@ def test_current_run_delivery_projects_reference_and_keeps_context_provenance(mo
 
 
 def test_conversation_inputs_reject_cross_task_reference_before_admission():
-    from backend.app.desktop.conversation_inputs import ConversationInputCreate, ConversationInputs
+    from backend.app.desktop.conversations.inputs import ConversationInputCreate, ConversationInputs
 
     inputs = ConversationInputs(SimpleNamespace(session_factory=None,
         contexts=SimpleNamespace(permits_message_reference=AsyncMock(return_value=False))))

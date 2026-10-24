@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from backend.app.desktop.material_files import (
+from backend.app.desktop.materials.files import (
     MATERIAL_ATTACHMENTS_SUBDIR,
     resolve_material_path,
 )
@@ -482,7 +482,7 @@ def test_spatial_plugin_available_when_model_declares_vision(monkeypatch):
 
 
 def test_material_policy_line_marks_images_without_text_policies():
-    from backend.app.desktop.service import _material_policy_line
+    from backend.app.desktop.materials.policy import _material_policy_line
 
     line = _material_policy_line(Path("/w/.focus/attachments/a.png"), "full", "strict")
     assert "图片材料" in line
@@ -491,7 +491,7 @@ def test_material_policy_line_marks_images_without_text_policies():
 
 
 def test_material_policy_line_keeps_text_policies_unchanged():
-    from backend.app.desktop.service import _material_policy_line
+    from backend.app.desktop.materials.policy import _material_policy_line
 
     assert _material_policy_line(Path("/w/notes.md"), "full", "strict").endswith(
         "| 优先完整阅读 | 严格遵守"
@@ -561,7 +561,7 @@ def test_reports_schema_carries_material_and_read_flag():
 
 
 def test_must_view_prompt_lists_materials_and_names_report_tool():
-    from backend.app.desktop.service import _must_view_prompt
+    from backend.app.desktop.materials.policy import _must_view_prompt
 
     text = _must_view_prompt([{"material_id": "m1", "relative_path": "a.png"}])
     assert "a.png" in text

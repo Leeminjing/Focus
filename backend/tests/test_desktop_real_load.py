@@ -4,6 +4,10 @@ FOCUS_DESKTOP_REAL_LOAD=1 explicitly enables billed model calls. Defaults: three
 15-minute repetitions per case. No production task, cache or database is reused.
 """
 
+import backend.app.desktop.capabilities.service as _desktop_capabilities_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+
 import asyncio
 from datetime import UTC, datetime
 import json
@@ -19,11 +23,11 @@ from sqlalchemy import func, select
 from backend.tests.test_desktop_poc import _client, SESSION
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.incremental_index_support import Checkpoints, messages, revision
-from backend.app.desktop.agent_loop.context_expansion.portfolio_index import PortfolioSemanticIndexService
-from backend.app.desktop.agent_loop.context_expansion.index_prewarm import LocalIndexPrewarmer
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.models import LoopDelegationGrant
-from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import PortfolioSemanticIndexService
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_prewarm import LocalIndexPrewarmer
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant
+from backend.app.desktop.persistence.models import DesktopRun
 from backend.scripts.desktop_performance_report import summarize
 
 
@@ -35,11 +39,12 @@ pytestmark = [pytest.mark.usefixtures("runtime_postgres_database"),
 @pytest.mark.parametrize("repeat", range(int(os.environ.get("FOCUS_DESKTOP_LOAD_REPEATS", "3"))))
 def test_real_desktop_load(tmp_path, monkeypatch, caplog, scenario, repeat):
     from backend.app.gateway.app import app
-    import backend.app.desktop.service as service_module
+    import backend.app.desktop.composition.service as service_module
 
     async def no_external_tools(**_kwargs):
         return []
-    monkeypatch.setattr(service_module, "get_available_tools", no_external_tools)
+    monkeypatch.setattr(_desktop_capabilities_service, 'get_available_tools', no_external_tools)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', no_external_tools)
     monkeypatch.setenv("FOCUS_LOOP_SUPERVISOR", "0")
     monkeypatch.setenv("FOCUS_PERFORMANCE_METRICS", "1")
     caplog.set_level(logging.INFO, logger="focus.performance")

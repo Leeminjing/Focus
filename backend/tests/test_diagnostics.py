@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app import diagnostics, doctor
 from backend.app.diagnostic_endpoint import publish_endpoint
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinatorRuntime
-from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinatorRuntime
+from backend.app.desktop.patrol.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
 
 
 def test_real_gateway_health_retains_startup_probe_and_reports_live_runs(runtime_postgres_database, monkeypatch, tmp_path):
@@ -41,11 +41,11 @@ def test_real_gateway_health_retains_startup_probe_and_reports_live_runs(runtime
 
 
 def test_postgres_report_correlates_work_without_exporting_content(runtime_postgres_database, monkeypatch, tmp_path):
-    from backend.app.desktop.models import DesktopWorkspace, DesktopThread, DesktopRun
-    from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage
-    from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-    from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
-    from backend.app.desktop.run_orchestration.models import RunDispatch
+    from backend.app.desktop.persistence.models import DesktopWorkspace, DesktopThread, DesktopRun
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage
+    from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+    from backend.app.desktop.patrol.agent_loop.projections.projection_models import LoopProjectionFailure
+    from backend.app.desktop.runs.orchestration.models import RunDispatch
 
     monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(tmp_path))
     secret = "sensitive-provider-credential-and-user-prompt"

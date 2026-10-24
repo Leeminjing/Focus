@@ -12,11 +12,11 @@ from pathlib import Path
 import pytest
 from focus.config.app_config import get_app_config
 
-from backend.app.desktop.agent_loop.context_expansion.portfolio_index import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
     PortfolioSemanticIndexService,
 )
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.budget_presets import initial_budgets
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.resources.budget_presets import initial_budgets
 from backend.tests.incremental_index_support import Checkpoints, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 
@@ -167,7 +167,7 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
     budgets = initial_budgets()
 
     async def run(sessions, seed):
-        from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
             ProtocolSafeRevisionSegmenter,
             RevisionSemanticIndexer,
         )

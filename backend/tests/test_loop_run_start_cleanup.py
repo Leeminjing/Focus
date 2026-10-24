@@ -11,9 +11,9 @@ from focus.runtime.runs.manager import RunManager
 from focus.runtime.runs.schemas import RunStatus
 from focus.runtime.stream_bridge.memory import MemoryStreamBridge
 
-from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
-from backend.app.desktop.run_orchestration.executor import RunExecutionResources
+from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
+from backend.app.desktop.runs.orchestration.assembler import RunExecutionAssembly
+from backend.app.desktop.runs.orchestration.executor import RunExecutionResources
 
 
 @pytest.mark.parametrize("failure", ["cancel", "timeout", "error"])

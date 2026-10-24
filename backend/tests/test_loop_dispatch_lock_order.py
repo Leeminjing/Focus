@@ -12,13 +12,13 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.journal_models import LoopJournalSequence
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopRound
-from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopWaveDispatcher
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalSequence
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDirective, LoopRound
+from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_loop_execution_ownership import _seed_launching_directive, _admit_run
 
@@ -41,7 +41,7 @@ def test_dispatch_and_run_start_share_first_loop_lock(tmp_path, monkeypatch, exh
                 current = await session.get(LoopRound, fixture["round_id"])
                 current.status = "ready"
                 if exhausted:
-                    from backend.app.desktop.agent_loop.models import LoopBudgetUsage
+                    from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
                     usage = await session.get(LoopBudgetUsage, fixture["loop_id"])
                     usage.model_calls = 1
             start_execution, execution_locked = asyncio.Event(), asyncio.Event()

@@ -6,8 +6,8 @@
 """
 import pytest
 from langchain_core.messages import SystemMessage
-from backend.app.desktop.session_patrol.contracts import AuthoringDocument, Transformation, legacy_document
-from backend.app.desktop.session_patrol.compiler import compile_document
+from backend.app.desktop.patrol.session_patrol.contracts import AuthoringDocument, Transformation, legacy_document
+from backend.app.desktop.patrol.session_patrol.compiler import compile_document
 from focus.history import FocusItem, deserialize_history_messages, semantic_policy, content_hash
 from focus.models.provider_contract import ProviderContract
 from focus.models.response_projection import ResponsesRequestProjector

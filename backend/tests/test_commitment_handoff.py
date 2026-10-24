@@ -10,14 +10,14 @@ from copy import deepcopy
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from backend.app.desktop.context_curator.projector import CurationSourceProjector
-from backend.app.desktop.context_evolution.history import continued_revision_history
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
-from backend.app.desktop.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
-from backend.app.desktop.agent_loop.context_expansion.contracts import SemanticEvidenceUnit
-from backend.app.desktop.context_curation import NamespacedMessageRef
+from backend.app.desktop.contexts.curator.projector import CurationSourceProjector
+from backend.app.desktop.contexts.evolution.history import continued_revision_history
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import SemanticEvidenceUnit
+from backend.app.desktop.contexts.curation import NamespacedMessageRef
 from backend.tests.test_context_revision_reader import _ref
-from backend.app.desktop.context_evolution import ContextRevisionPayloadMode
+from backend.app.desktop.contexts.evolution import ContextRevisionPayloadMode
 from focus.agents.commitment.artifacts import _freeze_knowledge
 from focus.agents.commitment.handoff import ContractApproval, compile_handoff, validate_contract_mirror
 from focus.history import content_hash, messages_to_items, semantic_messages, serialize_history_message

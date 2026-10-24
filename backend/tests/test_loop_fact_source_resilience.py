@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from backend.app.desktop.agent_loop.materialized_fact_sources import RunFactSourceReader
-from backend.app.desktop.context_evolution import ContextRevisionNotFound
+from backend.app.desktop.patrol.agent_loop.facts.materialized_fact_sources import RunFactSourceReader
+from backend.app.desktop.contexts.evolution import ContextRevisionNotFound
 
 
 class _UnusedCheckpointer:

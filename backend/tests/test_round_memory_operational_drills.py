@@ -30,27 +30,27 @@ from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_atomic_portfolio_publication import _CheckpointWriter, _compiled
 from test_round_task_progress import _Checkpointer
 
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopDirective,
     LoopObservation,
 )
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
-from backend.app.desktop.agent_loop.run_activity_writer import LoopRunActivityWriter
-from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
-from backend.app.desktop.agent_loop.task_progress.models import (
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.projections.projection_models import LoopProjectionFailure
+from backend.app.desktop.patrol.agent_loop.execution.run_activity_writer import LoopRunActivityWriter
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
+from backend.app.desktop.patrol.agent_loop.task_progress.models import (
     LoopDecisionInputs,
     LoopProgressHead,
     LoopProgressReceipt,
     LoopProgressWork,
     LoopTaskProgress,
 )
-from backend.app.desktop.agent_loop.task_progress.repository import ProgressNotReady
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.patrol.agent_loop.task_progress.repository import ProgressNotReady
+from backend.app.desktop.contexts.curation import (
     CurationProgramRepository,
     PortfolioCandidatePreparer,
     PortfolioFreezer,
@@ -60,12 +60,12 @@ from backend.app.desktop.context_curation import (
     PortfolioLaneIntent,
     PortfolioRevision,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionPublisher,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
 
 pytestmark = [
     pytest.mark.usefixtures("isolated_postgres_database"),

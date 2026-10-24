@@ -10,10 +10,10 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.run_orchestration.models import RunOutboxDelivery, RunOutboxEvent
-from backend.app.desktop.run_orchestration.outbox import RunOutboxConsumer, RunOutboxRepository
-from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.orchestration.models import RunOutboxDelivery, RunOutboxEvent
+from backend.app.desktop.runs.orchestration.outbox import RunOutboxConsumer, RunOutboxRepository
+from backend.app.desktop.patrol.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

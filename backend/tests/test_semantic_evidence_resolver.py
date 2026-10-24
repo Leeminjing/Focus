@@ -7,21 +7,21 @@ r"""本文件对外提供 multi-source semantic evidence resolver 的纯合同�
 
 from __future__ import annotations
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     EvidenceRequirement,
     ExpansionBlocker,
     ExpansionOpportunity,
     ResolvedEvidenceBundle,
     WorkContextSpec,
 )
-from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_corpus import (
     CorpusEvidenceItem,
     FrozenEvidenceCorpus,
 )
-from backend.app.desktop.agent_loop.context_expansion.evidence_resolver import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_resolver import (
     MultiSourceEvidenceResolver,
 )
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     MultiSourceEvidence,
     NamespacedMessageRef,
     SourceMessageEvidence,

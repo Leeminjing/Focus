@@ -17,18 +17,18 @@ import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import make_url
 
-from backend.app.desktop.agent_loop.mission_contract import (
+from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
     CompletionCheckDefinition,
     ExecutionBoundaries,
     LegacyMissionAdapter,
     LoopMissionContract,
 )
-from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
-from backend.app.desktop.agent_loop.mission_service import MissionRevisionService
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog, MissionSectionMismatch
-from backend.app.desktop.agent_loop.schemas import CriterionVerification, LoopCreateRequest
-from backend.app.desktop.context_curation.contracts import MissionEvidenceRef, evidence_ref_key
+from backend.app.desktop.patrol.agent_loop.completion.completion_policy import CompletionCheckPolicy
+from backend.app.desktop.patrol.agent_loop.missions.mission_service import MissionRevisionService
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog, MissionSectionMismatch
+from backend.app.desktop.patrol.agent_loop.schemas import CriterionVerification, LoopCreateRequest
+from backend.app.desktop.contexts.curation.contracts import MissionEvidenceRef, evidence_ref_key
 
 
 def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres_database) -> None:

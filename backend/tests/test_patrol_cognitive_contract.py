@@ -13,16 +13,16 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop import round_orchestration as module
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.patrol import PatrolContractViolation
-from backend.app.desktop.agent_loop.round_orchestration import (
+from backend.app.desktop.patrol.agent_loop.rounds import round_orchestration as module
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.patrol.agent_loop.patrol import PatrolContractViolation
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import (
     LoopRoundOrchestrator,
     PatrolCognitiveStep,
     StructuredPatrolDecisionModel,
 )
-from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import CuratorCoordinationStage
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 from backend.tests.config_helpers import app_config_for
 
 _DECISION = {"rationale": "继续推进", "evidence": [], "mission_references": [{"role": "outcome", "reference_id": "outcome"}], "actions": [{"action": "continue_context", "context_id": "context-1", "context_revision_id": "revision-1", "message": "继续既有工作"}]}
@@ -30,8 +30,8 @@ _FLAT = {"rationale": _DECISION["rationale"], "evidence": [], "mission_reference
 
 
 def test_explicit_causal_read_reconstructs_only_selected_utf8_history():
-    from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView
-    from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+    from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import PatrolReadView
+    from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
 
     snapshot = {"meaning": "用户此前看到的局面" * 1600}
     digest = canonical_hash(snapshot)
@@ -59,8 +59,8 @@ def _run(coro):
 
 
 def test_consecutive_inputs_do_not_eagerly_read_or_inject_full_snapshots(monkeypatch):
-    from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView
-    from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+    from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import PatrolReadView
+    from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
 
     snapshots = [{"shared": "unchanged work state " * 200, "revision": i} for i in range(3)]
     chain = tuple({"intent_id": f"intent-{i}", "snapshot_hash": canonical_hash(snapshot),
@@ -94,8 +94,8 @@ def test_consecutive_inputs_do_not_eagerly_read_or_inject_full_snapshots(monkeyp
 
 def test_model_can_request_one_old_snapshot_before_deciding(monkeypatch):
     from backend.tests.config_helpers import ToolCapableFakeChatModel
-    from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView
-    from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+    from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import PatrolReadView
+    from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
 
     old = {"fact_id": "fact", "revision": 1, "meaning": "old-visible-value"}
     current = {**old, "revision": 2, "meaning": "current-visible-value"}

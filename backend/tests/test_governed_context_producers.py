@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import backend.app.desktop.collab  # noqa: F401  受治理键与生产者的声明消费者
-import backend.app.desktop.service  # noqa: F401
+import backend.app.desktop.agents.collaboration  # noqa: F401  受治理键与生产者的声明消费者
+import backend.app.desktop.composition.service  # noqa: F401
 import focus.agents.commitment.middleware  # noqa: F401
 import focus.agents.material_inputs  # noqa: F401
 import focus.agents.must_view  # noqa: F401
@@ -276,7 +276,7 @@ def test_task_identity_is_identical_across_execution_shapes():
 
 def test_missing_governed_key_fails_with_the_key_name():
     """缺键逐键失败：失败信息只提缺失的那个键，且零值不被当成缺失。"""
-    from backend.app.desktop.collab import _collab_values
+    from backend.app.desktop.agents.collaboration import _collab_values
 
     class _Runtime:
         def __init__(self, context):
@@ -291,7 +291,7 @@ def test_missing_governed_key_fails_with_the_key_name():
         {"agent_id": "main:t-1", "task_id": "t-1", "swarm_depth": 0, "workspace": "C:/ws"}
     )
     assert _collab_values(runtime) == ("main:t-1", "t-1")
-    from backend.app.desktop.collab import _context_value
+    from backend.app.desktop.agents.collaboration import _context_value
 
     assert _context_value(runtime.context, "swarm_depth", "唤醒链深度") == "0"
 
@@ -310,17 +310,18 @@ def _call_keywords(path: Path, names: set[str]) -> list[tuple[int, ast.Call]]:
 
 def test_launch_extras_never_carry_governed_keys():
     """静态守卫：启动点的 extras 不得夹带受治理键——一旦夹带就会被剥除，这正是本次回归的形态。"""
-    path = REPO / "backend" / "app" / "desktop" / "service.py"
-    calls = _call_keywords(path, {"_governed_context", "assemble_run_context"})
+    paths = (REPO / "backend/app/desktop/runs").rglob("*.py")
+    calls = [(path, lineno, node) for path in paths
+             for lineno, node in _call_keywords(path, {"_governed_context", "assemble_run_context"})]
     assert calls, "未找到启动上下文组装调用点"
-    for lineno, node in calls:
+    for path, lineno, node in calls:
         for keyword in node.keywords:
             if keyword.arg != "extras" or not isinstance(keyword.value, ast.Dict):
                 continue
             for key in keyword.value.keys:
                 assert not (
                     isinstance(key, ast.Constant) and key.value in governed_keys()
-                ), f"service.py:{lineno} 的 extras 夹带了受治理键 {getattr(key, 'value', key)!r}"
+                ), f"{path.name}:{lineno} 的 extras 夹带了受治理键 {getattr(key, 'value', key)!r}"
 
 
 def test_consumer_tests_do_not_hand_build_governed_context_keys():

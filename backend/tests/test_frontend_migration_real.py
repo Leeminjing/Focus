@@ -22,13 +22,13 @@ from sqlalchemy import func, select
 from test_workspace_patrol import _setup
 
 from focus.agents.lead_agent_state import LeadAgentState
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopUserIntent, LoopObservation
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.domain_evidence.identity import canonical_hash
-from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolBootstrap
-from backend.app.desktop.context_evolution import ContextEvolutionService, ContextRevisionRepository
-from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopUserIntent, LoopObservation
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.runs.evidence.identity import canonical_hash
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
+from backend.app.desktop.contexts.evolution import ContextEvolutionService, ContextRevisionRepository
+from backend.app.desktop.persistence.models import DesktopRun
 
 
 @pytest.mark.usefixtures("runtime_postgres_database")

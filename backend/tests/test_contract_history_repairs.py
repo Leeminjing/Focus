@@ -25,7 +25,7 @@ from backend.tests.test_commitment_handoff import _completed
 from backend.tests.test_commitment_handoff_recovery import _middleware
 from backend.tests.test_commitment_resume import _ScriptedDelegator
 from backend.tests.test_context_revision_reader import _ref, _revision, _RevisionStore
-from backend.app.desktop.context_evolution import ContextRevisionPayloadMode, ContextRevisionReader
+from backend.app.desktop.contexts.evolution import ContextRevisionPayloadMode, ContextRevisionReader
 from focus.agents.commitment.handoff import compile_handoff
 from focus.agents.commitment.middleware import CommitmentMiddleware
 from focus.agents.compression.gate import CompressionGate, apply_compression_ranges

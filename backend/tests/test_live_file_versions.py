@@ -19,23 +19,23 @@ from sqlalchemy import select
 from backend.tests.test_workspace_patrol import _setup
 from backend.tests.test_workspace_patrol_decisions import _prepare
 from backend.tests.runtime_context_support import tool_runtime
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopUserIntent
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest, FileReference, request_document
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.materialized_fact_query import MaterializedFactQueryService
-from backend.app.desktop.agent_loop.live_access import LoopLiveRedactionPolicy
-from backend.app.desktop.agent_loop.event_contract import LiveEventAuthorizationPolicy
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.materialized_fact_sources import RunFactSourceReader
-from backend.app.desktop.domain_evidence.file_versions import FileVersionCapture, FileVersionRecorder
-from backend.app.desktop.domain_evidence.file_reads import FileVersionReader
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.execution_attempts import ToolExecutionLedger
-from backend.app.desktop.run_orchestration.outbox import RunOutboxConsumer
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest, FileReference, request_document
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.facts.materialized_fact_query import MaterializedFactQueryService
+from backend.app.desktop.patrol.agent_loop.live.live_access import LoopLiveRedactionPolicy
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import LiveEventAuthorizationPolicy
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.facts.materialized_fact_sources import RunFactSourceReader
+from backend.app.desktop.runs.evidence.file_versions import FileVersionCapture, FileVersionRecorder
+from backend.app.desktop.runs.evidence.file_reads import FileVersionReader
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.runs.execution_attempts import ToolExecutionLedger
+from backend.app.desktop.runs.orchestration.outbox import RunOutboxConsumer
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 from focus.tools.builtins.workspace_tools import write_file
 from focus.security.context import security_context_of
 from focus.runtime.tool_attempts import ToolExecutionUncertain

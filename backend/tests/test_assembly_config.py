@@ -126,7 +126,7 @@ def test_containment_allows_global_root(global_home_dir, tmp_path):
 
 
 def test_assembly_prompt_constants():
-    from backend.app.desktop.service import _ASSEMBLY_SYSTEM_PROMPT, _MAIN_SYSTEM_PROMPT
+    from backend.app.desktop.capabilities.prompts import ASSEMBLY_SYSTEM_PROMPT as _ASSEMBLY_SYSTEM_PROMPT, MAIN_SYSTEM_PROMPT as _MAIN_SYSTEM_PROMPT
 
     assert _ASSEMBLY_SYSTEM_PROMPT != _MAIN_SYSTEM_PROMPT
     assert "~/.focus" in _ASSEMBLY_SYSTEM_PROMPT
@@ -136,10 +136,11 @@ def test_assembly_run_sets_allow_global_config():
     """装配运行把全局配置家目录并入工作根：装配位显式传 allow_global_config。"""
     import inspect
 
-    from backend.app.desktop.service import DesktopService
+    from backend.app.desktop.composition.service import DesktopService
 
     assert "allow_global_config" in inspect.signature(DesktopService._prepare).parameters
-    assert "allow_global_config=is_global_assembly" in inspect.getsource(DesktopService.start_main_run)
+    from backend.app.desktop.runs.service import RunService
+    assert "allow_global_config=is_global_assembly" in inspect.getsource(RunService.start_main_run)
 
 
 def test_regression_global_empty_equals_repo(tmp_path, monkeypatch):

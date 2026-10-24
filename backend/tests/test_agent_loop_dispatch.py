@@ -21,7 +21,7 @@ from langchain_core.messages import ToolMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import (
+from backend.app.desktop.patrol.agent_loop import (
     AgentLoopRecovery,
     AgentLoopService,
     LoopCoordinator,
@@ -32,15 +32,15 @@ from backend.app.desktop.agent_loop import (
     LoopWaveDispatcher,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.directive_causality import (
+from backend.app.desktop.patrol.agent_loop.execution.directive_causality import (
     DirectiveCausalityQuery,
     DirectiveCausalityRecorder,
 )
-from backend.app.desktop.agent_loop.directive_lifecycle import (
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import (
     DirectiveLifecycleRepository,
 )
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopCoordinatorLease,
@@ -49,7 +49,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -57,9 +57,9 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.run_orchestration import RunOutboxConsumer
-from backend.app.desktop.workspace_coordination.models import (
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.orchestration import RunOutboxConsumer
+from backend.app.desktop.workspaces.coordination.models import (
     RunExecutionAnchor,
     WorkspaceLease,
 )

@@ -24,7 +24,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import (
+from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
     CompletionEvidenceService,
     CompletionGuard,
@@ -38,15 +38,15 @@ from backend.app.desktop.agent_loop import (
     PatrolDecisionIntent,
     PendingDecisionProjector,
 )
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.mission_contract import (
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
     CompletionCheckDefinition,
     ExecutionBoundaries,
     LoopMissionContract,
 )
-from backend.app.desktop.agent_loop.mission_history import MissionHistoryQueryService
-from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.missions.mission_history import MissionHistoryQueryService
+from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDirective,
     LoopDirectiveTransition,
@@ -57,7 +57,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopWorkerRequest,
     MessageProvenance,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -65,8 +65,8 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -257,7 +257,7 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
 
 
 async def _round_frontier(sessions, round_id: str) -> str:
-    from backend.app.desktop.agent_loop.models import LoopRound
+    from backend.app.desktop.patrol.agent_loop.models import LoopRound
     async with sessions() as session:
         return (await session.get(LoopRound, round_id)).frontier_hash
 

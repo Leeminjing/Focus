@@ -9,6 +9,9 @@ r"""本文件对外提供 Loop Run 单一 durable 启动者的竞争与授权回
 
 from __future__ import annotations
 
+import backend.app.desktop.runs.assembly_service as _desktop_runs_assembly_service
+
+
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -24,26 +27,27 @@ from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop import service as desktop_service_module
-from backend.app.desktop.agent_loop.models import LoopAction, LoopDecision, LoopDelegationGrant, LoopDirective
-from backend.app.desktop.agent_loop.models import LoopUserIntent
-from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder
-from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
-from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRecovery, RunDispatchRepository
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.run_orchestration.executor import RunExecutionResources
-from backend.app.desktop.service import DesktopService, PreparedRun
-from backend.app.desktop.workspace_coordination.leases import WorkspaceLeaseManager
-from backend.app.desktop.workspace_coordination.models import WorkspaceLease, WorkspaceSlot
-from backend.app.desktop.workspace_coordination.schemas import WorkspaceAccessMode, WorkspaceLeaseRequest
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.composition import service as desktop_service_module
+from backend.app.desktop.patrol.agent_loop.models import LoopAction, LoopDecision, LoopDelegationGrant, LoopDirective
+from backend.app.desktop.patrol.agent_loop.models import LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopRunWorkspaceBinder
+from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.assembler import RunExecutionAssembly
+from backend.app.desktop.runs.orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRecovery, RunDispatchRepository
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.orchestration.executor import RunExecutionResources
+from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.runs.contracts import PreparedRun
+from backend.app.desktop.workspaces.coordination.leases import WorkspaceLeaseManager
+from backend.app.desktop.workspaces.coordination.models import WorkspaceLease, WorkspaceSlot
+from backend.app.desktop.workspaces.coordination.schemas import WorkspaceAccessMode, WorkspaceLeaseRequest
 
 from test_agent_loop_round_liveness import _seed_loop, _stop
 
@@ -52,7 +56,7 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
 async def _seed_launching_directive(sessions, fixture: dict, *, label: str) -> str:
-    from backend.app.desktop.agent_loop.models import LoopRound
+    from backend.app.desktop.patrol.agent_loop.models import LoopRound
     directive_id = uuid.uuid4().hex
     decision_id = uuid.uuid4().hex
     action_id = uuid.uuid4().hex
@@ -125,8 +129,8 @@ async def _admit_run(sessions, fixture: dict, directive_id: str, *, slot_id: str
             WorkspaceSlot.kind == "authoritative",
         ))
         assert slot is not None
-        from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
-        from backend.app.desktop.agent_loop.models import AgentLoop
+        from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_directive_equipment
+        from backend.app.desktop.patrol.agent_loop.models import AgentLoop
 
         loop = await session.get(AgentLoop, fixture["loop_id"])
         equipment = await resolve_directive_equipment(session, loop, directive)
@@ -151,8 +155,8 @@ async def _admit_run(sessions, fixture: dict, directive_id: str, *, slot_id: str
 
 
 def test_interrupted_unsettled_main_keeps_context_and_capacity_with_another_slot(tmp_path: Path) -> None:
-    from backend.app.desktop.agent_loop.context_run_pool import ContextRunPool
-    from backend.app.desktop.run_orchestration.admission import RunAdmissionConflict
+    from backend.app.desktop.patrol.agent_loop.resources.context_run_pool import ContextRunPool
+    from backend.app.desktop.runs.orchestration.admission import RunAdmissionConflict
 
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -203,7 +207,7 @@ def test_competing_durable_workers_start_one_loop_run(tmp_path: Path, monkeypatc
                 started.append(body.context["run_id"])
                 return SimpleNamespace(run_id=run_id, task=done)
 
-            monkeypatch.setattr(desktop_service_module, "execute_prepared_run", execute)
+            monkeypatch.setattr(_desktop_runs_assembly_service, 'execute_prepared_run', execute)
             service = object.__new__(DesktopService)
             service.session_factory = sessions
             service.bridge = MemoryStreamBridge()
@@ -222,7 +226,7 @@ def test_competing_durable_workers_start_one_loop_run(tmp_path: Path, monkeypatc
                     )
 
             workers = [
-                DurableRunDispatchWorker(sessions, f"desktop-main:{index}", Assembler(), service._start_dispatched_run, RunDispatchRepository())
+                DurableRunDispatchWorker(sessions, f"desktop-main:{index}", Assembler(), service.run_assembly._start_dispatched_run, RunDispatchRepository())
                 for index in range(2)
             ]
             assert sum(await asyncio.gather(*(worker.drain(limit=1) for worker in workers))) == 1
@@ -416,7 +420,7 @@ def test_invalid_grant_or_slot_blocks_durable_start(tmp_path: Path, monkeypatch:
             async def forbidden(*args, **kwargs):
                 raise AssertionError("撤销授权后不得启动 Agent")
 
-            monkeypatch.setattr(desktop_service_module, "execute_prepared_run", forbidden)
+            monkeypatch.setattr(_desktop_runs_assembly_service, 'execute_prepared_run', forbidden)
             service = object.__new__(DesktopService)
             service.session_factory = sessions
             service.bridge = MemoryStreamBridge()
@@ -434,7 +438,7 @@ def test_invalid_grant_or_slot_blocks_durable_start(tmp_path: Path, monkeypatch:
                         agent_factory=lambda: None,
                     )
 
-            worker = DurableRunDispatchWorker(sessions, "desktop-main:revoked", Assembler(), service._start_dispatched_run, RunDispatchRepository())
+            worker = DurableRunDispatchWorker(sessions, "desktop-main:revoked", Assembler(), service.run_assembly._start_dispatched_run, RunDispatchRepository())
             assert await worker.drain(limit=1) == 1
             async with sessions() as session:
                 dispatch = await RunDispatchRepository().by_run(session, run_id)
@@ -488,7 +492,7 @@ def test_occupied_planned_writer_slot_fails_without_workspace_fallback(tmp_path:
                     thread_id=task.thread_id, agent_factory=lambda: None, payload={},
                 )
 
-            service._prepare = prepare
+            service.run_assembly._prepare = prepare
 
             async def forbidden(*args, **kwargs):
                 raise AssertionError("capacity conflict must prevent Agent startup")

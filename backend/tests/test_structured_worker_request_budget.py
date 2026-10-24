@@ -13,10 +13,10 @@ import httpx
 import pytest
 from langchain_openai import ChatOpenAI
 
-from backend.app.desktop.agent_loop import structured_worker
-from backend.app.desktop.agent_loop.task_progress.candidate_contract import candidate_schema, validate_candidate
-from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import interpretation_payload
-from backend.app.desktop.agent_loop.task_progress.runtime import _SYSTEM, TaskProgressRuntime
+from backend.app.desktop.patrol.agent_loop.workers import structured_worker
+from backend.app.desktop.patrol.agent_loop.task_progress.candidate_contract import candidate_schema, validate_candidate
+from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import interpretation_payload
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import _SYSTEM, TaskProgressRuntime
 from focus.messages.request_budget import estimate_request_budget, estimate_responses_budget
 from focus.models.provider_contract import ProviderContract
 from focus.models.responses import FocusResponsesChatModel

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.app.desktop.skills import build_task_skill_catalog, describe_task_skill_catalog, resolve_task_skills
+from backend.app.desktop.capabilities.skills import build_task_skill_catalog, describe_task_skill_catalog, resolve_task_skills
 
 
 def _skill(root: Path, folder: str, name: str, description: str) -> None:
@@ -130,7 +130,7 @@ def test_custom_migration_skill_overrides_bundle_only_in_its_scope(tmp_path, mon
 
 
 def test_bundled_migration_template_is_importable_by_focus(tmp_path, monkeypatch):
-    from backend.app.desktop.strategy_packages import parse_strategy
+    from backend.app.desktop.capabilities.strategy_packages import parse_strategy
 
     monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(tmp_path / "global"))
     content = build_task_skill_catalog(tmp_path / "project")["focus-skill-to-strategy"].content

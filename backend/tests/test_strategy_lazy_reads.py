@@ -13,16 +13,16 @@ from sqlalchemy import select
 
 from focus.context.requests import frozen_request_messages
 from focus.history import content_hash
-from backend.app.desktop.evolution_strategies import EvolutionStrategy, strategy_catalog, strategy_catalog_input, freeze_strategies
-from backend.app.desktop.memory import MemoryService, MemoryUpdate
-from backend.app.desktop.models import Memory
-from backend.app.desktop.strategy_packages import StrategyMetadata, StrategyPackage
-from backend.app.desktop.strategy_snapshots import FrozenStrategySnapshot, PatrolStrategyReadRequest, read_strategy_page
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.observation import observation_hash
-from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView
-from backend.app.desktop.agent_loop.patrol_request_capacity import PatrolRequestCapacity
-from backend.app.desktop.agent_loop.round_orchestration import (
+from backend.app.desktop.capabilities.evolution_strategies import EvolutionStrategy, strategy_catalog, strategy_catalog_input, freeze_strategies
+from backend.app.desktop.memory.service import MemoryService, MemoryUpdate
+from backend.app.desktop.persistence.models import Memory
+from backend.app.desktop.capabilities.strategy_packages import StrategyMetadata, StrategyPackage
+from backend.app.desktop.capabilities.strategy_snapshots import FrozenStrategySnapshot, PatrolStrategyReadRequest, read_strategy_page
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import PatrolReadView
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_request_capacity import PatrolRequestCapacity
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import (
     PATROL_SYSTEM_CONTRACT, PatrolCognitiveStep, StructuredPatrolDecisionModel,
 )
 from backend.tests.config_helpers import app_config_for
@@ -119,8 +119,8 @@ def test_missing_or_corrupt_snapshot_never_falls_back_to_current_memory(isolated
 
 
 def test_read_rejects_forged_observation_and_revoked_authority(isolated_postgres_database, tmp_path):
-    from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-    from backend.app.desktop.agent_loop.schemas import RevokeLoopGrantRequest
+    from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+    from backend.app.desktop.patrol.agent_loop.schemas import RevokeLoopGrantRequest
 
     async def run():
         async with live(tmp_path) as (sessions, seed, memories, observations):
@@ -138,7 +138,7 @@ def test_read_rejects_forged_observation_and_revoked_authority(isolated_postgres
 
 @pytest.mark.parametrize("limited", [False, True])
 def test_patrol_transport_only_includes_requested_pages_and_checks_next_request(isolated_postgres_database, tmp_path, limited):
-    from backend.app.desktop.agent_loop.context_expansion.candidate_paging import ProviderRequestWindowError
+    from backend.app.desktop.patrol.agent_loop.context_expansion.candidate_paging import ProviderRequestWindowError
 
     async def run():
         async with live(tmp_path) as (sessions, seed, memories, observations):
@@ -195,10 +195,10 @@ def test_legacy_full_snapshot_projects_to_catalog_and_can_be_read_without_store(
 @pytest.mark.parametrize("limited", [False, True])
 def test_planner_reads_selected_strategy_and_persists_pages_for_resume(foreign, paged, limited):
     from test_complete_semantic_context_derivation import _long_index
-    from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+    from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import (
         RetrievalBackedCognitiveAdvisor, PlannerQueryProposal, PlannerReadProposal, PlannerStrategyReadProposal, LaneAdviceProposal,
     )
-    from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
         PlanningRetrievalSession, PortfolioIndexCatalog, AuthorizedSemanticRetriever, RetrievalBudget,
     )
     body = {"memory_id": "frozen", "title": "方法", "workspace_id": None,
@@ -207,7 +207,7 @@ def test_planner_reads_selected_strategy_and_persists_pages_for_resume(foreign, 
     catalog = strategy_catalog((snapshot,))
     calls, reads, checkpoints = [], [], []
     model_config = config().models[0]
-    from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
+    from backend.app.desktop.patrol.agent_loop.workers.structured_worker import StructuredWorkerModel
     class Model:
         request_model_config = model_config
         request_messages = staticmethod(StructuredWorkerModel.request_messages)
@@ -260,7 +260,7 @@ def test_planner_reads_selected_strategy_and_persists_pages_for_resume(foreign, 
 
 
 def test_legacy_observation_without_explicit_identity_uses_its_own_frozen_body(isolated_postgres_database, tmp_path):
-    from backend.app.desktop.agent_loop.models import LoopObservation
+    from backend.app.desktop.patrol.agent_loop.models import LoopObservation
     async def run():
         async with live(tmp_path) as (sessions, seed, memories, observations):
             observation = await observations.capture(seed["loop_id"], seed["round_id"])
@@ -283,8 +283,8 @@ def test_legacy_observation_without_explicit_identity_uses_its_own_frozen_body(i
 
 @pytest.mark.parametrize("read_first", [False, True])
 def test_patrol_adoption_requires_a_read_of_the_frozen_version(monkeypatch, read_first):
-    from backend.app.desktop.agent_loop import round_orchestration as module
-    from backend.app.desktop.agent_loop.patrol_contract import PatrolContractViolation
+    from backend.app.desktop.patrol.agent_loop.rounds import round_orchestration as module
+    from backend.app.desktop.patrol.agent_loop.patrol_contract import PatrolContractViolation
     from test_loop_patrol_capacity_recovery import _observation
 
     body = {"memory_id": "adopt", "title": "方法", "workspace_id": None,
@@ -317,7 +317,7 @@ def test_patrol_adoption_requires_a_read_of_the_frozen_version(monkeypatch, read
 
 @pytest.mark.parametrize("strategy_reading", [False, True])
 def test_patrol_extra_steps_are_only_used_for_strategy_pages(strategy_reading):
-    from backend.app.desktop.agent_loop.round_orchestration import PatrolDecisionProposal
+    from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import PatrolDecisionProposal
     from test_loop_patrol_capacity_recovery import _observation
     from test_patrol_cognitive_contract import _FLAT
 

@@ -10,9 +10,9 @@ import asyncio
 
 import pytest
 
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.feature_flags import LoopFeatureFlags
 
 
 @pytest.mark.parametrize(

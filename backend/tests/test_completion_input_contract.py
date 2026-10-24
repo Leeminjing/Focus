@@ -13,12 +13,12 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.derivation_worker import safe_validation_message
-from backend.app.desktop.agent_loop.workers import StructuredCompletionVerifier
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationResult
-from backend.app.desktop.domain_evidence.tests import TestResultParser
+from backend.app.desktop.patrol.agent_loop.completion.completion_policy import CompletionCheckPolicy
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import safe_validation_message
+from backend.app.desktop.patrol.agent_loop.workers.runtime import StructuredCompletionVerifier
+from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationResult
+from backend.app.desktop.runs.evidence.tests import TestResultParser
 from backend.tests.config_helpers import app_config_for
 
 
@@ -56,8 +56,8 @@ def test_declared_ids_are_in_nested_schema_and_runtime_validation():
 @pytest.mark.parametrize('all_optional', [False, True])
 def test_structured_verifier_accepts_optional_unknown_with_satisfied_conclusion(monkeypatch, all_optional):
     async def run():
-        from backend.app.desktop.agent_loop.completion import CompletionGuard
-        from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract
+        from backend.app.desktop.patrol.agent_loop.completion.service import CompletionGuard
+        from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract
 
         config = app_config_for('optional-verifier', None)
         config.models[0].curation_output_method = 'prompt_json'
@@ -77,7 +77,7 @@ def test_structured_verifier_accepts_optional_unknown_with_satisfied_conclusion(
                     'input_tokens': 20, 'output_tokens': 10, 'total_tokens': 30}
                 return AIMessage(content=json.dumps(result))
 
-        monkeypatch.setattr('backend.app.desktop.agent_loop.structured_worker.create_chat_model', lambda **kwargs: Provider())
+        monkeypatch.setattr('backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model', lambda **kwargs: Provider())
         worker = RoleBoundStructuredModel(config, 'claim_verifier')
         proposal = await StructuredCompletionVerifier(worker).verify({'completion_checks': checks})
         contract = CompletionVerificationContract(verification_id='v', loop_id='l', round_id='r',
@@ -103,7 +103,7 @@ def test_schema_feedback_excludes_original_candidate_content():
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_unknown_source_identity_is_opaque_in_feedback_and_durable_failure(tmp_path, monkeypatch):
     async def run():
-        from backend.app.desktop.agent_loop.models import LoopWorkerRequest
+        from backend.app.desktop.patrol.agent_loop.models import LoopWorkerRequest
         from test_loop_worker_recovery import _case, _fail_three
 
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
@@ -136,7 +136,7 @@ def test_async_result_validation_is_awaited_and_uses_existing_feedback(monkeypat
                 config["callbacks"][0].usage_metadata["async-verifier"] = {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30}
                 return AIMessage(content=json.dumps(_unknown()))
 
-        monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: Provider())
+        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider())
         worker = RoleBoundStructuredModel(config, "claim_verifier")
 
         async def validate(proposal):
@@ -213,7 +213,7 @@ def test_cancellation_during_async_validation_retains_actual_call_and_cleans_up(
                 config["callbacks"][0].usage_metadata["cancel"] = {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30}
                 return AIMessage(content=json.dumps(_unknown()))
 
-        monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: Provider())
+        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider())
         worker = RoleBoundStructuredModel(config, "claim_verifier")
 
         async def validate(proposal):
@@ -237,11 +237,11 @@ def test_cancellation_during_async_validation_retains_actual_call_and_cleans_up(
 def test_worker_freezes_all_sources_and_projects_same_validator_eligibility(tmp_path, monkeypatch):
     async def run():
         from sqlalchemy import select
-        from backend.app.desktop.agent_loop.completion_evidence_catalog import CompletionEvidenceCatalog
-        from backend.app.desktop.agent_loop.models import AgentLoop, LoopWorkerRequest
-        from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-        from backend.app.desktop.domain_evidence.repository import DomainResultRepository
-        from backend.app.desktop.models import DesktopRun, DesktopWorkspace
+        from backend.app.desktop.patrol.agent_loop.completion.completion_evidence_catalog import CompletionEvidenceCatalog
+        from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopWorkerRequest
+        from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+        from backend.app.desktop.runs.evidence.repository import DomainResultRepository
+        from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
         from completion_evidence_support import record_verified_fixture
         from test_loop_worker_recovery import _case
 
@@ -280,9 +280,9 @@ def test_worker_freezes_all_sources_and_projects_same_validator_eligibility(tmp_
 def test_actual_verifier_corrects_stale_source_in_same_worker_attempt(tmp_path, monkeypatch):
     async def run():
         from sqlalchemy import select
-        from backend.app.desktop.agent_loop.models import AgentLoop, LoopWorkerRequest
-        from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-        from backend.app.desktop.models import DesktopWorkspace
+        from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopWorkerRequest
+        from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+        from backend.app.desktop.persistence.models import DesktopWorkspace
         from completion_evidence_support import record_verified_fixture
         from test_loop_worker_recovery import _case, _step
 
@@ -318,10 +318,10 @@ def test_actual_verifier_corrects_stale_source_in_same_worker_attempt(tmp_path, 
 def test_final_record_rechecks_after_candidate_validation(tmp_path, monkeypatch, change):
     async def run():
         from sqlalchemy import select, func
-        from backend.app.desktop.agent_loop.completion import CompletionCandidateValidator, CompletionEvidenceService
-        from backend.app.desktop.agent_loop.models import AgentLoop, CompletionVerification, LoopRound
-        from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract
-        from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+        from backend.app.desktop.patrol.agent_loop.completion.service import CompletionCandidateValidator, CompletionEvidenceService
+        from backend.app.desktop.patrol.agent_loop.models import AgentLoop, CompletionVerification, LoopRound
+        from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract
+        from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
         from test_loop_worker_recovery import _case
 
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
@@ -352,8 +352,8 @@ def test_final_record_rechecks_after_candidate_validation(tmp_path, monkeypatch,
 def test_complete_request_capacity_rejects_before_provider_and_receipt(tmp_path, monkeypatch):
     async def run():
         from sqlalchemy import select
-        from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-        from backend.app.desktop.agent_loop.models import LoopWorkerRequest
+        from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+        from backend.app.desktop.patrol.agent_loop.models import LoopWorkerRequest
         from test_loop_worker_recovery import _case, _fail_three
 
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
@@ -379,8 +379,8 @@ async def _record_legacy_tap(sessions, fixture, root):
     from datetime import UTC, datetime
     from langchain_core.messages import ToolMessage
     from focus.history import serialize_history_message, content_hash
-    from backend.app.desktop.models import DesktopRun, ToolExecutionAttempt
-    from backend.app.desktop.domain_evidence.repository import DomainResultRepository
+    from backend.app.desktop.persistence.models import DesktopRun, ToolExecutionAttempt
+    from backend.app.desktop.runs.evidence.repository import DomainResultRepository
 
     path = Path(root) / "legacy-tap.cjs"
     path.write_text('require("node:test")("persists prompt", () => {});', encoding="utf-8")
@@ -408,10 +408,10 @@ async def _record_legacy_tap(sessions, fixture, root):
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_legacy_report_derivation_preserves_source_and_uses_exact_tool_proof(tmp_path, monkeypatch):
     async def run():
-        from backend.app.desktop.agent_loop.models import AgentLoop
-        from backend.app.desktop.models import DesktopWorkspace
-        from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-        from backend.app.desktop.agent_loop.completion_evidence_catalog import CompletionEvidenceCatalog
+        from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+        from backend.app.desktop.persistence.models import DesktopWorkspace
+        from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+        from backend.app.desktop.patrol.agent_loop.completion.completion_evidence_catalog import CompletionEvidenceCatalog
         from test_loop_worker_recovery import _case
 
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):

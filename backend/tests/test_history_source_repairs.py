@@ -16,13 +16,13 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.context_curator.contract import compile_curated_context
-from backend.app.desktop.context_curator.projector import CurationSourceProjector
-from backend.app.desktop.context_evolution import ContextRevisionPayloadMode, ContextRevisionReader
-from backend.app.desktop.models import DesktopRun, DesktopWorkspace
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.executor import _graph_input
-from backend.app.desktop.run_orchestration.input_provenance import bind_run_inputs
+from backend.app.desktop.contexts.curator.contract import compile_curated_context
+from backend.app.desktop.contexts.curator.projector import CurationSourceProjector
+from backend.app.desktop.contexts.evolution import ContextRevisionPayloadMode, ContextRevisionReader
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.executor import _graph_input
+from backend.app.desktop.runs.orchestration.input_provenance import bind_run_inputs
 from backend.tests.test_context_revision_reader import _ref, _revision, _RevisionStore, _Checkpointer
 from backend.tests.test_unified_run_orchestration import _seed, _registration
 from focus.agents.compression.gate import apply_compression_ranges

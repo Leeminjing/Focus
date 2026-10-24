@@ -5,6 +5,13 @@
 后台执行主体身份不同而不会阻塞主运行，最后在服务入口断言主执行存在待决时新运行被拒。
 """
 
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.conversations.service as _desktop_conversations_service
+import backend.app.desktop.patrol.service as _desktop_patrol_service
+import backend.app.desktop.runs.recovery_service as _desktop_runs_recovery_service
+import backend.app.desktop.runs.service as _desktop_runs_service
+
+
 import asyncio
 from types import SimpleNamespace
 
@@ -13,7 +20,7 @@ from fastapi import HTTPException
 
 from focus.security.approval import APPROVAL_TYPE
 
-from backend.app.desktop.pending_interrupts import (
+from backend.app.desktop.conversations.interrupts import (
     MAIN_CHECKPOINT_NAMESPACE,
     main_pending_interrupt,
     main_pending_kinds,
@@ -172,7 +179,7 @@ async def _stub_pending_access(_session, _task, _checkpointer, _payload_type):
 
 
 def _stub_service(monkeypatch):
-    import backend.app.desktop.service as service_module
+    import backend.app.desktop.composition.service as service_module
 
     class _RevisionRepository:
         async def current(self, _session, _context_id):
@@ -181,14 +188,17 @@ def _stub_service(monkeypatch):
     service = service_module.DesktopService.__new__(service_module.DesktopService)
     service.session_factory = _Session
     service.checkpointer = None
-    service._get_task_entities = _stub_task_entities
-    service._commitment_recovery_payload = _stub_no_commitment
+    service.workspaces._get_task_entities = _stub_task_entities
+    service.conversations._commitment_recovery_payload = _stub_no_commitment
     service.contexts = SimpleNamespace(ensure_runnable=_stub_ensure_runnable)
-    monkeypatch.setattr(
-        service_module, "ContextRevisionRepository", _RevisionRepository
-    )
-    monkeypatch.setattr(service_module, "compression_recovery_payload", _stub_no_compression)
-    monkeypatch.setattr(service_module, "main_pending_interrupt", _stub_pending_access)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'ContextRevisionRepository', _RevisionRepository)
+    monkeypatch.setattr(_desktop_runs_service, 'ContextRevisionRepository', _RevisionRepository)
+    monkeypatch.setattr(_desktop_conversations_service, 'compression_recovery_payload', _stub_no_compression)
+    monkeypatch.setattr(_desktop_runs_recovery_service, 'compression_recovery_payload', _stub_no_compression)
+    monkeypatch.setattr(_desktop_runs_service, 'compression_recovery_payload', _stub_no_compression)
+    monkeypatch.setattr(_desktop_conversations_service, 'main_pending_interrupt', _stub_pending_access)
+    monkeypatch.setattr(_desktop_runs_recovery_service, 'main_pending_interrupt', _stub_pending_access)
+    monkeypatch.setattr(_desktop_runs_service, 'main_pending_interrupt', _stub_pending_access)
     return service
 
 
@@ -203,13 +213,15 @@ def test_pending_access_blocks_new_main_run(monkeypatch):
 
 def test_no_pending_access_lets_new_main_run_proceed(monkeypatch):
     """无未决准入时不因准入门拦截（后续装配失败属既有装配路径，与本用例无关）。"""
-    import backend.app.desktop.service as service_module
+    import backend.app.desktop.composition.service as service_module
 
     async def _no_pending(_session, _task, _checkpointer, _payload_type):
         return None
 
     service = _stub_service(monkeypatch)
-    monkeypatch.setattr(service_module, "main_pending_interrupt", _no_pending)
+    monkeypatch.setattr(_desktop_conversations_service, 'main_pending_interrupt', _no_pending)
+    monkeypatch.setattr(_desktop_runs_recovery_service, 'main_pending_interrupt', _no_pending)
+    monkeypatch.setattr(_desktop_runs_service, 'main_pending_interrupt', _no_pending)
     with pytest.raises(Exception) as excinfo:
         asyncio.run(service.start_main_run("task-1", "你好", None, ["read"], []))
     message = str(getattr(excinfo.value, "detail", excinfo.value))

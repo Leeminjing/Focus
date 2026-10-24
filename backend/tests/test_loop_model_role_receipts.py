@@ -17,18 +17,18 @@ from focus.models.deepseek import DeepSeekChatOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.accounting_query import LoopAccountingQuery
-from backend.app.desktop.agent_loop.context_expansion.index_budget_repository import IndexBudgetReservationRepository
-from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-from backend.app.desktop.agent_loop.models import LoopBudgetUsage, LoopWorkerRequest
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.patrol import PortfolioPatrol
-from backend.app.desktop.agent_loop.round_orchestration import StructuredPatrolDecisionModel
-from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
-from backend.app.desktop.agent_loop.task_progress.models import LoopProgressWork
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-from backend.app.desktop.agent_loop.usage import LoopUsageDelta
-from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
+from backend.app.desktop.patrol.agent_loop.journal.accounting_query import LoopAccountingQuery
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_budget_repository import IndexBudgetReservationRepository
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.patrol import PortfolioPatrol
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import StructuredPatrolDecisionModel
+from backend.app.desktop.patrol.agent_loop.workers.structured_worker import StructuredWorkerModel
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressWork
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_round_task_progress import _Checkpointer
@@ -71,8 +71,8 @@ def test_production_roles_record_owned_attempts_once(tmp_path, monkeypatch):
 
         provider = Provider(model="role-receipt", api_key="fixture", base_url="https://fixture.test/v1",
                             max_tokens=config.models[0].curation_max_output_tokens)
-        monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: provider)
-        monkeypatch.setattr("backend.app.desktop.agent_loop.round_orchestration.create_chat_model", lambda **kwargs: provider)
+        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: provider)
+        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.rounds.round_orchestration.create_chat_model", lambda **kwargs: provider)
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], fixture["round_id"])
             response.update(source_assessments=[{"source_key": item["source_key"], "disposition": "unknown", "explanation": "保留真实冻结来源"} for item in observation.task_delta["sources"]])

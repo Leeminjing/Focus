@@ -1,5 +1,9 @@
 """验证压缩面板完整快照、关键词预览和应用均读取当前 Revision 的执行身份。"""
 
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,9 +14,9 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
 
-from backend.app.desktop import service as desktop_service
-from backend.app.desktop.compression_routes import compression_router
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.composition import service as desktop_service
+from backend.app.desktop.api.compression import compression_router
+from backend.app.desktop.composition.service import DesktopService
 from focus.agents.compression import apply_compression_ranges
 from focus.runtime.runs.events import serialize_message
 
@@ -25,7 +29,7 @@ def compression_snapshot(monkeypatch):
     session.scalar.return_value = None
     service = object.__new__(DesktopService)
     service.session_factory = lambda: session
-    service._get_task_entities = AsyncMock(return_value=(task, object()))
+    service.workspaces._get_task_entities = AsyncMock(return_value=(task, object()))
     service.app_config = object()
     service.contexts = SimpleNamespace(
         ensure_runnable=AsyncMock(),
@@ -33,7 +37,7 @@ def compression_snapshot(monkeypatch):
     )
     service.context_patrol = SimpleNamespace(notify_stable_context_checkpoint=AsyncMock())
     current = AsyncMock(return_value=None)
-    monkeypatch.setattr(desktop_service.ContextRevisionRepository, "current", current)
+    monkeypatch.setattr(_desktop_conversations_compression_service.ContextRevisionRepository, "current", current)
 
     source = HumanMessage(content="earlier source", id="source-1")
     block = apply_compression_ranges(
@@ -61,7 +65,8 @@ def compression_snapshot(monkeypatch):
         return {"configurable": {"checkpoint_id": "compressed-1"}}
 
     graph = SimpleNamespace(aupdate_state=AsyncMock(side_effect=update_state))
-    monkeypatch.setattr(desktop_service, "make_lead_agent", AsyncMock(return_value=graph))
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', AsyncMock(return_value=graph))
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', AsyncMock(return_value=graph))
     app = FastAPI()
     app.state.desktop_service = service
     app.include_router(compression_router)
@@ -110,7 +115,7 @@ def test_panel_snapshot_and_apply_share_current_revision(compression_snapshot, i
         "configurable": {"thread_id": expected_identity[0]}
     }
     if expected_identity[1]:
-        assert isinstance(fixture.graph.checkpointer, desktop_service.NamespacedCheckpointer)
+        assert isinstance(fixture.graph.checkpointer, _desktop_conversations_compression_service.NamespacedCheckpointer)
     else:
         assert fixture.graph.checkpointer is fixture.service.checkpointer
 

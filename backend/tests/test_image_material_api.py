@@ -25,8 +25,8 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 from focus.runtime.runs.manager import RunRecord
 from focus.runtime.runs.schemas import DisconnectMode, RunStatus
 
-from backend.app.desktop.resource_limits import ImageResourceLimits
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.materials.limits import ImageResourceLimits
+from backend.app.desktop.composition.service import DesktopService
 from backend.app.gateway.app import app
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
@@ -270,9 +270,9 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
             assert aggregate.status_code == 413
             service.run_materials._images._limits = original_limits
 
-            original_window = service._validate_model_window
+            original_window = service.capabilities._validate_model_window
             measured = []
-            service._validate_model_window = lambda _model, used: measured.append(used)
+            service.capabilities._validate_model_window = lambda _model, used: measured.append(used)
             plain = client.post(
                 f"/desktop/api/tasks/{first_id}/main/runs",
                 headers=SESSION,
@@ -286,7 +286,7 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                 if used > plain_tokens:
                     raise HTTPException(422, "窗口超限")
 
-            service._validate_model_window = enforce_plain_window
+            service.capabilities._validate_model_window = enforce_plain_window
             window = client.post(
                 f"/desktop/api/tasks/{first_id}/main/runs",
                 headers=SESSION,
@@ -299,7 +299,7 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                 json={"message": "x", "material_inputs": [{"material_id": text_id, "note": "需要额外计量"}]},
             )
             assert note_window.status_code == 422
-            service._validate_model_window = original_window
+            service.capabilities._validate_model_window = original_window
 
             accepted = client.post(
                 f"/desktop/api/tasks/{first_id}/main/runs",

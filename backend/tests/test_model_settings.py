@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.desktop.model_settings import (
+from backend.app.desktop.capabilities.model_settings import (
     CONFIG_FILE_NAME,
     ModelSettingsError,
     catalog_snapshot,
@@ -25,7 +25,7 @@ from backend.app.desktop.model_settings import (
     settings_snapshot,
     validate_catalog,
 )
-from backend.app.desktop.model_settings_routes import model_settings_router
+from backend.app.desktop.api.model_settings import model_settings_router
 from focus.config.app_config import DEFAULT_MODEL_ENV_VAR, build_app_config
 
 _GLOBAL_ENV = "FOCUS_GLOBAL_HOME"
@@ -760,7 +760,7 @@ def test_missing_entry_yields_a_readable_422_without_fallback(workspace):
     """条目被删除后，运行发起前必须给可读错误，而不是 KeyError 或静默改用别的条目。"""
     from fastapi import HTTPException
 
-    from backend.app.desktop.service import DesktopService
+    from backend.app.desktop.composition.service import DesktopService
 
     service = DesktopService.__new__(DesktopService)
     service.app_config = _app_config()
@@ -780,7 +780,7 @@ def test_missing_entry_yields_a_readable_422_without_fallback(workspace):
 def test_undeclared_default_yields_a_readable_422(workspace):
     from fastapi import HTTPException
 
-    from backend.app.desktop.service import DesktopService
+    from backend.app.desktop.composition.service import DesktopService
 
     service = DesktopService.__new__(DesktopService)
     service.app_config = build_app_config({"models": [_entry("alpha"), _entry("beta")]}, {})
@@ -833,14 +833,14 @@ def test_route_rejects_an_invalid_catalog_with_field_errors(workspace):
 
 
 def test_route_requires_confirmation_before_deleting_a_referenced_entry(workspace, monkeypatch):
-    import backend.app.desktop.model_settings_routes as routes
+    import backend.app.desktop.api.model_settings as routes
 
     async def fake_references(session_factory, names):
         return {"beta": [{"kind": "run", "run_id": "r1", "task_id": "t1"}]}
 
     monkeypatch.setattr(routes, "referencing_models", fake_references)
     from unittest.mock import AsyncMock
-    monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup",
+    monkeypatch.setattr("backend.app.desktop.capabilities.model_verification.verify_model_setup",
                         AsyncMock(return_value={"ok": True, "reason": "验证通过", "checks": []}))
     client = _client(_app_config())
     catalog = [entry for entry in _file_catalog() if entry["name"] != "beta"]
@@ -861,7 +861,7 @@ def test_route_requires_confirmation_before_deleting_a_referenced_entry(workspac
 
 
 def test_route_lists_references(workspace, monkeypatch):
-    import backend.app.desktop.model_settings_routes as routes
+    import backend.app.desktop.api.model_settings as routes
 
     async def fake_references(session_factory, names):
         return {name: [{"kind": "task", "task_id": "t1"}] for name in names}
@@ -914,12 +914,8 @@ def _local_session_factory():
 def test_referencing_models_finds_tasks_and_runs(isolated_postgres_database):
     from sqlalchemy import delete
 
-    from backend.app.desktop.models import (
-        MAIN_RUN_EQUIPMENT_KEY,
-        DesktopRun,
-        DesktopThread,
-        DesktopWorkspace,
-    )
+    from backend.app.desktop.persistence.contracts import MAIN_RUN_EQUIPMENT_KEY
+    from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
     task_id = "task-modelsettings-ref01"
     workspace_id = "ws-modelsettings-ref01"

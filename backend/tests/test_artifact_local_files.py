@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from backend.app.desktop.agent_loop.live_access import LoopLiveAccessPolicy
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.domain_evidence.file_reads import FileVersionReader
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.live.live_access import LoopLiveAccessPolicy
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.runs.evidence.file_reads import FileVersionReader
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
 
 def test_local_file_authorization_and_containment(tmp_path, monkeypatch):

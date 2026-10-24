@@ -33,16 +33,16 @@ def mount_desktop(app) -> None:
     """
     from fastapi.staticfiles import StaticFiles
 
-    from backend.app.desktop.compression_routes import compression_router
-    from backend.app.desktop.memory_routes import memory_router
-    from backend.app.desktop.model_settings_routes import model_settings_router
-    from backend.app.desktop.storage_routes import storage_router
-    from backend.app.desktop.plugins_routes import plugins_router
-    from backend.app.desktop.routes import desktop_router
-    from backend.app.desktop.agent_loop.routes import agent_loop_router
-    from backend.app.desktop.agent_loop.query_routes import loop_query_router
-    from backend.app.desktop.agent_loop.live_routes import live_loop_router
-    from backend.app.desktop.agent_loop.projection_routes import projection_router
+    from backend.app.desktop.api.compression import compression_router
+    from backend.app.desktop.api.memory import memory_router
+    from backend.app.desktop.api.model_settings import model_settings_router
+    from backend.app.desktop.api.storage import storage_router
+    from backend.app.desktop.api.plugins import plugins_router
+    from backend.app.desktop.api.routes import desktop_router
+    from backend.app.desktop.patrol.agent_loop.routes import agent_loop_router
+    from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_query_router
+    from backend.app.desktop.patrol.agent_loop.live.live_routes import live_loop_router
+    from backend.app.desktop.patrol.agent_loop.projections.projection_routes import projection_router
 
     app.include_router(desktop_router)
     app.include_router(agent_loop_router)
@@ -55,6 +55,9 @@ def mount_desktop(app) -> None:
     app.include_router(model_settings_router)
     app.include_router(storage_router)
     mount_plugin_assets(app)
+    from backend.app.desktop.api.openapi import install_desktop_openapi_contract
+
+    install_desktop_openapi_contract(app)
     app.mount("/desktop", StaticFiles(directory=str(DESKTOP_DIR), html=True), name="desktop")
     logger.info("桌面路由与静态资源已挂载 (/desktop/api, /desktop)")
 

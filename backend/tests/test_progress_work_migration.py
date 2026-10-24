@@ -17,10 +17,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_round_task_progress import _Checkpointer
 
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
-from backend.app.desktop.agent_loop.task_progress.models import LoopProgressHead, LoopProgressReceipt, LoopProgressWork, LoopTaskProgress
-from backend.app.desktop.agent_loop.task_progress.repository import TaskProgressRepository
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressHead, LoopProgressReceipt, LoopProgressWork, LoopTaskProgress
+from backend.app.desktop.patrol.agent_loop.task_progress.repository import TaskProgressRepository
 
 
 def test_data_conversion_preserves_history_and_fences_only_obsolete_work(tmp_path, runtime_postgres_database):

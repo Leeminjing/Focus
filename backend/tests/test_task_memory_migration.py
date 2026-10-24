@@ -21,8 +21,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop
 from test_patrol_session import _observation_envelope
 
-from backend.app.desktop.agent_loop.models import LoopObservation
-from backend.app.desktop.context_evolution.models import ContextPublicationReceipt
+from backend.app.desktop.patrol.agent_loop.models import LoopObservation
+from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt
 
 
 def test_additive_migration_preserves_historical_observation(tmp_path, monkeypatch):

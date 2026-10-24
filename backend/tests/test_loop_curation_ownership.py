@@ -21,19 +21,19 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-from backend.app.desktop.agent_loop.curation_ownership import (
+from backend.app.desktop.patrol.agent_loop.curation.curation_ownership import (
     CurationOwnershipConflict,
     CurationOwnershipRecovery,
     CurationOwnershipRepository,
     CurationOwnershipState,
 )
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.agent_loop.models import LoopDelegationGrant
-from backend.app.desktop.agent_loop.terminal_lifecycle import LoopTerminalLifecycle
-from backend.app.desktop.context_curation.models import CurationLane, CurationProgram
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant
+from backend.app.desktop.patrol.agent_loop.lifecycle.terminal_lifecycle import LoopTerminalLifecycle
+from backend.app.desktop.contexts.curation.models import CurationLane, CurationProgram
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

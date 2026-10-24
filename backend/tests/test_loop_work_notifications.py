@@ -18,14 +18,14 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-from backend.app.desktop.agent_loop import (
+from backend.app.desktop.patrol.agent_loop import (
     ContextRunPool, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel,
     LoopWaveDispatcher, PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.models import LoopWorkerRequest
-from backend.app.desktop.run_orchestration import RunOutboxConsumer
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.state_changes import PostgresNotifications
+from backend.app.desktop.patrol.agent_loop.models import LoopWorkerRequest
+from backend.app.desktop.runs.orchestration import RunOutboxConsumer
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.persistence.state_changes import PostgresNotifications
 from backend.tests.test_loop_runtime_pools import _create_loop, _frontier
 from loop_run_boundary_support import freeze_patrol_intent, start_loop_run
 

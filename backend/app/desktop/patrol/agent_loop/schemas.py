@@ -1,0 +1,493 @@
+r"""本文件对外提供 Agent Loop API、版本化 Expansion 预算、Mission、类型化等待原因/响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
+
+输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion/recovery opportunity、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
+合同。具体工作流为预算合同验证 Expansion 子策略并标记来源，创建请求再解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 identity
+选择（spawn_context/recover_context）或结构化拒绝（decline_expansion）表达 Context 派生与恢复、可信 plan 由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
+envelope 绑定所有控制 revision 与未处理用户意图，completion 的模型候选与持久合同共用 CompletionVerificationResult，绑定唯一 check_id、类型化证据及 unresolved 引用；bootstrap intent 有模型外来源标识，自主压缩 action 只能引用已持久化候选，Kernel 只接受
+PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
+新版 Observation 校验完整 TaskProgress、来源 manifest 和已提交 Lineage 合同；legacy 输入保留原 schema。
+LoopCreateRequest.inherit_initial_equipment 显式要求服务端继承初始 Run，equipment 与 permission_scope 仅表达 override 或缩权。
+deliver_user_message 只接受已冻结 intent_id，不接受模型提供正文、目标或装备。
+completion_admission 冻结当前完成请求语义身份、原验证及准入 blocker，历史 envelope 可缺省。
+completion_eligibility 独立冻结具体验证的版本化完成资格，历史输入缺省不回填或改写。
+workspace_patrol、精确用户输入处置与 awaiting_input 扩展现有联合；缺省交互模式继续兼容旧 Observation。
+evolution_strategies 保存生效策略目录、适用信息和不可变正文 hash；兼容历史全文快照，不改变执行权限。
+可执行消息动作的 attachment_input_ids 仅选择冻结输入来源，不能提供任意材料路径或扩大素材访问范围。
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any, Literal
+
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    model_validator,
+)
+
+from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import (
+    ApplyContextCompressionAction,
+    AutonomousCompressionPolicy,
+)
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import (
+    ExpansionResourcePolicy,
+)
+from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
+    EvidenceKind,
+    LegacyMissionAdapter,
+    LoopMissionContract,
+)
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import ApplyUserInputsAction
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import (
+    TaskDeltaManifest,
+    TaskProgressDocument,
+)
+from backend.app.desktop.contexts.curation.contracts import (
+    CreateLanePlan,
+    UpdateLanePlan,
+)
+from backend.app.desktop.contexts.evolution.lineage_contracts import LineageSnapshot
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+_ATTACHMENT_INPUT_DESCRIPTION = (
+    "选择携带附件的 user_intents[].intent_id 或 causal_source_catalog[].intent_id；"
+    "每个身份交付该次输入的全部冻结附件。这里不是 material_id、路径或摘要。"
+)
+
+
+class WorkspaceRepairSelection(StrictModel):
+    adoption_id: str = Field(min_length=1, max_length=32)
+    phase: Literal["repair", "review"]
+    slot_id: str | None = None
+    revision: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def require_review_identity(self):
+        if (self.phase == "review") != (self.slot_id is not None and self.revision is not None):
+            raise ValueError("review 必须引用精确修复 slot/revision，repair 不接受 slot")
+        if self.phase == "repair" and (self.slot_id is not None or self.revision is not None):
+            raise ValueError("repair slot 由服务端分配")
+        return self
+
+
+class ContinueContextAction(StrictModel):
+    action: Literal["continue_context"]
+    context_id: str
+    context_revision_id: str
+    message: str = Field(min_length=1)
+    required_barrier: bool = True
+    workspace_repair: WorkspaceRepairSelection | None = None
+    attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
+
+
+class DeliverUserMessageAction(StrictModel):
+    action: Literal["deliver_user_message"]
+    intent_id: str = Field(min_length=1, max_length=32)
+
+
+class CancelExecutionAction(StrictModel):
+    action: Literal["cancel_execution"]
+    target_kind: Literal["run", "directive", "worker"]
+    target_id: str = Field(min_length=1)
+    round_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class ContextPermission(StrictModel):
+    context_id: str = Field(min_length=1)
+    access_mode: Literal["read-only", "workspace-write", "danger-full-access"] | None
+
+
+class CreateLaneAction(StrictModel):
+    action: Literal["create_lane"]
+    plan: CreateLanePlan
+    message: str = Field(min_length=1)
+    attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
+
+
+class SpawnContextAction(StrictModel):
+    action: Literal["spawn_context"]
+    opportunity_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RecoverContextAction(StrictModel):
+    action: Literal["recover_context"]
+    opportunity_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DeclineExpansionAction(StrictModel):
+    action: Literal["decline_expansion"]
+    opportunity_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    blocker_code: Literal[
+        "portfolio_projection_failed",
+        "cognitive_planning_failed",
+        "not_independent",
+        "completion_not_decidable",
+        "authority_missing",
+        "source_out_of_scope",
+        "source_unreadable",
+        "required_evidence_unresolved",
+        "evidence_budget_exhausted",
+        "dossier_invalid",
+        "context_budget_exhausted",
+        "lane_budget_exhausted",
+        "round_lane_budget_exhausted",
+        "concurrency_budget_exhausted",
+        "workspace_conflict",
+        "workspace_isolation_unavailable",
+        "duplicate_expansion",
+        "stale_source",
+        "compiler_failed",
+    ]
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class UpdateLaneAction(StrictModel):
+    action: Literal["update_lane"]
+    plan: UpdateLanePlan
+    message: str = Field(min_length=1)
+    attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
+
+
+class MergeContextsAction(StrictModel):
+    action: Literal["merge_contexts"]
+    plan: CreateLanePlan
+    message: str = Field(min_length=1)
+    attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
+
+
+class PauseLaneAction(StrictModel):
+    action: Literal["pause_lane"]
+    lane_id: str
+
+
+class DiscardMembershipAction(StrictModel):
+    action: Literal["discard_membership"]
+    membership_id: str
+
+
+class RequestLaneCuratorAction(StrictModel):
+    action: Literal["request_lane_curator"]
+    assignments: tuple[dict[str, Any], ...] = Field(min_length=1)
+
+
+class RequestCompletionVerifierAction(StrictModel):
+    action: Literal["request_completion_verifier"]
+    candidate_context_ids: tuple[str, ...] = Field(min_length=1)
+
+
+class RequestCompletionAction(StrictModel):
+    action: Literal["request_completion"]
+    verification_id: str
+    final_context_ids: tuple[str, ...] = Field(min_length=1)
+    final_slot_id: str
+
+
+class AdoptWorkspaceResultAction(StrictModel):
+    action: Literal["adopt_workspace_result"]
+    source_slot_id: str
+    source_revision: int = Field(gt=0)
+    rationale: str = Field(min_length=1, max_length=2000)
+
+
+class WaitEvidenceIdentity(StrictModel):
+    kind: Literal["mission", "gate", "capability", "budget", "external", "input"]
+    reference_id: str = Field(min_length=1, max_length=160)
+    revision: int | None = Field(default=None, gt=0)
+
+
+class WaitForUserAction(StrictModel):
+    action: Literal["wait_for_user"]
+    reason: str = Field(min_length=1)
+    cause: Literal["missing_goal", "missing_input", "human_gate", "permission", "budget", "external_blocker", "awaiting_input"] | None = None
+    required_input: str | None = Field(default=None, min_length=1, max_length=1000)
+    evidence_identity: WaitEvidenceIdentity | None = None
+
+
+class StopLoopAction(StrictModel):
+    action: Literal["stop_loop"]
+    reason: str = Field(min_length=1)
+
+
+PatrolAction = Annotated[
+    ContinueContextAction | DeliverUserMessageAction | CancelExecutionAction | ApplyUserInputsAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
+    RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
+    ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
+    Field(discriminator="action"),
+]
+PATROL_ACTION_ADAPTER = TypeAdapter(PatrolAction)
+
+PatrolModelAction = Annotated[
+    ContinueContextAction | DeliverUserMessageAction | CancelExecutionAction | ApplyUserInputsAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
+    RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
+    ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
+    Field(discriminator="action"),
+]
+PATROL_MODEL_ACTION_ADAPTER = TypeAdapter(PatrolModelAction)
+
+
+class StrategyAdoption(StrictModel):
+    memory_id: str = Field(min_length=1, max_length=32)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+    action_indexes: tuple[int, ...] = Field(min_length=1)
+
+
+class PatrolDecisionIntent(StrictModel):
+    decision_id: str
+    idempotency_key: str
+    origin_kind: Literal["patrol", "mission_bootstrap"] = "patrol"
+    loop_id: str
+    loop_revision: int = Field(gt=0)
+    round_id: str
+    observation_id: str | None = None
+    observation_generation: int = Field(default=1, ge=1)
+    observed_envelope_hash: str | None = None
+    holder_id: str
+    grant_id: str
+    grant_revision: int = Field(gt=0)
+    goal_revision: int = Field(gt=0)
+    fencing_token: int = Field(default=0, ge=0)
+    observed_frontier_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    observed_workspace_revision: int = Field(gt=0)
+    observed_projection_sequence: int = Field(default=0, ge=0)
+    base_entity_revisions: dict[str, int | str] = Field(default_factory=dict)
+    rationale: str = Field(min_length=1, max_length=4000)
+    strategy_adoptions: tuple[StrategyAdoption, ...] = ()
+    evidence: tuple[dict[str, Any], ...] = ()
+    actions: tuple[PatrolAction, ...] = Field(min_length=1)
+    context_permissions: tuple[ContextPermission, ...] = ()
+
+
+class LoopBudgetContract(StrictModel):
+    max_rounds: int = Field(default=1000, ge=1, le=1000)
+    max_duration_seconds: int | None = Field(default=None, ge=60)
+    max_model_calls: int | None = Field(default=None, ge=1)
+    max_input_tokens: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    max_retries: int | None = Field(default=None, ge=0)
+    max_lanes: int = Field(default=64, ge=1, le=64)
+    max_contexts: int = Field(default=256, ge=1, le=256)
+    max_providers: int = Field(default=32, ge=1, le=32)
+    max_new_lanes_per_round: int = Field(default=16, ge=0, le=16)
+    max_concurrent_runs: int = Field(default=32, ge=1, le=32)
+    max_no_progress: int = Field(default=20, ge=1, le=20)
+    expansion_resources: ExpansionResourcePolicy = Field(default_factory=ExpansionResourcePolicy)
+    expansion_resources_source: Literal["default", "explicit"] = "default"
+
+    def as_grant_budgets(self, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+        budgets = self.model_dump(mode="json")
+        if previous:
+            for name in type(self).model_fields:
+                if name not in self.model_fields_set and name in previous:
+                    budgets[name] = previous[name]
+        if "expansion_resources" in self.model_fields_set:
+            budgets["expansion_resources_source"] = "explicit"
+        elif previous and previous.get("expansion_resources"):
+            budgets["expansion_resources"] = ExpansionResourcePolicy.model_validate(budgets["expansion_resources"]).model_dump(mode="json")
+            budgets["expansion_resources_source"] = previous.get("expansion_resources_source", "explicit")
+        else:
+            budgets["expansion_resources_source"] = "default"
+        return budgets
+
+
+class NarrowLoopGrantRequest(StrictModel):
+    command: Literal["narrow"]
+    capabilities: tuple[str, ...] = Field(min_length=1)
+    context_scope: tuple[str, ...] = Field(min_length=1)
+    permission_scope: tuple[str, ...]
+    delegable_gates: tuple[str, ...] = ()
+    compression_policy: AutonomousCompressionPolicy | None = None
+    expires_at: str | None = None
+
+
+class AdjustLoopBudgetsRequest(StrictModel):
+    command: Literal["adjust_budgets"]
+    budgets: LoopBudgetContract
+
+
+class IncreaseLoopBudgetRequest(StrictModel):
+    command: Literal["increase_budget"]
+    preset: Literal["normal", "long"]
+    expected_authority_revision: int = Field(ge=1)
+
+
+class RevokeLoopGrantRequest(StrictModel):
+    command: Literal["revoke"]
+
+
+LoopGrantMutationRequest = Annotated[
+    NarrowLoopGrantRequest | AdjustLoopBudgetsRequest | IncreaseLoopBudgetRequest | RevokeLoopGrantRequest,
+    Field(discriminator="command"),
+]
+
+
+class LoopCreateRequest(StrictModel):
+    loop_id: str
+    workspace_id: str
+    initial_context_id: str
+    initial_run_id: str
+    readiness_token: str | None = Field(default=None, min_length=64, max_length=64)
+    activation_key: str | None = Field(default=None, min_length=1, max_length=160)
+    holder_id: str
+    mission: LoopMissionContract | None = None
+    goal: str | None = Field(default=None, min_length=1)
+    task_contract: str | None = Field(default=None, min_length=1)
+    acceptance_criteria: tuple[dict[str, Any], ...] | None = Field(default=None, min_length=1)
+    capabilities: tuple[str, ...]
+    context_scope: tuple[str, ...] = Field(min_length=1)
+    permission_scope: tuple[str, ...]
+    delegable_gates: tuple[str, ...] = ()
+    compression_policy: AutonomousCompressionPolicy | None = None
+    budgets: LoopBudgetContract = Field(default_factory=LoopBudgetContract)
+    equipment: dict[str, Any] = Field(default_factory=dict)
+    inherit_initial_equipment: bool = False
+    expires_at: str | None = None
+
+    @model_validator(mode="after")
+    def require_one_mission_shape(self) -> LoopCreateRequest:
+        legacy = (self.goal, self.task_contract, self.acceptance_criteria)
+        if self.mission is not None and any(value is not None for value in legacy):
+            raise ValueError("mission 与旧 goal/task_contract/acceptance_criteria 不能同时提交")
+        if self.mission is None and any(value is None for value in legacy):
+            raise ValueError("必须提交 mission 或完整旧目标字段")
+        if self.mission is not None and (not self.mission.outcome or not self.mission.completion_checks):
+            raise ValueError("旧 Context Loop 启动仍需完整最终结果和完成检查；工作区 Patrol 使用统一输入")
+        return self
+
+    def resolved_mission(self) -> LoopMissionContract:
+        if self.mission is not None:
+            return self.mission
+        return LegacyMissionAdapter.convert(
+            goal=self.goal or "",
+            task_contract=self.task_contract or "",
+            acceptance_criteria=self.acceptance_criteria or (),
+        )
+
+
+class LoopInterventionRequest(StrictModel):
+    mode: Literal["patrol_context_intent", "patrol_portfolio_intent"]
+    content: str = Field(min_length=1, max_length=12000)
+    context_id: str | None = None
+
+    def scope(self) -> str:
+        return "context" if self.mode == "patrol_context_intent" else "portfolio"
+
+
+class LoopWaitResponseRequest(StrictModel):
+    request_revision: int = Field(gt=0)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    answer: dict[str, Any]
+
+
+class ResumeWithCurrentMissionRequest(StrictModel):
+    confirmation: Literal["resume_with_current_mission"]
+    request_revision: int = Field(gt=0)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+
+
+class LoopObservationEnvelope(StrictModel):
+    observation_id: str | None = None
+    generation: int = Field(default=0, ge=0)
+    intervention: dict[str, Any] | None = None
+    pre_input_state: dict[str, Any] | None = None
+    pre_input_hash: str | None = None
+    causal_chain: tuple[dict[str, Any], ...] = ()
+    interaction_mode: Literal["context_loop", "workspace_patrol"] = "context_loop"
+    information_requests: tuple[dict[str, Any], ...] = ()
+    input_schema_version: Literal[0, 1] = 0
+    decision_inputs_ref: str | None = None
+    previous_task_progress: dict[str, Any] | None = None
+    task_delta: dict[str, Any] | None = None
+    committed_lineage: dict[str, Any] | None = None
+    loop_id: str
+    loop_revision: int
+    round_id: str
+    goal_revision: int
+    authority_revision: int
+    observed_frontier_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    projection_sequence: int = Field(default=0, ge=0)
+    base_entity_revisions: dict[str, int | str] = Field(default_factory=dict)
+    mission: dict[str, Any] | None = None
+    goal: dict[str, Any] | None = None
+    grant: dict[str, Any]
+    portfolio_frontier: tuple[dict[str, Any], ...]
+    stable_results: tuple[dict[str, Any], ...] = ()
+    workspace: dict[str, Any]
+    budget: dict[str, Any]
+    pending_decisions: tuple[dict[str, Any], ...] = ()
+    worker_results: tuple[dict[str, Any], ...] = ()
+    user_intents: tuple[dict[str, Any], ...] = ()
+    evolution_strategies: tuple[dict[str, Any], ...] = ()
+    expansion_handles: tuple[dict[str, str], ...] = ()
+    expansion_assessment: dict[str, Any] | None = None
+    recovery_opportunities: tuple[dict[str, Any], ...] = ()
+    recovery_waiting_reason: str | None = None
+    completion_admission: dict[str, Any] | None = None
+    completion_eligibility: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def require_mission_or_legacy_goal(self) -> LoopObservationEnvelope:
+        if self.mission is None and self.goal is None:
+            raise ValueError("observation 必须包含结构化 Mission 或旧 Goal")
+        if self.input_schema_version == 1:
+            if not self.decision_inputs_ref or self.previous_task_progress is None or self.task_delta is None or self.committed_lineage is None:
+                raise ValueError("新版 Observation 必须完整绑定三项冻结输入")
+            TaskProgressDocument.model_validate(self.previous_task_progress)
+            manifest = TaskDeltaManifest.model_validate(self.task_delta)
+            if not manifest.complete:
+                raise ValueError("新版 Observation 不接受未完成的来源枚举")
+            LineageSnapshot.model_validate(self.committed_lineage)
+        return self
+
+
+class CompletionEvidenceReference(StrictModel):
+    kind: EvidenceKind
+    source_id: str = Field(min_length=1, max_length=240)
+    summary: str | None = Field(default=None, max_length=2000)
+
+
+class CriterionVerification(StrictModel):
+    check_id: str = Field(validation_alias=AliasChoices("check_id", "criterion_id"), min_length=1, max_length=96)
+    status: Literal["satisfied", "unsatisfied", "unknown"]
+    evidence: tuple[CompletionEvidenceReference, ...] = ()
+    explanation: str
+
+    @model_validator(mode="after")
+    def require_evidence_for_satisfied_check(self) -> CriterionVerification:
+        if self.status == "satisfied" and not self.evidence:
+            raise ValueError("satisfied 完成检查必须包含类型化证据")
+        return self
+
+
+class CompletionVerificationResult(StrictModel):
+    criteria: tuple[CriterionVerification, ...] = Field(min_length=1)
+    conclusion: Literal["satisfied", "unsatisfied", "unknown"]
+    unresolved: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def require_unique_declared_check_ids(self) -> CompletionVerificationResult:
+        check_ids = [item.check_id for item in self.criteria]
+        if len(check_ids) != len(set(check_ids)):
+            raise ValueError("Completion verification check_id 必须唯一")
+        if not set(self.unresolved).issubset(check_ids):
+            raise ValueError("unresolved 只能引用本 verification 的 check_id")
+        return self
+
+
+class CompletionVerificationContract(CompletionVerificationResult):
+    verification_id: str
+    loop_id: str
+    round_id: str
+    goal_revision: int
+    frontier_hash: str
+    workspace_revision: int

@@ -9,14 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine,async_sessionmaker
 from backend.tests.test_patrol_session import _create_loop
 from backend.tests.test_patrol_failure_diagnostics import _observation
-from backend.app.desktop.agent_loop.models import AgentLoop,LoopRound,LoopObservation,LoopDelegationGrant,LoopGoalRevision
-from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.agent_loop.decision_context import DecisionSupplementRepository,PatrolDecisionContext
-from backend.app.desktop.agent_loop.observation import observation_hash
-from backend.app.desktop.agent_loop.clarification_admission import ClarificationFacts,ClarificationFactsReader,ClarificationAdmissionPolicy
-from backend.app.desktop.agent_loop.schemas import WaitForUserAction
-from backend.app.desktop.agent_loop.task_progress.models import LoopDecisionSupplement
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop,LoopRound,LoopObservation,LoopDelegationGrant,LoopGoalRevision
+from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.patrol.agent_loop.decisions.decision_context import DecisionSupplementRepository,PatrolDecisionContext
+from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+from backend.app.desktop.patrol.agent_loop.inputs.clarification_admission import ClarificationFacts,ClarificationFactsReader,ClarificationAdmissionPolicy
+from backend.app.desktop.patrol.agent_loop.schemas import WaitForUserAction
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopDecisionSupplement
 
 
 @pytest.mark.parametrize('need,capabilities,permissions,workspace,storage',[

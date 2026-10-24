@@ -11,7 +11,7 @@ import pytest
 
 from focus.runtime.runs.usage import ModelUsage
 
-from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import RetrievalBackedCognitiveAdvisor
+from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import RetrievalBackedCognitiveAdvisor
 from backend.tests.test_retrieval_work_citation_feedback import _prepared
 
 
@@ -61,9 +61,9 @@ def test_work_model_receives_corpus_role_contract_before_creating_candidates():
     ("verification_result", ("test",)), ("failure", ("failure",)),
 ])
 def test_projected_roles_match_corpus_without_changing_frozen_input(kind, expected):
-    from backend.app.desktop.agent_loop.context_expansion.contracts import ContextSemanticManifest, SemanticEvidenceUnit
-    from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpusReader
-    from backend.app.desktop.agent_loop.context_expansion.evidence_roles import evidence_role_contract
+    from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ContextSemanticManifest, SemanticEvidenceUnit
+    from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpusReader
+    from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_roles import evidence_role_contract
     from backend.tests._semantic_context_fixtures import single_source_fixture
 
     evidence = single_source_fixture()
@@ -81,9 +81,9 @@ def test_projected_roles_match_corpus_without_changing_frozen_input(kind, expect
 
 
 def test_message_roles_union_context_authority_and_keep_material_separate():
-    from backend.app.desktop.agent_loop.context_expansion.contracts import ContextSemanticManifest, SemanticEvidenceUnit
-    from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpusReader
-    from backend.app.desktop.agent_loop.context_expansion.evidence_roles import evidence_role_contract
+    from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ContextSemanticManifest, SemanticEvidenceUnit
+    from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpusReader
+    from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_roles import evidence_role_contract
     from backend.tests._semantic_context_fixtures import single_source_fixture
 
     evidence = single_source_fixture()
@@ -104,9 +104,9 @@ def test_message_roles_union_context_authority_and_keep_material_separate():
 
 
 def test_projected_run_status_and_typed_material_roles_are_isolated():
-    from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpusReader
-    from backend.app.desktop.agent_loop.context_expansion.evidence_roles import evidence_role_contract
-    from backend.app.desktop.context_curation import MaterialEvidenceRef, MultiSourceEvidence, RunResultEvidenceRef, StructuredEvidence
+    from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpusReader
+    from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_roles import evidence_role_contract
+    from backend.app.desktop.contexts.curation import MaterialEvidenceRef, MultiSourceEvidence, RunResultEvidenceRef, StructuredEvidence
     from backend.tests._semantic_context_fixtures import single_source_fixture
 
     contract = evidence_role_contract()
@@ -128,7 +128,7 @@ def test_projected_run_status_and_typed_material_roles_are_isolated():
 
 
 def test_role_contract_is_in_input_before_evidence_page_capacity_check(monkeypatch):
-    from backend.app.desktop.agent_loop.context_expansion.evidence_read_paging import EvidenceReadPager
+    from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_read_paging import EvidenceReadPager
 
     original = EvidenceReadPager.pages
     observed = []
@@ -148,7 +148,7 @@ def test_role_contract_is_in_input_before_evidence_page_capacity_check(monkeypat
 
 
 def test_role_projection_uses_only_frozen_read_contexts_and_keeps_catalog():
-    from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import PortfolioIndexCatalog
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import PortfolioIndexCatalog
     from backend.tests.test_complete_semantic_context_derivation import _long_index
 
     index = _long_index()

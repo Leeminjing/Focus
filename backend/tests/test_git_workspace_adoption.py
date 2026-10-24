@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from backend.app.desktop.workspace_coordination import (
+from backend.app.desktop.workspaces.coordination import (
     GitWorkspaceResultApplier,
     GitWorktreeIsolationProvider,
     IsolationRequest,

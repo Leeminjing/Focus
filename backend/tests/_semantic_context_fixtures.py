@@ -7,12 +7,12 @@ r"""本文件对外提供 semantic context derivation 测试使用的冻结证�
 
 from __future__ import annotations
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     EvidenceRequirement,
     ResolvedEvidenceItem,
     WorkContextSpec,
 )
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     MissionEvidenceRef,
     MultiSourceEvidence,
     NamespacedMessageRef,
@@ -21,7 +21,7 @@ from backend.app.desktop.context_curation import (
     SourceRevisionEvidence,
     StructuredEvidence,
 )
-from backend.app.desktop.context_evolution import ContextRevisionRef
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
 
 
 def revision_ref(name: str, generation: int = 1) -> ContextRevisionRef:

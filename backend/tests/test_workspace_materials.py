@@ -21,10 +21,10 @@ import pytest
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopUserIntent
-from backend.app.desktop.material_ownership import load_material, lock_workspace_submission
-from backend.app.desktop.models import DesktopMaterial, DesktopThread
-from backend.app.desktop.resource_limits import ImageResourceLimits
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopUserIntent
+from backend.app.desktop.materials.ownership import load_material, lock_workspace_submission
+from backend.app.desktop.persistence.models import DesktopMaterial, DesktopThread
+from backend.app.desktop.materials.limits import ImageResourceLimits
 from backend.app.gateway.app import app
 
 
@@ -112,7 +112,7 @@ def test_workspace_upload_first_send_retry_and_ownership(tmp_path):
 @pytest.mark.parametrize("git", [False, True])
 def test_input_attachment_preview_reads_accepted_version_and_checks_owner(tmp_path, git):
     import subprocess
-    from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
+    from backend.app.desktop.materials.snapshots import MaterialSnapshotVerifier
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         workspace = _workspace(client, tmp_path / "workspace")

@@ -2,10 +2,10 @@
 输入为五个精确Mission条目及跨来源联合绑定；输出为完整集合、预算阻断和精确身份断言。
 具体工作流为调用生产resolver，验证准入集合不丢失且闭包预算不裁剪；示例：pytest backend/tests/test_evidence_joint_bindings.py -q。
 """
-from backend.app.desktop.agent_loop.context_expansion.contracts import CandidateEvidenceIdentity, EvidenceRequirement, ExpansionBlocker, ResolvedEvidenceBundle, WorkContextSpec, stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.evidence_resolver import MultiSourceEvidenceResolver
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.context_curation import MissionEvidenceRef, MultiSourceEvidence, StructuredEvidence, evidence_ref_key
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import CandidateEvidenceIdentity, EvidenceRequirement, ExpansionBlocker, ResolvedEvidenceBundle, WorkContextSpec, stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_resolver import MultiSourceEvidenceResolver
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.contexts.curation import MissionEvidenceRef, MultiSourceEvidence, StructuredEvidence, evidence_ref_key
 from backend.tests._semantic_context_fixtures import single_source_fixture, duplicate_message_id_fixture
 from backend.tests.test_semantic_evidence_resolver import _corpus, _opportunity, _single_requirement_spec, _unit_id
 

@@ -5,7 +5,7 @@
 任务边界；不连接业务数据库，不授予执行权。示例：stage_observations()["modules"]。
 """
 
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
 
 def stage_observations():

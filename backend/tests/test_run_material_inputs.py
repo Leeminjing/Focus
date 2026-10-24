@@ -14,14 +14,14 @@ import pytest
 from pydantic import ValidationError
 from langchain_core.messages import HumanMessage
 
-from backend.app.desktop.material_context import MaterialContextProjector
-from backend.app.desktop.material_kinds import MaterialKindClassifier
-from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
-from backend.app.desktop.models import MainRunCreate
-from backend.app.desktop.conversation_inputs import ConversationInputCreate
-from backend.app.desktop.resource_limits import ImageResourceLimits
-from backend.app.desktop.run_material_message import RunMaterialMessageProjector
-from backend.app.desktop.run_materials import RunMaterialRequest, RunMaterialResolver
+from backend.app.desktop.materials.context import MaterialContextProjector
+from backend.app.desktop.materials.kinds import MaterialKindClassifier
+from backend.app.desktop.materials.snapshots import MaterialSnapshotVerifier
+from backend.app.desktop.api.schemas import MainRunCreate
+from backend.app.desktop.conversations.inputs import ConversationInputCreate
+from backend.app.desktop.materials.limits import ImageResourceLimits
+from backend.app.desktop.runs.material_message import RunMaterialMessageProjector
+from backend.app.desktop.runs.materials import RunMaterialRequest, RunMaterialResolver
 from focus.agents.material_inputs import RunMaterialInput, RunMaterialInputs
 from focus.agents.compression.schemas import validate_apply_decision
 

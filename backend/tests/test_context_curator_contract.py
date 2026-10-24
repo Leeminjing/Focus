@@ -15,7 +15,7 @@ from langchain_openai import ChatOpenAI
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.context_curator import (
+from backend.app.desktop.contexts.curator import (
     CurationContractError,
     CurationEngine,
     CurationEngineError,
@@ -27,18 +27,10 @@ from backend.app.desktop.context_curator import (
     estimate_curation_tokens,
     require_curation_model,
 )
-from backend.app.desktop.context_projection import compile_context_messages
-from backend.app.desktop.storage_values import normalize_json_storage_value
-from backend.app.desktop.models import (
-    ContextCurationPolicy,
-    ContextTrackingUpdate,
-    DraftUpdate,
-    PatrolAgent,
-    PatrolContextAttempt,
-    PatrolContextBinding,
-    PatrolContextRevision,
-    PatrolDraft,
-)
+from backend.app.desktop.contexts.projection import compile_context_messages
+from backend.app.desktop.persistence.values import normalize_json_storage_value
+from backend.app.desktop.api.schemas import ContextCurationPolicy, ContextTrackingUpdate, DraftUpdate
+from backend.app.desktop.persistence.models import PatrolAgent, PatrolContextAttempt, PatrolContextBinding, PatrolContextRevision, PatrolDraft
 from focus.config.model_config import ModelConfig
 from focus.config.app_config import AppConfig
 from focus.config import get_app_config
@@ -302,7 +294,7 @@ def test_plan_outcome_enforces_whole_replace_or_empty_no_change():
 
 
 def test_prompt_json_engine_uses_one_direct_model_call(monkeypatch):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     class FakeModel:
         def __init__(self):
@@ -326,7 +318,7 @@ def test_prompt_json_engine_uses_one_direct_model_call(monkeypatch):
 
 
 def test_engine_keeps_system_contract_separate_from_untrusted_envelope(monkeypatch):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     captured = []
 
@@ -356,7 +348,7 @@ def test_engine_keeps_system_contract_separate_from_untrusted_envelope(monkeypat
 
 
 def test_native_structured_engine_requests_explicit_method_and_raw(monkeypatch):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     captured = {}
 
@@ -412,7 +404,7 @@ def test_real_openai_compatible_adapters_accept_declared_output_contracts():
 
 
 def test_prompt_json_engine_rejects_trailing_natural_language(monkeypatch):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     class FakeModel:
         async def ainvoke(self, _messages):
@@ -425,7 +417,7 @@ def test_prompt_json_engine_rejects_trailing_natural_language(monkeypatch):
 
 
 def test_prompt_json_engine_classifies_transport_failure_as_provider(monkeypatch):
-    import backend.app.desktop.context_curator.engine as engine_module
+    import backend.app.desktop.contexts.curator.engine as engine_module
 
     class FakeModel:
         async def ainvoke(self, _messages):
@@ -439,7 +431,7 @@ def test_prompt_json_engine_classifies_transport_failure_as_provider(monkeypatch
 
 
 def test_model_window_boundary_rejects_without_truncating_input():
-    from backend.app.desktop.context_patrol_service import ContextPatrolService
+    from backend.app.desktop.patrol.context_service import ContextPatrolService
 
     snapshot = CurationSourceProjector().project("cp-1", SOURCE)
     payload = build_curation_input(snapshot, 0, {}, [])

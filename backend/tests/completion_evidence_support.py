@@ -13,13 +13,13 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.domain_evidence.tests import TestResultParser
-from backend.app.desktop.domain_evidence.repository import DomainResultRepository
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.runs.evidence.tests import TestResultParser
+from backend.app.desktop.runs.evidence.repository import DomainResultRepository
 
 
 async def claim_verifier(sessions, loop_id, worker_id):
-    from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
+    from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
 
     claimed = await LoopWorkerRuntime(sessions, None)._claim_many(32, loop_id)
     return next(row.retry_identity for row in claimed if row.worker_request_id == worker_id)

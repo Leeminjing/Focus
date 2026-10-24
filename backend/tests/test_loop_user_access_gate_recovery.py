@@ -16,14 +16,14 @@ import pytest
 from sqlalchemy import func,select
 from sqlalchemy.ext.asyncio import async_sessionmaker,create_async_engine
 
-from backend.app.desktop.agent_loop.gates import PendingDecisionProjector
-from backend.app.desktop.agent_loop.models import AgentLoop,LoopPendingDecision,LoopDecision,LoopDirective,LoopEventOutbox,LoopRound
-from backend.app.desktop.agent_loop.schemas import LoopWaitResponseRequest
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest,LoopWaitResponse
-from backend.app.desktop.agent_loop.user_access_gate_recovery import UserAccessGateRecovery
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.models import DesktopRun,DesktopWorkspace
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor,WorkspaceLease,WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.governance.gates import PendingDecisionProjector
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop,LoopPendingDecision,LoopDecision,LoopDirective,LoopEventOutbox,LoopRound
+from backend.app.desktop.patrol.agent_loop.schemas import LoopWaitResponseRequest
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest,LoopWaitResponse
+from backend.app.desktop.patrol.agent_loop.recovery.user_access_gate_recovery import UserAccessGateRecovery
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
+from backend.app.desktop.workspaces.coordination.models import RunExecutionAnchor,WorkspaceLease,WorkspaceSlot
 from backend.tests.test_agent_loop_round_liveness import _seed_loop,_stop
 
 pytestmark=pytest.mark.usefixtures('runtime_postgres_database')
@@ -141,7 +141,7 @@ async def _handled(sessions,fixture,*,legacy=False):
             session.add(LoopDecision(decision_id=decision_id,loop_id=fixture['loop_id'],round_id=fixture['round_id'],holder_id='test',
                 intent={'actions':[]},rationale='fixture committed decision',status='committed',idempotency_key=decision_id))
             await session.flush()
-            from backend.app.desktop.agent_loop.models import LoopAction
+            from backend.app.desktop.patrol.agent_loop.models import LoopAction
             session.add(LoopAction(action_id=action_id,decision_id=decision_id,loop_id=fixture['loop_id'],position=0,
                 action_type='continue_context',payload={},status='pending'))
             await session.flush()

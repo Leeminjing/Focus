@@ -9,10 +9,10 @@ import json
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-import backend.app.desktop.agent_loop.structured_worker as worker_module
-from backend.app.desktop.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ContextSynthesisWorkerDraft
-from backend.app.desktop.context_curation import (
+import backend.app.desktop.patrol.agent_loop.workers.structured_worker as worker_module
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ContextSynthesisWorkerDraft
+from backend.app.desktop.contexts.curation import (
     EvidenceRef, MaterialEvidenceRef, MissionEvidenceRef, MultiSourceEvidence, NamespacedMessageRef,
     RunResultEvidenceRef, StructuredEvidence, WorkspaceEffectEvidenceRef, evidence_ref_key,
 )

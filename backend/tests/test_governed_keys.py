@@ -19,7 +19,7 @@ from focus.security.governed import governed_keys, is_governed, strip_governed
 
 def _import_consumers() -> None:
     """导入声明受治理键的消费者模块，使集合完整。"""
-    import backend.app.desktop.collab  # noqa: F401
+    import backend.app.desktop.agents.collaboration  # noqa: F401
     import focus.agents.commitment.middleware  # noqa: F401
     import focus.agents.must_view  # noqa: F401
     import focus.security.context  # noqa: F401

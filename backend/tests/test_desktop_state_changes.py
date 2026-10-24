@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.state_changes import ChangeSignal, DesktopStateChanges
+from backend.app.desktop.persistence.state_changes import ChangeSignal, DesktopStateChanges
 
 
 def test_generations_preserve_changes_during_snapshot_and_all_subscribers():

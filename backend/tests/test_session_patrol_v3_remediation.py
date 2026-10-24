@@ -8,9 +8,9 @@ from copy import deepcopy
 import json
 
 import pytest
-from backend.app.desktop.session_patrol.compiler import compile_document
-from backend.app.desktop.session_patrol.contracts import AuthoringDocument
-from backend.app.desktop.session_patrol.source_projection import freeze_authoring_sources
+from backend.app.desktop.patrol.session_patrol.compiler import compile_document
+from backend.app.desktop.patrol.session_patrol.contracts import AuthoringDocument
+from backend.app.desktop.patrol.session_patrol.source_projection import freeze_authoring_sources
 from focus.history import FocusItem, content_hash, items_to_messages, messages_to_items
 from focus.models.provider_contract import ProviderContract
 from focus.models.response_projection import ResponsesRequestProjector

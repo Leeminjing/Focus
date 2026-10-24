@@ -20,16 +20,16 @@ import pytest
 from focus.config.app_config import get_app_config
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.context_expansion.portfolio_index import PortfolioIndexBuildResult, PortfolioSemanticIndexService
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import PortfolioIndexBuildResult, PortfolioSemanticIndexService
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.agent_loop.context_expansion.projection_record_repository import ProjectionRecordRepository
-from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
-from backend.app.desktop.context_evolution.schemas import ContextRevisionMessageView
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.models import LoopBudgetUsage
+from backend.app.desktop.patrol.agent_loop.context_expansion.projection_record_repository import ProjectionRecordRepository
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
+from backend.app.desktop.contexts.evolution.schemas import ContextRevisionMessageView
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
 from backend.tests.incremental_index_support import Checkpoints, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 from backend.scripts.semantic_index_corpus import load_corpus

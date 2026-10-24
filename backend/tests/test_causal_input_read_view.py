@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.app.desktop.agent_loop.causal_read_view import CausalInputReadView
-from backend.app.desktop.agent_loop.patrol_read_view import PatrolCausalReadRequest, PatrolReadView
-from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+from backend.app.desktop.patrol.agent_loop.projections.causal_read_view import CausalInputReadView
+from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import PatrolCausalReadRequest, PatrolReadView
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
 
 
 def test_changed_fact_only_carries_changed_fields_and_original_revision():

@@ -8,11 +8,11 @@ import asyncio
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlocker, ResolvedEvidenceBundle
-from backend.app.desktop.agent_loop.context_expansion.evidence_resolver import MultiSourceEvidenceResolver
-from backend.app.desktop.agent_loop.context_expansion.quality import ContextQualityVerifier
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
-from backend.app.desktop.context_curation import MultiSourceEvidence, SourceMessageEvidence, SourceRevisionEvidence, evidence_ref_key
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ExpansionBlocker, ResolvedEvidenceBundle
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_resolver import MultiSourceEvidenceResolver
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality import ContextQualityVerifier
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
+from backend.app.desktop.contexts.curation import MultiSourceEvidence, SourceMessageEvidence, SourceRevisionEvidence, evidence_ref_key
 from backend.tests._semantic_context_fixtures import message_ref, revision_ref
 from backend.tests.test_semantic_evidence_resolver import _corpus, _opportunity, _single_requirement_spec, _unit_id
 

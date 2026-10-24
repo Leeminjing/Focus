@@ -21,13 +21,7 @@ from sqlalchemy import delete, func, select
 os.environ.setdefault("OPENAI_API_KEY", "context-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
-from backend.app.desktop.models import (  # noqa: E402
-    DesktopMaterial,
-    DesktopRun,
-    DesktopThread,
-    DesktopWorkspace,
-    PatrolDraft,
-)
+from backend.app.desktop.persistence.models import DesktopMaterial, DesktopRun, DesktopThread, DesktopWorkspace, PatrolDraft
 from backend.app.gateway.app import app  # noqa: E402
 
 
@@ -110,7 +104,7 @@ async def _cleanup(service, context_ids: list[str], workspace_ids: list[str], th
 
 
 def test_recursive_tree_merge_and_parent_independence(tmp_path: Path, monkeypatch):
-    import backend.app.desktop.context_service as context_module
+    import backend.app.desktop.contexts.service as context_module
 
     async def fake_make_lead_agent(**_kwargs):
         return create_agent(model=FakeListChatModel(responses=["unused"]), tools=[])
@@ -276,7 +270,7 @@ def test_recursive_tree_merge_and_parent_independence(tmp_path: Path, monkeypatc
 
 
 def test_degradation_requires_hash_bound_decision(tmp_path: Path, monkeypatch):
-    import backend.app.desktop.context_service as context_module
+    import backend.app.desktop.contexts.service as context_module
 
     async def fake_make_lead_agent(**_kwargs):
         return create_agent(model=FakeListChatModel(responses=["unused"]), tools=[])

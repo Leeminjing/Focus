@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import (
+from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
     ContextRunPool,
     LoopCoordinator,
@@ -26,7 +26,7 @@ from backend.app.desktop.agent_loop import (
     LoopKernel,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDecision,
     LoopContextMembership,
@@ -35,11 +35,11 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.publication_queue import (
+from backend.app.desktop.patrol.agent_loop.curation.publication_queue import (
     LoopPortfolioPublicationQueue,
 )
-from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -47,9 +47,9 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.context_curation.models import CurationLane
-from backend.app.desktop.agent_loop.rounds import current_frontier_hash
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.contexts.curation.models import CurationLane
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import current_frontier_hash
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

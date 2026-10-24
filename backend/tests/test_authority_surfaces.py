@@ -226,7 +226,7 @@ def test_full_mode_does_not_touch_the_other_hard_protocols(tmp_path):
         "承诺层人工确认与子图": "backend/packages/harness/focus/agents/commitment/middleware.py",
         "承诺层九阶段规则": "backend/packages/harness/focus/agents/commitment/stage_rules.py",
         "承诺层委派闭环": "backend/packages/harness/focus/agents/commitment/delegation.py",
-        "上下文投影": "backend/app/desktop/context_projection.py",
+        "上下文投影": "backend/app/desktop/contexts/projection.py",
         "压缩范围校验": "backend/packages/harness/focus/agents/compression/schemas.py",
         "压缩门": "backend/packages/harness/focus/agents/compression/gate.py",
     }
@@ -237,12 +237,15 @@ def test_full_mode_does_not_touch_the_other_hard_protocols(tmp_path):
 
 def test_hard_protocol_mechanisms_remain_in_place():
     """完全权限不解除这些机制：它们各自的存在性由结构断言守住。"""
+    import ast
+
     root = Path(__file__).parents[2]
-    desktop = (root / "backend/app/desktop/service.py").read_text(encoding="utf-8")
-    projection = (root / "backend/app/desktop/context_projection.py").read_text(encoding="utf-8")
+    desktop = (root / "backend/app/desktop/patrol/service.py").read_text(encoding="utf-8")
+    projection = (root / "backend/app/desktop/contexts/projection.py").read_text(encoding="utf-8")
 
     # Patrol 的只读下限只看能力权限，与访问模式无关
-    assert 'forbidden = set(equipment.get("permissions") or []) & {"write", "host_command"}' in desktop
+    restriction = ast.parse('forbidden = set(equipment.get("permissions") or []) & {"write", "host_command"}').body[0]
+    assert any(ast.dump(node) == ast.dump(restriction) for node in ast.walk(ast.parse(desktop)))
     # 上下文投影的降级仍然只产出候选，由哈希绑定的接受/拒绝决定
     assert "approval_required" in projection
     assert "projection_hash" in projection

@@ -12,9 +12,9 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.history_search import HistorySearchService, history_entries, message_text, snippet
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.models import DesktopMaterial, DesktopRun, DesktopThread, DesktopWorkspace, RunMaterialBinding
+from backend.app.desktop.conversations.history import HistorySearchService, history_entries, message_text, snippet
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.persistence.models import DesktopMaterial, DesktopRun, DesktopThread, DesktopWorkspace, RunMaterialBinding
 
 
 def test_text_and_retained_compression_sources():

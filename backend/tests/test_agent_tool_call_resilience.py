@@ -20,12 +20,12 @@ from langchain_core.tools import ToolException
 
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
 
-from backend.app.desktop.checkpoint_recovery import (  # noqa: E402
+from backend.app.desktop.conversations.checkpoint_recovery import (  # noqa: E402
     EMPTY_CHECKPOINT_ID,
     select_checkpoint_base,
 )
-from backend.app.desktop.service import DesktopService  # noqa: E402
-from backend.app.desktop.tool_error_provider import build_tool_error_middleware  # noqa: E402
+from backend.app.desktop.composition.service import DesktopService  # noqa: E402
+from backend.app.desktop.runs.tool_errors import build_tool_error_middleware  # noqa: E402
 from backend.app.gateway.routers.thread_runs import RunCreateRequest  # noqa: E402
 from focus.runtime.runs.events import serialize_message, validate_messages  # noqa: E402
 
@@ -168,12 +168,12 @@ def test_swarm_and_patrol_history_readers_keep_entity_boundaries():
         async def list_agents(_task_id):
             return []
 
-        service.get_checkpoint_messages = get_checkpoint_messages
-        service.list_agents = list_agents
+        service.conversations.get_checkpoint_messages = get_checkpoint_messages
+        service.patrol.list_agents = list_agents
         async def task_thread_id(_task_id):
             return "thread-a"
 
-        service._task_thread_id = task_thread_id
+        service.conversations._task_thread_id = task_thread_id
 
         swarm_reader = service._build_swarm_reader_tools("task-a")[0]
         result = await swarm_reader.ainvoke({"agent_id": "swarm-current"})

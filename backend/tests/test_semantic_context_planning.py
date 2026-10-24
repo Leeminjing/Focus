@@ -12,20 +12,20 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.context_expansion.manifest_adapter import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.manifest_adapter import (
     CompositeSemanticManifestProjector,
     WorkerResultManifestProjector,
 )
-from backend.app.desktop.agent_loop.context_expansion.planner import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.planner import (
     WorkerResultCognitivePlanner,
 )
 from backend.tests.semantic_manifest_support import (
     SemanticManifestProjector,
 )
-from backend.app.desktop.agent_loop.context_expansion.signals import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.signals import (
     ExpansionSignalCollector,
 )
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 from backend.tests._semantic_context_fixtures import revision_ref
 
 

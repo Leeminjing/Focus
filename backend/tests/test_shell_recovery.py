@@ -13,15 +13,15 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.execution_attempts.shell_recovery import ShellCleanupRecovery
-from backend.app.desktop.execution_attempts.tool import ToolExecutionLedger
-from backend.app.desktop.models import DesktopRun, ToolExecutionAttempt
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.run_orchestration.dispatch import RunDispatchRecovery
-from backend.app.desktop.run_orchestration.models import RunDispatch, RunOutboxEvent
-from backend.app.desktop.workspace_coordination.leases import WorkspaceLeaseManager
-from backend.app.desktop.workspace_coordination.models import WorkspaceLease
-from backend.app.desktop.workspace_coordination.schemas import WorkspaceLeaseRequest
+from backend.app.desktop.runs.execution_attempts.shell_recovery import ShellCleanupRecovery
+from backend.app.desktop.runs.execution_attempts.tool import ToolExecutionLedger
+from backend.app.desktop.persistence.models import DesktopRun, ToolExecutionAttempt
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRecovery
+from backend.app.desktop.runs.orchestration.models import RunDispatch, RunOutboxEvent
+from backend.app.desktop.workspaces.coordination.leases import WorkspaceLeaseManager
+from backend.app.desktop.workspaces.coordination.models import WorkspaceLease
+from backend.app.desktop.workspaces.coordination.schemas import WorkspaceLeaseRequest
 from backend.tests.test_shell_cleanup_settlement import _Checkpointer, _execution
 from backend.tests.test_execution_attempt_audit import _seed
 from focus.runtime.runs.manager import RunManager
@@ -180,7 +180,7 @@ def test_recovery_api_requires_session_and_server_evidence(tmp_path):
         import httpx
         from fastapi import FastAPI
         from types import SimpleNamespace
-        from backend.app.desktop.routes import desktop_router
+        from backend.app.desktop.api.routes import desktop_router
         from backend.app.gateway.middleware.auth import AuthMiddleware
 
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

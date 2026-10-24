@@ -20,14 +20,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_round_task_progress import _Checkpointer, _source
 
-from backend.app.desktop.agent_loop.models import LoopDelegationGrant, LoopObservation
-from backend.app.desktop.agent_loop.models import LoopRound
-from backend.app.desktop.agent_loop.observation_query import ObservationInspectionQuery
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.query_routes import loop_query_router
-from backend.app.desktop.agent_loop.task_progress.models import LoopDecisionInputs, LoopProgressHead, LoopTaskProgress
-from backend.app.desktop.domain_evidence.identity import canonical_hash
+from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant, LoopObservation
+from backend.app.desktop.patrol.agent_loop.models import LoopRound
+from backend.app.desktop.patrol.agent_loop.observations.observation_query import ObservationInspectionQuery
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_query_router
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopDecisionInputs, LoopProgressHead, LoopTaskProgress
+from backend.app.desktop.runs.evidence.identity import canonical_hash
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")

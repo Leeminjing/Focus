@@ -8,8 +8,8 @@ import asyncio
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle
-from backend.app.desktop.context_curation import SourceMessageEvidence, evidence_ref_key
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle
+from backend.app.desktop.contexts.curation import SourceMessageEvidence, evidence_ref_key
 from backend.tests.test_synthesis_claim_feedback import _service
 
 

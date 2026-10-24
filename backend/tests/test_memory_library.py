@@ -5,6 +5,11 @@
 示例：pytest backend/tests/test_memory_library.py。
 """
 
+
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+
 import os
 from pathlib import Path
 import shutil
@@ -19,7 +24,7 @@ from langchain_core.messages import HumanMessage
 os.environ.setdefault("OPENAI_API_KEY", "memory-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
-from backend.app.desktop.memory import (  # noqa: E402
+from backend.app.desktop.memory.service import (  # noqa: E402
     _MAIN_RUNTIME_MEMORY_KEY,
     MemoryCreate,
     MemorySelection,
@@ -27,7 +32,7 @@ from backend.app.desktop.memory import (  # noqa: E402
     MemorySummarizeRequest,
     MemoryUpdate,
 )
-from backend.app.desktop.models import DesktopThread  # noqa: E402
+from backend.app.desktop.persistence.models import DesktopThread  # noqa: E402
 from backend.app.gateway.app import app  # noqa: E402
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
@@ -54,7 +59,7 @@ def _remove_workspace_folder(folder):
 
 
 def test_memory_crud_and_injection(monkeypatch):
-    import backend.app.desktop.memory as memory_module
+    import backend.app.desktop.memory.service as memory_module
 
     class _FakeResponse:
         content = "这是概括后的记忆内容"
@@ -167,7 +172,7 @@ def test_memory_crud_and_injection(monkeypatch):
             )
 
             # 端到端：最终 system_prompt 含 <memory> 且为编辑后文本
-            import backend.app.desktop.service as svc
+            import backend.app.desktop.composition.service as svc
 
             captured = {}
 
@@ -176,8 +181,9 @@ def test_memory_crud_and_injection(monkeypatch):
                 captured["frozen_contexts"] = kwargs["frozen_contexts"]
                 return create_agent(model=FakeListChatModel(responses=["unused"]), tools=[])
 
-            original = svc.make_lead_agent
-            svc.make_lead_agent = fake_make_lead_agent
+            original = _desktop_conversations_compression_service.make_lead_agent
+            _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
+            _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
             try:
                 prepared2 = await service.start_main_run(
                     task_id, "请再开始", None, ["read"], [], None, [mem["memory_id"]],
@@ -187,7 +193,8 @@ def test_memory_crud_and_injection(monkeypatch):
                 assert any("编辑后的最终内容" in item.content for item in captured["frozen_contexts"])
                 assert graph is not None
             finally:
-                svc.make_lead_agent = original
+                _desktop_conversations_compression_service.make_lead_agent = original
+                _desktop_runs_agent_factory.make_lead_agent = original
 
             # text 来源按 ranges 切片（真实 message_id）
             text_selection = MemorySelection(sources=[MemorySource(
@@ -229,7 +236,7 @@ def test_memory_crud_and_injection(monkeypatch):
 
 
 def test_memory_summarize_empty_raises(monkeypatch):
-    import backend.app.desktop.memory as memory_module
+    import backend.app.desktop.memory.service as memory_module
 
     class _FakeResponse:
         content = "x"
@@ -275,7 +282,7 @@ def test_memory_summarize_empty_raises(monkeypatch):
 
 def test_patrol_and_swarm_do_not_inject_memory(monkeypatch):
     """派生 Agent（patrol/teammate/worker）装配时系统提示词不含 `<memory>`。"""
-    import backend.app.desktop.service as svc
+    import backend.app.desktop.composition.service as svc
 
     captured = {}
 
@@ -283,7 +290,8 @@ def test_patrol_and_swarm_do_not_inject_memory(monkeypatch):
         captured["system_prompt"] = kwargs.get("system_prompt", "")
         return create_agent(model=FakeListChatModel(responses=["unused"]), tools=[])
 
-    monkeypatch.setattr(svc, "make_lead_agent", fake_make_lead_agent)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', fake_make_lead_agent)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', fake_make_lead_agent)
     folder = _make_workspace_folder()
     with _client() as client:
         service = app.state.desktop_service

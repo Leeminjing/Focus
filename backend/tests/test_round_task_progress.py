@@ -20,30 +20,30 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop, _stop
 
-from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.decision_context import PatrolDecisionContext
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.decisions.decision_context import PatrolDecisionContext
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.models import (
     LoopBudgetUsage,
     LoopDirective,
     LoopObservation,
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.observation import observation_hash
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.run_activity_writer import (
+from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.execution.run_activity_writer import (
     LoopRunActivityWriteError,
     LoopRunActivityWriter,
 )
-from backend.app.desktop.agent_loop.schemas import AdjustLoopBudgetsRequest
-from backend.app.desktop.agent_loop.task_progress.consolidation import (
+from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest
+from backend.app.desktop.patrol.agent_loop.task_progress.consolidation import (
     TaskProgressConsolidator,
 )
-from backend.app.desktop.agent_loop.task_progress.contracts import (
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import (
     ProgressCandidate,
     RoundDecisionInputs,
     SourceAssessment,
@@ -53,23 +53,23 @@ from backend.app.desktop.agent_loop.task_progress.contracts import (
     TaskSource,
     canonical_hash,
 )
-from backend.app.desktop.agent_loop.task_progress.models import (
+from backend.app.desktop.patrol.agent_loop.task_progress.models import (
     LoopProgressHead,
     LoopProgressReceipt,
     LoopProgressWork,
     LoopTaskProgress,
 )
-from backend.app.desktop.agent_loop.task_progress.query import TaskProgressQuery
-from backend.app.desktop.agent_loop.task_progress.repository import (
+from backend.app.desktop.patrol.agent_loop.task_progress.query import TaskProgressQuery
+from backend.app.desktop.patrol.agent_loop.task_progress.repository import (
     ProgressNotReady,
     ProgressPublicationRejected,
     TaskProgressRepository,
 )
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
-from backend.app.desktop.domain_evidence.repository import DomainResultRepository
-from backend.app.desktop.domain_evidence.tests import TestResultParser
-from backend.app.desktop.models import DesktopRun, DesktopThread
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
+from backend.app.desktop.runs.evidence.repository import DomainResultRepository
+from backend.app.desktop.runs.evidence.tests import TestResultParser
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 
 
 def _source(*, kind="test", source_id="test-1", payload=None):

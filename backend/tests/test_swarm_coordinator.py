@@ -27,13 +27,8 @@ _ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
-from backend.app.desktop.collab import AgentCollab  # noqa: E402
-from backend.app.desktop.models import (  # noqa: E402
-    AgentMessage,
-    DesktopThread,
-    DesktopWorkspace,
-    SwarmAgent,
-)
+from backend.app.desktop.agents.collaboration import AgentCollab  # noqa: E402
+from backend.app.desktop.persistence.models import AgentMessage, DesktopThread, DesktopWorkspace, SwarmAgent
 from backend.tests.runtime_context_support import tool_runtime  # noqa: E402
 
 
@@ -84,7 +79,7 @@ async def _cleanup(collab: AgentCollab, task_id: str) -> None:
 
 async def _inbox_text(collab, agent_id, task_id):
     from types import SimpleNamespace
-    from backend.app.desktop.inbox import AgentInbox
+    from backend.app.desktop.agents.inbox import AgentInbox
     retained = getattr(collab, "_test_retained", {})
     ids = retained.setdefault((agent_id, task_id), set())
     updates, _ = await AgentInbox(collab.session_factory, None).prepare(SimpleNamespace(agent_id=agent_id, task_id=task_id), ids)

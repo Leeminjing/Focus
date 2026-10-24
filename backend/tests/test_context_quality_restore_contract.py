@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.quality import ContextQualityAssessment, ContextQualityVerifier
-from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality import ContextQualityAssessment, ContextQualityVerifier
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
 from backend.tests.test_synthesis_claim_feedback import _inputs
 
 

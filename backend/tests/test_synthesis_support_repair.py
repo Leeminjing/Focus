@@ -13,18 +13,18 @@ import pytest
 from langchain_core.messages import AIMessage
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionOpportunity, ResolvedEvidenceBundle, ResolvedEvidenceItem, stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.artifact_repository import SemanticDerivationArtifactRepository
-from backend.app.desktop.agent_loop.context_expansion.compiler import ContextExpansionPlanCompiler
-from backend.app.desktop.agent_loop.context_expansion.start_readiness import load_execution_readiness
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ContextSynthesisValidator
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.context_curation import MultiSourceEvidence, StructuredEvidence, evidence_ref_key
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ExpansionOpportunity, ResolvedEvidenceBundle, ResolvedEvidenceItem, stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import SemanticDerivationArtifactRepository
+from backend.app.desktop.patrol.agent_loop.context_expansion.compiler import ContextExpansionPlanCompiler
+from backend.app.desktop.patrol.agent_loop.context_expansion.start_readiness import load_execution_readiness
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ContextSynthesisValidator
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.contexts.curation import MultiSourceEvidence, StructuredEvidence, evidence_ref_key
 from backend.tests.test_synthesis_claim_feedback import _inputs
 from backend.tests.test_synthesis_claim_feedback import _compiler_observation
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
-from backend.app.desktop.agent_loop.models import LoopBudgetUsage
+from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
 from backend.tests.config_helpers import app_config_for
 
 
@@ -75,7 +75,7 @@ def _repair_service(monkeypatch, *, change=True, verdict="unsupported", verifier
                 } for claim in document["claims"]]}
             return AIMessage(content=json.dumps(response))
 
-    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: Provider())
+    monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider())
     author = RoleBoundStructuredModel(config, "dossier_synthesizer", max_attempts=2)
     verifier = RoleBoundStructuredModel(config, "claim_verifier", max_attempts=2)
     return StructuredContextSynthesisService(author, verifier), spec, bundle, author, verifier, calls

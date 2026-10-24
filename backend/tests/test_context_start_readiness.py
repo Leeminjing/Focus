@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle, WorkContextSpec
-from backend.app.desktop.agent_loop.context_expansion.quality import ContextQualityVerifier
-from backend.app.desktop.agent_loop.context_expansion.quality_input_scope import quality_input_scope
-from backend.app.desktop.agent_loop.context_expansion.start_readiness import ExecutionReadiness, QuestionDisposition, work_question_id
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ContextSynthesisDraft, ContextSynthesisValidator, ValidatedContextDossier
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle, WorkContextSpec
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality import ContextQualityVerifier
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality_input_scope import quality_input_scope
+from backend.app.desktop.patrol.agent_loop.context_expansion.start_readiness import ExecutionReadiness, QuestionDisposition, work_question_id
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ContextSynthesisDraft, ContextSynthesisValidator, ValidatedContextDossier
 
 
 def _frozen():
@@ -91,8 +91,8 @@ def test_unsolved_prerequisite_remains_blocked_before_model():
 
 
 def test_mandatory_boundaries_are_retained_in_execution_material():
-    from backend.app.desktop.agent_loop.mission_contract import ExecutionBoundaries
-    from backend.app.desktop.agent_loop.context_expansion.synthesis import render_context_dossier
+    from backend.app.desktop.patrol.agent_loop.missions.mission_contract import ExecutionBoundaries
+    from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import render_context_dossier
 
     _, _, dossier, _ = _frozen()
     scope = _scope().model_copy(update={"mission_boundaries": ExecutionBoundaries(

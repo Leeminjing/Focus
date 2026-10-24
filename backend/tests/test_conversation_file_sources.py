@@ -2,9 +2,9 @@
 import asyncio
 from types import SimpleNamespace as NS
 
-from backend.app.desktop.agent_loop.conversation_query import ContextConversationQueryService
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.models import DesktopRun, DesktopThread
+from backend.app.desktop.patrol.agent_loop.queries.conversation_query import ContextConversationQueryService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 
 
 def test_conversation_projects_original_file_sources_across_runs_and_derivation():
@@ -44,7 +44,7 @@ def test_conversation_projects_original_file_sources_across_runs_and_derivation(
 
 
 def test_authored_answer_cannot_claim_a_run_via_model_metadata():
-    from backend.app.desktop.agent_loop.file_link_sources import ConversationFileSources
+    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import ConversationFileSources
     message = {"id": "made-up", "role": "ai", "content": "[报告](report.md)",
                "file_context": {"run_id": "foreign", "slot_id": "foreign"}}
     revision = NS(ref=NS(revision_id="authored", context_id="c"), origin_kind="derive", origin_id="foreign", sources=())
@@ -54,7 +54,7 @@ def test_authored_answer_cannot_claim_a_run_via_model_metadata():
 
 
 def test_conflicting_inherited_sources_never_choose_a_same_named_file():
-    from backend.app.desktop.agent_loop.file_link_sources import ConversationFileSources
+    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import ConversationFileSources
     message = {"id": "same-id", "role": "ai", "content": "[报告](report.md)"}
     refs = {key: NS(ref=NS(revision_id=key, context_id="c"), origin_kind="run_settled", origin_id=key, sources=())
             for key in ("one", "two")}
@@ -72,7 +72,7 @@ def test_conflicting_inherited_sources_never_choose_a_same_named_file():
 
 
 def test_run_source_must_belong_to_the_context_and_workspace():
-    from backend.app.desktop.agent_loop.file_link_sources import ConversationFileSources
+    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import ConversationFileSources
     message = {"id": "answer", "role": "ai", "content": "[报告](report.md)"}
     revision = NS(ref=NS(revision_id="r", context_id="c"), origin_kind="run_settled", origin_id="run", sources=())
     class Session:

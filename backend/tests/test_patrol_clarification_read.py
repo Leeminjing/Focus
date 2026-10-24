@@ -8,11 +8,11 @@ import json
 from dataclasses import replace
 from itertools import product
 import pytest
-from backend.app.desktop.agent_loop import round_orchestration as module
-from backend.app.desktop.agent_loop.round_orchestration import StructuredPatrolDecisionModel
-from backend.app.desktop.agent_loop.clarification_admission import ClarificationAdmissionPolicy,ClarificationFacts,ClarificationRejected
-from backend.app.desktop.agent_loop.schemas import WaitForUserAction
-from backend.app.desktop.agent_loop.observation import observation_hash
+from backend.app.desktop.patrol.agent_loop.rounds import round_orchestration as module
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import StructuredPatrolDecisionModel
+from backend.app.desktop.patrol.agent_loop.inputs.clarification_admission import ClarificationAdmissionPolicy,ClarificationFacts,ClarificationRejected
+from backend.app.desktop.patrol.agent_loop.schemas import WaitForUserAction
+from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_patrol_failure_diagnostics import _observation
 

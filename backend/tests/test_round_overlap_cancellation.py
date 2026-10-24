@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound
-from backend.app.desktop.agent_loop.round_consequences import RoundConsequenceReader
-from backend.app.desktop.agent_loop.rounds import terminate_round
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound
+from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import RoundConsequenceReader
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import terminate_round
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 
 

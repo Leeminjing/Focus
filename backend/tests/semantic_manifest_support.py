@@ -12,14 +12,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     ContextSemanticManifest,
     SemanticEvidenceUnit,
     stable_expansion_hash,
 )
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.context_curation import NamespacedMessageRef
-from backend.app.desktop.context_evolution import ContextRevisionRef
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.contexts.curation import NamespacedMessageRef
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
 
 
 class SemanticManifestProjector:

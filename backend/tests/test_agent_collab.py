@@ -28,13 +28,8 @@ _ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
-from backend.app.desktop.collab import AgentCollab
-from backend.app.desktop.models import (
-    AgentBoardTask,
-    AgentMessage,
-    DesktopThread,
-    DesktopWorkspace,
-)
+from backend.app.desktop.agents.collaboration import AgentCollab
+from backend.app.desktop.persistence.models import AgentBoardTask, AgentMessage, DesktopThread, DesktopWorkspace
 from backend.tests.runtime_context_support import tool_runtime
 
 
@@ -81,7 +76,7 @@ async def _cleanup(collab: AgentCollab, task_id: str) -> None:
 
 def test_mailbox_prepare_is_read_only_and_scoped_to_recipient():
     from types import SimpleNamespace
-    from backend.app.desktop.inbox import AgentInbox
+    from backend.app.desktop.agents.inbox import AgentInbox
 
     async def run():
         collab = AgentCollab(_SESSION_FACTORY)

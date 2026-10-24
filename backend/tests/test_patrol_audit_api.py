@@ -16,11 +16,11 @@ from fastapi import FastAPI
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.models import LoopDelegationGrant, LoopWorkerRequest
-from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssignment, LoopPatrolPhaseTransition
-from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolEvidenceReference, PatrolWaitTarget
-from backend.app.desktop.agent_loop.query_routes import loop_query_router
+from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopCuratorAssignment, LoopPatrolPhaseTransition
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_repository import PatrolSessionRepository
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import PatrolActivity, PatrolEvidenceReference, PatrolWaitTarget
+from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_query_router
 from test_patrol_session import _create_loop, _observation_envelope, _persist_observation
 
 

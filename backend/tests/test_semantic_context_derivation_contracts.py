@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     EvidenceRequirement,
     ExpansionOpportunity,
     ResolvedEvidenceBundle,
@@ -21,7 +21,7 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     SpawnContextIntent,
     WorkContextSpec,
 )
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     ComposeMessage,
     CreateLanePlan,
     LaneCompilationError,
@@ -48,10 +48,10 @@ def test_patrol_spawn_intent_remains_identity_only() -> None:
 
 
 def test_context_expansion_modules_do_not_import_commit_authority() -> None:
-    package = ROOT / "backend" / "app" / "desktop" / "agent_loop" / "context_expansion"
+    package = ROOT / "backend" / "app" / "desktop" / "patrol" / "agent_loop" / "context_expansion"
     forbidden = {
-        "backend.app.desktop.agent_loop.kernel",
-        "backend.app.desktop.context_curation.portfolio_publisher",
+        "backend.app.desktop.patrol.agent_loop.kernel",
+        "backend.app.desktop.contexts.curation.portfolio_publisher",
     }
     violations: list[str] = []
     for path in package.glob("*.py"):

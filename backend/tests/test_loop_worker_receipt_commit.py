@@ -16,12 +16,12 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.index_budget_repository import IndexBudgetReservationRepository
-from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopWorkerRequest
-from backend.app.desktop.agent_loop.usage import LoopUsageDelta
-from backend.app.desktop.agent_loop.worker_model_usage import WorkerModelUsage
-from backend.app.desktop.agent_loop.worker_receipt_recovery import WorkerReceiptRecovery
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_budget_repository import IndexBudgetReservationRepository
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
+from backend.app.desktop.patrol.agent_loop.workers.worker_model_usage import WorkerModelUsage
+from backend.app.desktop.patrol.agent_loop.recovery.worker_receipt_recovery import WorkerReceiptRecovery
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_loop_model_role_receipts import _run_worker
@@ -54,7 +54,7 @@ def test_worker_result_commits_original_receipt_without_model_resampling(tmp_pat
                 return AIMessage(content=json.dumps(response))
 
         monkeypatch.setattr(IndexBudgetReservationRepository, method_name, unavailable_independent_commit)
-        monkeypatch.setattr('backend.app.desktop.agent_loop.structured_worker.create_chat_model', lambda **kwargs: Provider())
+        monkeypatch.setattr('backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model', lambda **kwargs: Provider())
         try:
             worker_id = await _run_worker(sessions, config, fixture, kind)
             assert len(calls) == 1
@@ -164,7 +164,7 @@ def test_pause_before_result_only_settles_deferred_usage(tmp_path, monkeypatch, 
                 return AIMessage(content=json.dumps(response))
 
         monkeypatch.setattr(IndexBudgetReservationRepository, 'settle', unavailable_independent_commit)
-        monkeypatch.setattr('backend.app.desktop.agent_loop.structured_worker.create_chat_model', lambda **kwargs: Provider())
+        monkeypatch.setattr('backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model', lambda **kwargs: Provider())
         try:
             with pytest.raises((AssertionError, ValueError)):
                 await _run_worker(sessions, config, fixture, kind)

@@ -24,9 +24,9 @@ _ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
-from backend.app.desktop.context_service import ContextService  # noqa: E402
-from backend.app.desktop.context_evolution.models import ContextRevision  # noqa: E402
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
+from backend.app.desktop.contexts.service import ContextService  # noqa: E402
+from backend.app.desktop.contexts.evolution.models import ContextRevision  # noqa: E402
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
 from focus.config.app_config import AppConfig  # noqa: E402
 
 

@@ -12,17 +12,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
 BACKEND_ROOT = ROOT / "backend" / "app" / "desktop"
-DESKTOP_ROOT = ROOT / "desktop"
+DESKTOP_ROOT = ROOT / "desktop/src/renderer/features/loop"
 BACKEND_PACKAGES = {
-    "context_evolution": set(),
-    "workspace_coordination": set(),
-    "run_orchestration": {"context_evolution", "workspace_coordination"},
-    "context_curation": {"context_evolution"},
-    "agent_loop": {
-        "context_evolution",
-        "workspace_coordination",
-        "run_orchestration",
-        "context_curation",
+    "contexts/evolution": set(),
+    "workspaces/coordination": set(),
+    "runs/orchestration": {"contexts/evolution", "workspaces/coordination"},
+    "contexts/curation": {"contexts/evolution"},
+    "patrol/agent_loop": {
+        "contexts/evolution",
+        "workspaces/coordination",
+        "runs/orchestration",
+        "contexts/curation",
     },
 }
 DESKTOP_MODULES = (
@@ -52,8 +52,7 @@ def _imported_domain(module: str | None) -> str | None:
     prefix = "backend.app.desktop."
     if not module or not module.startswith(prefix):
         return None
-    candidate = module.removeprefix(prefix).split(".", 1)[0]
-    return candidate if candidate in BACKEND_PACKAGES else None
+    return next((package for package in BACKEND_PACKAGES if module == prefix + package.replace("/", ".") or module.startswith(prefix + package.replace("/", ".") + ".")), None)
 
 
 def test_new_domain_files_have_declarative_headers() -> None:
@@ -85,23 +84,23 @@ def test_new_backend_domains_follow_dependency_direction() -> None:
 
 
 def test_task_memory_and_fact_consumers_are_independent() -> None:
-    memory = BACKEND_ROOT / "agent_loop" / "task_progress"
-    facts = [*(BACKEND_ROOT / "agent_loop").glob("fact*.py"), *(BACKEND_ROOT / "agent_loop").glob("materialized_fact*.py")]
+    memory = BACKEND_ROOT / "patrol/agent_loop" / "task_progress"
+    facts = list((BACKEND_ROOT / "patrol/agent_loop/facts").glob("*.py"))
     for path in [*memory.glob("*.py"), *facts]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
-        forbidden = ".agent_loop.fact" if path.parent == memory else ".agent_loop.task_progress"
+        forbidden = ".agent_loop.facts" if path.parent == memory else ".agent_loop.task_progress"
         assert not any(forbidden in module for module in imports), f"消费者互相依赖: {path.name}"
         if path.parent == memory:
             assert not any("event_journal" in module for module in imports), "来源不能依赖可裁剪展示 journal"
-    for name in ("patrol.py", "patrol_runtime.py", "workers.py"):
-        tree = ast.parse((BACKEND_ROOT / "agent_loop" / name).read_text(encoding="utf-8"))
+    for name in ("patrol.py", "sessions/patrol_runtime.py", "workers/runtime.py"):
+        tree = ast.parse((BACKEND_ROOT / "patrol/agent_loop" / name).read_text(encoding="utf-8"))
         calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
         assert not {"switch_current", "record_publication"}.intersection(calls), f"认知模块取得发布权: {name}"
 
 
 def test_compression_policy_is_a_pure_domain_module() -> None:
-    path = BACKEND_ROOT / "agent_loop" / "compression_authority" / "policy.py"
+    path = BACKEND_ROOT / "patrol/agent_loop" / "compression_authority" / "policy.py"
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     imports = {
@@ -113,13 +112,13 @@ def test_compression_policy_is_a_pure_domain_module() -> None:
         )
         if module
     }
-    forbidden = ("sqlalchemy", "fastapi", "langchain", "langgraph", "backend.app.gateway", "backend.app.desktop.service")
+    forbidden = ("sqlalchemy", "fastapi", "langchain", "langgraph", "backend.app.gateway", "backend.app.desktop.composition.service")
     assert not [module for module in imports if module.startswith(forbidden)]
 
 
 def test_patrol_decision_contract_is_not_reclaimed_by_orchestration() -> None:
-    contract = (BACKEND_ROOT / "agent_loop" / "patrol_contract.py").read_text(encoding="utf-8")
-    orchestration = (BACKEND_ROOT / "agent_loop" / "round_orchestration.py").read_text(encoding="utf-8")
+    contract = (BACKEND_ROOT / "patrol/agent_loop" / "patrol_contract.py").read_text(encoding="utf-8")
+    orchestration = (BACKEND_ROOT / "patrol/agent_loop" / "rounds/round_orchestration.py").read_text(encoding="utf-8")
     assert "round_orchestration" not in contract
     assert "_validate_expansion_decision" not in orchestration
     assert "_validate_mission_references" not in orchestration
@@ -127,7 +126,7 @@ def test_patrol_decision_contract_is_not_reclaimed_by_orchestration() -> None:
 
 
 def test_compression_authority_keeps_core_methods_bounded() -> None:
-    package = BACKEND_ROOT / "agent_loop" / "compression_authority"
+    package = BACKEND_ROOT / "patrol/agent_loop" / "compression_authority"
     oversized: list[str] = []
     for path in package.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

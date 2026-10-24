@@ -12,18 +12,18 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.routes import desktop_router
-from backend.app.desktop.service import DesktopService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopPendingDecision
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.api.routes import desktop_router
+from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopPendingDecision
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
 
 
 def test_bootstrap_does_not_wait_for_tool_discovery(monkeypatch):
     async def scenario():
         service = DesktopService.__new__(DesktopService)
         service.app_config = SimpleNamespace(models=[])
-        service.list_tasks = AsyncMock(return_value=[])
+        service.conversations.list_tasks = AsyncMock(return_value=[])
         started, release = asyncio.Event(), asyncio.Event()
 
         async def slow_tools():
@@ -65,7 +65,7 @@ def test_task_summaries_use_fixed_queries_without_recovery(isolated_postgres_dat
         now = datetime.now(UTC)
         service = DesktopService.__new__(DesktopService)
         service.session_factory = sessions
-        service._task_payload = AsyncMock(side_effect=AssertionError("列表不得读取详情/checkpoint"))
+        service.conversations._task_payload = AsyncMock(side_effect=AssertionError("列表不得读取详情/checkpoint"))
         queries = []
 
         def record(_connection, _cursor, statement, *_args):
@@ -184,7 +184,7 @@ def test_task_summaries_use_fixed_queries_without_recovery(isolated_postgres_dat
             await restarted.abandon_commitment(task_ids[12])
             ours = {row["task_id"]: row for row in await restarted.list_tasks()}
             assert ours[task_ids[12]]["attention"] == []
-            service._task_payload.assert_not_awaited()
+            service.conversations._task_payload.assert_not_awaited()
         finally:
             async with sessions.begin() as session:
                 await session.execute(delete(AgentLoop).where(AgentLoop.workspace_id == workspace_id))

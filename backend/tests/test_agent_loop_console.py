@@ -21,20 +21,20 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
-from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
-from backend.app.desktop.agent_loop.conversation_query import (
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.queries.console_query import LoopConsoleQueryService
+from backend.app.desktop.patrol.agent_loop.queries.conversation_query import (
     ContextConversationQueryService,
 )
-from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
-from backend.app.desktop.agent_loop.interventions import LoopInterventionService
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.facts.fact_projection import LoopFactProjectionService
+from backend.app.desktop.patrol.agent_loop.governance.interventions import LoopInterventionService
+from backend.app.desktop.patrol.agent_loop.models import (
     LoopInterventionTransition,
     LoopUserIntent,
 )
-from backend.app.desktop.agent_loop.round_orchestration import LoopObservationService
-from backend.app.desktop.agent_loop.schemas import LoopInterventionRequest
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.schemas import LoopInterventionRequest
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -42,7 +42,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

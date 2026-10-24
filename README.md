@@ -285,9 +285,9 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 
 | Directory | Contents |
 | --- | --- |
-| [backend/app/desktop/agent_loop](backend/app/desktop/agent_loop/) | Patrol, rounds, task progress, execution coordination, and completion checks. |
-| [backend/app/desktop/context_evolution](backend/app/desktop/context_evolution/) | Context versions, source relationships, and the evolution graph. |
-| [backend/app/desktop/workspace_coordination](backend/app/desktop/workspace_coordination/) | Workspace access, isolation, and result adoption. |
+| [backend/app/desktop/patrol/agent_loop](backend/app/desktop/patrol/agent_loop/) | Patrol, rounds, task progress, execution coordination, and completion checks. |
+| [backend/app/desktop/contexts/evolution](backend/app/desktop/contexts/evolution/) | Context versions, source relationships, and the evolution graph. |
+| [backend/app/desktop/workspaces/coordination](backend/app/desktop/workspaces/coordination/) | Workspace access, isolation, and result adoption. |
 | [backend/packages/harness/focus](backend/packages/harness/focus/) | Agent runtime, models, tools, Skills, MCP, and persistence. |
 | [desktop](desktop/) | Desktop shell, robot entry point, and workbench. |
 

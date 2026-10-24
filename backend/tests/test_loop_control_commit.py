@@ -16,12 +16,12 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopRound
-from backend.app.desktop.agent_loop.schemas import RevokeLoopGrantRequest
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDirective, LoopRound
+from backend.app.desktop.patrol.agent_loop.schemas import RevokeLoopGrantRequest
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_loop_execution_ownership import _seed_launching_directive, _admit_run
 

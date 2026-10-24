@@ -8,9 +8,9 @@ from backend.tests.test_session_patrol_workbench_api import client as client
 from copy import deepcopy
 import uuid
 import pytest
-from backend.app.desktop.session_patrol.contracts import AuthoringDocument
-from backend.app.desktop.session_patrol.compiler import compile_document
-from backend.app.desktop.session_patrol.authoring_adapters import upgrade_document
+from backend.app.desktop.patrol.session_patrol.contracts import AuthoringDocument
+from backend.app.desktop.patrol.session_patrol.compiler import compile_document
+from backend.app.desktop.patrol.session_patrol.authoring_adapters import upgrade_document
 from focus.history import FocusItem, items_to_messages, messages_to_items, semantic_policy, content_hash
 from focus.models.provider_contract import ProviderContract
 from focus.models.response_projection import ResponsesRequestProjector
@@ -85,7 +85,7 @@ def test_unknown_and_runtime_authoring_saved_but_diagnosed(kind):
 def test_typed_api_definition_graph_and_old_client_guard(client):
     from backend.tests.test_session_patrol_workbench_api import open_draft, save, wait_run
     from backend.app.gateway.app import app
-    from backend.app.desktop.models import PatrolDeploymentDefinition
+    from backend.app.desktop.persistence.models import PatrolDeploymentDefinition
     from sqlalchemy import select, text
     http, task, _, requests = client
     draft = save(http, open_draft(http, task), typed_document()).json()
@@ -118,7 +118,7 @@ def test_typed_api_definition_graph_and_old_client_guard(client):
 
 
 def test_canonical_source_filters_opaque_per_item_and_retains_native_identity():
-    from backend.app.desktop.session_patrol.source_projection import freeze_authoring_sources
+    from backend.app.desktop.patrol.session_patrol.source_projection import freeze_authoring_sources
     records = [FocusItem(item_id="r", kind="reasoning", origin="provider", payload={"type":"reasoning","encrypted_content":"opaque"}),
                FocusItem(item_id="c", message_id="group", kind="function_call", origin="provider", payload={"type":"function_call","call_id":"c1","name":"read","arguments":"{}"}),
                FocusItem(item_id="o", kind="function_call_output", origin="tool", payload={"type":"function_call_output","call_id":"c1","output":"evidence"})]

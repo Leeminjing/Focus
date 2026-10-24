@@ -19,17 +19,17 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, CanonicalEventEnvelope
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopProjectorCursor
-from backend.app.desktop.agent_loop.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
-from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection, ProjectedEntity
-from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
-from backend.app.desktop.agent_loop.live_projection_reducer import LoopLiveProjectionReducer, ProjectionSequenceGap
-from backend.app.desktop.agent_loop.live_routes import live_loop_snapshot
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft, CanonicalEventEnvelope
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent, LoopProjectorCursor
+from backend.app.desktop.patrol.agent_loop.live.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_contract import LoopLiveProjection, ProjectedEntity
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_reducer import LoopLiveProjectionReducer, ProjectionSequenceGap
+from backend.app.desktop.patrol.agent_loop.live.live_routes import live_loop_snapshot
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -108,9 +108,9 @@ def test_run_activity_time_tracks_confirmed_events_not_transport_heartbeat() -> 
 
 def test_unfrozen_round_snapshot_accepts_its_first_canonical_event(tmp_path: Path) -> None:
     async def run() -> None:
-        from backend.app.desktop.agent_loop.live_snapshot_overlay import LoopLiveProjectionOverlay
-        from backend.app.desktop.agent_loop.models import LoopRound
-        from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+        from backend.app.desktop.patrol.agent_loop.projections.live_snapshot_overlay import LoopLiveProjectionOverlay
+        from backend.app.desktop.patrol.agent_loop.models import LoopRound
+        from backend.app.desktop.patrol.agent_loop.journal.round_events import RoundStateEventRecorder
 
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)

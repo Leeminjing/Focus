@@ -14,10 +14,10 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from focus.runtime.runs.usage import ModelUsage
 
-from backend.app.desktop.agent_loop.accounting_query import LoopAccountingQuery
-from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
+from backend.app.desktop.patrol.agent_loop.journal.accounting_query import LoopAccountingQuery
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
 from backend.tests.config_helpers import app_config_for
 from backend.tests.incremental_index_support import Checkpoints
 from test_agent_loop_round_liveness import _seed_loop, _stop

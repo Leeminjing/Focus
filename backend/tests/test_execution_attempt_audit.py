@@ -25,9 +25,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.execution_attempts import ModelAttemptJournal, ModelAttemptMiddleware, ToolExecutionLedger
-from backend.app.desktop.inbox import AgentInbox, DurableInboxMiddleware
-from backend.app.desktop.models import AgentMessage, AgentMessageDelivery, DesktopRun, DesktopThread, DesktopWorkspace, ModelAttemptAudit
+from backend.app.desktop.runs.execution_attempts import ModelAttemptJournal, ModelAttemptMiddleware, ToolExecutionLedger
+from backend.app.desktop.agents.inbox import AgentInbox, DurableInboxMiddleware
+from backend.app.desktop.persistence.models import AgentMessage, AgentMessageDelivery, DesktopRun, DesktopThread, DesktopWorkspace, ModelAttemptAudit
 from focus.agents.lead_agent_state import LeadAgentState
 from focus.context.middleware import WorldStateMiddleware
 from focus.history.middleware import TypedHistoryMiddleware

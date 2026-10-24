@@ -14,9 +14,9 @@ import uuid
 import pytest
 from sqlalchemy import delete, func, select
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopDecision, LoopDelegationGrant, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.workspace_adoption import LoopWorkspaceAdoptionService
-from backend.app.desktop.workspace_coordination.models import WorkspaceAdoption, WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopDecision, LoopDelegationGrant, LoopRound, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_adoption import LoopWorkspaceAdoptionService
+from backend.app.desktop.workspaces.coordination.models import WorkspaceAdoption, WorkspaceSlot
 from backend.tests.test_loop_governance_convergence import _loop, _freeze
 from backend.tests.test_loop_termination_lock_order import _race_pause
 from backend.tests.test_git_workspace_adoption import _git, _repository
@@ -79,8 +79,8 @@ def test_adoption_records_progress_and_creates_one_successor(tmp_path):
             decision_id, adoption = await _seed_adoption(sessions, fixture)
             assert (await _finish(sessions, decision_id, adoption)).status == 'committed'
             assert (await _finish(sessions, decision_id, adoption)).status == 'committed'
-            from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-            from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
+            from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+            from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
             from backend.tests.test_loop_memory_execution_recovery import ControlledMemory
 
             memory = ControlledMemory()
@@ -178,10 +178,10 @@ def test_adoption_refreshes_cached_owner_after_pause(tmp_path):
 @pytest.mark.parametrize("phase", ("before_apply", "after_apply", "after_commit"))
 @pytest.mark.parametrize("paused", (False, True))
 def test_startup_recovers_real_git_adoption_and_respects_pause(tmp_path, phase, paused):
-    from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-    from backend.app.desktop.agent_loop.recovery import AgentLoopRecovery
-    from backend.app.desktop.run_orchestration import RunOutboxConsumer
-    from backend.app.desktop.workspace_coordination import WorkspaceAdoptionRequest, WorkspaceFingerprinter
+    from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+    from backend.app.desktop.patrol.agent_loop.recovery.service import AgentLoopRecovery
+    from backend.app.desktop.runs.orchestration import RunOutboxConsumer
+    from backend.app.desktop.workspaces.coordination import WorkspaceAdoptionRequest, WorkspaceFingerprinter
 
     async def run():
         async with _loop(tmp_path, 'adopt-restart') as (sessions, fixture):

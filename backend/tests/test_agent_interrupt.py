@@ -6,6 +6,12 @@ StreamBridge、checkpoint、cancel 与续跑链路，确认数据库收尾后再
 示例：`python -m pytest backend/tests/test_agent_interrupt.py -q`。
 """
 
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+import backend.app.desktop.capabilities.service as _desktop_capabilities_service
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+
+
 import asyncio
 import os
 import uuid
@@ -20,8 +26,8 @@ os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.gateway.app import app  # noqa: E402
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace  # noqa: E402
-from backend.app.desktop.service import DesktopService  # noqa: E402
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace  # noqa: E402
+from backend.app.desktop.composition.service import DesktopService  # noqa: E402
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
 
@@ -35,7 +41,7 @@ async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thr
     await service.checkpointer.adelete_thread(thread_id)
     await service.checkpointer.adelete_thread(f"{thread_id}:commitment")
     async with service.session_factory() as session:
-        from backend.app.desktop.domain_evidence.models import DesktopDomainResult
+        from backend.app.desktop.runs.evidence.models import DesktopDomainResult
         await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == task_id))
         await session.execute(delete(DesktopThread).where(DesktopThread.task_id == task_id))
         await session.execute(
@@ -60,7 +66,7 @@ def _build_graph(slow: bool):
 
 def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wait_for_memory_status, wait_until):
     """中断主 Agent 运行（保留 checkpoint）后，同一 thread 继续对话历史不丢失。"""
-    import backend.app.desktop.service as svc
+    import backend.app.desktop.composition.service as svc
 
     calls = {"n": 0}
 
@@ -71,10 +77,12 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
     async def fake_get_available_tools(*, workspace=None):
         return []
 
-    original = svc.make_lead_agent
-    original_get_available_tools = svc.get_available_tools
-    svc.make_lead_agent = fake_make_lead_agent
-    svc.get_available_tools = fake_get_available_tools
+    original = _desktop_conversations_compression_service.make_lead_agent
+    original_get_available_tools = _desktop_capabilities_service.get_available_tools
+    _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
+    _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
+    _desktop_capabilities_service.get_available_tools = fake_get_available_tools
+    _desktop_runs_agent_factory.get_available_tools = fake_get_available_tools
     thread_id = f"desktop-interrupt-e2e-{uuid.uuid4().hex}"
     try:
         with _client() as client:
@@ -103,7 +111,7 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
             def _checkpoint_written() -> bool:
                 nonlocal messages_after
                 messages_after = client.portal.call(
-                    service.get_checkpoint_messages, thread_id, ""
+                    service.conversations.get_checkpoint_messages, thread_id, ""
                 )
                 return bool(messages_after)
 
@@ -130,7 +138,7 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
             wait_for_memory_status(client, service, run2["run_id"], {"success"})
 
             messages_final = client.portal.call(
-                service.get_checkpoint_messages, thread_id, ""
+                service.conversations.get_checkpoint_messages, thread_id, ""
             )
             assert [m["role"] for m in messages_final] == ["human", "human", "ai"]
             assert messages_final[0]["content"] == "第一轮任务"
@@ -139,8 +147,8 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
 
             wait_until(
                 lambda: (
-                    client.portal.call(service.get_run, run1["run_id"]).status == "interrupted"
-                    and client.portal.call(service.get_run, run2["run_id"]).status == "success"
+                    client.portal.call(service.runs.get_run, run1["run_id"]).status == "interrupted"
+                    and client.portal.call(service.runs.get_run, run2["run_id"]).status == "success"
                 ),
                 timeout=10,
                 interval=0.1,
@@ -151,5 +159,7 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
                 _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id
             )
     finally:
-        svc.make_lead_agent = original
-        svc.get_available_tools = original_get_available_tools
+        _desktop_conversations_compression_service.make_lead_agent = original
+        _desktop_runs_agent_factory.make_lead_agent = original
+        _desktop_capabilities_service.get_available_tools = original_get_available_tools
+        _desktop_runs_agent_factory.get_available_tools = original_get_available_tools

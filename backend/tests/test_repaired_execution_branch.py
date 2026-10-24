@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from backend.app.desktop.context_projection import ProtocolRepairContext, compile_context_messages
+from backend.app.desktop.contexts.projection import ProtocolRepairContext, compile_context_messages
 from focus.agents.lead_agent_state import LeadAgentState
 from focus.config.app_config import AppConfig
 from focus.history import serialize_history_message, validate_items, messages_to_items

@@ -10,15 +10,15 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.workspace_coordination import (
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.workspaces.coordination import (
     GitWorkspaceResultApplier, WorkspaceAdopter, WorkspaceAdoption,
     WorkspaceAdoptionRequest, WorkspaceFingerprinter, WorkspaceSlot,
     WorkspaceAdoptionConflict, WorkspaceLeaseConflict, WorkspaceLeaseManager, WorkspaceLeaseRequest,
     WorkspaceSlotLifecycle,
     RunExecutionAnchor,
 )
-from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceRevisionConflict
+from backend.app.desktop.workspaces.coordination.fingerprints import WorkspaceRevisionConflict
 from backend.tests.test_git_workspace_adoption import _git, _repository
 
 
@@ -26,7 +26,7 @@ _CRASH = r'''
 import asyncio, json, os, sys
 from pathlib import Path
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from backend.app.desktop.workspace_coordination import GitWorkspaceResultApplier, WorkspaceAdopter, WorkspaceAdoptionRequest
+from backend.app.desktop.workspaces.coordination import GitWorkspaceResultApplier, WorkspaceAdopter, WorkspaceAdoptionRequest
 
 class CrashAfterApply(GitWorkspaceResultApplier):
     async def apply(self, target, intent):
@@ -282,7 +282,7 @@ def test_intent_migration_preserves_existing_adoption(isolated_migration_databas
 
 
 def test_late_run_settlement_cannot_consume_unregistered_adoption(isolated_postgres_database, tmp_path):
-    from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
+    from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
 
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

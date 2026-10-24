@@ -13,27 +13,27 @@ import uuid
 import pytest
 from sqlalchemy import delete, select
 
-from backend.app.desktop.agent_loop import LoopKernel, PatrolDecisionIntent
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder, LoopWaveDispatcher
-from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop import LoopKernel, PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopRunWorkspaceBinder, LoopWaveDispatcher
+from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_directive_equipment
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop, LoopAction, LoopContextMembership, LoopDelegationGrant, LoopDirective, LoopObservation, LoopRound,
 )
-from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
-from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-from backend.app.desktop.agent_loop.schemas import WorkspaceRepairSelection
-from backend.app.desktop.agent_loop.workspace_adoption import LoopWorkspaceAdoptionService
-from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair, WorkspaceRepairRejected
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.models import RunDispatch
-from backend.app.desktop.workspace_coordination import (
+from backend.app.desktop.patrol.agent_loop.governance.provenance import DelegatedDirectiveFactory
+from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
+from backend.app.desktop.patrol.agent_loop.schemas import WorkspaceRepairSelection
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_adoption import LoopWorkspaceAdoptionService
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_repair import WorkspaceConflictRepair, WorkspaceRepairRejected
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.models import RunDispatch
+from backend.app.desktop.workspaces.coordination import (
     GitWorkspaceResultApplier, WorkspaceAdopter, WorkspaceAdoptionRequest, WorkspaceFingerprinter, WorkspaceLeaseManager,
 )
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceAdoption, WorkspaceSlot
+from backend.app.desktop.workspaces.coordination.models import RunExecutionAnchor, WorkspaceAdoption, WorkspaceSlot
 from backend.tests.loop_run_boundary_support import freeze_patrol_intent
 from backend.tests.test_git_workspace_adoption import _git, _repository
 from backend.tests.test_loop_governance_convergence import _loop
@@ -123,7 +123,7 @@ async def _conflict(sessions, fixture, tmp_path, *, unknown_target=False):
 
 
 async def _advance(sessions):
-    from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
+    from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
     from backend.tests.test_loop_memory_execution_recovery import ControlledMemory
 
     memory = ControlledMemory()
@@ -153,8 +153,8 @@ async def _intent(sessions, fixture, action, *, mode="workspace-write"):
         observation = await session.get(LoopObservation, intent.observation_id)
         adoption = await session.get(WorkspaceAdoption, action.get("workspace_repair", {}).get("adoption_id")) if action.get("workspace_repair") else None
         if adoption:
-            from backend.app.desktop.agent_loop.observation import observation_hash
-            from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+            from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+            from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
             envelope = {**observation.envelope, "workspace": {**observation.envelope["workspace"], "adoptions": [{
                 "adoption_id": adoption.adoption_id,
@@ -254,7 +254,7 @@ def test_registered_user_changes_still_require_user_decision(tmp_path):
 
 @pytest.mark.parametrize("crash_phase", (None, "before_apply", "after_apply", "after_commit"))
 def test_repair_dispatch_and_adoption_review_gate(tmp_path, monkeypatch, crash_phase):
-    from backend.app.desktop.agent_loop import workspace_planning
+    from backend.app.desktop.patrol.agent_loop.workspaces import workspace_planning
 
     monkeypatch.setattr(workspace_planning, "global_home", lambda: tmp_path.parent / ("h" + fixture_home))
     fixture_home = uuid.uuid4().hex[:6]
@@ -292,7 +292,7 @@ def test_repair_dispatch_and_adoption_review_gate(tmp_path, monkeypatch, crash_p
             assert _git(Path(target.root_path), "diff", "--cached", "--binary") == index_before
             await _advance(sessions)
             # Create an independent, read-only review Context under the existing grant.
-            from backend.app.desktop.context_evolution import (ContextRevisionRepository, ContextRevisionContract,
+            from backend.app.desktop.contexts.evolution import (ContextRevisionRepository, ContextRevisionContract,
                 ContextRevisionRef, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionOriginKind)
 
             review_id, revision_id = uuid.uuid4().hex, uuid.uuid4().hex
@@ -336,7 +336,7 @@ def test_repair_dispatch_and_adoption_review_gate(tmp_path, monkeypatch, crash_p
                 "rationale": "Tests and independent review confirm both features"})
             service = LoopWorkspaceAdoptionService(sessions)
             if crash_phase:
-                from backend.app.desktop.agent_loop.kernel import KernelCommitResult
+                from backend.app.desktop.patrol.agent_loop.kernel import KernelCommitResult
                 from backend.tests.test_workspace_adoption_recovery import _crash
 
                 class CrashPort:
@@ -368,7 +368,7 @@ def test_repair_dispatch_and_adoption_review_gate(tmp_path, monkeypatch, crash_p
 
 @pytest.mark.parametrize("variant", ("source_edit", "target_edit", "target_revision", "authority", "uncertain"))
 def test_repair_rechecks_evidence_before_dispatch(tmp_path, monkeypatch, variant):
-    from backend.app.desktop.agent_loop import workspace_planning
+    from backend.app.desktop.patrol.agent_loop.workspaces import workspace_planning
 
     monkeypatch.setattr(workspace_planning, "global_home", lambda: tmp_path.parent / ("h" + uuid.uuid4().hex[:6]))
 

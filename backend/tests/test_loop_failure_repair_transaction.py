@@ -25,29 +25,29 @@ from focus.runtime.stream_bridge.memory import MemoryStreamBridge
 from focus.security.policy import AccessMode
 from focus.tools.builtins.workspace_tools import powershell, write_file
 
-from backend.app.desktop.agent_loop.completion_sources import CompletionSourceValidator
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder, LoopWaveDispatcher
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopDelegationGrant, LoopRound
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.patrol import PortfolioPatrol
-from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.domain_evidence.repository import DomainResultRepository
-from backend.app.desktop.domain_evidence.tests import TestResultParser
-from backend.app.desktop.execution_attempts.tool import ToolExecutionLedger
-from backend.app.desktop.models import DesktopRun, DesktopWorkspace
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
-from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.run_orchestration.outbox import RunOutboxConsumer
-from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceFingerprinter
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.completion.completion_sources import CompletionSourceValidator
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopRunWorkspaceBinder, LoopWaveDispatcher
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDecision, LoopDelegationGrant, LoopRound
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.patrol import PortfolioPatrol
+from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
+from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.runs.evidence.repository import DomainResultRepository
+from backend.app.desktop.runs.evidence.tests import TestResultParser
+from backend.app.desktop.runs.execution_attempts.tool import ToolExecutionLedger
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.assembler import RunExecutionAssembly
+from backend.app.desktop.runs.orchestration.dispatch import DurableRunDispatchWorker
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.orchestration.outbox import RunOutboxConsumer
+from backend.app.desktop.workspaces.coordination.fingerprints import WorkspaceFingerprinter
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 from backend.tests.runtime_context_support import tool_runtime
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_loop_memory_execution_recovery import ControlledMemory
@@ -97,7 +97,7 @@ async def _authorize(sessions, fixture, claim, message, failure=None):
         assert source["execution_round_id"] == failure["round_id"] and source["run_id"] == failure["run_id"]
 
     async def model(frozen):
-        from backend.app.desktop.agent_loop.directive_equipment import resolve_context_equipment
+        from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_context_equipment
         async with sessions() as session:
             current = await session.get(AgentLoop, frozen.loop_id)
             permissions = [{"context_id": row["context_id"], "access_mode":
@@ -130,7 +130,7 @@ async def _launch(sessions, fixture, coordinator, claim):
     async def admit(directive, message, slot_id):
         slot_holder["slot_id"] = slot_id
         async with sessions.begin() as session:
-            from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
+            from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_directive_equipment
             loop = await session.get(AgentLoop, fixture["loop_id"])
             equipment = await resolve_directive_equipment(session, loop, directive)
             await RunAdmissionService(RunOwnershipPolicy().admit).admit(session, DesktopRun(

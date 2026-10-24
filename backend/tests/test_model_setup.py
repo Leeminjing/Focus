@@ -14,11 +14,11 @@ from pydantic import ValidationError
 
 from focus.config import app_config as config_module
 from focus.config.app_config import get_app_config
-from backend.app.desktop.model_settings import (
+from backend.app.desktop.capabilities.model_settings import (
     ModelSettingsError, save_model_settings, settings_snapshot,
 )
-from backend.app.desktop.model_settings_routes import model_settings_router
-from backend.app.desktop.model_verification import verify_model_setup
+from backend.app.desktop.api.model_settings import model_settings_router
+from backend.app.desktop.capabilities.model_verification import verify_model_setup
 
 
 @pytest.fixture
@@ -74,8 +74,8 @@ def provider(monkeypatch):
         return create_chat_model(*args, **kwargs, http_client=httpx.Client(transport=transport),
                                  http_async_client=httpx.AsyncClient(transport=transport))
     monkeypatch.setattr("focus.models.create_chat_model", factory)
-    monkeypatch.setattr("backend.app.desktop.context_curator.engine.create_chat_model", factory)
-    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", factory)
+    monkeypatch.setattr("backend.app.desktop.contexts.curator.engine.create_chat_model", factory)
+    monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", factory)
     return state
 
 
@@ -218,10 +218,10 @@ def test_save_verifies_only_selected_provider_with_unconfigured_templates(setup_
 
 @pytest.mark.parametrize("role", ["semantic_index_projector", "semantic_index_interpreter", "claim_verifier"])
 def test_automatic_index_roles_use_curation_default(setup_workspace, provider, role):
-    from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-    from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage
-    from backend.app.desktop.context_curator.contract import CuratedContextPlan
-    from backend.app.desktop.context_curator.engine import CURATOR_SYSTEM_CONTRACT
+    from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+    from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import CuratorCoordinationStage
+    from backend.app.desktop.contexts.curator.contract import CuratedContextPlan
+    from backend.app.desktop.contexts.curator.engine import CURATOR_SYSTEM_CONTRACT
 
     _, entry = setup_workspace
     config = get_app_config("config.yaml")
@@ -262,9 +262,9 @@ def test_verification_rejects_invalid_automatic_index_output(setup_workspace, pr
 
 
 def test_internal_model_selection_honors_explicit_overrides_and_rejects_missing_default(setup_workspace, monkeypatch):
-    from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-    from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
-    from backend.app.desktop.context_curator.engine import CurationEngine
+    from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+    from backend.app.desktop.patrol.agent_loop.workers.structured_worker import StructuredWorkerModel
+    from backend.app.desktop.contexts.curator.engine import CurationEngine
 
     config = get_app_config("config.yaml")
     curator = config.models[0].model_copy(update={"name": "curator", "default": False})
@@ -296,8 +296,8 @@ def test_responses_protocol_mismatch_has_an_actionable_diagnosis(setup_workspace
     def fail(**kwargs):
         raise ResponseAttemptError("invalid", {}, "synthetic protocol mismatch")
     monkeypatch.setattr("focus.models.create_chat_model", fail)
-    monkeypatch.setattr("backend.app.desktop.context_curator.engine.create_chat_model", fail)
-    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", fail)
+    monkeypatch.setattr("backend.app.desktop.contexts.curator.engine.create_chat_model", fail)
+    monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", fail)
     result = asyncio.run(verify_model_setup(get_app_config("config.yaml")))
     assert not result["checks"][0]["ok"]
     assert "协议" in result["checks"][0]["reason"]
@@ -416,7 +416,7 @@ def test_reverification_does_not_write_config_or_credentials(setup_workspace, pr
     provider["calls"].clear()
     def unexpected_save(*args, **kwargs):
         raise AssertionError("Retry must not save")
-    monkeypatch.setattr("backend.app.desktop.model_settings_routes.save_model_settings", unexpected_save)
+    monkeypatch.setattr("backend.app.desktop.api.model_settings.save_model_settings", unexpected_save)
     retried = client.post("/desktop/api/settings/models/verify", json={"verification_id": "retry-2"})
     assert retried.json()["verification"]["ok"]
     assert len(provider["calls"]) == 3
@@ -442,7 +442,7 @@ def test_progress_is_visible_before_save_finishes_and_old_attempt_cannot_overwri
                 started.set()
                 await release.wait()
             return {"status": "complete", "ok": not first, "reason": "done", "checks": []}
-        monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup", verify)
+        monkeypatch.setattr("backend.app.desktop.capabilities.model_verification.verify_model_setup", verify)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             old = asyncio.create_task(client.put("/desktop/api/settings/models", json={
                 "models": [setup_workspace[1]], "verification_id": "old",
@@ -474,7 +474,7 @@ def test_cancelled_verification_marks_unfinished_checks_as_interrupted(setup_wor
             ]})
             started.set()
             await asyncio.Event().wait()
-        monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup", verify)
+        monkeypatch.setattr("backend.app.desktop.capabilities.model_verification.verify_model_setup", verify)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             pending = asyncio.create_task(client.post("/desktop/api/settings/models/verify", json={"verification_id": "cancelled"}))
             await asyncio.wait_for(started.wait(), 5)

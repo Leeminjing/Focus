@@ -19,15 +19,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from focus.runtime.runs.schemas import RunStatus
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopRound, LoopDirective
-from backend.app.desktop.agent_loop.accounting_query import LoopAccountingQuery
-from backend.app.desktop.agent_loop.round_consequences import RoundConsequenceReader
-from backend.app.desktop.models import DesktopRun, ModelAttemptAudit
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.execution_attempts.usage_receipts import ModelUsageReceipts
-from backend.app.desktop.execution_attempts.model import ModelAttemptJournal
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopRound, LoopDirective
+from backend.app.desktop.patrol.agent_loop.journal.accounting_query import LoopAccountingQuery
+from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import RoundConsequenceReader
+from backend.app.desktop.persistence.models import DesktopRun, ModelAttemptAudit
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.execution_attempts.usage_receipts import ModelUsageReceipts
+from backend.app.desktop.runs.execution_attempts.model import ModelAttemptJournal
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_loop_mission_bootstrap import _seed_greeting_loop
 from test_loop_execution_ownership import _seed_launching_directive, _admit_run
@@ -85,7 +85,7 @@ def test_owned_descendants_reserve_live_budget_and_settle_after_pause(tmp_path):
                 result = await finalizer.finalize(record)
                 assert result.status == "interrupted"
                 assert (await finalizer.finalize(record)).idempotent
-                from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
+                from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
 
                 async with sessions.begin() as session:
                     event = SimpleNamespace(run_id=run_id, event_id=result.event_id, payload={})
@@ -106,7 +106,7 @@ def test_owned_descendants_reserve_live_budget_and_settle_after_pause(tmp_path):
                 assert view["consumption"]["unreported_reservations"] == {"model_calls": 1, "input_tokens": 100, "output_tokens": 0}
                 assert view["initial_evidence"]["round_id"] is None and view["completed_rounds"] == 0
                 assert (await session.get(AgentLoop, fixture["loop_id"])).status == "paused"
-                from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
+                from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
 
                 live = await LoopLiveSnapshotProjector().project(session, fixture["loop_id"])
                 assert all(live.runs[run_id].state["status"] == "interrupted" for run_id in run_ids)
@@ -119,12 +119,12 @@ def test_owned_descendants_reserve_live_budget_and_settle_after_pause(tmp_path):
 def test_production_index_attempts_keep_reported_failure_and_cancelled_reservation_separate(tmp_path, monkeypatch):
     from langchain_core.messages import AIMessage
     from pydantic import BaseModel
-    from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-    from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
-    from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-    from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
-    from backend.app.desktop.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel, IndexModelBudget
-    from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+    from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+    from backend.app.desktop.patrol.agent_loop.resources.model_usage_owner import OwnedModelUsage
+    from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+    from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import resolve_expansion_resources
+    from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel, IndexModelBudget
+    from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
     from backend.tests.incremental_index_support import Checkpoints
     from backend.tests.config_helpers import app_config_for
 
@@ -149,7 +149,7 @@ def test_production_index_attempts_keep_reported_failure_and_cancelled_reservati
                 sent.set()
                 await asyncio.Event().wait()
 
-        monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: Provider())
+        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider())
         task = None
         try:
             fixture = await _seed_loop(sessions, tmp_path, label="index-receipt", started_at=datetime.now(UTC))
@@ -179,7 +179,7 @@ def test_production_index_attempts_keep_reported_failure_and_cancelled_reservati
                 assert view["unknown_model_attempts"] == 1
                 assert view["consumption"]["unreported_reservations"]["model_calls"] == 1
                 assert view["consumption"]["occupied"]["model_calls"] == 2
-                from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
+                from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
 
                 live = await LoopLiveSnapshotProjector().project(session, fixture["loop_id"])
                 assert live.accounting.state["accounting"] == view
@@ -212,7 +212,7 @@ def test_baseline_audits_fill_missing_run_counters_without_claiming_task_ownersh
                     session.add(ModelAttemptAudit(attempt_id=uuid.uuid4().hex, run_id=initial_id,
                         execution_thread_id=initial.execution_thread_id, checkpoint_ns="", checkpoint_id="baseline",
                         source_manifest={}, status="completed", usage={"input_tokens": 40, "output_tokens": 10}))
-                from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+                from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
                 session.add(LoopIndexBudgetReservation(reservation_id=uuid.uuid4().hex, loop_id=loop.loop_id,
                     grant_revision=loop.authority_revision, model_calls=1, input_tokens=100, output_tokens=10,
                     actual_usage=None))

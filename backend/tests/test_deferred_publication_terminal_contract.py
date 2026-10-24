@@ -11,10 +11,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopEventOutbox, LoopRound
-from backend.app.desktop.agent_loop.publication_queue import LoopPortfolioPublicationQueue
-from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSuperseded
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDecision, LoopEventOutbox, LoopRound
+from backend.app.desktop.patrol.agent_loop.curation.publication_queue import LoopPortfolioPublicationQueue
+from backend.app.desktop.contexts.curation.portfolio_publisher import PortfolioSuperseded
 from backend.tests.test_loop_termination_lock_order import _loop_case, _queue_publication, _race_pause
 
 

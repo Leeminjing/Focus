@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / "backend/packages/harness"))
 import openai
 from pydantic import BaseModel, ConfigDict
 
-from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
+from backend.app.desktop.patrol.agent_loop.workers.structured_worker import StructuredWorkerModel
 from focus.config.app_config import AppConfig
 from focus.models import response_clients
 from focus.models.factory import create_chat_model

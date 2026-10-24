@@ -16,16 +16,16 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
-from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityQuery, DirectiveCausalityRecorder
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.models import LoopAction, LoopDecision, LoopDirective
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.routes import desktop_router
-from backend.app.desktop.service import DesktopService
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.execution.directive_causality import DirectiveCausalityQuery, DirectiveCausalityRecorder
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.models import LoopAction, LoopDecision, LoopDirective
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.api.routes import desktop_router
+from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.workspaces.coordination.models import RunExecutionAnchor, WorkspaceSlot
 from backend.tests.test_loop_live_acceptance import _seed_contexts
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

@@ -446,7 +446,7 @@ def test_gate_cancel_suppresses_within_run_with_tool_loop():
 # === 桌面压缩模块单测（tasks 4.9）===
 
 def test_format_transcript_skips_synthetic_and_strips_metadata():
-    from backend.app.desktop.compression import _format_transcript
+    from backend.app.desktop.conversations.compression import _format_transcript
 
     text = _format_transcript([
         {"role": "human", "content": "讨论了数据库方案"},
@@ -467,7 +467,7 @@ def test_format_transcript_skips_synthetic_and_strips_metadata():
 
 
 def test_summarize_messages_returns_candidate(monkeypatch):
-    from backend.app.desktop import compression as module
+    from backend.app.desktop.conversations import compression as module
 
     seen = []
 
@@ -486,7 +486,7 @@ def test_summarize_messages_returns_candidate(monkeypatch):
 
 
 def test_summarize_messages_rejects_empty_range(monkeypatch):
-    from backend.app.desktop import compression as module
+    from backend.app.desktop.conversations import compression as module
 
     class FakeModel:
         async def ainvoke(self, messages):
@@ -502,7 +502,7 @@ def test_summarize_messages_rejects_empty_range(monkeypatch):
 def test_compression_recovery_payload_projects_interrupt():
     from types import SimpleNamespace
 
-    from backend.app.desktop.compression import compression_recovery_payload
+    from backend.app.desktop.conversations.compression import compression_recovery_payload
 
     class FakeInterrupt:
         def __init__(self, value):
@@ -533,7 +533,7 @@ def test_compression_recovery_payload_projects_interrupt():
 def test_compression_recovery_payload_none_without_compression_interrupt():
     from types import SimpleNamespace
 
-    from backend.app.desktop.compression import compression_recovery_payload
+    from backend.app.desktop.conversations.compression import compression_recovery_payload
 
     class FakeInterrupt:
         def __init__(self, value):

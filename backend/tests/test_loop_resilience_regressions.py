@@ -24,30 +24,30 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop.activation_eligibility import LoopActivationEligibilityResolver
-from backend.app.desktop.agent_loop.activation_models import LoopActivation
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.journal_models import LoopProjectorCursor
-from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection
-from backend.app.desktop.agent_loop.live_snapshot_overlay import LoopLiveProjectionOverlay
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopRound
-from backend.app.desktop.agent_loop.persistence_safety import PersistencePayloadNormalizer
-from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure, LoopProjectionUnitOutcome
-from backend.app.desktop.agent_loop.projection_recovery import ProjectionRecoveryRepository
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
-from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService, WaitRequestConflict
-from backend.app.desktop.agent_loop.schemas import LoopCreateRequest, LoopWaitResponseRequest
-from backend.app.desktop.agent_loop.service import AgentLoopService
-from backend.app.desktop.context_curation.models import CurationLane, CurationProgram
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.models import RunDispatch
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop.governance.activation_eligibility import LoopActivationEligibilityResolver
+from backend.app.desktop.patrol.agent_loop.governance.activation_models import LoopActivation
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopProjectorCursor
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_contract import LoopLiveProjection
+from backend.app.desktop.patrol.agent_loop.projections.live_snapshot_overlay import LoopLiveProjectionOverlay
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopRound
+from backend.app.desktop.patrol.agent_loop.persistence.persistence_safety import PersistencePayloadNormalizer
+from backend.app.desktop.patrol.agent_loop.projections.projection_models import LoopProjectionFailure, LoopProjectionUnitOutcome
+from backend.app.desktop.patrol.agent_loop.recovery.projection_recovery import ProjectionRecoveryRepository
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest, LoopWaitResponse
+from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService, WaitRequestConflict
+from backend.app.desktop.patrol.agent_loop.schemas import LoopCreateRequest, LoopWaitResponseRequest
+from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
+from backend.app.desktop.contexts.curation.models import CurationLane, CurationProgram
+from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.models import RunDispatch
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

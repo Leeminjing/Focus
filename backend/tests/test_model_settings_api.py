@@ -53,7 +53,7 @@ def test_gateway_starts_and_settings_can_repair_initial_configuration(tmp_path, 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(document), encoding="utf-8")
     verify = AsyncMock(return_value={"ok": True, "reason": "验证通过", "checks": []})
-    monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup", verify)
+    monkeypatch.setattr("backend.app.desktop.capabilities.model_verification.verify_model_setup", verify)
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/desktop/api/bootstrap", headers=SESSION).status_code == 200
@@ -92,7 +92,7 @@ def desktop(tmp_path, monkeypatch):
     original_key = os.environ.get("OPENAI_API_KEY")
     # 此模块验证 Gateway/持久化合同；真实能力验证的 HTTP 传输覆盖在 test_model_setup.py。
     from unittest.mock import AsyncMock
-    monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup",
+    monkeypatch.setattr("backend.app.desktop.capabilities.model_verification.verify_model_setup",
                         AsyncMock(return_value={"ok": True, "reason": "验证通过", "checks": []}))
 
     file_map, preference_map = load_layered_maps("config.yaml", "config.yaml")
@@ -231,7 +231,7 @@ def test_save_does_not_rewrite_already_persisted_run_entries(desktop):
     client, service, _home, _file_map, _file_bytes = desktop
     from sqlalchemy import delete
 
-    from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+    from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
     snapshot = client.get("/desktop/api/settings/models", headers=SESSION).json()
     anchored = snapshot["models"][0]["name"]
@@ -305,7 +305,7 @@ def test_referenced_entry_requires_confirmation_before_delete(desktop):
     client, service, _home, _file_map, _file_bytes = desktop
     from sqlalchemy import delete
 
-    from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+    from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
     snapshot = client.get("/desktop/api/settings/models", headers=SESSION).json()
     victim = snapshot["models"][0]["name"]

@@ -13,8 +13,8 @@ import pytest
 from sqlalchemy import String, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.models import LoopCoordinatorLease
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.models import LoopCoordinatorLease
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 
 pytestmark = pytest.mark.usefixtures("runtime_postgres_database")

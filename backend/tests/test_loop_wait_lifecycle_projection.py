@@ -10,10 +10,10 @@ import os
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
-from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound
-from backend.app.desktop.agent_loop.schemas import LoopWaitResponseRequest
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
+from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound
+from backend.app.desktop.patrol.agent_loop.schemas import LoopWaitResponseRequest
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -22,8 +22,8 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 def test_resume_publishes_unfrozen_round_and_each_changed_barrier_once(tmp_path):
     async def run():
         from sqlalchemy import func, select
-        from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+        from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+        from backend.app.desktop.patrol.agent_loop.journal.lifecycle_events import LoopLifecycleEventRecorder
 
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -67,9 +67,9 @@ def test_resume_publishes_unfrozen_round_and_each_changed_barrier_once(tmp_path)
 
 def test_runtime_stage_versions_do_not_advance_control_or_hide_later_pause(tmp_path):
     async def run():
-        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
-        from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-        from backend.app.desktop.models import DesktopRun
+        from backend.app.desktop.patrol.agent_loop.journal.lifecycle_events import LoopLifecycleEventRecorder
+        from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+        from backend.app.desktop.persistence.models import DesktopRun
         from test_loop_execution_ownership import _seed_launching_directive, _admit_run
 
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

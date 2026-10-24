@@ -22,12 +22,12 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, CanonicalEventEnvelope, EventNotAuthorized, EventVisibility, LiveEventAuthorizationPolicy
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal, ReplayUnavailable, StaleEntityRevision
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopProjectorCursor
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft, CanonicalEventEnvelope, EventNotAuthorized, EventVisibility, LiveEventAuthorizationPolicy
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal, ReplayUnavailable, StaleEntityRevision
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent, LoopProjectorCursor
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

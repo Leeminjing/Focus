@@ -7,6 +7,9 @@ r"""本文件对外提供 Loop Run 通用调度路径与真实桌面首个 Live 
 
 from __future__ import annotations
 
+import backend.app.desktop.runs.assembly_service as _desktop_runs_assembly_service
+
+
 import asyncio
 from datetime import UTC, datetime
 import json
@@ -25,24 +28,25 @@ from focus.runtime.stream_bridge.schemas import StreamEvent
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop import service as desktop_service_module
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopRound
-from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
-from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBridge
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
-from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRepository
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.service import DesktopService, PreparedRun
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
-from backend.app.desktop.context_evolution import (
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.composition import service as desktop_service_module
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.live.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDirective, LoopRound
+from backend.app.desktop.patrol.agent_loop.projections.projection_models import LoopProjectionFailure
+from backend.app.desktop.patrol.agent_loop.execution.run_activity_bridge import LoopRunActivityBridge
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.assembler import RunExecutionAssembly
+from backend.app.desktop.runs.orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRepository
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.runs.contracts import PreparedRun
+from backend.app.desktop.workspaces.coordination.models import RunExecutionAnchor, WorkspaceSlot
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode,
     ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository,
 )
@@ -133,7 +137,7 @@ def test_generic_dispatch_publishes_loop_tool_activity_before_settlement(tmp_pat
                 )
                 return SimpleNamespace(run_id=run_id, task=execution_done)
 
-            monkeypatch.setattr(desktop_service_module, "execute_prepared_run", execute)
+            monkeypatch.setattr(_desktop_runs_assembly_service, 'execute_prepared_run', execute)
 
             class Assembler:
                 async def assemble(self, requested_run_id: str) -> RunExecutionAssembly:
@@ -148,7 +152,7 @@ def test_generic_dispatch_publishes_loop_tool_activity_before_settlement(tmp_pat
                 sessions,
                 "desktop-main:test",
                 Assembler(),
-                service._start_dispatched_run,
+                service.run_assembly._start_dispatched_run,
                 RunDispatchRepository(),
             )
             assert await worker.drain(limit=1) == 1
@@ -229,7 +233,7 @@ def test_generic_assembly_uses_the_planned_isolated_slot(tmp_path: Path) -> None
                     payload={},
                 )
 
-            service._prepare = prepare
+            service.run_assembly._prepare = prepare
             await service.assemble_run(run_id)
             async with sessions() as session:
                 anchor = await session.get(RunExecutionAnchor, run_id)
@@ -415,7 +419,7 @@ def test_one_run_reaches_live_sse_and_real_electron_before_settlement(tmp_path: 
                 live_bridge["value"] = resources.bridge
                 return SimpleNamespace(run_id=run_id, task=execution_done)
 
-            monkeypatch.setattr(desktop_service_module, "execute_prepared_run", execute)
+            monkeypatch.setattr(_desktop_runs_assembly_service, 'execute_prepared_run', execute)
 
             class Assembler:
                 async def assemble(self, requested_run_id):
@@ -425,7 +429,7 @@ def test_one_run_reaches_live_sse_and_real_electron_before_settlement(tmp_path: 
                     )
 
             worker = DurableRunDispatchWorker(
-                sessions, "desktop-main:real-ui", Assembler(), service._start_dispatched_run, RunDispatchRepository(),
+                sessions, "desktop-main:real-ui", Assembler(), service.run_assembly._start_dispatched_run, RunDispatchRepository(),
             )
             assert await worker.drain(limit=1) == 1
             async with sessions() as session:

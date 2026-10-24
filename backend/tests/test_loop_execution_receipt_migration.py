@@ -18,8 +18,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.models import DesktopWorkspace, DesktopThread, DesktopRun, ModelAttemptAudit
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.persistence.models import DesktopWorkspace, DesktopThread, DesktopRun, ModelAttemptAudit
 
 
 @contextmanager

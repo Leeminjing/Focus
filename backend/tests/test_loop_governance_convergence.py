@@ -15,28 +15,28 @@ import pytest
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.models import DesktopRun, ModelAttemptAudit
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopRound, LoopObservation, LoopDecision, LoopDirective, LoopPatrolAttempt, LoopWorkerRequest
-from backend.app.desktop.agent_loop.accounting_query import LoopAccountingQuery
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
-from backend.app.desktop.agent_loop.rounds import settle_round
-from backend.app.desktop.agent_loop.round_consequences import RoundConsequenceReader
-from backend.app.desktop.context_curation.models import PortfolioRevision
-from backend.app.desktop.workspace_coordination.models import WorkspaceAdoption, WorkspaceSlot
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded
-from backend.app.desktop.agent_loop.usage import LoopUsageDelta
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.lineage import validate_parent_chain
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
-from backend.app.desktop.run_orchestration.models import RunOutboxEvent
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.run_orchestration.models import RunDispatch
-from backend.app.desktop.execution_attempts.tool import ToolExecutionLedger
-from backend.app.desktop.models import ToolExecutionAttempt
+from backend.app.desktop.persistence.models import DesktopRun, ModelAttemptAudit
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopRound, LoopObservation, LoopDecision, LoopDirective, LoopPatrolAttempt, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.journal.accounting_query import LoopAccountingQuery
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.patrol.agent_loop.resources.model_usage_owner import OwnedModelUsage
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import settle_round
+from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import RoundConsequenceReader
+from backend.app.desktop.contexts.curation.models import PortfolioRevision
+from backend.app.desktop.workspaces.coordination.models import WorkspaceAdoption, WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded
+from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.lineage import validate_parent_chain
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+from backend.app.desktop.runs.orchestration.models import RunOutboxEvent
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.runs.orchestration.models import RunDispatch
+from backend.app.desktop.runs.execution_attempts.tool import ToolExecutionLedger
+from backend.app.desktop.persistence.models import ToolExecutionAttempt
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_loop_execution_ownership import _seed_launching_directive, _admit_run
 
@@ -162,7 +162,7 @@ def test_last_worker_cleanup_and_publication_only_round_advance_once(tmp_path):
                 assert await settle_round(session, loop, current)
             coordinator = LoopCoordinator(sessions)
             await coordinator.maintain_rounds()
-            from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
+            from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
             from backend.tests.test_loop_memory_execution_recovery import ControlledMemory
             memory = ControlledMemory()
             memory.release.set()
@@ -173,9 +173,9 @@ def test_last_worker_cleanup_and_publication_only_round_advance_once(tmp_path):
                 assert (await session.get(LoopBudgetUsage, fixture["loop_id"])).rounds == 1
                 assert (await session.get(AgentLoop, fixture["loop_id"])).current_round_id != fixture["round_id"]
                 next_id = (await session.get(AgentLoop, fixture["loop_id"])).current_round_id
-            from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+            from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
             from backend.tests.incremental_index_support import Checkpoints
-            from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
+            from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
 
             await LoopObservationService(sessions, Checkpoints()).capture(fixture["loop_id"], next_id)
             async with sessions() as session:
@@ -242,7 +242,7 @@ def test_typed_model_owners_share_budget_and_unknown_receipts_survive_pause(tmp_
                 session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=fixture["loop_id"],
                     round_id=fixture["round_id"], observation_id=observation_id, observation_generation=1,
                     kind="completion_verifier", scope={}, status="pending"))
-            from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
+            from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
 
             worker = (await LoopWorkerRuntime(sessions, None)._claim_many(1, fixture["loop_id"]))[0]
             receipts = []
@@ -257,8 +257,8 @@ def test_typed_model_owners_share_budget_and_unknown_receipts_survive_pause(tmp_
                 assert view["consumption"]["occupied"]["model_calls"] == 3
                 assert view["consumption"]["actual"]["model_calls"] == 0
                 assert view["unknown_model_attempts"] == 0
-            from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-            from backend.app.desktop.agent_loop.worker_receipt_recovery import WorkerReceiptRecovery
+            from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+            from backend.app.desktop.patrol.agent_loop.recovery.worker_receipt_recovery import WorkerReceiptRecovery
 
             async with sessions.begin() as session:
                 assert await WorkerReceiptRecovery().reconcile(session) == 0

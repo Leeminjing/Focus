@@ -13,24 +13,24 @@ import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
     SemanticDerivationArtifactRepository,
 )
-from backend.app.desktop.agent_loop.context_expansion.models import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopIndexBudgetReservation,
     LoopSegmentProjectionRecord,
     LoopSemanticIndexArtifact,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_index import (
     RevisionSemanticIndex,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.agent_loop.models import LoopBudgetUsage, LoopDelegationGrant
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.context_evolution.models import ContextPublicationReceipt
+from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage, LoopDelegationGrant
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt
 from backend.tests.incremental_index_support import (
     Checkpoints,
     ModelProbe,
@@ -218,17 +218,17 @@ def test_append_tail_boundaries(tmp_path, count, append, reused, recomputed):
 
 def test_curator_retrieves_inherited_failure_and_new_fix(tmp_path):
     async def run(sessions, seed):
-        from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
             AuthorizedSemanticRetriever,
             PlanningRetrievalSession,
             PortfolioIndexCatalog,
             RetrievalBudget,
             SemanticRetrievalQuery,
         )
-        from backend.app.desktop.agent_loop.patrol_runtime import (
+        from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
             CuratorCoordinationStage,
         )
-        from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+        from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
         probe = ModelProbe()
         service = probe.service(sessions)
@@ -648,7 +648,7 @@ def test_effective_configuration_changes_force_full_build(
     tmp_path, config, monkeypatch
 ):
     async def run(sessions, seed):
-        from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
             SemanticGroundingValidator,
         )
 
@@ -727,7 +727,7 @@ def test_bounded_search_and_multi_source_do_not_inherit(tmp_path):
 
 def test_hypothesis_and_missing_verdict_are_never_promoted(tmp_path):
     async def run(sessions, seed):
-        from backend.app.desktop.agent_loop.context_expansion.portfolio_index import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
             PortfolioSemanticIndexService,
         )
         from backend.tests.incremental_index_support import Checkpoints
@@ -850,7 +850,7 @@ def test_historical_index_and_planning_session_remain_readable(
     tmp_path, schema_version
 ):
     async def run(sessions, seed):
-        from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
             PlanningRetrievalSession,
             PortfolioIndexCatalog,
             RetrievalBudget,
@@ -926,7 +926,7 @@ def test_frozen_revision_and_control_memories_are_unchanged_by_indexing(tmp_path
     async def run(sessions, seed):
         from sqlalchemy import text
 
-        from backend.app.desktop.context_evolution import ContextRevisionRepository
+        from backend.app.desktop.contexts.evolution import ContextRevisionRepository
 
         first = await revision(sessions, seed["context_id"], messages(12))
         captured = observation(seed, first)
@@ -1023,8 +1023,8 @@ def test_cross_context_source_and_multi_portfolio_concurrency(tmp_path):
     async def run(sessions, seed):
         import uuid
 
-        from backend.app.desktop.context_evolution import ContextRevisionRepository
-        from backend.app.desktop.models import DesktopThread
+        from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+        from backend.app.desktop.persistence.models import DesktopThread
 
         first = await revision(sessions, seed["context_id"], messages(12))
         async with sessions.begin() as session:
@@ -1039,7 +1039,7 @@ def test_cross_context_source_and_multi_portfolio_concurrency(tmp_path):
                 )
             )
             await session.flush()
-            from backend.app.desktop.context_evolution import (
+            from backend.app.desktop.contexts.evolution import (
                 ContextRevisionContract,
                 ContextRevisionRef,
             )

@@ -20,15 +20,15 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.completion import CompletionEvidenceService
-from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.recovery import AgentLoopRecovery
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopWaitResponseRequest
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
-from backend.app.desktop.agent_loop.worker_attempts import WorkerAttemptRejected
-from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
+from backend.app.desktop.patrol.agent_loop.completion.service import CompletionEvidenceService
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopRound, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.recovery.service import AgentLoopRecovery
+from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract, LoopWaitResponseRequest
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest, LoopWaitResponse
+from backend.app.desktop.patrol.agent_loop.workers.worker_attempts import WorkerAttemptRejected
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_round_task_progress import _Checkpointer
@@ -59,7 +59,7 @@ async def _case(tmp_path, monkeypatch):
     config = app_config_for("worker-retry", None)
     config.models[0].curation_output_method = "prompt_json"
     provider = Provider()
-    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: provider)
+    monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: provider)
     runtime = LoopWorkerRuntime(sessions, config)
     identity = uuid.uuid4().hex
     observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], fixture["round_id"])
@@ -213,7 +213,7 @@ def test_late_success_failure_cancel_and_model_reservation_cannot_mutate_new_att
                 await CompletionEvidenceService(sessions).record(contract, identity, retry_identity=old.retry_identity)
             with pytest.raises(WorkerAttemptRejected):
                 await runtime._advance(old.loop_id, old.round_id, request=old)
-            from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
+            from backend.app.desktop.patrol.agent_loop.resources.model_usage_owner import OwnedModelUsage
 
             with pytest.raises(ValueError):
                 await OwnedModelUsage(sessions, old.loop_id, old.round_id, "worker", identity, retry_identity=old.retry_identity).reserve(20, 10)
@@ -228,7 +228,7 @@ def test_restart_reopens_half_resolved_worker_wait_once_and_keeps_paused_loop(tm
     async def run():
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
             wait = await _fail_three(runtime, fixture)
-            from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestService
+            from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestService
 
             async with sessions.begin() as session:
                 await LoopWaitRequestService().resolve(session, wait["request_id"], answer={"action": "retry"}, actor_id="legacy-user",
@@ -237,7 +237,7 @@ def test_restart_reopens_half_resolved_worker_wait_once_and_keeps_paused_loop(tm
                 return 0
             async def release(*args):
                 return None
-            from backend.app.desktop.agent_loop.rounds import RoundStallLimits
+            from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import RoundStallLimits
 
             recovery = AgentLoopRecovery(sessions, SimpleNamespace(recover=empty, release_rounds=release, stall_limits=RoundStallLimits()), SimpleNamespace(recover=empty))
             await recovery.reconcile()
@@ -273,7 +273,7 @@ def test_actual_old_model_result_and_task_cleanup_leave_replacement_running(tmp_
                         "lane_curator": {"rationale": "原 Context 范围保持", "work_specs": []}, "claim_verifier": {"assessments": []}}[kind]
                     return AIMessage(content=json.dumps(result))
 
-            monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: DelayedProvider())
+            monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: DelayedProvider())
             assert await runtime.drain(fixture["loop_id"]) == 1
             await asyncio.wait_for(started[0].wait(), 10)
             async with sessions() as session:
@@ -307,8 +307,8 @@ def test_real_control_retry_race_never_restarts_revoked_worker(tmp_path, monkeyp
     async def run():
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
             wait = await _fail_three(runtime, fixture)
-            from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-            from backend.app.desktop.agent_loop.schemas import RevokeLoopGrantRequest
+            from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+            from backend.app.desktop.patrol.agent_loop.schemas import RevokeLoopGrantRequest
 
             async def control():
                 if command == "stop":

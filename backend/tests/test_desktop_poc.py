@@ -7,6 +7,14 @@ SSE、持久 Run、宿主输入来源、恢复、投放、权限装配和精确�
 草稿链使用v3作者文档、当前revision和真实Responses预览，保留冻结来源、部署幂等、分支与材料恢复断言。
 """
 
+import backend.app.desktop.api.launch as _desktop_api_launch
+import backend.app.desktop.api.runs as _desktop_api_runs
+
+import backend.app.desktop.capabilities.service as _desktop_capabilities_service
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+
 import asyncio
 from copy import deepcopy
 import hashlib
@@ -40,23 +48,21 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 # 决策 1：桌面功能内嵌 Gateway，测试目标为唯一 FastAPI 应用
 from backend.app.gateway.app import app  # noqa: E402
-from backend.app.desktop.context_evolution import (  # noqa: E402
+from backend.app.desktop.contexts.evolution import (  # noqa: E402
     ContextRevisionOriginKind,
     ContextRevisionPrepareRequest,
     ContextRevisionPublisher,
     ContextRevisionRepository,
     LangGraphContextCheckpointWriter,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
-from backend.app.desktop.service import (  # noqa: E402
-    DesktopService,
-    _checkpoint_commitment_review,
-    estimate_tokens,
-    prompt_with_skills,
-)
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
+from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.conversations.recovery import _checkpoint_commitment_review
+from backend.app.desktop.runs.estimates import estimate_tokens
+from backend.app.desktop.capabilities.skills import prompt_with_skills
 from backend.app.gateway.routers.thread_runs import sse_consumer  # noqa: E402
 from backend.tests.patrol_draft_support import save_patrol_document, save_patrol_draft
-from backend.app.desktop.session_patrol.contracts import legacy_document
+from backend.app.desktop.patrol.session_patrol.contracts import legacy_document
 
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
@@ -64,12 +70,13 @@ SESSION = {"X-Focus-Session": "focus-dev-session"}
 
 @pytest.fixture(autouse=True)
 def _isolated_external_tool_pool(monkeypatch):
-    import backend.app.desktop.service as service_module
+    import backend.app.desktop.composition.service as service_module
 
     async def empty_tools(*, workspace=None):
         return []
 
-    monkeypatch.setattr(service_module, "get_available_tools", empty_tools)
+    monkeypatch.setattr(_desktop_capabilities_service, 'get_available_tools', empty_tools)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', empty_tools)
 
 
 def _client():
@@ -189,7 +196,7 @@ async def _seed_checkpoint(service: DesktopService, thread_id: str, namespace: s
 
 
 async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thread_id: str):
-    from backend.app.desktop.domain_evidence.models import DesktopDomainResult
+    from backend.app.desktop.runs.evidence.models import DesktopDomainResult
 
     pending = [(task, record) for task in service._sync_tasks if not task.done()
                and (record := task.get_coro().cr_frame.f_locals.get("record")) is not None
@@ -262,13 +269,14 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path, wait_until):
     仅替换装配工厂为 FakeListChatModel 图，其余（RunManager/worker/StreamBridge/SSE/
     checkpoint/attach sync）全部真实执行。
     """
-    import backend.app.desktop.service as svc
+    import backend.app.desktop.composition.service as svc
 
     async def fake_make_lead_agent(**kwargs):
         return create_agent(model=FakeListChatModel(responses=["你好"]), tools=[])
 
-    original = svc.make_lead_agent
-    svc.make_lead_agent = fake_make_lead_agent
+    original = _desktop_conversations_compression_service.make_lead_agent
+    _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
+    _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
     thread_id = f"desktop-e2e-{uuid.uuid4().hex}"
     try:
         with _client() as client:
@@ -318,7 +326,7 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path, wait_until):
             assert "tokens" in names and "events" in names
 
             messages = client.portal.call(
-                service.get_checkpoint_messages, thread_id, ""
+                service.conversations.get_checkpoint_messages, thread_id, ""
             )
             assert messages[-1]["role"] == "ai"
             assert "你好" in messages[-1]["content"]
@@ -338,13 +346,14 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path, wait_until):
                 _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id
             )
     finally:
-        svc.make_lead_agent = original
+        _desktop_conversations_compression_service.make_lead_agent = original
+        _desktop_runs_agent_factory.make_lead_agent = original
 
 
 def test_main_run_uses_current_revision_execution_identity(
     tmp_path, monkeypatch, wait_for_memory_status
 ):
-    import backend.app.desktop.service as svc
+    import backend.app.desktop.composition.service as svc
 
     async def fake_make_lead_agent(**kwargs):
         graph = StateGraph(MessagesState)
@@ -384,7 +393,8 @@ def test_main_run_uses_current_revision_execution_identity(
             await publisher.publish(session, candidate)
             return candidate.revision.ref
 
-    monkeypatch.setattr(svc, "make_lead_agent", fake_make_lead_agent)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', fake_make_lead_agent)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', fake_make_lead_agent)
     with _client() as client:
         workspace_folder = tmp_path / "workspace"
         workspace_folder.mkdir()
@@ -417,7 +427,7 @@ def test_main_run_uses_current_revision_execution_identity(
 
 def test_desktop_resume_run_is_immediately_streamable(tmp_path, monkeypatch, wait_until):
     """公共 HTTP 回归：resume 返回的 run_id 必须立即拥有可订阅 SSE。"""
-    import backend.app.desktop.service as svc
+    import backend.app.desktop.composition.service as svc
 
     async def fake_make_lead_agent(**kwargs):
         graph = StateGraph(MessagesState)
@@ -435,7 +445,8 @@ def test_desktop_resume_run_is_immediately_streamable(tmp_path, monkeypatch, wai
         graph.add_edge("pause_for_review", END)
         return graph.compile()
 
-    monkeypatch.setattr(svc, "make_lead_agent", fake_make_lead_agent)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', fake_make_lead_agent)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', fake_make_lead_agent)
     thread_id = f"desktop-resume-e2e-{uuid.uuid4().hex}"
 
     with _client() as client:
@@ -848,7 +859,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until, mo
                 prompt_output_tokens=0, prompt_cache_hit_tokens=0, task=future,
             )
 
-        import backend.app.desktop.routes as desktop_routes
+        import backend.app.desktop.api.runs as desktop_routes
 
         original_start_run = desktop_routes.start_run
         original_dispatch_start = service._run_dispatch_worker._starter
@@ -861,7 +872,8 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until, mo
                 assembly.agent_factory,
             )
 
-        desktop_routes.start_run = fake_start_run
+        _desktop_api_launch.start_run = fake_start_run
+        _desktop_api_runs.start_run = fake_start_run
         service._run_dispatch_worker._starter = fake_dispatch_start
         main = client.post(
             f"/desktop/api/tasks/{task['task_id']}/main/runs",
@@ -891,7 +903,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until, mo
         )
 
         resumed = client.portal.call(
-            service.resume_run, thread_id, {"decision": "approve"}
+            service.run_recovery.resume_run, thread_id, {"decision": "approve"}
         )
         assert resumed.body.context["model_name"] == "deepseek-v4-flash"
         assert resumed.body.context["permissions"] == ["read", "host_command"]
@@ -1037,7 +1049,8 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until, mo
             _cleanup, app.state.desktop_service, task["task_id"], workspace["workspace_id"], thread_id
         )
 
-    desktop_routes.start_run = original_start_run
+    _desktop_api_launch.start_run = original_start_run
+    _desktop_api_runs.start_run = original_start_run
 
 
 def test_unregistered_execution_identity_is_refused_with_a_distinct_code():
@@ -1068,13 +1081,14 @@ def test_main_run_permissions(tmp_path):
     MainRunCreate 默认 permissions = read+write+host_command（host_command 默认开启）；
     显式最小权限集仍生效。
     """
-    import backend.app.desktop.service as svc
+    import backend.app.desktop.composition.service as svc
 
     async def fake_make_lead_agent(**kwargs):
         return create_agent(model=FakeListChatModel(responses=["ok"]), tools=[])
 
-    original = svc.make_lead_agent
-    svc.make_lead_agent = fake_make_lead_agent
+    original = _desktop_conversations_compression_service.make_lead_agent
+    _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
+    _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
     thread_id = f"main-perm-{uuid.uuid4().hex}"
     try:
         with _client() as client:
@@ -1094,7 +1108,7 @@ def test_main_run_permissions(tmp_path):
 
             # 带 host_command → context 透传，shell 可装配
             prepared = client.portal.call(
-                service.start_main_run, task["task_id"], "用 shell", "deepseek-v4-flash",
+                service.runs.start_main_run, task["task_id"], "用 shell", "deepseek-v4-flash",
                 ["read", "write", "host_command"], [],
             )
             assert prepared.body.context["permissions"] == ["read", "write", "host_command"]
@@ -1108,7 +1122,7 @@ def test_main_run_permissions(tmp_path):
 
             # 显式传参仍生效（最小权限集）
             prepared_limited = client.portal.call(
-                service.start_main_run, task["task_id"], "你好", None, ["read", "write"], [],
+                service.runs.start_main_run, task["task_id"], "你好", None, ["read", "write"], [],
             )
             assert prepared_limited.body.context["permissions"] == ["read", "write"]
             limited_names = {t.name for t in select_workspace_tools(prepared_limited.body.context["permissions"])}
@@ -1120,11 +1134,11 @@ def test_main_run_permissions(tmp_path):
             )
 
             # MainRunCreate 默认值：不带 permissions 时默认全开（host_command 默认开启，shell 可装配）
-            from backend.app.desktop.models import MainRunCreate
+            from backend.app.desktop.api.schemas import MainRunCreate
 
             assert MainRunCreate(message="x").permissions == ["read", "write", "host_command"]
             prepared_default = client.portal.call(
-                service.start_main_run, task["task_id"], "你好", None,
+                service.runs.start_main_run, task["task_id"], "你好", None,
                 MainRunCreate(message="x").permissions, [],
             )
             assert prepared_default.body.context["permissions"] == ["read", "write", "host_command"]
@@ -1136,4 +1150,5 @@ def test_main_run_permissions(tmp_path):
                 _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id
             )
     finally:
-        svc.make_lead_agent = original
+        _desktop_conversations_compression_service.make_lead_agent = original
+        _desktop_runs_agent_factory.make_lead_agent = original

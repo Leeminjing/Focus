@@ -6,9 +6,9 @@ from types import SimpleNamespace as NS
 import pytest
 from fastapi import HTTPException
 
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.task_changes import aggregate_versions, change_detail, line_counts, task_changes
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.conversations.changes import aggregate_versions, change_detail, line_counts, task_changes
 
 
 def side(text=None, **extra):
@@ -115,8 +115,8 @@ def test_ordinary_tool_versions_flow_through_real_database(isolated_postgres_dat
     import uuid
     from langchain_core.messages import ToolMessage
     from backend.tests.test_workspace_patrol import _setup
-    from backend.app.desktop.execution_attempts import ToolExecutionLedger
-    from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+    from backend.app.desktop.runs.execution_attempts import ToolExecutionLedger
+    from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
     async def check():
         engine, sessions, workspace_id, _ = await _setup(tmp_path)

@@ -5,7 +5,7 @@
 import asyncio
 import json
 from langchain_core.messages import AIMessage
-import backend.app.desktop.agent_loop.structured_worker as worker_module
+import backend.app.desktop.patrol.agent_loop.workers.structured_worker as worker_module
 from backend.tests.test_synthesis_claim_feedback import _service
 
 

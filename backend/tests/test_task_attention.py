@@ -3,7 +3,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from backend.app.desktop.task_attention import read_task_attention
+from backend.app.desktop.conversations.attention import read_task_attention
 
 
 def test_interrupted_attention_preserves_namespace_and_omits_payload():

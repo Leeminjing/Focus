@@ -18,10 +18,10 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopRound, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
 from backend.tests.test_loop_worker_recovery import _case, _step
 
 
@@ -50,8 +50,8 @@ def _intent(observation):
 
 
 async def _publish_memory(sessions, loop_id):
-    from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-    from backend.app.desktop.agent_loop.task_progress.contracts import SourceAssessment
+    from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+    from backend.app.desktop.patrol.agent_loop.task_progress.contracts import SourceAssessment
     from focus.runtime.runs.usage import ModelUsage
 
     class MemoryModel:
@@ -82,7 +82,7 @@ def test_stable_worker_only_round_counts_no_progress_once(tmp_path, monkeypatch,
                 monkeypatch.setattr(runtime, '_advance', hold)
             await _step(runtime, fixture['loop_id'])
             if entry != 'worker':
-                from backend.app.desktop.agent_loop.rounds import settle_round
+                from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import settle_round
                 async with sessions.begin() as session:
                     loop = await session.get(AgentLoop, fixture['loop_id'], with_for_update=True)
                     current = await session.get(LoopRound, observation.round_id, with_for_update=True)
@@ -90,7 +90,7 @@ def test_stable_worker_only_round_counts_no_progress_once(tmp_path, monkeypatch,
                     if entry in {'coordinator', 'successful_run'}:
                         settled_run = None
                         if entry == 'successful_run':
-                            from backend.app.desktop.models import DesktopRun
+                            from backend.app.desktop.persistence.models import DesktopRun
 
                             settled_run = DesktopRun(run_id=uuid.uuid4().hex, task_id=fixture['context_id'],
                                 agent_id=uuid.uuid4().hex, kind='worker', status='success',
@@ -116,11 +116,11 @@ def test_stable_worker_only_round_counts_no_progress_once(tmp_path, monkeypatch,
 
 def test_legacy_semantic_version_alone_does_not_count_as_progress(tmp_path, monkeypatch):
     async def run():
-        from backend.app.desktop.agent_loop.models import LoopObservation
-        from backend.app.desktop.agent_loop.observation import observation_hash
-        from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-        from backend.app.desktop.agent_loop.round_progress import RoundProgressReader
-        from backend.app.desktop.agent_loop.rounds import current_frontier_hash
+        from backend.app.desktop.patrol.agent_loop.models import LoopObservation
+        from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+        from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+        from backend.app.desktop.patrol.agent_loop.rounds.round_progress import RoundProgressReader
+        from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import current_frontier_hash
 
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
             await _prepare(sessions, fixture, identity)
@@ -145,7 +145,7 @@ def test_legacy_semantic_version_alone_does_not_count_as_progress(tmp_path, monk
 
 
 def test_semantic_input_ignores_execution_identity_but_preserves_content_and_coverage():
-    from backend.app.desktop.agent_loop.completion_admission import CompletionRequestAdmission
+    from backend.app.desktop.patrol.agent_loop.completion.completion_admission import CompletionRequestAdmission
 
     projected = {'mission': {'revision': 1, 'outcome': '交付', 'completion_checks': [{'check_id': 'test'}]},
         'workspace': {'revision': 1, 'fingerprint': 'actual'}, 'frontier_hash': 'frontier',
@@ -176,8 +176,8 @@ def test_semantic_input_ignores_execution_identity_but_preserves_content_and_cov
 
 def test_same_content_context_publication_is_not_semantic_novelty(tmp_path, monkeypatch):
     async def run():
-        from backend.app.desktop.agent_loop.completion_admission import CompletionRequestAdmission
-        from backend.app.desktop.context_evolution import ContextRevisionRepository
+        from backend.app.desktop.patrol.agent_loop.completion.completion_admission import CompletionRequestAdmission
+        from backend.app.desktop.contexts.evolution import ContextRevisionRepository
 
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
             provider.valid = True
@@ -201,8 +201,8 @@ def test_same_content_context_publication_is_not_semantic_novelty(tmp_path, monk
 
 
 def test_legacy_observation_hash_retains_original_field_set():
-    from backend.app.desktop.agent_loop.observation import observation_hash
-    from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+    from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+    from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
     envelope = LoopObservationEnvelope(loop_id='l', round_id='r', loop_revision=1, goal_revision=1,
         authority_revision=1, observed_frontier_hash='f' * 64, grant={}, portfolio_frontier=(), workspace={},
@@ -219,7 +219,7 @@ def test_legacy_observation_hash_retains_original_field_set():
 @pytest.mark.parametrize('legacy_contract', [False, True], ids=['current', 'v1'])
 def test_kernel_rejects_equivalent_saved_unknown_without_new_worker(tmp_path, monkeypatch, legacy_contract):
     async def run():
-        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
         from backend.tests.test_round_task_progress import _Checkpointer
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
             await _prepare(sessions, fixture, identity)
@@ -250,9 +250,9 @@ def test_kernel_rejects_equivalent_saved_unknown_without_new_worker(tmp_path, mo
 
 def test_real_same_revision_qualification_and_reexecution_admission(tmp_path, monkeypatch):
     async def run():
-        from backend.app.desktop.agent_loop.completion_admission import CompletionRequestAdmission
-        from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-        from backend.app.desktop.models import DesktopRun, DesktopWorkspace
+        from backend.app.desktop.patrol.agent_loop.completion.completion_admission import CompletionRequestAdmission
+        from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+        from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
         from backend.tests.completion_evidence_support import record_verified_fixture
 
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
@@ -286,9 +286,9 @@ def test_real_same_revision_qualification_and_reexecution_admission(tmp_path, mo
 
 def test_frozen_patrol_blocker_matches_kernel_policy(tmp_path, monkeypatch):
     async def run():
-        from backend.app.desktop.agent_loop.patrol_contract import PatrolDecisionContract
-        from backend.app.desktop.agent_loop.patrol import PatrolContractViolation
-        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+        from backend.app.desktop.patrol.agent_loop.patrol_contract import PatrolDecisionContract
+        from backend.app.desktop.patrol.agent_loop.patrol import PatrolContractViolation
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
         from backend.tests.test_round_task_progress import _Checkpointer
 
         async with _case(tmp_path, monkeypatch) as (sessions, fixture, runtime, provider, identity, observation):
@@ -305,8 +305,8 @@ def test_frozen_patrol_blocker_matches_kernel_policy(tmp_path, monkeypatch):
             with pytest.raises(PatrolContractViolation, match='completion_evidence_unchanged'):
                 PatrolDecisionContract().validate(actions=proposal.actions,
                     mission_references=(), observation=frozen)
-            from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
-            from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolSession
+            from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
+            from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopPatrolSession
             from backend.tests.config_helpers import app_config_for, ToolCapableFakeChatModel
             from langchain_core.messages import AIMessage
 
@@ -314,7 +314,7 @@ def test_frozen_patrol_blocker_matches_kernel_policy(tmp_path, monkeypatch):
                         {'role': 'completion_check', 'reference_id': 'tests'}],
                         'actions': [a.model_dump(mode='json') for a in proposal.actions]}
             model = ToolCapableFakeChatModel(scripted=[AIMessage(content=json.dumps(response)) for _ in range(3)])
-            monkeypatch.setattr('backend.app.desktop.agent_loop.round_orchestration.create_chat_model', lambda **kwargs: model)
+            monkeypatch.setattr('backend.app.desktop.patrol.agent_loop.rounds.round_orchestration.create_chat_model', lambda **kwargs: model)
             config = app_config_for('worker-retry', None)
             config.models[0].curation_output_method = 'prompt_json'
             orchestrator = LoopRoundOrchestrator(sessions, config, LoopKernel(sessions), _Checkpointer())
