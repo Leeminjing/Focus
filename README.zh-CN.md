@@ -135,7 +135,7 @@ Shell 的平台能力有差异：Windows 提供只读、工作区写入和完全
 
 ## 快速开始
 
-可以通过一键安装脚本安装稳定版，也可以从源码运行 Focus。
+可以通过一键安装脚本安装跟随 GitHub main 的开发版或正式 Release 稳定版，也可以从源码运行 Focus。
 
 ### 准备环境
 
@@ -147,7 +147,24 @@ Shell 的平台能力有差异：Windows 提供只读、工作区写入和完全
 
 ### 一键安装
 
-安装命令适用于已发布、非预发布的稳定 `vX.Y.Z` Release，且该 Release 需附带对应安装脚本。首个稳定版发布前，可以使用下方的源码运行方式。
+开发机使用 dev 通道。尚无正式 Release 时也可以安装：
+
+**Windows · PowerShell**
+
+```powershell
+$previousFocusChannel = $env:FOCUS_CHANNEL
+$env:FOCUS_CHANNEL = 'dev'
+try { irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex }
+finally { $env:FOCUS_CHANNEL = $previousFocusChannel }
+```
+
+**macOS · Terminal**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh -s -- --dev
+```
+
+下列稳定版安装命令要求存在已发布、非预发布的 `vX.Y.Z` Release，且附带两个安装脚本。全新安装默认 stable；重跑安装器默认沿用已有通道。显式切换可使用本地安装脚本的 `-Stable` / `--stable`，或 `FOCUS_CHANNEL=stable`。
 
 **Windows · PowerShell**
 
@@ -171,7 +188,13 @@ focus
 
 ```sh
 focus update
+focus update --dev
+focus update --stable
 ```
+
+`focus update` 沿用当前安装通道；`--dev` 跟随 main，`--stable` 跟随最新正式 Release。两者都执行完整备份、迁移、健康检查与失败恢复，验收成功后才切换通道。没有正式 Release 时，stable 会报错。
+
+旧安装需要先关闭 Focus、保持 Docker 运行，重新执行上方开发版安装命令一次。它会迁移仓库外的 `~/.focus/runtime/cli`；仅更新 `~/.focus/app` 无法刷新旧命令逻辑。已有配置、数据库和历史保留。
 
 查看健康摘要或导出统一故障诊断报告：
 

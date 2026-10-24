@@ -1,5 +1,4 @@
-/* Managed release transaction. Kept outside the checkout during recovery so a
- * failed release cannot replace the code needed to restore its predecessor. */
+/* Shared dev/stable transaction; the controller remains outside the checkout. */
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
@@ -10,6 +9,19 @@ const repository = "https://github.com/Leeminjing/Focus.git";
 const releaseApi = "https://api.github.com/repos/Leeminjing/Focus/releases/latest";
 const normalize = value => value.trim().toLowerCase().replace(/\/$/, "").replace(/\.git$/, "");
 const canonicalPath = value => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+const cliFiles = ["focus.ps1", "focus.sh", "managed-update.cjs", "cli-launch.cjs", "cli-protocol.json"];
+
+function installedChannel(metadata) {
+  if (["dev", "stable"].includes(metadata.channel)) return metadata.channel;
+  if (!Object.hasOwn(metadata, "channel") && metadata.branch === "main") return "dev";
+  throw new Error("Unknown Focus installation channel. Expected dev or stable.");
+}
+
+function channelOption(args) {
+  if (!args.length) return undefined;
+  if (args.length === 1 && ["--dev", "--stable"].includes(args[0])) return args[0].slice(2);
+  throw new Error("Usage: focus update [--dev | --stable]");
+}
 
 function hashFile(file) {
   const hash = crypto.createHash("sha256");
@@ -86,7 +98,8 @@ function assertReady(appDir, home, execute = cp.execFileSync) {
     throw new Error("Focus update/recovery is incomplete. Close Focus and run 'focus update' to restore the recovery point.");
   }
   const head = execute("git", ["-C", appDir, "rev-parse", "HEAD"], { encoding: "utf8", windowsHide: true }).trim();
-  if (metadata.channel !== "stable" || !metadata.validatedCommit || metadata.validatedCommit !== head) {
+  installedChannel(metadata);
+  if (!metadata.validatedCommit || metadata.validatedCommit !== head) {
     if (!metadata.validatedCommit && metadata.channel !== "stable" && metadata.branch === "main" && metadata.recoveredCommit === head) return true;
     throw new Error("This managed version has not passed update validation. Run the latest Focus installer.");
   }
@@ -232,18 +245,33 @@ class Installation {
   health() {
     this.run(this.python, ["-m", "backend.app.update_check"], { timeout: 120000 });
   }
+  snapshotCli() {
+    const pointer = path.join(this.home, "runtime/cli/current.json");
+    return fs.existsSync(pointer) ? JSON.parse(fs.readFileSync(pointer, "utf8")) : null;
+  }
+  restoreCli(pointer) {
+    const file = path.join(this.home, "runtime/cli/current.json");
+    if (pointer === null) fs.rmSync(file, { force: true });
+    else atomicJson(file, pointer);
+  }
   publishCli() {
     const directory = path.join(this.home, "runtime/cli");
-    fs.mkdirSync(directory, { recursive: true });
-    for (const name of ["focus.ps1", "focus.sh", "managed-update.cjs"]) {
-      const target = path.join(directory, name);
-      fs.copyFileSync(path.join(this.appDir, "scripts", name), `${target}.tmp`);
-      fs.renameSync(`${target}.tmp`, target);
+    let source = path.join(this.appDir, "scripts");
+    // Pre-protocol releases must not replace a modern controller with the old
+    // stable-only updater. Keep the controller that performed this transaction.
+    const protocol = path.join(source, "cli-protocol.json");
+    if (!fs.existsSync(protocol) || JSON.parse(fs.readFileSync(protocol, "utf8")).version !== 1) source = this.controllerDir || __dirname;
+    const generation = `cli-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+    const destination = path.join(directory, "generations", generation);
+    fs.mkdirSync(destination, { recursive: true });
+    for (const name of cliFiles) {
+      fs.copyFileSync(path.join(source, name), path.join(destination, name));
     }
+    atomicJson(path.join(directory, "current.json"), { generation });
   }
 }
 
-async function update(installation, resolveRelease = stableRelease) {
+async function update(installation, resolveRelease = stableRelease, requestedChannel) {
   const i = installation;
   const statePath = path.join(i.home, "update-state.json");
   const metadataPath = path.join(i.home, "install.json");
@@ -263,6 +291,7 @@ async function update(installation, resolveRelease = stableRelease) {
     i.restore(directory, state);
     i.restoreDependencies(directory);
     if (state.previousMetadata.validatedCommit) i.health();
+    if (Object.hasOwn(state, "previousCli")) i.restoreCli(state.previousCli);
     const previousMetadata = { ...state.previousMetadata };
     if (previousMetadata.branch === "main" && !previousMetadata.validatedCommit) previousMetadata.recoveredCommit = state.previousCommit;
     atomicJson(metadataPath, previousMetadata);
@@ -271,11 +300,17 @@ async function update(installation, resolveRelease = stableRelease) {
   }
   if (fs.existsSync(statePath)) {
     await recover(JSON.parse(fs.readFileSync(statePath, "utf8")));
-    console.log("Interrupted update recovered. Run 'focus update' again to try the stable release.");
-    return;
+    console.log("Interrupted update recovered. Run 'focus update' again to update the installed channel.");
+    return { recovered: true };
   }
-  const tag = await resolveRelease();
-  i.git("fetch", "--no-tags", "origin", `refs/tags/${tag}`);
+  const currentChannel = installedChannel(metadata);
+  const channel = requestedChannel === undefined ? currentChannel : requestedChannel;
+  if (!["dev", "stable"].includes(channel)) throw new Error("Unknown update channel. Expected dev or stable.");
+  if (i.git("status", "--porcelain", "--untracked-files=no")) {
+    throw new Error("Managed checkout has local changes. Preserve them before updating; Focus will not overwrite them.");
+  }
+  const tag = channel === "stable" ? await resolveRelease() : undefined;
+  i.git("fetch", "--no-tags", "origin", channel === "dev" ? "refs/heads/main" : `refs/tags/${tag}`);
   const target = i.git("rev-parse", "FETCH_HEAD^{commit}");
   const previous = i.git("rev-parse", "HEAD");
   i.prepareDatabase();
@@ -284,10 +319,14 @@ async function update(installation, resolveRelease = stableRelease) {
   const directory = path.join(i.home, "backups", id);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   i.snapshotDependencies(directory);
-  const state = { id, previousCommit: previous, targetCommit: target, tag,
+  const state = { id, previousCommit: previous, targetCommit: target, tag, channel,
+    previousCli: i.snapshotCli(),
     previousMetadata: metadata, backupSha256: i.backup(directory) };
   // Save a standalone recovery entry point before changing the checkout.
   fs.copyFileSync(__filename, path.join(directory, "recover.cjs"));
+  // A standalone recovery controller must also retain its compatible CLI bundle.
+  for (const name of cliFiles) fs.copyFileSync(path.join(__dirname, name), path.join(directory, name));
+  i.controllerDir = directory;
   atomicJson(path.join(directory, "recovery.json"), state);
   atomicJson(statePath, state);
   console.log(`Recovery point: ${directory}`);
@@ -297,8 +336,10 @@ async function update(installation, resolveRelease = stableRelease) {
     i.migrate();
     i.health();
     i.publishCli();
-    const accepted = { ...metadata, schema: 2, channel: "stable", release: tag,
+    const accepted = { ...metadata, schema: 3, channel,
       validatedCommit: target, validatedAt: new Date().toISOString(), recoveryPoint: directory };
+    if (channel === "stable") accepted.release = tag;
+    else delete accepted.release;
     delete accepted.branch;
     delete accepted.recoveredCommit;
     atomicJson(metadataPath, accepted);
@@ -311,17 +352,19 @@ async function update(installation, resolveRelease = stableRelease) {
     }
     throw new Error(`Focus update failed: ${failure.message}. Previous code and database restored.`);
   }
-  console.log(`Focus updated successfully: ${tag} (${target.slice(0, 7)}); migrations and health checks passed.`);
+  console.log(`Focus updated successfully: ${channel} ${tag || "main"} (${target.slice(0, 7)}); migrations and health checks passed.`);
+  return { channel, commit: target };
 }
 
-module.exports = { Installation, update, stableRelease, assertReady, atomicJson, withUpdateLock };
+module.exports = { Installation, update, stableRelease, assertReady, atomicJson, withUpdateLock, installedChannel, channelOption };
 if (require.main === module) {
-  const [command, home, appDir, python] = process.argv.slice(2);
+  const [command, home, appDir, python, ...options] = process.argv.slice(2);
   if (command === "check" && home && appDir) {
     assertReady(appDir, home);
   } else {
     if (command !== "update" || !home || !appDir || !python) throw new Error("Usage: node managed-update.cjs update HOME APP PYTHON");
-    withUpdateLock(home, () => update(new Installation(home, appDir, python)))
+    const channel = channelOption(options);
+    withUpdateLock(home, () => update(new Installation(home, appDir, python), stableRelease, channel))
       .catch(error => { console.error(error.message); process.exitCode = 1; });
   }
 }

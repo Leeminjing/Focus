@@ -48,7 +48,7 @@ for (const prerequisite of ["git", "node", "npm", "docker"]) {
 assert.match(installer, /Python 3\.11 or newer/);
 assert.match(installer, /managed_install_matches \|\| fail/);
 assert.match(installer, /sh "\$cli_script" update/);
-assert.match(installer, /chmod 755 "\$bin_dir\/focus"/);
+assert.match(installer, /chmod 755 "\$bin_dir\/focus.tmp"/);
 assert.match(installer, /export PATH="\$HOME\/\.focus\/bin:\$PATH"/);
 
 assert.match(macCli, /case "\$#:\$\*" in[\s\S]*0:\) start_focus[\s\S]*1:update\) update_focus/);

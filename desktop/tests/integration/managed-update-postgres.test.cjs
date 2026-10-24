@@ -58,7 +58,9 @@ test("real PostgreSQL migration, Gateway health and complete Context/Revision/ru
   assert.equal(snapshot(), before, "acceptance must not resume or modify existing work");
   const directory = path.join(home, "backup"); fs.mkdirSync(directory);
   const backupSha256 = i.backup(directory);
-  sql("CREATE TABLE failed_migration_residue(id int); UPDATE desktop_context_revisions SET authored_messages='[]'; DELETE FROM desktop_runs; ALTER TABLE desktop_threads DROP COLUMN title");
+  // The title column now has a notification trigger. Remove its dependants in
+  // this disposable DB too, so the deliberately broken migration can execute.
+  sql("CREATE TABLE failed_migration_residue(id int); UPDATE desktop_context_revisions SET authored_messages='[]'; DELETE FROM desktop_runs; ALTER TABLE desktop_threads DROP COLUMN title CASCADE");
   const run = i.run.bind(i);
   i.run = (command, args, options) => run(command, args, { ...options, stdio: "pipe" });
   assert.throws(() => i.health(), /Command failed/, "a stamped but incompatible schema must fail health checks");

@@ -10,6 +10,14 @@ metadata_path="${focus_home}/install.json"
 staging_root="${focus_home}/staging"
 staging_app="${staging_root}/app-$$"
 python_runtime=""
+channel="${FOCUS_CHANNEL:-}"
+case "$#:${1:-}" in
+    0:) ;;
+    1:--dev) channel=dev ;;
+    1:--stable) channel=stable ;;
+    *) printf 'Usage: install.sh [--dev | --stable]\n' >&2; exit 1 ;;
+esac
+controller_app="$staging_root/controller-$$"
 
 fail() {
     printf 'Focus installation failed: %s\n' "$*" >&2
@@ -47,6 +55,9 @@ cleanup_staging() {
             fi
             ;;
     esac
+    case "$controller_app" in
+        "$staging_root"/controller-[0-9]*) rm -rf -- "$controller_app" ;;
+    esac
 }
 
 managed_install_matches() {
@@ -68,7 +79,7 @@ try:
     matches = (
         metadata.get("managed") is True
         and normalize_repository(metadata.get("repository", "")) == normalize_repository(repository)
-        and (metadata.get("channel") == "stable" or metadata.get("branch") == "main")
+        and (metadata.get("channel") in ("dev", "stable") or ("channel" not in metadata and metadata.get("branch") == "main"))
         and os.path.realpath(metadata.get("appPath", "")) == os.path.realpath(app_dir)
     )
 except (OSError, TypeError, ValueError):
@@ -79,18 +90,17 @@ PY
 }
 
 write_metadata() {
-    "$python_runtime" - "$metadata_path" "$repository" "$release_tag" "$app_dir" <<'PY'
+    "$python_runtime" - "$metadata_path" "$repository" "$channel" "$app_dir" <<'PY'
 import datetime
 import json
 import sys
 
-metadata_path, repository, release_tag, app_dir = sys.argv[1:]
+metadata_path, repository, channel, app_dir = sys.argv[1:]
 metadata = {
     "schema": 1,
     "managed": True,
     "repository": repository,
-    "channel": "stable",
-    "release": release_tag,
+    "channel": channel,
     "appPath": app_dir,
     "installedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
@@ -134,6 +144,13 @@ docker compose version >/dev/null 2>&1 || fail "Required command 'docker compose
 resolve_python_runtime
 "$python_runtime" -m venv --help >/dev/null 2>&1 || fail "Python's venv module is not available."
 
+if [ -z "$channel" ] && [ -f "$metadata_path" ]; then
+    channel="$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").replace(/^\uFEFF/,"")); const c=m.channel ?? (m.branch === "main" ? "dev" : "invalid"); console.log(c)' "$metadata_path")"
+fi
+channel="${channel:-stable}"
+case "$channel" in dev|stable) ;; *) fail "FOCUS_CHANNEL must be dev or stable." ;; esac
+release_tag=main
+if [ "$channel" = stable ]; then
 release_tag="$("$python_runtime" - <<'PY'
 import json, re, urllib.request
 request = urllib.request.Request("https://api.github.com/repos/Leeminjing/Focus/releases/latest", headers={"User-Agent": "Focus-installer"})
@@ -144,6 +161,7 @@ if release.get("draft") is not False or release.get("prerelease") is not False o
 print(release["tag_name"])
 PY
 )"
+fi
 
 mkdir -p "$focus_home" "$bin_dir" "$focus_home/plugins" "$focus_home/users"
 
@@ -152,7 +170,7 @@ if [ -e "$app_dir" ]; then
     managed_install_matches || fail "$app_dir already exists but is not a Focus managed installation. Move it elsewhere, then run the installer again."
     existing_install=true
 fi
-printf 'Cloning stable Focus %s...\n' "$release_tag"
+printf 'Cloning %s Focus %s...\n' "$channel" "$release_tag"
 mkdir -p "$staging_root"
 trap cleanup_staging EXIT
 trap 'exit 130' HUP INT TERM
@@ -165,26 +183,34 @@ if [ "$existing_install" = false ]; then
 fi
 cli_dir="$focus_home/runtime/cli"
 mkdir -p "$cli_dir"
-cp "$cli_source/scripts/focus.sh" "$cli_dir/focus.sh"
-cp "$cli_source/scripts/managed-update.cjs" "$cli_dir/managed-update.cjs"
+if [ ! -f "$cli_source/scripts/cli-protocol.json" ]; then
+    git clone --branch main --single-branch "$repository" "$controller_app"
+    cli_source="$controller_app"
+fi
 export FOCUS_UPDATE_APP="$app_dir"
 
 [ -f "$focus_home/config.yaml" ] || printf '# Focus global configuration fallback layer.\n' >"$focus_home/config.yaml"
 [ -f "$focus_home/extensions_config.json" ] || printf '{"mcpServers": {}}\n' >"$focus_home/extensions_config.json"
 [ -f "$focus_home/.env" ] || cp "$app_dir/.env.example" "$focus_home/.env"
 
-cli_script="$cli_dir/focus.sh"
+cli_script="$cli_source/scripts/focus.sh"
 [ -f "$cli_script" ] || fail "The installed repository does not contain scripts/focus.sh."
 
-cat >"$bin_dir/focus" <<'SH'
+was_recovery=false
+[ ! -f "$focus_home/update-state.json" ] || was_recovery=true
+sh "$cli_script" update "--$channel"
+[ "$was_recovery" = false ] && [ -f "$cli_dir/current.json" ] || fail "Recovery completed. Run this installer again to finish the upgrade."
+cp "$cli_source/scripts/cli-launch.cjs" "$cli_dir/cli-launch.cjs.tmp"
+mv "$cli_dir/cli-launch.cjs.tmp" "$cli_dir/cli-launch.cjs"
+cat >"$bin_dir/focus.tmp" <<'SH'
 #!/bin/sh
 export FOCUS_UPDATE_APP="$HOME/.focus/app"
-exec sh "$HOME/.focus/runtime/cli/focus.sh" "$@"
+exec node "$HOME/.focus/runtime/cli/cli-launch.cjs" "$@"
 SH
-chmod 755 "$bin_dir/focus"
+chmod 755 "$bin_dir/focus.tmp"
+mv "$bin_dir/focus.tmp" "$bin_dir/focus"
 configure_shell_path
 export PATH="$bin_dir:$PATH"
-sh "$cli_script" update
 
 
 printf '\nFocus installed successfully.\n\n'

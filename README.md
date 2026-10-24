@@ -135,7 +135,7 @@ Read the [Strategy guide](docs/strategies/README.md), or start with the [validat
 
 ## Quick start
 
-Install a stable release with the one-line installer, or run Focus from source.
+Install the development channel (GitHub main), a stable Release, or run Focus from source.
 
 ### Prerequisites
 
@@ -147,7 +147,24 @@ Install a stable release with the one-line installer, or run Focus from source.
 
 ### One-line installation
 
-These commands require a published, non-prerelease stable `vX.Y.Z` release with the corresponding installer attached. Before the first stable release is published, use the source instructions below.
+For development installations, including before the first Release, use:
+
+**Windows · PowerShell**
+
+```powershell
+$previousFocusChannel = $env:FOCUS_CHANNEL
+$env:FOCUS_CHANNEL = 'dev'
+try { irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex }
+finally { $env:FOCUS_CHANNEL = $previousFocusChannel }
+```
+
+**macOS · Terminal**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh -s -- --dev
+```
+
+For stable installations, the following commands require a published, non-prerelease `vX.Y.Z` Release with both installers attached. Fresh installs default to stable; rerunning an installer preserves an existing channel. Use `-Stable` / `--stable` or `FOCUS_CHANNEL=stable` to switch explicitly.
 
 **Windows · PowerShell**
 
@@ -171,9 +188,13 @@ To update, first close Focus and keep Docker Desktop running, then execute:
 
 ```sh
 focus update
+focus update --dev
+focus update --stable
 ```
 
-See [stable releases, installation, and update recovery](docs/managed-releases.md) for details.
+`focus update` follows the installed channel; the other commands explicitly switch channels after backup, migration and health checks. Stable fails if there is no eligible Release. Old installations must rerun the development installer above once to upgrade their external CLI; updating only `~/.focus/app` cannot refresh it. Close Focus and keep Docker running during this migration.
+
+See [update channels, installation, and recovery](docs/managed-releases.md) for details.
 
 To inspect a running instance or export a diagnostic report:
 

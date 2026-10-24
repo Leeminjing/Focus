@@ -1,14 +1,10 @@
+param([switch]$Dev, [switch]$Stable)
+
 & {
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
 
     $Repository = "https://github.com/Leeminjing/Focus.git"
-    # Only published stable releases are eligible for public installation.
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/Leeminjing/Focus/releases/latest" -Headers @{ "User-Agent" = "Focus-installer" } -TimeoutSec 15
-    if ($release.draft -ne $false -or $release.prerelease -ne $false -or -not $release.published_at -or $release.tag_name -notmatch '^v\d+\.\d+\.\d+$') {
-        throw "No published stable Focus release is available."
-    }
-    $ReleaseTag = [string]$release.tag_name
     $UserProfile = [Environment]::GetFolderPath("UserProfile")
     if ([string]::IsNullOrWhiteSpace($UserProfile)) {
         throw "Could not determine the current Windows user profile directory."
@@ -18,6 +14,26 @@
     $AppDir = Join-Path $FocusHome "app"
     $BinDir = Join-Path $FocusHome "bin"
     $MetadataPath = Join-Path $FocusHome "install.json"
+    if ($Dev -and $Stable) { throw "Choose -Dev or -Stable, not both." }
+    $Channel = $env:FOCUS_CHANNEL
+    if ($Dev) { $Channel = "dev" }
+    if ($Stable) { $Channel = "stable" }
+    if (-not $Channel -and (Test-Path -LiteralPath $MetadataPath)) {
+        $previous = Get-Content -Raw -LiteralPath $MetadataPath | ConvertFrom-Json
+        if ($previous.PSObject.Properties.Name -contains "channel") { $Channel = [string]$previous.channel }
+        elseif ($previous.PSObject.Properties.Name -contains "branch" -and $previous.branch -eq "main") { $Channel = "dev" }
+        else { throw "Unknown Focus installation channel." }
+    }
+    if (-not $Channel) { $Channel = "stable" }
+    if ($Channel -cnotin @("dev", "stable")) { throw "FOCUS_CHANNEL must be dev or stable." }
+    $TargetRef = "main"
+    if ($Channel -eq "stable") {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/Leeminjing/Focus/releases/latest" -Headers @{ "User-Agent" = "Focus-installer" } -TimeoutSec 15
+        if ($release.draft -ne $false -or $release.prerelease -ne $false -or -not $release.published_at -or $release.tag_name -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "No published stable Focus release is available."
+        }
+        $TargetRef = [string]$release.tag_name
+    }
 
     function Get-ApplicationPath {
         param([Parameter(Mandatory = $true)][string]$Name)
@@ -29,8 +45,8 @@
         return $application.Source
     }
 
-    # electron 43 的安装器依赖 @electron/get 5（ESM-only），要求 Node >= 22.12.0；
-    # 更低版本无法执行安装器，会留下没有二进制的残缺 node_modules。
+    # Electron 43 uses @electron/get 5 (ESM-only), requiring Node >= 22.12.0.
+    # Older Node versions can leave node_modules without an Electron binary.
     function Assert-NodeRuntime {
         $node = Get-ApplicationPath "node.exe"
 
@@ -75,8 +91,8 @@
             $metadata = Get-Content -Raw -LiteralPath $MetadataPath | ConvertFrom-Json
             return $metadata.managed -eq $true -and
                 (Normalize-RepositoryUrl ([string]$metadata.repository)) -eq (Normalize-RepositoryUrl $Repository) -and
-                ((($metadata.PSObject.Properties.Name -contains "channel") -and $metadata.channel -eq "stable") -or
-                    (($metadata.PSObject.Properties.Name -contains "branch") -and $metadata.branch -eq "main")) -and
+                ((($metadata.PSObject.Properties.Name -contains "channel") -and $metadata.channel -in @("dev", "stable")) -or
+                    (-not ($metadata.PSObject.Properties.Name -contains "channel") -and ($metadata.PSObject.Properties.Name -contains "branch") -and $metadata.branch -eq "main")) -and
                 [System.IO.Path]::GetFullPath([string]$metadata.appPath) -eq [System.IO.Path]::GetFullPath($AppDir)
         } catch {
             return $false
@@ -119,93 +135,104 @@
         }
         Write-Host "Existing Focus installation found. Updating it..."
     }
-    Write-Host "Cloning stable Focus $ReleaseTag..."
+    Write-Host "Cloning $Channel Focus $TargetRef..."
     $stagingRoot = Join-Path $FocusHome "staging"
     $stagingApp = Join-Path $stagingRoot "app-$PID"
+    $controllerApp = Join-Path $stagingRoot "controller-$PID"
     New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
     try {
-        Invoke-Native $git @("clone", "--branch", $ReleaseTag, "--single-branch", $Repository, $stagingApp)
+        Invoke-Native $git @("clone", "--branch", $TargetRef, "--single-branch", $Repository, $stagingApp)
         if (-not $existingInstall) {
-            Move-Item -LiteralPath $stagingApp -Destination $AppDir
+            $resolvedApp = [System.IO.Path]::GetFullPath($AppDir)
+            if ($resolvedApp -ne [System.IO.Path]::GetFullPath((Join-Path $FocusHome "app"))) { throw "Unexpected app destination." }
+            if (-not [System.IO.Path]::GetFullPath($stagingApp).StartsWith([System.IO.Path]::GetFullPath($stagingRoot).TrimEnd("\") + "\", [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unexpected staging source." }
+            Move-Item -LiteralPath $stagingApp -Destination $resolvedApp
         }
-    } catch {
-        $resolvedStagingRoot = [System.IO.Path]::GetFullPath($stagingRoot).TrimEnd("\") + "\"
-        $resolvedStagingApp = [System.IO.Path]::GetFullPath($stagingApp)
-        if ($resolvedStagingApp.StartsWith($resolvedStagingRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
-            (Test-Path -LiteralPath $resolvedStagingApp)) {
-            Remove-Item -LiteralPath $resolvedStagingApp -Recurse -Force
+
+        if (-not $existingInstall) {
+            $metadata = [ordered]@{
+                schema = 1
+                managed = $true
+                repository = $Repository
+                channel = $Channel
+                appPath = $AppDir
+                installedAt = [DateTime]::UtcNow.ToString("o")
+            }
+            $metadata | ConvertTo-Json | Set-Content -LiteralPath $MetadataPath -Encoding UTF8
         }
-        throw
-    }
 
-    if (-not $existingInstall) {
-        $metadata = [ordered]@{
-            schema = 1
-            managed = $true
-            repository = $Repository
-            channel = "stable"
-            release = $ReleaseTag
-            appPath = $AppDir
-            installedAt = [DateTime]::UtcNow.ToString("o")
+        $globalConfig = Join-Path $FocusHome "config.yaml"
+        if (-not (Test-Path -LiteralPath $globalConfig)) {
+            "# Focus global configuration fallback layer.`n" | Set-Content -LiteralPath $globalConfig -Encoding UTF8
         }
-        $metadata | ConvertTo-Json | Set-Content -LiteralPath $MetadataPath -Encoding UTF8
-    }
+        $globalExtensions = Join-Path $FocusHome "extensions_config.json"
+        if (-not (Test-Path -LiteralPath $globalExtensions)) {
+            '{"mcpServers": {}}' | Set-Content -LiteralPath $globalExtensions -Encoding UTF8
+        }
+        $globalEnv = Join-Path $FocusHome ".env"
+        if (-not (Test-Path -LiteralPath $globalEnv)) {
+            Copy-Item -LiteralPath (Join-Path $AppDir ".env.example") -Destination $globalEnv
+        }
 
-    $globalConfig = Join-Path $FocusHome "config.yaml"
-    if (-not (Test-Path -LiteralPath $globalConfig)) {
-        "# Focus global configuration fallback layer.`n" | Set-Content -LiteralPath $globalConfig -Encoding UTF8
-    }
-    $globalExtensions = Join-Path $FocusHome "extensions_config.json"
-    if (-not (Test-Path -LiteralPath $globalExtensions)) {
-        '{"mcpServers": {}}' | Set-Content -LiteralPath $globalExtensions -Encoding UTF8
-    }
-    $globalEnv = Join-Path $FocusHome ".env"
-    if (-not (Test-Path -LiteralPath $globalEnv)) {
-        Copy-Item -LiteralPath (Join-Path $AppDir ".env.example") -Destination $globalEnv
-    }
+        # Run the staged controller without replacing the installed CLI. An older
+        # Release may predate the dual-channel protocol; bootstrap its controller
+        # separately from main while the update target remains the selected Release.
+        $cliSource = $AppDir
+        if ($existingInstall) { $cliSource = $stagingApp }
+        if (-not (Test-Path -LiteralPath (Join-Path $cliSource "scripts\cli-protocol.json"))) {
+            Invoke-Native $git @("clone", "--branch", "main", "--single-branch", $Repository, $controllerApp)
+            $cliSource = $controllerApp
+        }
+        $cliDir = Join-Path $FocusHome "runtime\cli"
+        New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
+        $cliScript = Join-Path $cliSource "scripts\focus.ps1"
+        if (-not (Test-Path -LiteralPath $cliScript -PathType Leaf)) {
+            throw "The installed repository does not contain scripts\focus.ps1."
+        }
 
-    # Keep the validated CLI outside the checkout. It remains available if a
-    # failed migration requires restoring an older main-based checkout.
-    $cliSource = $AppDir
-    if ($existingInstall) { $cliSource = $stagingApp }
-    $cliDir = Join-Path $FocusHome "runtime\cli"
-    New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
-    foreach ($file in @("focus.ps1", "managed-update.cjs")) {
-        Copy-Item -LiteralPath (Join-Path $cliSource "scripts\$file") -Destination (Join-Path $cliDir $file) -Force
-    }
-    $cliScript = Join-Path $cliDir "focus.ps1"
-    if (-not (Test-Path -LiteralPath $cliScript -PathType Leaf)) {
-        throw "The installed repository does not contain scripts\focus.ps1."
-    }
+        $powershell = Join-Path $PSHOME "powershell.exe"
+        if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) {
+            $powershell = Get-ApplicationPath "powershell.exe"
+        }
+        $previousUpdateApp = $env:FOCUS_UPDATE_APP
+        try {
+            $env:FOCUS_UPDATE_APP = $AppDir
+            $wasRecovery = Test-Path -LiteralPath (Join-Path $FocusHome "update-state.json")
+            Invoke-Native $powershell @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $cliScript, "update", "--$Channel")
+            # Recovery ends an invocation without accepting a new CLI. Leave the
+            # old launcher intact and ask for another installer run in that case.
+            if ($wasRecovery -or -not (Test-Path -LiteralPath (Join-Path $cliDir "current.json"))) { throw "Recovery completed. Run this installer again to finish the upgrade." }
+        } finally {
+            $env:FOCUS_UPDATE_APP = $previousUpdateApp
+        }
 
-    $powershell = Join-Path $PSHOME "powershell.exe"
-    if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) {
-        $powershell = Get-ApplicationPath "powershell.exe"
-    }
-    $launcher = '@echo off' + "`r`n" + 'setlocal' + "`r`n" +
-        'set "FOCUS_UPDATE_APP=%USERPROFILE%\.focus\app"' + "`r`n" +
-        'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.focus\runtime\cli\focus.ps1" %*' + "`r`n"
-    $launcherPath = Join-Path $BinDir "focus.cmd"
-    [System.IO.File]::WriteAllText($launcherPath, $launcher, [System.Text.Encoding]::ASCII)
-    Add-UserPathEntry $BinDir
+        Copy-Item -LiteralPath (Join-Path $cliSource "scripts\cli-launch.cjs") -Destination (Join-Path $cliDir "cli-launch.cjs.tmp") -Force
+        Move-Item -LiteralPath (Join-Path $cliDir "cli-launch.cjs.tmp") -Destination (Join-Path $cliDir "cli-launch.cjs") -Force
+        $launcher = '@echo off' + "`r`n" + 'setlocal' + "`r`n" +
+            'set "FOCUS_UPDATE_APP=%USERPROFILE%\.focus\app"' + "`r`n" +
+            'node "%USERPROFILE%\.focus\runtime\cli\cli-launch.cjs" %*' + "`r`n"
+        $launcherPath = Join-Path $BinDir "focus.cmd"
+        [System.IO.File]::WriteAllText("$launcherPath.tmp", $launcher, [System.Text.Encoding]::ASCII)
+        Move-Item -LiteralPath "$launcherPath.tmp" -Destination $launcherPath -Force
+        Add-UserPathEntry $BinDir
 
-    $previousUpdateApp = $env:FOCUS_UPDATE_APP
-    try {
-        $env:FOCUS_UPDATE_APP = $AppDir
-        Invoke-Native $powershell @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $cliScript, "update")
+        Write-Host ""
+        Write-Host "Focus installed successfully."
+        Write-Host ""
+        Write-Host "On first launch, Model Settings will open. Enter your API key and save to verify chat and curation."
+        Write-Host "Optional environment-file configuration: $globalEnv"
+        Write-Host ""
+        Write-Host "Run:"
+        Write-Host "    focus"
+        Write-Host ""
+        Write-Host "Update later with:"
+        Write-Host "    focus update"
     } finally {
-        $env:FOCUS_UPDATE_APP = $previousUpdateApp
+        $safeRoot = [System.IO.Path]::GetFullPath($stagingRoot).TrimEnd("\") + "\"
+        foreach ($candidate in @($stagingApp, $controllerApp)) {
+            $resolved = [System.IO.Path]::GetFullPath($candidate)
+            if (-not $resolved.StartsWith($safeRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe staging cleanup path." }
+            if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
+        }
     }
-
-    Write-Host ""
-    Write-Host "Focus installed successfully."
-    Write-Host ""
-    Write-Host "On first launch, Model Settings will open. Enter your API key and save to verify chat and curation."
-    Write-Host "Optional environment-file configuration: $globalEnv"
-    Write-Host ""
-    Write-Host "Run:"
-    Write-Host "    focus"
-    Write-Host ""
-    Write-Host "Update later with:"
-    Write-Host "    focus update"
 }

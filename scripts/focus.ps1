@@ -66,8 +66,8 @@ function Assert-ManagedInstall {
     $managed = $metadata.PSObject.Properties.Name -contains "managed" -and $metadata.managed -eq $true
     $repositoryMatches = $metadata.PSObject.Properties.Name -contains "repository" -and
         (Normalize-RepositoryUrl ([string]$metadata.repository)) -eq (Normalize-RepositoryUrl $ExpectedRepository)
-    $branchMatches = ($metadata.PSObject.Properties.Name -contains "channel" -and $metadata.channel -eq "stable") -or
-        ($metadata.PSObject.Properties.Name -contains "branch" -and [string]$metadata.branch -eq $ExpectedBranch)
+    $branchMatches = ($metadata.PSObject.Properties.Name -contains "channel" -and $metadata.channel -in @("dev", "stable")) -or
+        (-not ($metadata.PSObject.Properties.Name -contains "channel") -and $metadata.PSObject.Properties.Name -contains "branch" -and [string]$metadata.branch -eq $ExpectedBranch)
     $pathMatches = $metadata.PSObject.Properties.Name -contains "appPath" -and
         [System.IO.Path]::GetFullPath([string]$metadata.appPath) -eq $AppDir
 
@@ -183,6 +183,7 @@ function Start-Focus {
 }
 
 function Update-Focus {
+    param([string[]]$UpdateArguments = @())
     Assert-ManagedInstall
 
     $updateLock = $null
@@ -203,7 +204,7 @@ function Update-Focus {
         $node = Assert-NodeRuntime
         # Execute the updater loaded by this entry point, including the stable
         # installer staging copy when upgrading a legacy main-based install.
-        Invoke-Native $node @($UpdaterScript, "update", $FocusHome, $AppDir, $VenvPython)
+        Invoke-Native $node (@($UpdaterScript, "update", $FocusHome, $AppDir, $VenvPython) + $UpdateArguments)
 
     } finally {
         if ($null -ne $runLock) {
@@ -245,12 +246,20 @@ if ($Command -eq "doctor") {
     if ($Arguments.Count -gt 1) { $doctorArguments = $Arguments[1..($Arguments.Count - 1)] }
     Invoke-FocusDoctor -DoctorArguments $doctorArguments
 }
+if ($Command -eq "update") {
+    $updateArguments = @()
+    if ($Arguments.Count -gt 1) { $updateArguments = @($Arguments[1..($Arguments.Count - 1)]) }
+    if ($updateArguments.Count -gt 1 -or ($updateArguments.Count -eq 1 -and $updateArguments[0] -cnotin @("--dev", "--stable"))) {
+        throw "Usage: focus update [--dev | --stable]"
+    }
+    Update-Focus -UpdateArguments $updateArguments
+    exit 0
+}
 if ($null -ne $Arguments -and $Arguments.Count -gt 1) {
-    throw "Usage: focus [update | doctor [--json] [--output FILE] [--url URL]]"
+    throw "Usage: focus [update [--dev | --stable] | doctor [--json] [--output FILE] [--url URL]]"
 }
 
 switch ($Command) {
     { [string]::IsNullOrWhiteSpace($_) } { Start-Focus; break }
-    "update" { Update-Focus; break }
     default { throw "Unknown command '$Command'. Usage: focus [update | doctor]" }
 }

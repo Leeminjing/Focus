@@ -73,7 +73,7 @@ try:
     matches = (
         metadata.get("managed") is True
         and normalize_repository(metadata.get("repository", "")) == normalize_repository(repository)
-        and (metadata.get("channel") == "stable" or metadata.get("branch") == branch)
+        and (metadata.get("channel") in ("dev", "stable") or ("channel" not in metadata and metadata.get("branch") == branch))
         and os.path.realpath(metadata.get("appPath", "")) == os.path.realpath(app_dir)
     )
 except (OSError, TypeError, ValueError):
@@ -182,7 +182,7 @@ update_focus() {
 
     require_node_runtime
     updater="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/managed-update.cjs"
-    node "$updater" update "$focus_home" "$app_dir" "$venv_python"
+    node "$updater" update "$focus_home" "$app_dir" "$venv_python" "$@"
 
 }
 
@@ -213,5 +213,6 @@ fi
 case "$#:$*" in
     0:) start_focus ;;
     1:update) update_focus ;;
-    *) fail "Usage: focus [update | doctor [--json] [--output FILE] [--url URL]]" ;;
+    2:"update --dev"|2:"update --stable") shift; update_focus "$@" ;;
+    *) fail "Usage: focus [update [--dev | --stable] | doctor [--json] [--output FILE] [--url URL]]" ;;
 esac
