@@ -213,15 +213,34 @@ test("compact panel expands within display bounds and only accepts resize from i
   assert.throws(() => f.invoke("resize-panel",f.host.panel,{height:200,width:NaN}),/宽度无效/);
 });
 
-test("panel height follows the reference easing and display changes cancel an obsolete transition", async t => {
+test("panel resize applies once even when an older renderer requests animation", async t => {
   const f=fixture(t); await f.host.start(); f.host.openPanel();
+  const calls = [], setBounds = f.host.panel.setBounds.bind(f.host.panel);
+  f.host.panel.setBounds = value => { calls.push(value); setBounds(value); };
   f.invoke("resize-panel",f.host.panel,{height:400,width:304,animate:true});
-  assert.ok(f.host.panel.getBounds().height<400);
-  await new Promise(resolve=>setTimeout(resolve,120));
-  assert.ok(f.host.panel.getBounds().height>125 && f.host.panel.getBounds().height<400);
+  assert.equal(f.host.panel.getBounds().height,400,"输入不能启动原生窗口高度动画");
+  await new Promise(resolve=>setTimeout(resolve,50));
+  assert.equal(calls.length,1,"一次布局变化只能写一次原生窗口边界");
   f.screen.area={x:0,y:0,width:400,height:240}; f.screen.emit("display-metrics-changed");
-  await new Promise(resolve=>setTimeout(resolve,300));
-  assert.equal(f.host.panel.getBounds().height,240,"旧动画不得把窗口移回已断开的显示器或覆盖新的边界");
+  assert.equal(f.host.panel.getBounds().height,240);
+});
+
+test("panel sizing ignores one DIP noise without losing cumulative changes or display recovery", async t => {
+  const f=fixture(t); await f.host.start(); f.host.openPanel();
+  const calls = [], setBounds = f.host.panel.setBounds.bind(f.host.panel);
+  // Windows fractional scaling can round native bounds one DIP away from the request.
+  f.host.panel.setBounds = value => { calls.push(value); setBounds({ ...value, x:value.x+1, y:value.y+1, width:value.width+1, height:value.height+1 }); };
+  f.invoke("resize-panel",f.host.panel,{height:200,width:304});
+  for (const height of [201,200,199,200]) f.invoke("resize-panel",f.host.panel,{height,width:305});
+  f.host.openPanel();
+  assert.equal(calls.length,1,"目标和原生边界的一像素误差不能反复调整窗口");
+  f.invoke("resize-panel",f.host.panel,{height:202,width:304});
+  assert.equal(f.host._panelHeight,202,"容差必须对比最后生效目标，不能吞掉累计增长");
+  assert.equal(calls.length,2);
+  f.screen.area={x:0,y:0,width:400,height:160}; f.screen.emit("display-metrics-changed");
+  assert.equal(calls.at(-1).height,160,"显示器变化必须重新计算受限边界");
+  f.screen.area={...originalArea}; f.screen.emit("display-metrics-changed");
+  assert.equal(calls.at(-1).height,202,"重新获得空间后应恢复内容目标高度");
 });
 
 test("panel visibility comes from the host for startup, IPC hide, close and robot hide", async t => {

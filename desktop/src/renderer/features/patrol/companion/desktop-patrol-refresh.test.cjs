@@ -20,7 +20,7 @@ const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: 
   contexts: { c: { entity_id: "c", updated_sequence: 1, state: { title: "回答", current_revision_id: revision } } },
   task_progress: { revision: 1, state: { document: { items: [] } } }, interventions: {}, ...patch });
 
-async function panel({ visible = true, workspaceId = "a", choose = async () => null, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true } = {}) {
+async function panel({ visible = true, workspaceId = "a", choose = async () => null, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true, manualFrames = false } = {}) {
   const body = createElement("body");
   body.innerHTML = fs.readFileSync(path.join(__dirname, "../../../desktop-patrol.html"), "utf8");
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
@@ -28,13 +28,24 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
   body.querySelector("#history-items").ownerDocument = document;
   let state = { projection: null, connection: { status: "live" } }, listener;
   const events = {}, calls = [], states = [], stores = new Map(), copied = [], starts = [], loopReads = [], submissions = [];
+  document.fonts = { addEventListener:(name,callback) => { events.fontsLoaded = callback; } };
+  const sizing = { width:262, scrollHeight:36, feedbackHeight:0, reads:0, requests:[] }, frames = new Map();
+  let frameId = 0;
+  const input = body.querySelector("#instruction"), host = body.querySelector("#panel"), properties = new Map();
+  Object.defineProperty(input, "style", { value:{height:"36px"} });
+  Object.defineProperty(input, "clientWidth", { get:() => sizing.width });
+  Object.defineProperty(input, "scrollHeight", { get:() => { sizing.reads++; return sizing.scrollHeight; } });
+  Object.defineProperty(host, "style", { value:{ getPropertyValue:name => properties.get(name) || "", setProperty:(name,value) => properties.set(name,value) } });
+  body.querySelector(".panel-header").offsetHeight = 35;
+  Object.defineProperty(body.querySelector("#compose"), "offsetHeight", { get:() => parseFloat(input.style.height)+33 });
+  Object.defineProperty(body.querySelector(".panel-feedback-content"), "offsetHeight", { get:() => sizing.feedbackHeight });
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
   const api = { workspacePatrol: async id => { loopReads.push(id); return { loop_id: `loop-${id}` }; }, workspaceInputs: history,
     conversation: (...args) => { calls.push(args); return read(...args); } };
   const bridge = { enabled: true, onVisibility: callback => { events.visibility = callback; },
     onOpen: callback => { events.open = callback; }, onContent() {},
     ready: async () => ({ state: { workspaceId }, panelVisible: visible }),
-    setState: async value => { states.push(value); }, resizePanel: async () => {} };
+    setState: async value => { states.push(value); }, resizePanel: async value => { sizing.requests.push(value); } };
   const intake = { store, hasUnfinished: () => false, isSending: () => false, remember() {}, claimUnbound() {},
     flush: async () => {},
     readBinding: () => null, reconcile: async () => {},
@@ -42,9 +53,14 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
     choose, bind: async path => ({ workspace_id: path, display_name: path }),
     submit: async id => { submissions.push({ workspaceId: id, content: store(id).get().draft.content }); return { loop_id: `loop-${id}` }; },
     history: (id, page) => store(id).history(page) };
-  const window = { markdownit, focusDesktop: { runtime: () => ({ apiBase: "http://fixture", session: "test-session" }), patrol: bridge }, addEventListener() {} };
+  const window = { markdownit, focusDesktop: { runtime: () => ({ apiBase: "http://fixture", session: "test-session" }), patrol: bridge }, addEventListener:(name,callback) => { events[name] = callback; } };
   const context = vm.createContext({ window, document, markdownit, setTimeout, location: { search: "?surface=panel" }, URLSearchParams,
-    AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } }, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
+    AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } },
+    requestAnimationFrame: callback => { if (!manualFrames) return setImmediate(callback); frames.set(++frameId,callback); return frameId; },
+    cancelAnimationFrame: id => { if (manualFrames) frames.delete(id); else clearImmediate(id); },
+    getComputedStyle: node => node === host ? {paddingTop:"8"} : {paddingTop:"2",paddingBottom:"1",borderTopWidth:"1",borderBottomWidth:"1"},
+    screen:{availHeight:1040}, matchMedia:() => ({matches:false}), localStorage: {},
+    ResizeObserver: class { constructor(callback) { events.resizeObserved = callback; } observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
     FocusLoopLiveConnection: { create: () => ({ start: async id => { starts.push(id); }, stop() {} }) },
     FocusWorkspacePatrolIntake: { create: () => intake }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
@@ -66,11 +82,52 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
   const activated = vm.runInContext(fs.readFileSync(path.join(__dirname, "./desktop-patrol-panel.js"), "utf8"), context);
   if (waitForActivation) await activated;
   else await tick();
-  return { calls, states, body, events, api, copied, store, starts, loopReads, activated, context, submissions, work,
+  return { calls, states, body, events, api, copied, store, starts, loopReads, activated, context, submissions, work, sizing,
+    flushLayout() { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback()); },
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
 }
+
+test("panel batches input measurements, deduplicates layout noise and refits on width changes", async () => {
+  const f = await panel({manualFrames:true});
+  f.flushLayout();
+  assert.equal(f.sizing.requests.length,1);
+  const reads = f.sizing.reads;
+  for (let i=0;i<100;i++) {
+    f.store("a").edit({content:`draft-${i}`});
+    f.events.resizeObserved();
+  }
+  assert.equal(f.sizing.reads,reads,"同一帧的输入不能同步反复读布局");
+  f.sizing.scrollHeight = 72;
+  f.flushLayout();
+  assert.equal(f.sizing.reads,reads+1);
+  assert.equal(f.sizing.requests.length,2);
+  assert.equal(f.sizing.requests.at(-1).height,161);
+  assert.equal(f.sizing.requests.at(-1).animate,undefined);
+  for (const height of [1,0,1,0]) {
+    f.sizing.feedbackHeight = height; f.events.resizeObserved(); f.flushLayout();
+  }
+  assert.equal(f.sizing.requests.length,2,"1 DIP 测量波动不能产生 IPC 请求");
+  assert.equal(f.sizing.reads,reads+1,"内容和宽度未变时不重测输入框");
+  f.sizing.feedbackHeight = 2; f.events.resizeObserved(); f.flushLayout();
+  assert.equal(f.sizing.requests.at(-1).height,163,"累计增长不能被容差吞掉");
+  f.sizing.feedbackHeight = 0; f.sizing.width = 494; f.sizing.scrollHeight = 36;
+  f.events.resize(); f.flushLayout();
+  assert.equal(f.sizing.requests.at(-1).height,125,"窗口变宽后应重新测量换行并缩回");
+  f.sizing.feedbackHeight = 1000; f.events.resizeObserved(); f.flushLayout();
+  assert.equal(f.sizing.requests.at(-1).height,516);
+  const count = f.sizing.requests.length;
+  f.sizing.feedbackHeight = 2000; f.events.resizeObserved(); f.flushLayout();
+  assert.equal(f.sizing.requests.length,count,"超出高度上限的反馈增长不能反复发送尺寸");
+  const cachedReads = f.sizing.reads;
+  f.context.window.devicePixelRatio = 1.5; f.events.resize(); f.flushLayout();
+  assert.equal(f.sizing.reads,cachedReads+1,"切换系统缩放必须使输入测量缓存失效");
+  f.events.fontsLoaded(); f.flushLayout();
+  assert.equal(f.sizing.reads,cachedReads+2,"字体加载完成后必须重新测量输入换行");
+  f.store("a").edit({content:"pending"}); f.events.beforeunload(); f.flushLayout();
+  assert.equal(f.sizing.requests.length,count,"销毁页面时必须取消排队的尺寸测量");
+});
 
 test("onboarding survives cancelling the folder picker and reaches the first explicit send", async () => {
   let selections = 0;

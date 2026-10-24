@@ -16,11 +16,12 @@ const os = require("node:os");
 if (!process.versions.electron) {
   const { test } = require("node:test");
   const { spawn } = require("node:child_process");
-  test("production desktop Patrol keeps preview, explicit send and scoped feedback in real Electron", { timeout: 60000 }, async () => {
+  for (const scaleFactor of [1,1.25,1.5]) test(`production desktop Patrol keeps input stable and feedback scoped in real Electron (${scaleFactor}x)`, { timeout: 60000 }, async () => {
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), "focus-patrol-ui-"));
     const env = { ...process.env, FOCUS_PATROL_UI_USER_DATA: userData };
+    if (env.FOCUS_PATROL_CAPTURE_DIR) env.FOCUS_PATROL_CAPTURE_DIR = path.join(env.FOCUS_PATROL_CAPTURE_DIR, String(scaleFactor));
     delete env.ELECTRON_RUN_AS_NODE;
-    const child = spawn(require("electron"), [__filename], { windowsHide: true, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(require("electron"), [`--force-device-scale-factor=${scaleFactor}`,__filename], { windowsHide: true, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", value => { stdout += value; });
     child.stderr.on("data", value => { stderr += value; });
@@ -41,6 +42,7 @@ if (!process.versions.electron) {
   const { app, BrowserWindow, ipcMain } = electron;
   const http = require("node:http");
   const { DesktopPatrolHost } = require("../../src/main/desktop-patrol-host.cjs");
+  const { registerDesktopPreferences } = require("../../src/main/desktop-preferences.cjs");
   const { setTimeout: delay } = require("node:timers/promises");
   const directory = process.env.FOCUS_PATROL_UI_USER_DATA || fs.mkdtempSync(path.join(os.tmpdir(), "focus-patrol-ui-"));
   app.setPath("userData", directory);
@@ -85,13 +87,51 @@ if (!process.versions.electron) {
   async function capture(win, name) {
     if (!process.env.FOCUS_PATROL_CAPTURE_DIR) return;
     await run(win,"(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(resolve)); await Promise.all(document.getAnimations().filter(a => a.effect.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })()");
-    for (let i=0; i<100 && host?._resizeTimer; i++) await delay(16);
     await run(win,"new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     fs.mkdirSync(process.env.FOCUS_PATROL_CAPTURE_DIR, { recursive: true });
     const target = path.join(process.env.FOCUS_PATROL_CAPTURE_DIR, `${name}.png`);
     fs.writeFileSync(target, (await win.webContents.capturePage()).toPNG());
     fs.writeFileSync(target.replace(/\.png$/,'.json'),JSON.stringify(await run(win,"({dpr:devicePixelRatio,width:innerWidth,height:innerHeight,rects:Object.fromEntries(['#instruction','#send','.panel-shell','.panel-menu-content','#version-picker','#version-detail'].map(s=>[s,document.querySelector(s).getBoundingClientRect().toJSON()]))})"),null,2));
     console.log(`PATROL_UI_SCREENSHOT ${target}`);
+  }
+  async function verifyInputSizing(resizeRequests) {
+    const writes = [], setBounds = host.panel.setBounds.bind(host.panel);
+    host.panel.setBounds = bounds => { writes.push(bounds); return setBounds(bounds); };
+    const settle = () => run(host.panel,"new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve))))");
+    try {
+      await run(host.panel,"(async () => { await document.fonts.ready; await Promise.all(document.getAnimations().filter(a=>a.effect.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))); document.querySelector('#instruction').focus(); })()");
+      await settle();
+      const initial = host.panel.getBounds(), first = writes.length, firstRequest = resizeRequests.length;
+      const geometry = () => run(host.panel,"JSON.stringify(['#instruction','#send','.panel-shell'].map(s=>{const r=document.querySelector(s).getBoundingClientRect();return [r.x,r.y,r.width,r.height]}))");
+      const initialGeometry = await geometry();
+      for (let i=0;i<12;i++) { await host.panel.webContents.insertText("a"); await settle(); }
+      assert.equal(writes.length,first,"未换行输入不得移动或缩放原生窗口");
+      assert.equal(resizeRequests.length,firstRequest,"未换行输入不得重复发送尺寸 IPC");
+      assert.deepEqual(host.panel.getBounds(),initial);
+      assert.equal(await geometry(),initialGeometry,"同行输入时输入框、发送按钮和卡片都应保持原位");
+      let changes = 0;
+      for (let i=0;i<12;i++) {
+        const before = writes.length, beforeRequest = resizeRequests.length;
+        await host.panel.webContents.insertText("测试多行文字输入窗口尺寸变化。");
+        await settle();
+        assert.ok(writes.length-before <= 1,"一次输入布局变化不能产生逐帧原生窗口动画");
+        assert.ok(resizeRequests.length-beforeRequest <= 1,"同一目标只能发送一次尺寸 IPC");
+        changes += writes.length-before;
+      }
+      assert.ok(changes>0,"长输入必须真实触发窗口扩展");
+      assert.equal(await run(host.panel,"document.querySelector('#instruction').offsetHeight"),108);
+      const count = writes.length, requestCount = resizeRequests.length, final = host.panel.getBounds();
+      await delay(450);
+      assert.equal(writes.length,count,"停止输入后不得继续调整原生窗口");
+      assert.equal(resizeRequests.length,requestCount,"停止输入后尺寸观察必须收敛");
+      assert.deepEqual(host.panel.getBounds(),final);
+      assert.equal(await run(host.panel,"document.activeElement.id"),"instruction","输入期间不能丢失焦点");
+      await capture(host.panel,"desktop-typing-stable");
+      await run(host.panel,"document.querySelector('#instruction').value=''; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true}))");
+      await settle();
+      assert.ok(Math.abs(host.panel.getBounds().height-125)<=1,"清空后应收回基础高度");
+      console.log(`PATROL_SIZING_PASS scale=${electron.screen.getPrimaryDisplay().scaleFactor} same-line-writes=0 multiline-writes=${changes} settled-writes=0`);
+    } finally { host.panel.setBounds = setBounds; }
   }
   function snapshot(loopId) {
     return { loop_id: loopId, last_sequence: liveSequence,
@@ -256,6 +296,9 @@ if (!process.versions.electron) {
     ipcMain.handle("focus:gateway-status", () => ({ status: "ready", error: null, revision: 1 }));
     ipcMain.handle("focus:open-external", (_event, url) => { externalLinks.push(url); return true; });
     ipcMain.handle("focus:file-action", (event, request) => { assert.ok(host.accepts(event)); sharedActions.push(request); return true; });
+    registerDesktopPreferences(ipcMain,{directory:() => directory,authorize:event => { assert.ok(host.accepts(event)); }});
+    const resizeRequests = [], register = ipcMain.handle.bind(ipcMain);
+    ipcMain.handle = (channel,handler) => register(channel,channel === "focus:patrol-resize-panel" ? (event,size) => { resizeRequests.push(size); return handler(event,size); } : handler);
     app.on("web-contents-created", (_event, contents) => {
       contents.on("console-message", (_event, level, message) => { if (level >= 3) errors.push(message); });
       contents.on("preload-error", (_event, _path, error) => errors.push(error.message));
@@ -308,6 +351,7 @@ if (!process.versions.electron) {
       console.log("PATROL_NATIVE_PREVIEW_READY");
       await new Promise(()=>{});
     }
+    await verifyInputSizing(resizeRequests);
     await capture(host.panel, "desktop-empty");
     for (let i = 0; i < 100 && host._panelHeight == null; i++) await delay(20);
     assert.ok(Math.abs(host.panel.getBounds().width-304)<=1,"透明原生窗口允许一个 DIP 的系统缩放取整");

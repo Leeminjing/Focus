@@ -48,6 +48,7 @@
   let control = null;
   let restart = null;
   let onboarding = false;
+  let resizeFrame = null, lastPanelSize = null, lastInputLayout = null, sizingDisposed = false;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   const references = FocusDesktopPatrolReferences.create({ host, api, runtime, store:draftStore, loopId:() => loopId, onError:fail });
   const artifacts = FocusArtifactDrawer.create({ host, api, getLoopId: () => loopId, onSource: id => openWorkbench(id) });
@@ -161,8 +162,7 @@
     if ($("#instruction").value !== model.draft.content) $("#instruction").value = model.draft.content;
     preview.render(model.draft);
     references.render(model.draft);
-    $("#instruction").style.height = "36px";
-    $("#instruction").style.height = `${Math.max(36, Math.min(108, $("#instruction").scrollHeight))}px`;
+    schedulePanelResize();
     $("#reply-target").hidden = !model.draft.request_id;
     $("#reply-target span").textContent = model.draft.request_id ? localize`回复指定问题 · 版本 ${model.draft.request_revision}` : "";
     const status = { accepted: localize("已受理"), sending: localize("发送中"), failed: localize("未确认"), edited: localize("已转为草稿") };
@@ -554,7 +554,17 @@
     if (before) void readHistory(before);
   });
   watchDraft();
-  const resizePanel = () => {
+  function schedulePanelResize() {
+    if (sizingDisposed || resizeFrame !== null) return;
+    resizeFrame = requestAnimationFrame(() => { resizeFrame = null; resizePanel(); });
+  }
+  function resizePanel() {
+    const input = $("#instruction"), inputWidth = input.clientWidth, scale = window.devicePixelRatio;
+    if (!lastInputLayout || lastInputLayout.content !== input.value || lastInputLayout.width !== inputWidth || lastInputLayout.scale !== scale) {
+      lastInputLayout = { content:input.value, width:inputWidth, scale };
+      input.style.height = "36px";
+      input.style.height = `${Math.max(36, Math.min(108, input.scrollHeight))}px`;
+    }
     const detail = !$("#version-detail").hidden, beside = detail && matchMedia("(min-width:580px)").matches;
     const popupHeight = [$("#version-picker"),$("#version-detail"),$(".artifact-drawer")].reduce((sum,node) => sum + (node.hidden || (beside && node.id === "version-detail") ? 0 : node.offsetHeight + 8),0);
     const shellStyle = getComputedStyle($(".panel-shell"));
@@ -565,13 +575,17 @@
     const contentHeight = composeHeight + $(".panel-feedback-content").offsetHeight + popupHeight;
     const menuHeight = $(".panel-menu").open ? $(".panel-menu-content").offsetTop + $(".panel-menu-content").offsetHeight + 10 : 0;
     const gutter = parseFloat(getComputedStyle(host).paddingTop);
-    const height = Math.round(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 56 : 0)+gutter*2);
-    if (bridge?.enabled) void bridge.resizePanel({height,width:(detail || artifacts.isOpen() ? 590 : host.dataset.reading === "true" ? 520 : 288)+gutter*2,animate:!matchMedia("(prefers-reduced-motion:reduce)").matches}).catch(fail);
-  };
-  const sizeObserver = new ResizeObserver(resizePanel);
-  $(".panel-menu").addEventListener("toggle", resizePanel);
-  sizeObserver.observe(host);
-  sizeObserver.observe($(".panel-content"));
+    // Measure intrinsic blocks, not the viewport or transformed opening animation.
+    const height = Math.min(500+gutter*2, Math.ceil(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 56 : 0)+gutter*2));
+    const size = { height, width:(detail || artifacts.isOpen() ? 590 : host.dataset.reading === "true" ? 520 : 288)+gutter*2 };
+    if (!bridge?.enabled || (lastPanelSize && Math.abs(size.height-lastPanelSize.height) <= 1 && Math.abs(size.width-lastPanelSize.width) <= 1)) return;
+    lastPanelSize = size;
+    void bridge.resizePanel(size).catch(error => { if (lastPanelSize === size) lastPanelSize = null; fail(error); });
+  }
+  const sizeObserver = new ResizeObserver(schedulePanelResize);
+  $(".panel-menu").addEventListener("toggle", schedulePanelResize);
+  window.addEventListener("resize", schedulePanelResize);
+  document.fonts?.addEventListener("loadingdone", () => { lastInputLayout = null; schedulePanelResize(); });
   sizeObserver.observe($("#compose"));
   sizeObserver.observe($(".panel-feedback-content"));
   sizeObserver.observe($(".panel-menu-content"));
@@ -627,5 +641,5 @@
   const flush = () => { void intake.flush().catch(fail); };
   document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
   window.addEventListener("pagehide", () => { try { intake.checkpoint(); } catch (error) { fail(error); } flush(); });
-  window.addEventListener("beforeunload", () => { sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
+  window.addEventListener("beforeunload", () => { sizingDisposed = true; if (resizeFrame !== null) cancelAnimationFrame(resizeFrame); sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });

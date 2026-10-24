@@ -15,6 +15,8 @@ const ROBOT_SIZE = { width: 96, height: 120 };
 // Transparent paint space for the CSS shadow; the visible composer stays 288×109.
 const PANEL_GUTTER = 8;
 const PANEL_SIZE = { width: 288 + PANEL_GUTTER*2, height: 109 + PANEL_GUTTER*2 };
+// Native bounds can differ by one DIP after Windows fractional-scale rounding.
+const BOUNDS_TOLERANCE = 1;
 const PREFIX = "focus:patrol-";
 
 function clampBounds(bounds, area) {
@@ -298,7 +300,6 @@ class DesktopPatrolHost {
     this._disposed = true;
     this._pendingFlush?.finish("面板已关闭");
     clearTimeout(this._saveTimer);
-    clearTimeout(this._resizeTimer);
     for (const name of this._handlers) this._electron.ipcMain.removeHandler(name);
     for (const [name, listener] of this._syncHandlers) this._electron.ipcMain.removeListener(name, listener);
     if (this._onDisplaysChanged) {
@@ -368,9 +369,9 @@ class DesktopPatrolHost {
       if (!Number.isFinite(width)) throw new Error("面板宽度无效");
       const nextHeight = Math.max(PANEL_SIZE.height, Math.min(500 + PANEL_GUTTER*2, Math.ceil(height)));
       const nextWidth = Math.max(PANEL_SIZE.width, Math.min(590 + PANEL_GUTTER*2, Math.ceil(width)));
-      if (nextHeight === this._panelHeight && nextWidth === this._panelWidth) return true;
+      if (Math.abs(nextHeight-this._panelHeight) <= BOUNDS_TOLERANCE && Math.abs(nextWidth-this._panelWidth) <= BOUNDS_TOLERANCE) return true;
       this._panelHeight = nextHeight; this._panelWidth = nextWidth;
-      this._positionPanel(size?.animate === true);
+      this._positionPanel();
       return true;
     });
     handle("hide-robot", ["robot", "panel"], () => { this.panel.hide(); this.robot.hide(); });
@@ -444,23 +445,13 @@ class DesktopPatrolHost {
     }
   }
 
-  _positionPanel(animate = false) {
-    clearTimeout(this._resizeTimer);
-    this._resizeTimer = null;
+  _positionPanel() {
     if (!this.robot || this.robot.isDestroyed() || !this.panel || this.panel.isDestroyed()) return;
     const robot = this.robot.getBounds();
     const target = panelBounds(robot, this._electron.screen.getDisplayMatching(robot).workArea, this._panelHeight, this._panelWidth);
     const from = this.panel.getBounds();
-    if (!animate || !this.panel.isVisible() || from.width !== target.width || from.height === target.height) { this.panel.setBounds(target); return; }
-    const started = performance.now();
-    const frame = () => {
-      if (this._disposed || this.panel.isDestroyed()) return;
-      const t = Math.min(1,(performance.now()-started)/380), eased = 1-Math.pow(1-t,3);
-      this.panel.setBounds({...target,y:Math.round(from.y+(target.y-from.y)*eased),height:Math.round(from.height+(target.height-from.height)*eased)});
-      if (t < 1) this._resizeTimer = setTimeout(frame,16);
-      else this._resizeTimer = null;
-    };
-    frame();
+    if (["x","y","width","height"].every(key => Math.abs(from[key]-target[key]) <= BOUNDS_TOLERANCE)) return;
+    this.panel.setBounds(target);
   }
 
   _reposition() {
