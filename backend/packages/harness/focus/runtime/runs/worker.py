@@ -54,6 +54,7 @@
 已发布修复投影仅用于普通新输入，在精确旧 checkpoint 上以显式 Items 重建原子提交消息、合同镜像和空请求状态；原中断历史保持。
 """
 
+import asyncio
 import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable
@@ -196,6 +197,7 @@ async def run_agent(
     agent_ready = False
     mcp_run = begin_mcp_run()
     model_clients = begin_model_clients()
+    run_resource = None
     try:
 
 
@@ -205,6 +207,9 @@ async def run_agent(
             extras={**security.extras, "sandbox_cancel_event": record.abort_event},
         )
         langgraph_context = {**langgraph_context, **security.to_runtime_context()}
+        run_resource = security.extras.get("run_resource")
+        if run_resource is not None:
+            await run_resource.start()
 
 
         run_manager.update(record.run_id, status=RunStatus.running)
@@ -340,6 +345,8 @@ async def run_agent(
                 bridge.publish(record.run_id, chunk_event)
 
 
+        if run_resource is not None:
+            run_resource.check()
         if record.abort_event.is_set():
             action = record.abort_action
             if action == "rollback":
@@ -367,7 +374,11 @@ async def run_agent(
             run_manager.update(record.run_id, status=RunStatus.success)
             logger.info("run '%s' 状态 → success", record.run_id)
 
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            if run_resource is None or run_resource.failure is None:
+                raise
+            exc = run_resource.failure
         logger.error("run '%s' 异常: %s", record.run_id, exc, exc_info=True)
 
 
@@ -397,6 +408,11 @@ async def run_agent(
             logger.error("发布 error 事件失败", exc_info=True)
 
     finally:
+        if run_resource is not None:
+            try:
+                await run_resource.finish()
+            except Exception:
+                logger.exception("run '%s' 外部资源释放失败", record.run_id)
         try:
             await end_model_clients(model_clients)
         except Exception:

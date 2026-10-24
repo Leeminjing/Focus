@@ -11,7 +11,7 @@
   if (root) root.FocusRunStreamSubscriptions = api;
 })(globalThis, function () {
   "use strict";
-  const TYPES = ["metadata", "tokens", "reasoning", "events", "interrupt", "error", "resync", "end"];
+  const TYPES = ["metadata", "tokens", "reasoning", "events", "browser", "interrupt", "error", "resync", "end"];
 
   function create(runtime, { EventSourceImpl = globalThis.EventSource, maxFrames = 512, onObserverError = () => {} } = {}) {
     const entries = new Map();

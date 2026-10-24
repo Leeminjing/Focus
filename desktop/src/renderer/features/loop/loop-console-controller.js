@@ -64,6 +64,7 @@
 
     async function selectContext(contextId, options = {}) {
       if (!loopId || !contextId) return;
+      if (!options.preserveSelection) void globalThis.focusContextBrowser?.select(contextId);
       captureViewport();
       conversationAbort?.abort();
       factsAbort?.abort();

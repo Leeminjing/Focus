@@ -1,0 +1,88 @@
+# Context 的独立浏览器
+
+Windows 上的每个 Context 在 Run 执行前默认创建并绑定一个真实原生浏览器。
+Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、Run 或 Patrol。
+当前固定源码版本为 `8eea976de275a657138c73815e4b2abf174c0f67`，已核对该版本的
+[协议](https://github.com/Leeminjing/focus-distinct-browser/blob/8eea976de275a657138c73815e4b2abf174c0f67/docs/protocol.md)
+和[设计](https://github.com/Leeminjing/focus-distinct-browser/blob/8eea976de275a657138c73815e4b2abf174c0f67/docs/design.md)。
+
+## 用户操作
+
+1. 在 Windows 11 x64 和可用的 WebView2 Evergreen Runtime 环境中正常启动 Focus。
+   Focus 随源码/安装版本携带 EXE，`npm start` 和托管更新会校验其摘要。
+   浏览器能力不额外依赖基建的 Python 演示、C++ 工具、SDK 或 .NET。
+   Focus 自身原有的后端运行依赖仍适用；macOS 保持既有执行路径。
+2. 发起 Context 的 Run。只有该浏览器 `create` 成功后才发布 Run 的 `running` 状态；
+   缺少 EXE、Runtime 或创建失败沿用现有 Run 错误/收尾通道。
+3. 在任务列表、Context 图或 Loop 控制台点击 Context，展示它的原生窗口。
+   **浏览器**按钮也可以再次展示。展示保留页面、登录、输入和执行进度，
+   不取得租约，也不隐藏/最小化其他 Context 的浏览器。
+   Windows 拒绝前台激活时会提示从任务栏查看，不把它当作浏览器丢失。
+4. 点击原生工具栏的**接管**进行人工操作。已发动作仍可能收尾；新动作不会继续派发。
+   最小化/隐藏原生窗口也会暂停自动操作；恢复窗口后还需要点击**交还**。
+   Focus 的下一次模型决策等待交还，并要求 Agent 重新观察，不恢复旧动作队列。
+5. Run 成功、失败或取消都只释放本 Run 的控制权，浏览器页面保留，后续 Run 复用。
+   原生窗口关闭、故障或连接失效使绑定失效，相关活跃 Run 及时报告错误。
+   后端重启也不会把旧 ID 当成可恢复会话；旧窗口可能仍可人工使用。
+6. 需要共享时，先结束目标 Context 的 Run，在**浏览器绑定**中选同一工作区的来源 Context。
+   两者会使用同一个真实页面。也可明确创建新独立浏览器来解除共享或替换失效绑定。
+   更换后只有没有任何 Context 引用的旧浏览器才调用 `close`；共享者不会被误关。
+   断连后的显式替换使用全新的宿主连接，不接续旧窗口或旧令牌。
+
+## Agent 调用
+
+Windows 桌面 Agent 工厂装配以下内置工具，全部通过服务端 Context 绑定定位浏览器，
+模型不能传入其他 `browser_id` 或令牌：
+
+| 工具 | 用途 |
+| --- | --- |
+| `browser_observe()` | 申请/持有租约，观察当前页面，返回图片、URL、视口及 `observation_id` |
+| `browser_navigate(url, observation_id)` | 导航；之后重新观察 |
+| `browser_click(x, y, observation_id, coordinate_space="image")` | 坐标点击 |
+| `browser_type(text, observation_id)` | 向网页当前焦点输入文字 |
+| `browser_key(key, observation_id)` | Enter、Tab、Escape 等协议支持的命名按键 |
+| `browser_scroll(x, y, delta_y, observation_id, delta_x=0, coordinate_space="image")` | 滚动 |
+| `browser_release()` | 结束一段观察/动作，让共享者取得控制，保留页面 |
+
+典型顺序为 `observe → navigate → observe → click → type → click → observe → release`。
+同一段操作保持同一租约，模型思考期间自动续租。共享者的观察由 Focus 等待当前持有者释放；
+只有观察可等待，动作不会排队或自动重放。不同浏览器的请求独立进行。
+
+每次新租约都需要新的观察。导航、URL/视口变化、接管、暂停、释放后，旧观察不能继续操作。
+动作参数必须引用该 Run 的最近观察编号。默认坐标为返回图片像素，Focus 按
+`x * viewport.width / image.width`、`y * viewport.height / image.height` 换算为 CSS 视口像素；
+也可明确提供 `css_viewport` 坐标。
+
+观察需要声明 `supports_image_input: true` 的模型。工具沿用 Focus 的访问策略和审计：
+浏览器可以访问本地页面并产生副作用，因此观察/动作声明为 opaque 工具，受限文件模式沿用
+既有审批机制，完全访问按既有规则放行；释放租约不需要扩大访问权限。
+`busy`、`foreground:false`、`command_processed` 和 `result_unknown` 都保留原义。
+工具失败返回 `status=error` 的 ToolMessage 及结构化原生错误，结果未知时不重放。
+
+Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中的旧 Playwright MCP/
+自定义同前缀浏览器工具不会装配进该 Context，防止操作另一个浏览器或产生同名冲突。
+其他 MCP/自定义工具保持原装配流程。
+
+## 接入位置和分发
+
+- `backend/app/desktop/browser/transport.py`：管道线程、UTF-8 JSONL、多请求 ID 关联、交错事件、
+  连接失效和超时结果未知。适配 Windows Selector 事件循环，持续读取，不按浏览器串行等响应。
+- `browser/service.py`：Context 持久绑定、共享引用、Run 租约/续租/失效和事件路由。
+  绑定保存于 `DesktopThread.ui_state._distinct_browser`；通用 UI 保存不能伪造或覆盖这个服务端字段。
+- `DesktopService`：注入受信任的 Run 资源、内置工具目录与中间件。
+  Context 装配在 durable dispatch 标记数据库 running 前确认创建成功；统一 `run_agent`
+  在内存 running 前再次核对资源，finally 释放；没有新增 Run 执行器。
+- `browser/routes.py`：既有会话认证下的 Context 查询、展示、更换与 SSE 快照。
+  路径为 `/desktop/api/contexts/{context_id}/browser`、其 `/present` 和 `/stream`。
+  更换使用 PUT `{ "source_context_id": "来源 Context ID" }`；`null` 表示显式新建独立实例。
+- `desktop/src/renderer/features/context/context-browser.*`：Context 按钮、共享选择和实时状态；
+  被任务视图、图检查器和 Loop 控制台复用。被动刷新不反复激活原生窗口。
+- `desktop/resources/distinct-browser/`：固定版本 EXE 与 SHA-256 清单。
+  `npm --prefix desktop run prepare:browser` 验证产物；托管安装/更新调用同一命令。
+
+维护者重建产物使用 `npm --prefix desktop run build:browser`，需要 MSVC x64 与 Windows SDK。
+脚本检出固定基线并调用上游构建脚本（包括其控制状态机测试），然后更新 EXE 和摘要。
+也可向 `desktop/scripts/build-browser.ps1` 传 `-MsvcRoot`、`-WindowsSdkRoot`。
+开发时可用 `FOCUS_DISTINCT_BROWSER_EXE` 指定兼容协议 v1 的本地 EXE。
+
+验收命令、实际结果与截图见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)。

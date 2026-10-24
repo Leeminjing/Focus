@@ -22,6 +22,8 @@
       const selector = panel.contains(focused) ? [...focused.attributes].filter(item => item.name.startsWith("data-")).map(item => `[${item.name}="${root.CSS.escape(item.value)}"]`).join("") : "";
       const scroll = panel.scrollTop, bodyScroll = panel.querySelector(".patrol-context-body")?.scrollTop || 0;
       content.innerHTML = view.context({ ...active.page, context_id: active.contextId }, active.node, tab, { presentation, manifest: getManifest(), revisionId: active.revisionId });
+      content.insertAdjacentHTML("afterbegin", root.FocusContextBrowser?.render(active.contextId) || "");
+      root.focusContextBrowser?.patch();
       panel.classList.toggle("is-expanded", presentation === "workbench" && tab !== "overview");
       if (active.readError) content.querySelector(".patrol-context-body")?.insertAdjacentHTML("afterbegin", localize`<p role="alert">完整会话不可用：${view.escape(active.readError)} <button data-context-inspection-retry>重试读取</button></p>`);
       panel.scrollTop = scroll;
@@ -102,6 +104,7 @@
       panel.addEventListener("keydown", event => { if (event.key === "Escape") { event.stopPropagation(); close(); } }, { signal: lifetime.signal });
     }
     async function select(loopId, contextId, node, trigger, revisionId = null) {
+      void root.focusContextBrowser?.select(contextId);
       active = { loopId, contextId, revisionId, node: { context_id: contextId, ...node }, page: {} };
       tab = "overview"; returnFocus = trigger; render(); onSelectionChange(selection());
       if (panel.hidden || panel.inert) void root.FocusSurfaceTransition.visible(panel, true, { axis: "x", distance: 40 });

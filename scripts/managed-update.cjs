@@ -209,7 +209,7 @@ class Installation {
   sync() {
     // npm.cmd needs cmd.exe on Windows; no user input is interpolated into it.
     if (process.platform === "win32") {
-      for (const args of [["ci"], ["run", "install:electron"]]) {
+      for (const args of [["ci"], ["run", "install:electron"], ["run", "prepare:browser"]]) {
         this.run(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `npm ${args.join(" ")}`], { cwd: path.join(this.appDir, "desktop") });
       }
     } else {

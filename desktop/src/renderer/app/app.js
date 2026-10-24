@@ -362,6 +362,9 @@ const composingMainInputs = new WeakSet();
 const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
+const contextBrowser = window.FocusContextBrowser?.create({ runtime, api, onStatus: setStatus,
+  getContexts: id => state.tasks.filter(item => item.workspace_id === state.tasks.find(task => task.task_id === id)?.workspace_id) });
+window.focusContextBrowser = contextBrowser;
 const desktopPatrol = window.focusDesktop?.patrol?.enabled ? window.focusDesktop.patrol : null;
 let workspacePatrolIntake = null;
 async function createWorkspacePatrolIntake() {
@@ -2305,7 +2308,7 @@ function renderFocus(task = activeTask()) {
     <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? localize("独立会话") : escapeHtml(task.workspace_name || localize("本地工作区"))}</small><h1>${task.harness_mode === "assembly" ? localize("无工作区模式") : localize("任务")}</h1><p>${task.harness_mode === "assembly" ? localize("从一个问题或一份材料开始。") : localize("一条任务，一条持续会话。")}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
-        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
+        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong>${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
         ${admission ? localize`<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-loop">查看任务 Loop 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
@@ -2379,6 +2382,8 @@ function renderFocus(task = activeTask()) {
   if (previousRailScrollTop != null && rail) rail.scrollTop = previousRailScrollTop;
   if (!previousConversation) requestAnimationFrame(() => rail?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
   mountPatrolAvatarLayer(task, detail);
+  contextBrowser?.patch();
+  contextBrowser?.watch(task.task_id);
   if (panelOpen) {
     mountFilePanel();
     bindPanelResizer();
@@ -7304,6 +7309,7 @@ async function moveMaterialGroupOrder(groupId, direction) {
 }
 
 async function switchTask(taskId) {
+  void contextBrowser?.select(taskId);
   const requestId = ++taskSwitchSequence;
   if (state.view !== "focus") { state.inspector.open = true; state.inspector.tab = "materials"; }
   cancelPendingViewRequests();

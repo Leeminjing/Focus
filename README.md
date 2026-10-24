@@ -298,6 +298,7 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 - [Task progress, round memory, and source relationships](docs/round-memory-architecture.md)
 - [Concurrent execution with Git worktrees](docs/governed-worktree-parallel-runs.md)
 - [Desktop startup](docs/desktop-startup.md)
+- [Context browsers on Windows: usage, Agent tools and validation](docs/distinct-browser.md)
 - [Stable releases, installation, and update recovery](docs/managed-releases.md)
 - [First-run and live-model acceptance](docs/first-run-acceptance.md)
 

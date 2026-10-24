@@ -355,6 +355,8 @@ class DesktopService:
         self.bridge = bridge
         self.app_config = app_config
         self.run_manager = run_manager
+        from backend.app.desktop.browser.service import ContextBrowsers
+        self.browsers = ContextBrowsers(session_factory, bridge)
         self.image_limits = ImageResourceLimits()
         self.material_uploads = MaterialUploadService(session_factory, self.image_limits)
         self.material_contents = MaterialContentService(session_factory, self.image_limits)
@@ -434,6 +436,8 @@ class DesktopService:
 
     async def close(self) -> None:
         self._closing = True
+        if hasattr(self, "browsers"):
+            await self.browsers.close()
         await self.context_patrol.close()
         background = list(self._sync_tasks)
         if self._run_dispatch_task:
@@ -553,6 +557,11 @@ class DesktopService:
                 history = await repaired_execution_for_run(session, run, self.checkpointer)
                 if history is not None:
                     prepared.body.context["context_execution_messages"] = history
+        # Durable dispatch marks the persisted Run running immediately after
+        # assembly. Browser creation must precede that transition as well as the
+        # worker's in-memory running metadata.
+        if os.name == "nt" and hasattr(self, "browsers"):
+            await self.browsers.ensure(run.task_id)
         if loop_id:
             from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder
 
@@ -628,6 +637,11 @@ class DesktopService:
         from focus.tools.tools import get_available_tools
 
         reg = await get_available_tools()
+        if os.name == "nt":
+            from backend.app.desktop.browser.tools import build_browser_tools
+            reg = [*(ToolInfo(name=item.name, label=item.name, description=item.description,
+                                  source="builtin", build_tool=lambda item=item: item)
+                          for item in build_browser_tools()), *(item for item in reg if not item.name.startswith("browser_"))]
         result: list[dict[str, Any]] = []
         seen: set[str] = set()
         for info in reg:
@@ -879,6 +893,10 @@ class DesktopService:
             if not task:
                 raise HTTPException(404, "任务不存在")
             persisted = dict(ui_state)
+            from backend.app.desktop.browser.service import BINDING_KEY
+            persisted.pop(BINDING_KEY, None)
+            if BINDING_KEY in (task.ui_state or {}):
+                persisted[BINDING_KEY] = task.ui_state[BINDING_KEY]
             persisted.pop("access_mode", None)
             standing_mode = (task.ui_state or {}).get("access_mode")
             if standing_mode is not None:
@@ -2238,7 +2256,14 @@ class DesktopService:
             runtime_extras["tool_execution_ledger"] = ToolExecutionLedger(
                 self.session_factory, authority_validator=RunOwnershipPolicy().assert_live,
                 secret_provider=lambda: configured_secret_values(self.app_config))
-        return assemble_run_context(profile, runtime_extras, dispatch_hints={"swarm_depth": swarm_depth})
+        context = assemble_run_context(profile, runtime_extras, dispatch_hints={"swarm_depth": swarm_depth})
+        if os.name == "nt" and hasattr(self, "browsers"):
+            resource = self.browsers.resource(run.task_id, run.run_id, profile.routing)
+            security = security_context_of(context)
+            context["security_context"] = replace(security, extras={
+                **security.extras, "browser_run": resource, "run_resource": resource,
+            })
+        return context
 
     def _build_agent_factory(
         self, task_id: str, agent_id: str, workspace_path: str, equipment: dict[str, Any],
@@ -2255,6 +2280,9 @@ class DesktopService:
 
         async def factory() -> CompiledStateGraph:
             tools = select_workspace_tools(permissions)
+            if os.name == "nt" and hasattr(self, "browsers"):
+                from backend.app.desktop.browser.tools import build_browser_tools
+                tools = [*tools, *build_browser_tools()]
 
             if agent_role != "patrol":
                 tools = [*tools, web_search, web_fetch]
@@ -2263,6 +2291,10 @@ class DesktopService:
 
                 pooled = await get_available_tools(workspace=workspace_path)
                 pool_tools = execution_pool_tools(pooled, include_builtin=False)
+                if os.name == "nt" and hasattr(self, "browsers"):
+                    # Browser tools in a Context must all target its native page;
+                    # the legacy Playwright MCP browser is a different session.
+                    pool_tools = [item for item in pool_tools if not item.name.startswith("browser_")]
                 tools = [*tools, *self._build_patrol_reader_tools(task_id),
                          *self._build_swarm_reader_tools(task_id),
                          *([] if governed_loop else [build_spawn_agent_tool(), *self._build_swarm_tools()]),
@@ -2279,6 +2311,9 @@ class DesktopService:
                 task_skill_names = None
                 middlewares = []
             additional_middlewares = [build_tool_error_middleware()]
+            if os.name == "nt" and hasattr(self, "browsers"):
+                from backend.app.desktop.browser.middleware import BrowserControlMiddleware
+                additional_middlewares.append(BrowserControlMiddleware())
             user_input_middleware = None
             if agent_role == "main" and not governed_loop:
                 from backend.app.desktop.conversation_input_delivery import ConversationInputDelivery

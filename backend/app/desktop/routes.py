@@ -65,6 +65,8 @@ desktop_router.include_router(workspace_material_router)
 desktop_router.include_router(file_link_router)
 desktop_router.include_router(file_router)
 desktop_router.include_router(task_changes_router)
+from backend.app.desktop.browser.routes import browser_router
+desktop_router.include_router(browser_router)
 
 
 @desktop_router.get("/sandbox/status")

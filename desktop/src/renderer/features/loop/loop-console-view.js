@@ -51,6 +51,8 @@
     patchConversation(consoleNode, state);
     patchFacts(consoleNode, state);
     patchError(consoleNode, state.error);
+    globalThis.focusContextBrowser?.patch();
+    globalThis.focusContextBrowser?.watch(state.selectedContextId);
     return true;
   }
 

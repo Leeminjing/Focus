@@ -5,6 +5,9 @@
   "description": "Focus 全图巡逻小兵桌面 PoC",
   "main": "src/main/main.cjs",
   "scripts": {
+    "build:browser": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-browser.ps1",
+    "prepare:browser": "node scripts/prepare-browser.cjs",
+    "prestart": "npm run prepare:browser",
     "build:patrol-editor": "node scripts/build-patrol-editor.cjs",
     "test": "node scripts/run-tests.cjs",
     "test:native": "node --test src/main/windows-sandbox/native.test.mjs",

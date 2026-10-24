@@ -1,0 +1,9 @@
+.context-browser-controls { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-2, 8px); min-width: 0; font-size: 11px; }
+.context-browser-controls [role="status"] { max-width: 260px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.context-browser-controls button { padding: 4px 8px; font-size: inherit; }
+.task-workspace-tools:has(.context-browser-controls) { flex-wrap: wrap; gap: var(--space-2, 8px); }
+.context-browser-dialog form { display: grid; gap: var(--space-4, 16px); padding: var(--space-5, 24px); }
+.context-browser-dialog h2, .context-browser-dialog p { margin: 0; }
+.context-browser-dialog p { line-height: 1.6; }
+.context-browser-dialog label { display: grid; gap: var(--space-2, 8px); }
+.context-browser-dialog select { width: 100%; min-height: 36px; font: inherit; }

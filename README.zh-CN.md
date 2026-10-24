@@ -295,6 +295,7 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 - [任务进度、轮次记忆与来源关系](docs/round-memory-architecture.md)
 - [Git worktree 并行执行](docs/governed-worktree-parallel-runs.md)
 - [桌面启动流程](docs/desktop-startup.md)
+- [Context 独立浏览器：使用、Agent 工具与验收](docs/distinct-browser.md)
 - [稳定版发布、安装与更新恢复](docs/managed-releases.md)
 - [首次运行与真实模型验收](docs/first-run-acceptance.md)
 
