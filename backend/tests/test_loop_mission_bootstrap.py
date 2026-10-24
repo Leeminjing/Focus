@@ -25,7 +25,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import (
+from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
     LoopCoordinator,
     LoopCreateRequest,
@@ -33,24 +33,24 @@ from backend.app.desktop.agent_loop import (
     LoopWaveDispatcher,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.clarification_admission import (
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.inputs.clarification_admission import (
     ClarificationAdmissionPolicy,
     ClarificationFacts,
     ClarificationRejected,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
     PlanningRetrievalSession,
 )
-from backend.app.desktop.agent_loop.mission_bootstrap import MissionBootstrapStage
-from backend.app.desktop.agent_loop.mission_contract import (
+from backend.app.desktop.patrol.agent_loop.missions.mission_bootstrap import MissionBootstrapStage
+from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
     CompletionCheckDefinition,
     ExecutionBoundaries,
     LoopMissionContract,
 )
-from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDelegationGrant,
     LoopDirective,
@@ -61,27 +61,27 @@ from backend.app.desktop.agent_loop.models import (
     LoopWorkerRequest,
     MessageProvenance,
 )
-from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
-from backend.app.desktop.agent_loop.round_orchestration import (
+from backend.app.desktop.patrol.agent_loop.governance.provenance import DelegatedDirectiveFactory
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import (
     LoopRoundOrchestrator,
     PatrolDecisionProposal,
 )
-from backend.app.desktop.agent_loop.rounds import current_frontier_hash
-from backend.app.desktop.agent_loop.schemas import (
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import current_frontier_hash
+from backend.app.desktop.patrol.agent_loop.schemas import (
     LoopObservationEnvelope,
     NarrowLoopGrantRequest,
     ResumeWithCurrentMissionRequest,
     WaitEvidenceIdentity,
     WaitForUserAction,
 )
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
-from backend.app.desktop.agent_loop.wait_requests import (
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest, LoopWaitResponse
+from backend.app.desktop.patrol.agent_loop.waits.wait_requests import (
     LoopWaitRequestFactory,
     LoopWaitRequestService,
 )
-from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
-from backend.app.desktop.context_curation.contracts import MissionEvidenceRef
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
+from backend.app.desktop.contexts.curation.contracts import MissionEvidenceRef
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -89,7 +89,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.tests.config_helpers import app_config_for
 from focus.runtime.runs.usage import ModelUsage
 
@@ -367,7 +367,7 @@ def test_coordinator_bootstrap_and_replayed_dispatch_start_one_run(tmp_path: Pat
             assert committed is not None and committed.status == "committed"
             assert replay is None
             await coordinator.release(claim)
-            from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
+            from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
             async with sessions() as session:
                 authorized_event = await session.scalar(select(LoopJournalEvent).where(
                     LoopJournalEvent.entity_id == committed.directive_ids[0], LoopJournalEvent.kind == "directive.authorized"))
@@ -409,7 +409,7 @@ def test_coordinator_bootstrap_and_replayed_dispatch_start_one_run(tmp_path: Pat
                     LoopJournalEvent.entity_id == directive.directive_id, LoopJournalEvent.kind == "directive.run_started"))
             assert started_event.payload["mission_delivery"] == (await fixture["service"].get(fixture["loop_id"]))["mission_delivery"]
             assert started_event.payload["mission_delivery"]["run_id"] == directive.launched_run_id
-            from backend.app.desktop.agent_loop.live_api import LoopLiveSnapshotService
+            from backend.app.desktop.patrol.agent_loop.live.live_api import LoopLiveSnapshotService
             from sqlalchemy import text
             async with sessions() as session:
                 await session.execute(text("SET TRANSACTION READ ONLY"))

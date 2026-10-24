@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 
-from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
+from backend.app.desktop.patrol.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
 
 
 def test_production_runtime_builds_one_scoped_supervisor_per_active_loop() -> None:

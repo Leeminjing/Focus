@@ -18,7 +18,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     CurationAttempt,
     CurationLane,
     CurationLaneLifecycle,
@@ -32,7 +32,7 @@ from backend.app.desktop.context_curation import (
     PortfolioRevision,
     StaleCurationWrite,
 )
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

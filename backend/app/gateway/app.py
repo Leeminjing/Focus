@@ -34,7 +34,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
-import backend.app.desktop.persistence_registry  # noqa: F401
+import backend.app.desktop.persistence.registry  # noqa: F401
 from backend.app.gateway.deps import langgraph_runtime
 
 # 在所有配置加载之前注入 .env 环境变量
@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # checkpointer / store / stream_bridge 与全局数据库 engine（决策 1、8、11）
         from focus.persistence.engine import get_session_factory
 
-        from backend.app.desktop.service import DesktopService
+        from backend.app.desktop.composition.service import DesktopService
 
         sessions = get_session_factory()
         service = DesktopService(
@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_manager=app.state.run_manager,
         )
         app.state.desktop_service = service
-        from backend.app.desktop.agent_loop import (
+        from backend.app.desktop.patrol.agent_loop import (
             AgentLoopRecovery,
             AgentLoopService,
             CompletionEvidenceService,
@@ -108,27 +108,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             LoopWorkspaceAdoptionService,
             PendingDecisionProjector,
         )
-        from backend.app.desktop.agent_loop.compression_authority.gate_projector import (
+        from backend.app.desktop.patrol.agent_loop.compression_authority.gate_projector import (
             LoopCompressionGateProjector,
         )
-        from backend.app.desktop.agent_loop.compression_authority.resolution import (
+        from backend.app.desktop.patrol.agent_loop.compression_authority.resolution import (
             CompressionResolutionCoordinator,
         )
-        from backend.app.desktop.agent_loop.curation_ownership import (
+        from backend.app.desktop.patrol.agent_loop.curation.curation_ownership import (
             CurationOwnershipRecovery,
         )
-        from backend.app.desktop.agent_loop.fact_projector import FactProjector
-        from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
-        from backend.app.desktop.agent_loop.interventions import LoopInterventionService
-        from backend.app.desktop.run_orchestration import RunOutboxConsumer
+        from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+        from backend.app.desktop.patrol.agent_loop.feature_flags import LoopFeatureFlags
+        from backend.app.desktop.patrol.agent_loop.governance.interventions import LoopInterventionService
+        from backend.app.desktop.runs.orchestration import RunOutboxConsumer
 
         app.state.loop_feature_flags = LoopFeatureFlags.from_env()
-        from backend.app.desktop.agent_loop.user_access_gate_recovery import UserAccessGateRecovery
+        from backend.app.desktop.patrol.agent_loop.recovery.user_access_gate_recovery import UserAccessGateRecovery
 
         app.state.agent_loop_service = AgentLoopService(
             sessions, app.state.run_manager, user_gate_recovery=UserAccessGateRecovery(app.state.checkpointer)
         )
-        from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolService
+        from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolService
         app.state.workspace_patrol = WorkspacePatrolService(sessions, service)
         app.state.agent_loop_interventions = LoopInterventionService(sessions)
         app.state.agent_loop_authority = LoopAuthorityService(sessions, app.state.run_manager)
@@ -174,14 +174,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             dispatcher,
         )
         app.state.agent_loop_fact_projector = FactProjector(sessions, app.state.checkpointer)
-        from backend.app.desktop.agent_loop.timeline_projector import WorkTimelineProjector
+        from backend.app.desktop.patrol.agent_loop.journal.timeline_projector import WorkTimelineProjector
 
         app.state.agent_loop_timeline_projector = WorkTimelineProjector(sessions)
-        from backend.app.desktop.agent_loop.task_progress.runtime import (
+        from backend.app.desktop.patrol.agent_loop.task_progress.runtime import (
             TaskProgressRuntime,
         )
         app.state.agent_loop_task_progress = TaskProgressRuntime(sessions, app_config)
-        from backend.app.desktop.agent_loop.workspace_cleanup import LoopWorkspaceCleanup
+        from backend.app.desktop.patrol.agent_loop.workspaces.workspace_cleanup import LoopWorkspaceCleanup
 
         app.state.agent_loop_runtime = LoopCoordinatorRuntime(
             app.state.agent_loop_coordinator,
@@ -205,7 +205,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Update acceptance opens the real lifespan without resuming user work
         # or starting recovery writers before the release has been accepted.
         update_check = os.getenv("FOCUS_UPDATE_CHECK") == "1"
-        from backend.app.desktop.storage_maintenance import StorageMaintenance
+        from backend.app.desktop.persistence.maintenance import StorageMaintenance
         app.state.storage_maintenance = StorageMaintenance(
             sessions, database_url=str(app_config.database.url) if app_config.database else None,
         )

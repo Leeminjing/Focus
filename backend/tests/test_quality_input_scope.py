@@ -10,11 +10,11 @@ import json
 import pytest
 from langchain_core.messages import AIMessage
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle, WorkContextSpec
-from backend.app.desktop.agent_loop.context_expansion.quality_verifier import StructuredContextQualityService
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.context_curation import evidence_ref_key
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle, WorkContextSpec
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality_verifier import StructuredContextQualityService
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.contexts.curation import evidence_ref_key
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_tool_exchange_quality_closure import _inputs
 
@@ -37,7 +37,7 @@ def test_outbound_review_binds_input_phase_and_atomic_protocol_without_changing_
                 {"dimension": name, "verdict": verdict, "reasons": ["Fixed independent semantic outcome"]}
                 for name in ("minimality", "sufficiency", "coherence")]}))
 
-    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: Provider())
+    monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider())
     service = StructuredContextQualityService(RoleBoundStructuredModel(config, "context_quality_verifier"))
     result = asyncio.run(service.verify(spec, bundle, dossier))
     assert len(calls) == 1

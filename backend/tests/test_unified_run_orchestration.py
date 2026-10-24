@@ -23,7 +23,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from langchain_core.messages import AIMessage, ToolMessage
 
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -32,9 +32,9 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
     ContextRevisionReader,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.run_orchestration import (
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.runs.orchestration import (
     RunLauncher,
     RunLifecycleFinalizer,
     RunOutboxConsumer,
@@ -323,7 +323,7 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
 
 
 def test_settled_approval_is_visible_after_restart_without_reading_checkpoints() -> None:
-    from backend.app.desktop.service import DesktopService
+    from backend.app.desktop.composition.service import DesktopService
 
     async def scenario():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -400,7 +400,7 @@ def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoin
             assert execution.messages[-1]["focus_interruption_status"] == "interrupted"
             assert contract.repair_manifest[0]["source_run_id"] == run_id
             assert contract.repair_manifest[0]["cause"] == "interrupted"
-            from backend.app.desktop.run_orchestration.execution_history import repaired_execution_for_run
+            from backend.app.desktop.runs.orchestration.execution_history import repaired_execution_for_run
 
             async with sessions() as session:
                 next_run = SimpleNamespace(kind="main", context_revision_id=contract.ref.revision_id,

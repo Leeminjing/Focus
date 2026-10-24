@@ -179,8 +179,11 @@ assert.match(html, /id="zoomAnnouncement"[^>]*class="visually-hidden"[^>]*aria-l
 
 const migrationDirectory = path.join(root, "backend/packages/harness/focus/persistence/migrations/versions");
 const backendPatrolBoundary = [
-  read("backend/app/desktop/models.py"),
-  read("backend/app/desktop/routes.py"),
+  read("backend/app/desktop/persistence/models.py"),
+  read("backend/app/desktop/api/schemas.py"),
+  ...fs.readdirSync(path.join(root, "backend/app/desktop/api"))
+    .filter(name => name.endsWith(".py"))
+    .map(name => read(`backend/app/desktop/api/${name}`)),
   ...fs.readdirSync(migrationDirectory)
     .filter(name => name.endsWith(".py"))
     .map(name => fs.readFileSync(path.join(migrationDirectory, name), "utf8")),

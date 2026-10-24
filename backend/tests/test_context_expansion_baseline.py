@@ -7,11 +7,11 @@ identity 级 spawn 合同断言。具体工作流为只构造不可变合同并�
 
 from __future__ import annotations
 
-from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import CuratorCoordinationStage
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PATROL_ACTION_ADAPTER, PATROL_MODEL_ACTION_ADAPTER
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope, PATROL_ACTION_ADAPTER, PATROL_MODEL_ACTION_ADAPTER
 
 
 def _single_context_observation() -> LoopObservationEnvelope:

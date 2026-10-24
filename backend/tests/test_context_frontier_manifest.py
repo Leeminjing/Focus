@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     ContextExpansionDenied,
     ContextFrontierBudgetExceeded,
     ContextFrontierBuilder,
@@ -29,7 +29,7 @@ from backend.app.desktop.context_curation import (
     PortfolioRepository,
     PortfolioRevision,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -38,8 +38,8 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.context_evolution.models import ContextRevision
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.contexts.evolution.models import ContextRevision
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

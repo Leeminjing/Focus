@@ -19,9 +19,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.context_assembly import desktop_contexts
-from backend.app.desktop.inbox import AgentInbox, DurableInboxMiddleware
-from backend.app.desktop.models import AgentMessage, AgentMessageDelivery, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.context_assembly import desktop_contexts
+from backend.app.desktop.agents.inbox import AgentInbox, DurableInboxMiddleware
+from backend.app.desktop.persistence.models import AgentMessage, AgentMessageDelivery, DesktopThread, DesktopWorkspace
 from focus.agents.lead_agent_state import LeadAgentState
 from focus.context.middleware import WorldStateMiddleware
 from focus.context.scoped import FrozenContext, scoped_messages

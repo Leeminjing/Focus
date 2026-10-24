@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from backend.app.desktop.browser.service import ContextBrowsers
 from backend.app.desktop.browser.tools import build_browser_tools
 from backend.app.desktop.browser.transport import BrowserError
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 from backend.tests.browser_fixture import BrowserFixture
 from backend.tests.runtime_context_support import runtime_context
 from focus.runtime.runs.manager import RunManager

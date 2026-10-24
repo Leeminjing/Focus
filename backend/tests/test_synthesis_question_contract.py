@@ -17,15 +17,15 @@ from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionOpportunity, ResolvedEvidenceBundle, WorkContextSpec, stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.start_readiness import ExecutionReadiness, load_execution_readiness, question_catalog, work_question_id
-from backend.app.desktop.agent_loop.context_expansion.artifact_repository import SemanticDerivationArtifactRepository
-from backend.app.desktop.agent_loop.context_expansion.compiler import ContextExpansionPlanCompiler
-from backend.app.desktop.agent_loop.models import LoopBudgetUsage
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ContextSynthesisWorkerDraft
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel, safe_validation_message
-from backend.app.desktop.agent_loop.derivation_worker import StructuredResultValidationError
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ExpansionOpportunity, ResolvedEvidenceBundle, WorkContextSpec, stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.start_readiness import ExecutionReadiness, load_execution_readiness, question_catalog, work_question_id
+from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import SemanticDerivationArtifactRepository
+from backend.app.desktop.patrol.agent_loop.context_expansion.compiler import ContextExpansionPlanCompiler
+from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ContextSynthesisWorkerDraft
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel, safe_validation_message
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import StructuredResultValidationError
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_synthesis_claim_feedback import _compiler_observation
@@ -86,7 +86,7 @@ def _service(monkeypatch, errors, *, verdict="supported"):
                     "reason": "Controlled independent result"} for c in payload["claims"]]}
             return AIMessage(content=json.dumps(response, ensure_ascii=False))
 
-    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", lambda **kwargs: Provider())
+    monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider())
     author = RoleBoundStructuredModel(config, "dossier_synthesizer")
     verifier = RoleBoundStructuredModel(config, "claim_verifier")
     return StructuredContextSynthesisService(author, verifier), spec, bundle, author, verifier, calls

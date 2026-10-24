@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.composition.service import DesktopService
 
 
 @asynccontextmanager
@@ -70,9 +70,9 @@ def test_transient_finalization_failure_retries_without_rerunning_agent(monkeypa
         service.context_patrol.notify_stable_context_checkpoint.assert_awaited_once_with("context")
         assert delays == [0.001, 0.002, 0.004, 0.004, 0.004][:failures]
 
-    monkeypatch.setattr("backend.app.desktop.service._RUN_FINALIZATION_RETRY_INITIAL_SECONDS", 0.001)
-    monkeypatch.setattr("backend.app.desktop.service._RUN_FINALIZATION_RETRY_MAX_SECONDS", 0.004)
-    monkeypatch.setattr("backend.app.desktop.service.asyncio.sleep", sleep)
+    monkeypatch.setattr('backend.app.desktop.runs.lifecycle_service._RUN_FINALIZATION_RETRY_INITIAL_SECONDS', 0.001)
+    monkeypatch.setattr('backend.app.desktop.runs.lifecycle_service._RUN_FINALIZATION_RETRY_MAX_SECONDS', 0.004)
+    monkeypatch.setattr("backend.app.desktop.composition.service.asyncio.sleep", sleep)
     asyncio.run(scenario())
 
 
@@ -155,7 +155,7 @@ def test_lost_backoff_task_keeps_terminal_record_for_online_compensation(monkeyp
         assert attempts == [record, record]
         assert not service._pending_run_finalizations
 
-    monkeypatch.setattr("backend.app.desktop.service._RUN_FINALIZATION_RETRY_INITIAL_SECONDS", 60)
+    monkeypatch.setattr('backend.app.desktop.runs.lifecycle_service._RUN_FINALIZATION_RETRY_INITIAL_SECONDS', 60)
     asyncio.run(scenario())
 
 
@@ -179,7 +179,7 @@ def test_close_cancels_backoff_without_losing_pending_record(monkeypatch):
         service._resume_pending_run_finalizations()
         assert not service._sync_tasks
 
-    monkeypatch.setattr("backend.app.desktop.service._RUN_FINALIZATION_RETRY_INITIAL_SECONDS", 60)
+    monkeypatch.setattr('backend.app.desktop.runs.lifecycle_service._RUN_FINALIZATION_RETRY_INITIAL_SECONDS', 60)
     asyncio.run(scenario())
 
 

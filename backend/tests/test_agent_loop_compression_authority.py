@@ -21,27 +21,27 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy, CompressionCandidateRequest
-from backend.app.desktop.agent_loop.compression_authority.candidates import CompressionCandidateService
-from backend.app.desktop.agent_loop.compression_authority.evidence import CompressionCheckpointEvidence, CompressionEvidenceVerifier
-from backend.app.desktop.agent_loop.compression_authority.manifest import CompressionManifestBuilder
-from backend.app.desktop.agent_loop.compression_authority.policy import CompressionAuthorityFacts, CompressionAuthorityPolicy
-from backend.app.desktop.agent_loop.round_orchestration import PatrolCognitiveStep, StructuredPatrolDecisionModel
-from backend.app.desktop.agent_loop.schemas import PATROL_ACTION_ADAPTER
+from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy, CompressionCandidateRequest
+from backend.app.desktop.patrol.agent_loop.compression_authority.candidates import CompressionCandidateService
+from backend.app.desktop.patrol.agent_loop.compression_authority.evidence import CompressionCheckpointEvidence, CompressionEvidenceVerifier
+from backend.app.desktop.patrol.agent_loop.compression_authority.manifest import CompressionManifestBuilder
+from backend.app.desktop.patrol.agent_loop.compression_authority.policy import CompressionAuthorityFacts, CompressionAuthorityPolicy
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import PatrolCognitiveStep, StructuredPatrolDecisionModel
+from backend.app.desktop.patrol.agent_loop.schemas import PATROL_ACTION_ADAPTER
 from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
-from backend.app.desktop.agent_loop.compression_authority.gate_projector import LoopCompressionGateProjector
-from backend.app.desktop.agent_loop.compression_authority.resolution import CompressionResolutionCoordinator
-from backend.app.desktop.agent_loop.gates import PendingDecisionProjector
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopPendingDecision, LoopRound
-from backend.app.desktop.agent_loop.schemas import LoopCreateRequest, PatrolDecisionIntent
-from backend.app.desktop.agent_loop.service import AgentLoopService
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
+from backend.app.desktop.patrol.agent_loop.compression_authority.gate_projector import LoopCompressionGateProjector
+from backend.app.desktop.patrol.agent_loop.compression_authority.resolution import CompressionResolutionCoordinator
+from backend.app.desktop.patrol.agent_loop.governance.gates import PendingDecisionProjector
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopPendingDecision, LoopRound
+from backend.app.desktop.patrol.agent_loop.schemas import LoopCreateRequest, PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
+from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 
 def test_compression_authority_migration_downgrades_and_upgrades(isolated_postgres_database) -> None:
@@ -477,7 +477,7 @@ def test_resolution_launch_uses_resolution_identity_as_stable_physical_run_id(mo
         return object()
 
     monkeypatch.setattr(
-        "backend.app.desktop.agent_loop.compression_authority.resolution.execute_prepared_run",
+        "backend.app.desktop.patrol.agent_loop.compression_authority.resolution.execute_prepared_run",
         execute,
     )
 
@@ -532,11 +532,11 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 return {"status": "resumable", "request": {"type": "compression_request", "usage": 120000}}
 
             monkeypatch.setattr(
-                "backend.app.desktop.agent_loop.compression_authority.gate_projector.compression_recovery_payload",
+                "backend.app.desktop.patrol.agent_loop.compression_authority.gate_projector.compression_recovery_payload",
                 recovery,
             )
             from test_loop_execution_ownership import _seed_launching_directive
-            from backend.app.desktop.agent_loop.rounds import create_observation_round
+            from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import create_observation_round
             old_round_id = snapshot["current_round_id"]
             directive_id = await _seed_launching_directive(sessions, {"loop_id": loop_id,
                 "round_id": old_round_id, "context_id": context_id, "revision_id": revision_id,
@@ -579,7 +579,7 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 return "summary"
 
             monkeypatch.setattr(
-                "backend.app.desktop.agent_loop.compression_authority.candidates.summarize_messages",
+                "backend.app.desktop.patrol.agent_loop.compression_authority.candidates.summarize_messages",
                 summarize,
             )
             candidate = await candidate_service.prepare(

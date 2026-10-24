@@ -5,8 +5,8 @@ import json
 import pytest
 
 from backend.scripts.semantic_index_corpus import BenchmarkCorpus, CorpusCase, Snapshot, load_corpus, require_jsonb_text, select_cases, summarize_reports
-from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
-from backend.app.desktop.context_evolution import ContextRevisionRef
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
 
 
 def snapshot(messages, generation=1, context="context"):

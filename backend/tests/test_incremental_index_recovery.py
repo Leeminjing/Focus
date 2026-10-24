@@ -25,7 +25,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 
-from backend.app.desktop.agent_loop.context_expansion.models import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopIndexBudgetReservation,
     LoopSemanticIndexArtifact,
 )
@@ -185,7 +185,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 target_revision = await revision(
                     sessions, fixture["context_id"], messages(12)
                 )
-                from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+                from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
                 from backend.tests.incremental_index_support import Checkpoints
 
                 frozen = await LoopObservationService(sessions, Checkpoints()).capture(
@@ -232,10 +232,10 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
         assert snapshot() == before
 
         async def seed_indexes():
-            from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+            from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
                 SemanticDerivationArtifactRepository,
             )
-            from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+            from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
                 RevisionSemanticIndexer,
             )
             from backend.tests.incremental_index_support import ModelProbe, observation

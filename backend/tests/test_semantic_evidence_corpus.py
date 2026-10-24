@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_corpus import (
     EvidenceCorpusReadError,
     FrozenEvidenceAuthority,
     FrozenEvidenceCorpusReader,

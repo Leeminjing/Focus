@@ -8,8 +8,8 @@ import uuid
 import pytest
 from backend.tests.test_session_patrol_workbench_api import client as client, save, open_draft, wait_run, SESSION
 from backend.app.gateway.app import app
-from backend.app.desktop.models import PatrolAgent, DesktopRun
-from backend.app.desktop.run_orchestration.models import RunDispatch
+from backend.app.desktop.persistence.models import PatrolAgent, DesktopRun
+from backend.app.desktop.runs.orchestration.models import RunDispatch
 from focus.history import content_hash, serialize_history_message
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

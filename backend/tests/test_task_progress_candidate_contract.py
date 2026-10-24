@@ -13,13 +13,13 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.task_progress.candidate_contract import (
+from backend.app.desktop.patrol.agent_loop.task_progress.candidate_contract import (
     CandidateValidationError,
     candidate_schema,
     validate_candidate,
 )
-from backend.app.desktop.agent_loop.task_progress.consolidation import TaskProgressConsolidator
-from backend.app.desktop.agent_loop.task_progress.contracts import (
+from backend.app.desktop.patrol.agent_loop.task_progress.consolidation import TaskProgressConsolidator
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import (
     ProgressCandidate, RoundDecisionInputs, SourceAssessment, TaskDeltaManifest,
     TaskItem, TaskProgressDocument, TaskSource, canonical_hash,
 )
@@ -134,7 +134,7 @@ def test_model_construct_cannot_bypass_canonical_shape_validation():
 
 
 def test_safe_diagnostics_and_feedback_preserve_identity_and_exclude_arbitrary_text():
-    from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import (
+    from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import (
         interpretation_payload, validation_diagnostic,
     )
     inputs = frozen_inputs()
@@ -155,7 +155,7 @@ def test_safe_diagnostics_and_feedback_preserve_identity_and_exclude_arbitrary_t
 
 
 def test_diagnostic_limit_is_explicit_without_reducing_validation():
-    from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import DIAGNOSTIC_BYTES, validation_diagnostic
+    from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import DIAGNOSTIC_BYTES, validation_diagnostic
     inputs = frozen_inputs()
     candidate = covered_candidate(inputs).model_copy(update={"source_assessments": covered_candidate(inputs).source_assessments * 80})
     with pytest.raises(CandidateValidationError) as error:
@@ -169,7 +169,7 @@ def test_diagnostic_limit_is_explicit_without_reducing_validation():
 
 
 def test_provider_schema_errors_have_safe_paths_and_no_raw_input():
-    from backend.app.desktop.agent_loop.task_progress.candidate_contract import structural_error
+    from backend.app.desktop.patrol.agent_loop.task_progress.candidate_contract import structural_error
     inputs = frozen_inputs()
     secret = "Bearer unknown-credential"
     with pytest.raises(ValidationError) as error:
@@ -181,7 +181,7 @@ def test_provider_schema_errors_have_safe_paths_and_no_raw_input():
 
 
 def test_legacy_feedback_is_explicit_and_generic_failures_do_not_become_corrections():
-    from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import interpretation_payload
+    from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import interpretation_payload
     inputs = frozen_inputs()
     assert "validation_feedback" not in interpretation_payload(inputs, {}, error="ValueError: provider failure")
     feedback = interpretation_payload(inputs, {}, [{"event": "explicit_retry", "legacy_candidate_failure": True}])["validation_feedback"]
@@ -191,8 +191,8 @@ def test_legacy_feedback_is_explicit_and_generic_failures_do_not_become_correcti
 
 @pytest.mark.parametrize("method", ["prompt_json", "json_schema"])
 def test_existing_structured_worker_routes_receive_bound_schema(monkeypatch, method):
-    import backend.app.desktop.agent_loop.structured_worker as worker
-    from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import interpretation_payload
+    import backend.app.desktop.patrol.agent_loop.workers.structured_worker as worker
+    from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import interpretation_payload
     inputs = frozen_inputs()
     schema = candidate_schema(inputs)
     captured = {}
@@ -223,9 +223,9 @@ def test_existing_structured_worker_routes_receive_bound_schema(monkeypatch, met
 
 def test_feedback_and_bound_schema_are_included_in_capacity_admission(monkeypatch):
     from focus.messages.usage import estimate_raw_tokens
-    from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
-    from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import interpretation_payload, validation_diagnostic
-    from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime, _SYSTEM
+    from backend.app.desktop.patrol.agent_loop.workers.structured_worker import StructuredWorkerModel
+    from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import interpretation_payload, validation_diagnostic
+    from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime, _SYSTEM
     inputs = frozen_inputs()
     plain = interpretation_payload(inputs, {})
     schema = candidate_schema(inputs)
@@ -270,7 +270,7 @@ def test_historical_source_does_not_expand_current_manifest(field):
 
 
 def test_multiple_reference_errors_preserve_paths_totals_and_original_sequence():
-    from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import validation_diagnostic
+    from backend.app.desktop.patrol.agent_loop.task_progress.candidate_interpretation import validation_diagnostic
     inputs = frozen_inputs()
     base = covered_candidate(inputs)
     candidate = base.model_copy(update={"source_assessments": base.source_assessments + (base.source_assessments[0],),

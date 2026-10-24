@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import Request
 from langgraph.graph.state import CompiledStateGraph
 
-from backend.app.desktop.run_orchestration import (
+from backend.app.desktop.runs.orchestration import (
     RunExecutionResources,
     execute_prepared_run,
 )

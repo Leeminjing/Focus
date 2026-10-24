@@ -98,8 +98,8 @@ def test_nonstream_header_timing_precedes_slow_body(caplog):
 
 def test_index_cancel_timing_includes_model_cleanup_and_queued_waiter_release(caplog):
     from types import SimpleNamespace
-    from backend.app.desktop.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel
-    from backend.app.desktop.agent_loop.context_expansion.index_scheduling import IndexModelSlots
+    from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel
+    from backend.app.desktop.patrol.agent_loop.context_expansion.index_scheduling import IndexModelSlots
 
     async def run():
         started = asyncio.Event()
@@ -144,7 +144,7 @@ def test_process_monitor_counts_sql_errors_and_releases_hooks_idempotently(caplo
     from sqlalchemy import event, text
     from sqlalchemy.exc import DBAPIError
     from sqlalchemy.ext.asyncio import create_async_engine
-    from backend.app.desktop.performance import DesktopPerformanceMonitor
+    from backend.app.desktop.persistence.performance import DesktopPerformanceMonitor
 
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

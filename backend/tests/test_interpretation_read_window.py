@@ -11,15 +11,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel, IndexModelBudget, IndexBudgetExceeded
-from backend.app.desktop.agent_loop.context_expansion.interpretation_inputs import FrozenInterpretationInputs
-from backend.app.desktop.agent_loop.context_expansion.interpretation_record import RevisionInterpretationProposal
-from backend.app.desktop.agent_loop.context_expansion.revision_interpretation import INTERPRETATION_PROMPT, RevisionInterpretationBuilder
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import ProtocolSafeRevisionSegmenter, RevisionSemanticIndexer
-from backend.app.desktop.context_evolution import ContextRevisionRef
-from backend.app.desktop.agent_loop import derivation_worker
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel, IndexModelBudget, IndexBudgetExceeded
+from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_inputs import FrozenInterpretationInputs
+from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import RevisionInterpretationProposal
+from backend.app.desktop.patrol.agent_loop.context_expansion.revision_interpretation import INTERPRETATION_PROMPT, RevisionInterpretationBuilder
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import ProtocolSafeRevisionSegmenter, RevisionSemanticIndexer
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
+from backend.app.desktop.patrol.agent_loop.workers import derivation_worker
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.workers.structured_worker import StructuredWorkerModel
 from backend.tests.config_helpers import app_config_for
 from focus.runtime.runs.usage import ModelUsage
 
@@ -324,7 +324,7 @@ def test_existing_tail_window_index_remains_an_exact_cache_hit(monkeypatch, tmp_
 
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_window_contract_keeps_local_cache_and_old_proof(monkeypatch, tmp_path):
-    import backend.app.desktop.agent_loop.context_expansion.portfolio_index as module
+    import backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index as module
     from backend.tests.incremental_index_support import ModelProbe, observation, revision
     from backend.tests.test_incremental_revision_index import exercise
 

@@ -15,14 +15,14 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.evolution_strategies import (
+from backend.app.desktop.capabilities.evolution_strategies import (
     EvolutionStrategy, freeze_strategies, strategy_adoption_records, validate_strategy_adoptions,
 )
-from backend.app.desktop.strategy_packages import StrategyMetadata, StrategyPackage, parse_strategy
-from backend.app.desktop.memory import MemoryCreate, MemoryService, MemoryUpdate, MemorySelection, StrategyScenarios
-from backend.app.desktop.memory_routes import memory_router
-from backend.app.desktop.models import DesktopWorkspace
-from backend.app.desktop.agent_loop.schemas import StrategyAdoption
+from backend.app.desktop.capabilities.strategy_packages import StrategyMetadata, StrategyPackage, parse_strategy
+from backend.app.desktop.memory.service import MemoryCreate, MemoryService, MemoryUpdate, MemorySelection, StrategyScenarios
+from backend.app.desktop.api.memory import memory_router
+from backend.app.desktop.persistence.models import DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop.schemas import StrategyAdoption
 
 
 def package(version="1.0.0"):
@@ -139,13 +139,13 @@ def test_adoption_survives_kernel_events_live_and_audit(isolated_postgres_databa
     from sqlalchemy import select
     from test_agent_loop_round_liveness import _seed_loop, _stop
     from loop_run_boundary_support import freeze_patrol_intent
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
-    from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopObservation, LoopRound
-    from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-    from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection
-    from backend.app.desktop.agent_loop.live_snapshot_overlay import LoopLiveProjectionOverlay
-    from backend.app.desktop.agent_loop.query_routes import loop_audit
-    from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDecision, LoopObservation, LoopRound
+    from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+    from backend.app.desktop.patrol.agent_loop.projections.live_projection_contract import LoopLiveProjection
+    from backend.app.desktop.patrol.agent_loop.projections.live_snapshot_overlay import LoopLiveProjectionOverlay
+    from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_audit
+    from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
 
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -167,8 +167,8 @@ def test_adoption_survives_kernel_events_live_and_audit(isolated_postgres_databa
                 rationale="先在已有工作中完成最小验证", actions=({"action": "continue_context", "context_id": seed["context_id"],
                     "context_revision_id": seed["revision_id"], "message": "验证关键假设并发布真实证据。"},))
             frozen = await freeze_patrol_intent(sessions, intent)
-            from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-            from backend.app.desktop.agent_loop.observation import observation_hash
+            from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+            from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
             async with sessions.begin() as session:
                 observation = await session.get(LoopObservation, frozen.observation_id)
                 envelope = LoopObservationEnvelope.model_validate(observation.envelope).model_copy(update={
@@ -205,7 +205,7 @@ def test_adoption_survives_kernel_events_live_and_audit(isolated_postgres_databa
 
 
 def test_authoring_produces_drafts_and_three_simulations_without_saving(monkeypatch):
-    from backend.app.desktop import memory as module
+    from backend.app.desktop.memory import service as module
     calls = []
     result = {"adopted": True, "reason": "关键假设未验证", "organization": "先最小验证", "inheritance": "目标和相关证据", "missing_evidence": ["实验结果"], "stop_when": "证据充分"}
     rehearsal = {name: {**result, "adopted": name != "inapplicable"} for name in ("applicable", "inapplicable", "feedback")}
@@ -259,7 +259,7 @@ def test_package_migration_preserves_legacy_edits_and_reentry(isolated_postgres_
     from importlib import import_module
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
-    from backend.app.desktop.models import Memory
+    from backend.app.desktop.persistence.models import Memory
 
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

@@ -18,7 +18,7 @@ async def ensure_tables() -> None:
             return
         from focus.persistence.engine import get_session_factory
         # Register the FK target in shared Base.metadata before compiling this table.
-        from backend.app.desktop import models as _desktop_models  # noqa: F401
+        from backend.app.desktop.persistence import models as _desktop_models  # noqa: F401
         from plugins.spatial_patrol.docx_models import DocxEditorSession
 
         factory = get_session_factory()

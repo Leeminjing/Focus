@@ -13,11 +13,11 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.memory import MemoryService, MemoryCreate, MemoryUpdate
-from backend.app.desktop.models import DesktopWorkspace
-from backend.app.desktop.evolution_strategies import freeze_strategies, strategy_catalog
-from backend.app.desktop.agent_loop.observation import observation_hash, LoopObservationBuilder
-from backend.app.desktop.agent_loop.decision_context import scoped_memory
+from backend.app.desktop.memory.service import MemoryService, MemoryCreate, MemoryUpdate
+from backend.app.desktop.persistence.models import DesktopWorkspace
+from backend.app.desktop.capabilities.evolution_strategies import freeze_strategies, strategy_catalog
+from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash, LoopObservationBuilder
+from backend.app.desktop.patrol.agent_loop.decisions.decision_context import scoped_memory
 from test_semantic_context_planning import _observation
 
 
@@ -102,9 +102,9 @@ def test_frozen_strategies_are_full_and_old_hash_is_compatible():
 def test_strategy_scenarios_use_frozen_planning_and_existing_candidate_contract(strategy, scenario, objectives):
     from importlib import import_module
     from backend.tests.test_complete_semantic_context_derivation import _long_index
-    from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+    from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import (
         RetrievalBackedCognitiveAdvisor, PlannerQueryProposal, PlannerReadProposal, LaneAdviceProposal)
-    from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
         PlanningRetrievalSession, PortfolioIndexCatalog, AuthorizedSemanticRetriever, RetrievalBudget)
 
     seed = next(row for row in import_module("focus.persistence.migrations.versions.b81e2f3a4c5d_evolution_strategies")._SEEDS if row[0] == strategy)

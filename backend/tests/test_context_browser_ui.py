@@ -18,7 +18,7 @@ pytestmark = pytest.mark.skipif(os.name != "nt" or os.environ.get("FOCUS_BROWSER
 def test_creation_failure_keeps_durable_run_pending_until_failed(client, monkeypatch):
     from backend.app.gateway.app import app
     from backend.app.desktop.browser.transport import BrowserError
-    from backend.app.desktop.run_orchestration.models import RunDispatch
+    from backend.app.desktop.runs.orchestration.models import RunDispatch
     from sqlalchemy import select
     http, task, _, sampled = client
     service = app.state.desktop_service
@@ -88,7 +88,8 @@ def test_context_selection_binding_and_native_status_in_real_focus(client, tmp_p
         catalog = compile_agent_tool_catalog(kwargs["tools"], middleware)
         return create_agent(Model(responses=["Browser-bound Run completed"]), tools=catalog.regular_tools,
                             middleware=middleware, context_schema=dict)
-    monkeypatch.setattr("backend.app.desktop.service.make_lead_agent", graph)
+    monkeypatch.setattr('backend.app.desktop.conversations.compression_service.make_lead_agent', graph)
+    monkeypatch.setattr('backend.app.desktop.runs.agent_factory.make_lead_agent', graph)
     started = http.post(f"/desktop/api/tasks/{aid}/main/runs", headers=SESSION,
                         json={"message": "Run with an independent browser", "model_name": "deepseek-v4-flash"})
     assert started.status_code == 200, started.text

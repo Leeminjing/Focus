@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from backend.app.desktop import file_routes as files
+from backend.app.desktop.workspaces import files as files
 
 
 def test_file_boundaries_and_missing_files(tmp_path):

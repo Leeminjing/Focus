@@ -1,0 +1,657 @@
+r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
+
+输入为已结束 RunRecord 或未启动成功的持久 Run、最终 checkpoint 和 workspace result；输出为安全规范化的终态 Run、
+新 Context revision 与 MainRunSettled event identity。具体工作流为先在事务外精确读取执行 checkpoint，
+再在单事务中锁 Run、保存终态及完整模型用量；仅以精确 source checkpoint 的消息 identity 证明终端未闭合调用属于当前 Run，
+来源不可读时不授予自动修复因果；随后用共享协议编译器验证 execution view，按 base revision CAS 发布合法 revision，
+按 lease 模式结算 workspace effect、释放 lease，保存使用当前注入秘密值脱敏的类型化任务领域来源并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
+权威 Writer 才推进权威 slot。控制终止只改变业务状态，finalize 仍回填用量与清理且不复活执行；
+slot 有未恢复的采用意图时仅记录 adoption_recovery_pending，不由迟到 Run 结算推进该 slot。
+未启动的 abort_prepared 同事务按 Run→Dispatch 顺序保存终态、终结派发和释放租约，再登记 outbox。
+重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。Run.workspace_result 中未清理的 Shell attempt 阻止结算、派发完成和租约释放；重启只记录 interrupted，绝不将未知进程树当作已退出。
+checkpoint 的 canonical typed bridge 在结算前验证，新 publication 保存 V2 execution Items，UI codec 不参与恢复。
+示例：`settlement = await finalizer.finalize(record)`。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from focus.history import content_hash
+from focus.history.bridge import checkpoint_records
+from backend.app.desktop.contexts.evolution.history import continued_revision_history
+from focus.runtime.runs.manager import RunRecord
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionReader,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+    ContextRevisionSourceContract,
+)
+from backend.app.desktop.contexts.evolution.repository import (
+    ContextRevisionIdentityMismatch,
+    ContextRevisionNotFound,
+)
+from backend.app.desktop.contexts.projection import (
+    ProtocolRepairContext,
+    compile_context_messages,
+)
+from backend.app.desktop.contexts.protocol import ToolExchangeInspector
+from backend.app.desktop.runs.evidence.run_outcomes import RunOutcomeRecorder
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, ModelAttemptAudit
+from backend.app.desktop.persistence.safety import PersistencePayloadNormalizer
+from backend.app.desktop.runs.orchestration.outbox import RunOutboxRepository
+from backend.app.desktop.workspaces.coordination.fingerprints import (
+    WorkspaceFingerprinter,
+)
+from backend.app.desktop.workspaces.coordination.models import (
+    RunExecutionAnchor,
+    WorkspaceLease,
+    WorkspaceSlot,
+)
+from backend.app.desktop.workspaces.coordination.reservations import reserved_adoption
+
+
+class RunSettlement(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: str
+    task_id: str
+    kind: str
+    status: str
+    final_checkpoint_id: str | None
+    context_revision: ContextRevisionRef | None
+    context_publication: str
+    event_id: str
+    idempotent: bool = False
+
+
+class RunLifecycleFinalizer:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        checkpointer: Any,
+        context_revisions: ContextRevisionRepository | None = None,
+        outbox: RunOutboxRepository | None = None,
+        *,
+        secret_provider=None,
+    ) -> None:
+        self._sessions = session_factory
+        self._checkpointer = checkpointer
+        self._contexts = context_revisions or ContextRevisionRepository()
+        self._outbox = outbox or RunOutboxRepository()
+        self._secret_provider = secret_provider
+
+    async def finalize(
+        self,
+        record: RunRecord,
+        workspace_result: dict[str, Any] | None = None,
+    ) -> RunSettlement:
+        run, thread = await self._identity(record.run_id)
+        checkpoint = await self._latest_checkpoint(run, thread)
+        checkpoint_id = self._checkpoint_id(checkpoint)
+        checkpoint_messages = self._checkpoint_messages(checkpoint)
+        from backend.app.desktop.conversations.attention import read_task_attention
+
+        try:
+            attention = await read_task_attention(
+                self._checkpointer, run, thread, checkpoint,
+                status="interrupted" if run.status == "interrupted" else record.status.value,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning("待处理摘要暂不可用: %s", run.run_id, exc_info=True)
+            attention = None
+        captured = await self._capture_workspace(run)
+        async with self._sessions.begin() as session:
+            locked = await session.scalar(
+                select(DesktopRun)
+                .where(DesktopRun.run_id == record.run_id)
+                .with_for_update()
+            )
+            if locked is None:
+                raise LookupError(f"Run 不存在: {record.run_id}")
+            if locked.settled_at is not None:
+                return await self._settlement(session, locked, idempotent=True)
+            if (locked.workspace_result or {}).get("shell_cleanup"):
+                raise RuntimeError("Shell 进程树清理未确认，Run 结算保持阻塞")
+            terminal_status = record.status.value
+            terminal_error = record.error
+            if locked.status == "interrupted":
+                terminal_status = locked.status
+                terminal_error = locked.error or terminal_error
+            if terminal_status in {"pending", "running"}:
+                terminal_status = "error"
+                terminal_error = terminal_error or "Run task 已结束但未产生终态"
+            locked.status = terminal_status
+            locked.error = self._safe_text(terminal_error, "desktop-run.error")
+            locked.model_call_count = record.model_call_count
+            locked.prompt_input_tokens = record.prompt_input_tokens
+            locked.prompt_output_tokens = record.prompt_output_tokens
+            locked.prompt_cache_hit_tokens = record.prompt_cache_hit_tokens
+            audits = tuple((await session.scalars(select(ModelAttemptAudit).where(ModelAttemptAudit.run_id == locked.run_id))).all())
+            if audits:
+                locked.model_call_count = max(locked.model_call_count, len(audits))
+                locked.prompt_input_tokens = max(locked.prompt_input_tokens, sum(int((row.usage or {}).get("input_tokens") or 0) for row in audits))
+                locked.prompt_output_tokens = max(locked.prompt_output_tokens, sum(int((row.usage or {}).get("output_tokens") or 0) for row in audits))
+            locked.final_checkpoint_id = checkpoint_id
+            locked.workspace_result = self._safe_json(
+                await self._settle_workspace(session, locked, workspace_result, captured),
+                "desktop-run.workspace-result",
+            )
+            if attention is not None:
+                locked.workspace_result = {**locked.workspace_result, "task_attention": attention if locked.status == "interrupted" else []}
+            locked.settled_at = datetime.now(UTC)
+            from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+
+            await RunDispatchRepository().settle_by_run(session, locked.run_id)
+            await self._release_workspace_lease(session, locked)
+            revision, publication = await self._publish_context_checkpoint(
+                session,
+                locked,
+                thread,
+                checkpoint_id,
+                checkpoint_messages,
+            )
+            secrets = self._secret_provider() if self._secret_provider is not None else None
+            await RunOutcomeRecorder(secrets=secrets).record(session, locked, checkpoint_messages)
+            event = await self._outbox.enqueue_settled(
+                session,
+                locked.run_id,
+                self._payload(locked, revision, publication),
+            )
+            return RunSettlement(
+                run_id=locked.run_id,
+                task_id=locked.task_id,
+                kind=locked.kind,
+                status=locked.status,
+                final_checkpoint_id=checkpoint_id,
+                context_revision=revision,
+                context_publication=publication,
+                event_id=event.event_id,
+            )
+
+    async def reconcile_active(self, reason: str, *, exclude_run_ids: set[str] | None = None) -> int:
+        excluded = exclude_run_ids or set()
+        async with self._sessions() as session:
+            identities = list(
+                (
+                    await session.scalars(
+                        select(DesktopRun).where(
+                            DesktopRun.settled_at.is_(None),
+                            DesktopRun.status.in_(["pending", "running", "interrupted"]),
+                            DesktopRun.run_id.not_in(excluded) if excluded else True,
+                        )
+                    )
+                ).all()
+            )
+        captured_by_run = {
+            run.run_id: await self._capture_workspace(run)
+            for run in identities
+        }
+        async with self._sessions.begin() as session:
+            runs = list(
+                (
+                    await session.scalars(
+                        select(DesktopRun)
+                        .where(
+                            DesktopRun.settled_at.is_(None),
+                            DesktopRun.status.in_(["pending", "running", "interrupted"]),
+                            DesktopRun.run_id.not_in(excluded) if excluded else True,
+                        )
+                        .order_by(DesktopRun.run_id)
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            settled = 0
+            for run in runs:
+                run.status = "interrupted"
+                run.error = self._safe_text(reason, "desktop-run.error")
+                if (run.workspace_result or {}).get("shell_cleanup"):
+                    run.error = "进程重启后 Shell 清理证据仍不完整；保留 Run、派发与工作区，禁止自动重放"
+                    continue
+                await self._settle_interrupted(session, run, captured_by_run.get(run.run_id))
+                settled += 1
+            return settled
+
+    async def recover_shell_cleanup(self, run_id: str, expected: dict, proofs: dict) -> RunSettlement:
+        run, _ = await self._identity(run_id)
+        captured = await self._capture_workspace(run)
+        async with self._sessions.begin() as session:
+            locked = await session.get(DesktopRun, run_id, with_for_update=True)
+            if locked.settled_at is not None:
+                return await self._settlement(session, locked, idempotent=True)
+            pending = (locked.workspace_result or {}).get("shell_cleanup") or {}
+            if locked.status != "interrupted" or not pending or pending != expected or set(proofs) != set(pending):
+                raise ValueError("Shell 执行状态已变化，请重新核验")
+            locked.workspace_result = {**locked.workspace_result, "shell_cleanup": {},
+                "shell_cleanup_recovery": {"verified_at": datetime.now(UTC).isoformat(), "attempts": proofs}}
+            locked.error = "Shell 退出已核验；原 Run 保持中断，未自动重放"
+            await self._settle_interrupted(session, locked, captured)
+            return await self._settlement(session, locked, idempotent=False)
+
+    async def _settle_interrupted(self, session: AsyncSession, run: DesktopRun, captured) -> None:
+        from backend.app.desktop.runs.execution_attempts.usage_receipts import ModelUsageReceipts
+        from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+
+        audits = tuple((await session.scalars(select(ModelAttemptAudit).where(ModelAttemptAudit.run_id == run.run_id).with_for_update())).all())
+        for audit in audits:
+            if audit.status == "prepared":
+                audit.status = "interrupted"
+                audit.audit = {"error_type": "process_restarted", "consumption": "unknown"}
+                audit.settled_at = datetime.now(UTC)
+                await ModelUsageReceipts().settle(session, audit)
+        run.model_call_count = max(run.model_call_count or 0, len(audits))
+        run.prompt_input_tokens = max(run.prompt_input_tokens or 0, sum(int((audit.usage or {}).get("input_tokens") or 0) for audit in audits))
+        run.prompt_output_tokens = max(run.prompt_output_tokens or 0, sum(int((audit.usage or {}).get("output_tokens") or 0) for audit in audits))
+        await RunDispatchRepository().settle_by_run(session, run.run_id)
+        run.settled_at = datetime.now(UTC)
+        reconciliation = await self._reconcile_workspace_evidence(session, run, captured)
+        if (run.workspace_result or {}).get("shell_cleanup_recovery"):
+            reconciliation["retry_safe"] = False
+        run.workspace_result = self._safe_json({
+            **(run.workspace_result or {}), "context_publication": "unknown_after_restart",
+            "reconciliation": reconciliation,
+        }, "desktop-run.workspace-result")
+        await self._release_workspace_lease(session, run)
+        await self._outbox.enqueue_settled(session, run.run_id, self._payload(run, None, "unknown_after_restart"))
+
+    @staticmethod
+    async def _reconcile_workspace_evidence(session: AsyncSession, run: DesktopRun, captured) -> dict[str, Any]:
+        anchor = await session.get(RunExecutionAnchor, run.run_id, with_for_update=True)
+        mode = str((run.workspace_anchor or {}).get("mode") or "read")
+        if anchor is None or captured is None:
+            return {
+                "mode": mode,
+                "evidence": "unavailable",
+                "retry_safe": False,
+                "side_effect_observed": None,
+            }
+        changed = captured.digest != anchor.observed_fingerprint
+        evidence = {
+            "kind": "restart_workspace_reconciliation",
+            "mode": mode,
+            "before": anchor.observed_fingerprint,
+            "after": captured.digest,
+            "changed": changed,
+        }
+        anchor.effect_evidence = [*(anchor.effect_evidence or []), evidence]
+        anchor.resulting_workspace_revision = anchor.observed_workspace_revision
+        anchor.resulting_fingerprint = captured.digest
+        anchor.settled_at = datetime.now(UTC)
+        return {
+            "mode": mode,
+            "evidence": "fingerprint",
+            "retry_safe": mode == "read" and not changed,
+            "side_effect_observed": changed,
+            "before": anchor.observed_fingerprint,
+            "after": captured.digest,
+        }
+
+    async def abort_prepared(self, run_id: str, reason: str) -> bool:
+        async with self._sessions.begin() as session:
+            run = await session.get(DesktopRun, run_id, with_for_update=True)
+            if run is None or run.settled_at is not None:
+                return False
+            if (run.workspace_result or {}).get("shell_cleanup"):
+                return False
+            if run.status != "interrupted":
+                run.status = "error"
+                run.error = self._safe_text(reason, "desktop-run.error")
+            run.settled_at = datetime.now(UTC)
+            run.workspace_result = self._safe_json({
+                **(run.workspace_result or {}),
+                "context_publication": "not_started",
+                "launch_error": reason,
+            }, "desktop-run.workspace-result")
+            from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+
+            await RunDispatchRepository().settle_by_run(session, run.run_id)
+            await self._release_workspace_lease(session, run)
+            await self._outbox.enqueue_settled(
+                session,
+                run.run_id,
+                self._payload(run, None, "not_started"),
+            )
+            return True
+
+    async def _identity(self, run_id: str) -> tuple[DesktopRun, DesktopThread]:
+        async with self._sessions() as session:
+            run = await session.get(DesktopRun, run_id)
+            if run is None:
+                raise LookupError(f"Run 不存在: {run_id}")
+            thread = await session.get(DesktopThread, run.task_id)
+            if thread is None:
+                raise LookupError(f"Run Context 不存在: {run.task_id}")
+            return run, thread
+
+    async def _latest_checkpoint(
+        self,
+        run: DesktopRun,
+        thread: DesktopThread,
+    ) -> Any | None:
+        execution_thread = run.execution_thread_id or thread.thread_id
+        checkpoint = await self._checkpointer.aget_tuple(
+            {
+                "configurable": {
+                    "thread_id": execution_thread,
+                    "checkpoint_ns": run.checkpoint_ns or "",
+                }
+            }
+        )
+        return checkpoint
+
+    async def _publish_context_checkpoint(
+        self,
+        session: AsyncSession,
+        run: DesktopRun,
+        thread: DesktopThread,
+        checkpoint_id: str | None,
+        checkpoint_messages: tuple[dict[str, Any], ...],
+    ) -> tuple[ContextRevisionRef | None, str]:
+        if run.kind != "main" or checkpoint_id is None:
+            return None, "not_applicable"
+        current = await self._contexts.current(session, run.task_id)
+        if current is not None and current.ref.checkpoint_id == checkpoint_id:
+            return current.ref, "unchanged"
+        if (
+            run.context_revision_id is not None
+            and (current is None or current.ref.revision_id != run.context_revision_id)
+        ):
+            return None, "superseded"
+        expected = current.ref if current is not None else None
+        revision_id = uuid.uuid4().hex
+        ref = ContextRevisionRef(
+            context_id=run.task_id,
+            revision_id=revision_id,
+            generation=await self._contexts.next_generation(session, run.task_id),
+            execution_thread_id=run.execution_thread_id or thread.thread_id,
+            checkpoint_ns=run.checkpoint_ns or "",
+            checkpoint_id=checkpoint_id,
+            payload_mode=ContextRevisionPayloadMode.CHECKPOINT,
+        )
+        sources = (
+            (ContextRevisionSourceContract(source=expected, position=0),)
+            if expected is not None
+            else ()
+        )
+        inherited_message_ids, source_available = (
+            await self._inherited_message_ids(session, current)
+            if run.status in {"interrupted", "cancelled", "error"}
+            and ToolExchangeInspector.terminal_unresolved_calls(list(checkpoint_messages)) is not None
+            else (set(), False)
+        )
+        repair_context = self._repair_context(
+            run,
+            checkpoint_messages=checkpoint_messages,
+            inherited_message_ids=inherited_message_ids,
+            source_revision_id=revision_id,
+            source_bound=(
+                current is not None
+                and source_available
+                and run.context_revision_id == current.ref.revision_id
+            ),
+        )
+        projection = compile_context_messages(
+            list(checkpoint_messages),
+            repair_context,
+        )
+        status = {
+            "valid": ContextRevisionProjectionStatus.VALID,
+            "repaired": ContextRevisionProjectionStatus.REPAIRED,
+            "approval_required": ContextRevisionProjectionStatus.APPROVAL_REQUIRED,
+        }[projection.status]
+        history = continued_revision_history(
+            current.authored_messages if current is not None else (), projection.execution_messages,
+            previous=current.history_payload if current else None,
+        )
+        contract = ContextRevisionContract(
+            ref=ref,
+            sources=sources,
+            history_payload=history,
+            repair_manifest=tuple(projection.repair_manifest),
+            issues=tuple(projection.issues),
+            initial_message_ids=tuple(
+                str(message.get("id"))
+                for message in projection.execution_messages
+                if message.get("id") is not None
+            ),
+            definition_hash=projection.definition_hash,
+            projection_hash=projection.projection_hash,
+            content_hash=content_hash({"run_id": run.run_id, "checkpoint_id": checkpoint_id,
+                                       "history_payload": history.model_dump(mode="json")}),
+            projection_status=status,
+            origin_kind=ContextRevisionOriginKind.RUN_SETTLED,
+            origin_id=run.run_id,
+            created_at=datetime.now(UTC),
+        )
+        await self._contexts.insert(session, contract)
+        if status is ContextRevisionProjectionStatus.APPROVAL_REQUIRED:
+            return ref, "approval_required"
+        await self._contexts.switch_current(session, ref, expected)
+        return ref, "published"
+
+    @staticmethod
+    def _checkpoint_id(checkpoint: Any | None) -> str | None:
+        if checkpoint is None:
+            return None
+        return checkpoint.config.get("configurable", {}).get("checkpoint_id")
+
+    @staticmethod
+    def _checkpoint_messages(checkpoint: Any | None) -> tuple[dict[str, Any], ...]:
+        if checkpoint is None:
+            return ()
+        values = getattr(checkpoint, "checkpoint", {}).get("channel_values", {})
+        return checkpoint_records(values)
+
+    @staticmethod
+    def _repair_context(
+        run: DesktopRun,
+        *,
+        checkpoint_messages: tuple[dict[str, Any], ...],
+        inherited_message_ids: set[str],
+        source_revision_id: str | None = None,
+        source_bound: bool = True,
+    ) -> ProtocolRepairContext | None:
+        if run.status not in {"interrupted", "cancelled", "error"} or not source_bound:
+            return None
+        terminal = ToolExchangeInspector.terminal_unresolved_calls(list(checkpoint_messages))
+        if terminal is None or terminal[0] in inherited_message_ids:
+            return None
+        status = "cancelled" if run.status == "cancelled" else "interrupted"
+        return ProtocolRepairContext.interrupted(
+            run.run_id,
+            call_ids=terminal[1],
+            status=status,
+            reason=run.error or f"Run settled with status {run.status} before the tool returned.",
+            source_revision_id=source_revision_id,
+        )
+
+    async def _inherited_message_ids(
+        self,
+        session: AsyncSession,
+        current: ContextRevisionContract | None,
+    ) -> tuple[set[str], bool]:
+        if current is None:
+            return set(), False
+        inherited = {
+            str(message.get("id"))
+            for message in (*current.authored_messages, *current.execution_messages)
+            if message.get("id")
+        }
+        inherited.update(current.initial_message_ids)
+        try:
+            authored = await ContextRevisionReader(self._contexts, self._checkpointer).read(
+                session, current.ref, "authored"
+            )
+        except (ContextRevisionNotFound, ContextRevisionIdentityMismatch):
+            return inherited, False
+        inherited.update(str(message["id"]) for message in authored.messages if message.get("id"))
+        return inherited, True
+
+    async def _settlement(
+        self,
+        session: AsyncSession,
+        run: DesktopRun,
+        *,
+        idempotent: bool,
+    ) -> RunSettlement:
+        event_id = self._outbox.event_id(run.run_id, "MainRunSettled")
+        revision = None
+        publication = str((run.workspace_result or {}).get("context_publication") or "unknown")
+        if run.kind == "main" and run.final_checkpoint_id is not None:
+            current = await self._contexts.current(session, run.task_id)
+            if current is not None and current.ref.checkpoint_id == run.final_checkpoint_id:
+                revision = current.ref
+                publication = "published"
+        return RunSettlement(
+            run_id=run.run_id,
+            task_id=run.task_id,
+            kind=run.kind,
+            status=run.status,
+            final_checkpoint_id=run.final_checkpoint_id,
+            context_revision=revision,
+            context_publication=publication,
+            event_id=event_id,
+            idempotent=idempotent,
+        )
+
+    async def _capture_workspace(self, run: DesktopRun):
+        slot_id = (run.workspace_anchor or {}).get("slot_id")
+        if not slot_id:
+            return None
+        async with self._sessions() as session:
+            slot = await session.get(WorkspaceSlot, slot_id)
+        if slot is None or not Path(slot.root_path).is_dir():
+            return None
+        return await asyncio.to_thread(WorkspaceFingerprinter().capture, Path(slot.root_path))
+
+    @staticmethod
+    async def _settle_workspace(
+        session: AsyncSession,
+        run: DesktopRun,
+        supplied: dict[str, Any] | None,
+        captured,
+    ) -> dict[str, Any]:
+        result = dict(supplied or {})
+        anchor_data = run.workspace_anchor or {}
+        slot_id = anchor_data.get("slot_id")
+        if not slot_id:
+            return result
+        slot = await session.get(WorkspaceSlot, slot_id, with_for_update=True)
+        anchor = await session.get(RunExecutionAnchor, run.run_id, with_for_update=True)
+        if slot is None or anchor is None:
+            return {**result, "workspace_status": "anchor_missing"}
+        adoption_id = await reserved_adoption(session, slot_id)
+        if adoption_id is not None:
+            return {**result, "workspace_status": "adoption_recovery_pending",
+                "adoption_id": adoption_id, "revision": slot.revision,
+                "fingerprint": slot.current_fingerprint}
+        expected = anchor.observed_workspace_revision
+        if slot.revision != expected:
+            return {
+                **result,
+                "workspace_status": "superseded",
+                "revision": slot.revision,
+                "fingerprint": slot.current_fingerprint,
+            }
+        mode = str(anchor_data.get("mode") or "read")
+        captured_fingerprint = captured.digest if captured is not None else slot.current_fingerprint
+        changed = captured_fingerprint != anchor.observed_fingerprint
+        effect = {
+            "kind": "workspace_fingerprint_transition",
+            "mode": mode,
+            "slot_kind": slot.kind,
+            "before": anchor.observed_fingerprint,
+            "after": captured_fingerprint,
+            "changed": changed,
+        }
+        anchor.effect_evidence = [*(anchor.effect_evidence or []), effect]
+        if mode == "read" and changed:
+            slot.revision += 1
+            slot.current_fingerprint = captured_fingerprint
+            anchor.resulting_workspace_revision = slot.revision
+            anchor.resulting_fingerprint = captured_fingerprint
+            anchor.settled_at = datetime.now(UTC)
+            return {
+                **result,
+                "workspace_status": "read_lease_violation",
+                "revision": slot.revision,
+                "fingerprint": slot.current_fingerprint,
+                "effect_evidence": anchor.effect_evidence,
+            }
+        if mode == "write" and changed:
+            slot.revision += 1
+            slot.current_fingerprint = captured_fingerprint
+        if slot.kind == "isolated" and mode == "write" and changed:
+            anchor.adoption_state = "pending"
+        anchor.resulting_workspace_revision = slot.revision
+        anchor.resulting_fingerprint = slot.current_fingerprint
+        anchor.settled_at = datetime.now(UTC)
+        result.update(
+            {
+                "workspace_status": "adoption_pending" if anchor.adoption_state == "pending" else "settled",
+                "revision": slot.revision,
+                "fingerprint": slot.current_fingerprint,
+                "effect_evidence": anchor.effect_evidence,
+                "adoption_state": anchor.adoption_state,
+            }
+        )
+        return result
+
+    @staticmethod
+    async def _release_workspace_lease(session: AsyncSession, run: DesktopRun) -> None:
+        lease_id = (run.workspace_anchor or {}).get("lease_id")
+        if not lease_id:
+            return
+        lease = await session.get(WorkspaceLease, lease_id, with_for_update=True)
+        if lease is not None and lease.status == "active":
+            lease.status = "released"
+            lease.released_at = datetime.now(UTC)
+
+    @staticmethod
+    def _payload(
+        run: DesktopRun,
+        revision: ContextRevisionRef | None,
+        publication: str,
+    ) -> dict[str, Any]:
+        result = dict(run.workspace_result or {})
+        result["context_publication"] = publication
+        run.workspace_result = result
+        return {
+            "run_id": run.run_id,
+            "task_id": run.task_id,
+            "kind": run.kind,
+            "origin": run.origin,
+            "status": run.status,
+            "context_revision": revision.model_dump(mode="json") if revision else None,
+            "final_checkpoint_id": run.final_checkpoint_id,
+            "workspace_anchor": run.workspace_anchor,
+            "workspace_result": result,
+            "loop_id": run.loop_id,
+            "round_id": run.round_id,
+            "action_id": run.action_id,
+            "directive_id": run.directive_id,
+        }
+
+    @staticmethod
+    def _safe_json(value: Any, source: str) -> Any:
+        return PersistencePayloadNormalizer.normalize(value, source).value
+
+    @staticmethod
+    def _safe_text(value: str | None, source: str) -> str | None:
+        if value is None:
+            return None
+        return str(PersistencePayloadNormalizer.normalize(value, source).value)

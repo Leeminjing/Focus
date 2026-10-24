@@ -22,18 +22,18 @@ from test_atomic_portfolio_publication import _contract
 from test_round_memory_boundaries import _prepare_portfolio, _world
 from test_round_task_progress import _Checkpointer
 
-from backend.app.desktop.agent_loop.models import LoopContextMembership
-from backend.app.desktop.agent_loop.observation_capture import (
+from backend.app.desktop.patrol.agent_loop.models import LoopContextMembership
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
     LoopObservationService,
     PatrolReadRequest,
 )
-from backend.app.desktop.context_evolution import ContextRevisionRepository
-from backend.app.desktop.context_evolution.committed_lineage import (
+from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+from backend.app.desktop.contexts.evolution.committed_lineage import (
     CommittedLineageReader,
 )
-from backend.app.desktop.context_evolution.lineage import ContextLineageResolver
-from backend.app.desktop.context_evolution.lineage_contracts import LineageSnapshot
-from backend.app.desktop.context_evolution.schemas import (
+from backend.app.desktop.contexts.evolution.lineage import ContextLineageResolver
+from backend.app.desktop.contexts.evolution.lineage_contracts import LineageSnapshot
+from backend.app.desktop.contexts.evolution.schemas import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -41,7 +41,7 @@ from backend.app.desktop.context_evolution.schemas import (
     ContextRevisionRef,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.models import DesktopThread
+from backend.app.desktop.persistence.models import DesktopThread
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")

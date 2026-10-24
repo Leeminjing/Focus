@@ -15,23 +15,23 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from backend.tests.test_workspace_patrol import _setup
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.fact_event_materializer import FactEventMaterializer
-from backend.app.desktop.agent_loop.fact_identity import FactIdentityResolver
-from backend.app.desktop.agent_loop.fact_lifecycle import FactLifecycleRepository, FactObservation
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.fact_verification import FactActor
-from backend.app.desktop.agent_loop.journal_models import LoopJournalSequence, LoopProjectorCursor, LoopReplayRetention
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopObservation, LoopRound
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest, VisibleContext
-from backend.app.desktop.agent_loop.patrol_read_view import PatrolCausalReadRequest
-from backend.app.desktop.agent_loop.projection_recovery import ProjectionRecoveryRepository
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
-from backend.app.desktop.agent_loop.task_progress.models import LoopDecisionInputs, LoopProgressWork
-from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.facts.fact_event_materializer import FactEventMaterializer
+from backend.app.desktop.patrol.agent_loop.facts.fact_identity import FactIdentityResolver
+from backend.app.desktop.patrol.agent_loop.facts.fact_lifecycle import FactLifecycleRepository, FactObservation
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.patrol.agent_loop.facts.fact_verification import FactActor
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalSequence, LoopProjectorCursor, LoopReplayRetention
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDecision, LoopObservation, LoopRound
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest, VisibleContext
+from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import PatrolCausalReadRequest
+from backend.app.desktop.patrol.agent_loop.recovery.projection_recovery import ProjectionRecoveryRepository
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopDecisionInputs, LoopProgressWork
+from backend.app.desktop.persistence.models import DesktopRun
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -205,7 +205,7 @@ def test_migration_binds_only_existing_authorized_run_without_widening_mode(tmp_
         from alembic.operations import Operations
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
         from test_agent_loop_round_liveness import _seed_loop
-        from backend.app.desktop.agent_loop.models import LoopAction, LoopDirective
+        from backend.app.desktop.patrol.agent_loop.models import LoopAction, LoopDirective
 
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -262,7 +262,7 @@ def test_migration_binds_only_existing_authorized_run_without_widening_mode(tmp_
                     "context_id": seeded["context_id"], "grant_revision": 1, "access_mode": "read-only", "source": "migration"}
                 assert decision.intent["context_permissions"] == [{"context_id": seeded["context_id"], "access_mode": "read-only"}]
                 if conflicting_run_id:
-                    from backend.app.desktop.agent_loop.directive_equipment import round_permission_state
+                    from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import round_permission_state
 
                     conflicting_run = await session.get(DesktopRun, conflicting_run_id)
                     assert conflicting_run.equipment["access_mode"] == "workspace-write"

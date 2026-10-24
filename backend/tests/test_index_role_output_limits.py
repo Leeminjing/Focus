@@ -9,8 +9,8 @@ import pytest
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
-from backend.app.desktop.agent_loop import structured_worker
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.workers import structured_worker
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
 from backend.tests.config_helpers import app_config_for
 
 

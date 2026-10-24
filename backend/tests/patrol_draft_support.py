@@ -6,7 +6,7 @@
 headers=session, system_prompt="检查", history_messages=[], final_human_message="执行", equipment=equipment)。
 """
 
-from backend.app.desktop.session_patrol.contracts import legacy_document
+from backend.app.desktop.patrol.session_patrol.contracts import legacy_document
 
 
 def save_patrol_draft(client, draft, *, headers, system_prompt, history_messages, final_human_message, equipment):

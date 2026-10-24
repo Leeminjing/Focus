@@ -14,10 +14,10 @@ from pydantic import ValidationError
 from langchain.tools import ToolException
 from langchain_core.messages import ToolMessage
 
-from backend.app.desktop.collab import AgentCollab
-from backend.app.desktop.service import DesktopService
-from backend.app.desktop.tool_error_provider import build_tool_error_middleware
-from backend.app.desktop.equipment_policy import activation_equipment, effective_equipment
+from backend.app.desktop.agents.collaboration import AgentCollab
+from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.runs.tool_errors import build_tool_error_middleware
+from backend.app.desktop.capabilities.equipment import activation_equipment, effective_equipment
 from backend.tests.runtime_context_support import runtime_context
 
 

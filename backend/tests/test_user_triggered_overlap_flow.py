@@ -24,34 +24,34 @@ from test_agent_loop_round_liveness import _seed_loop
 from test_round_task_progress import _Checkpointer
 from test_task_progress_validation_recovery import _Model
 from test_loop_failure_repair_transaction import NoCheckpoints
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator, LoopCoordinatorRuntime
-from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
-from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder, LoopWaveDispatcher
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopObservation, LoopRound, LoopUserIntent
-from backend.app.desktop.agent_loop.ownership import KernelFencingRejected
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.patrol import PortfolioPatrol
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.agent_loop.rounds import advance_settled_round
-from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
-from backend.app.desktop.agent_loop.task_progress.models import LoopProgressReceipt, LoopProgressWork
-from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
-from backend.app.desktop.agent_loop.task_progress.repository import TaskProgressRepository
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolService
-from backend.app.desktop.context_curation import ComposeMessage, CreateLanePlan
-from backend.app.desktop.context_curation.contracts import MissionEvidenceRef
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionNotFound, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.domain_evidence.repository import DomainResultRepository
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
-from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.run_orchestration.outbox import RunOutboxConsumer
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator, LoopCoordinatorRuntime
+from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_directive_equipment
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopRunWorkspaceBinder, LoopWaveDispatcher
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopObservation, LoopRound, LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.governance.ownership import KernelFencingRejected
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.patrol import PortfolioPatrol
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import advance_settled_round
+from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
+from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressReceipt, LoopProgressWork
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import canonical_hash
+from backend.app.desktop.patrol.agent_loop.task_progress.repository import TaskProgressRepository
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolService
+from backend.app.desktop.contexts.curation import ComposeMessage, CreateLanePlan
+from backend.app.desktop.contexts.curation.contracts import MissionEvidenceRef
+from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionNotFound, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.runs.evidence.repository import DomainResultRepository
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.assembler import RunExecutionAssembly
+from backend.app.desktop.runs.orchestration.dispatch import DurableRunDispatchWorker
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.orchestration.outbox import RunOutboxConsumer
 
 pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 

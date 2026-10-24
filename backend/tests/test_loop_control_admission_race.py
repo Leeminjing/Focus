@@ -14,15 +14,15 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.agent_loop.schemas import RevokeLoopGrantRequest
-from backend.app.desktop.execution_attempts.tool import ToolExecutionLedger
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.patrol.agent_loop.schemas import RevokeLoopGrantRequest
+from backend.app.desktop.runs.execution_attempts.tool import ToolExecutionLedger
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.dispatch import DurableRunDispatchWorker
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_loop_execution_ownership import _seed_launching_directive, _admit_run
 from backend.tests.test_loop_failure_repair_transaction import ExecutionAssembler

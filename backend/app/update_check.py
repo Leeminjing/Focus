@@ -18,7 +18,7 @@ async def check_schema() -> None:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    import backend.app.desktop.persistence_registry  # noqa: F401
+    import backend.app.desktop.persistence.registry  # noqa: F401
     from focus.persistence.base import Base
 
     ini = Path(__file__).resolve().parents[1] / "packages/harness/focus/persistence/migrations/alembic.ini"

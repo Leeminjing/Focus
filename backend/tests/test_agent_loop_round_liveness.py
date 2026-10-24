@@ -22,8 +22,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import (
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop import (
     AgentLoopRecovery,
     AgentLoopService,
     LoopCoordinator,
@@ -31,9 +31,9 @@ from backend.app.desktop.agent_loop import (
     LoopKernel,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.queries.console_query import LoopConsoleQueryService
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopCoordinatorLease,
     LoopDecision,
@@ -42,15 +42,15 @@ from backend.app.desktop.agent_loop.models import (
     LoopPatrolAttempt,
     LoopRound,
 )
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
-from backend.app.desktop.agent_loop.rounds import (
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import (
     TERMINATION_EVENT,
     UNDECIDED_ROUND_STATUSES,
     RoundStallLimits,
     stall_reasons,
     terminate_round,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -58,8 +58,8 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.run_orchestration import RunOutboxConsumer
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.orchestration import RunOutboxConsumer
 
 from config_helpers import app_config_for
 from loop_run_boundary_support import commit_patrol

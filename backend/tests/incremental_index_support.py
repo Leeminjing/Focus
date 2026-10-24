@@ -11,23 +11,23 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     stable_expansion_hash,
 )
-from backend.app.desktop.agent_loop.context_expansion.portfolio_index import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
     PortfolioSemanticIndexService,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
     SegmentSemanticUnitDraft,
     SemanticClaimSupportAssessment,
     SemanticClaimSupportProposal,
     SemanticProjectionProposal,
     SemanticSupportSpan,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionRef,
     ContextRevisionRepository,

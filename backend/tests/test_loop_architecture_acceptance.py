@@ -13,13 +13,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 AGENT_LOOP_MODULES = """
-completion_policy context_run_pool curator_assignments directive_causality directive_lifecycle event_contract event_journal
-fact_identity fact_lifecycle fact_materializer fact_models fact_projector fact_verification feature_flags intervention_lifecycle
-journal_models lineage_events fact_event_materializer portfolio_events run_activity_bridge supervisor_registry
-live_access live_api live_checkpoint live_history live_projection_contract live_projection_projector live_projection_reducer live_routes
-live_snapshot_overlay materialized_fact_query materialized_fact_sources mission_authority mission_contract mission_history
-mission_models mission_repository mission_service ownership patrol_audit patrol_runtime patrol_session_models
-patrol_session_repository patrol_session_state patrol_contract publication_queue runtime_convergence supervisor
+completion/completion_policy resources/context_run_pool curation/curator_assignments execution/directive_causality execution/directive_lifecycle journal/event_contract
+journal/event_journal facts/fact_identity facts/fact_lifecycle facts/fact_materializer facts/fact_models facts/fact_projector
+facts/fact_verification feature_flags governance/intervention_lifecycle journal/journal_models journal/lineage_events facts/fact_event_materializer
+journal/portfolio_events execution/run_activity_bridge lifecycle/supervisor_registry live/live_access live/live_api live/live_checkpoint
+live/live_history projections/live_projection_contract projections/live_projection_projector projections/live_projection_reducer live/live_routes projections/live_snapshot_overlay
+facts/materialized_fact_query facts/materialized_fact_sources missions/mission_authority missions/mission_contract missions/mission_history missions/mission_models
+missions/mission_repository missions/mission_service governance/ownership sessions/patrol_audit sessions/patrol_runtime sessions/patrol_session_models
+sessions/patrol_session_repository sessions/patrol_session_state patrol_contract curation/publication_queue lifecycle/runtime_convergence supervisor
 """.split()
 LOOP_TEST_MODULES = """
 test_loop_architecture_acceptance test_loop_event_journal test_loop_execution_ownership test_loop_fact_source_resilience
@@ -32,7 +33,7 @@ loop-legacy-connection loop-live-connection loop-live-projection.test loop-live-
 loop-live-selectors loop-live-store loop-mission-editor
 """.split()
 SOURCE_FILES = (
-    *(f"backend/app/desktop/agent_loop/{name}.py" for name in AGENT_LOOP_MODULES),
+    *(f"backend/app/desktop/patrol/agent_loop/{name}.py" for name in AGENT_LOOP_MODULES),
     *(f"backend/tests/{name}.py" for name in LOOP_TEST_MODULES),
     *(f"desktop/src/renderer/features/loop/{name}.js" for name in DESKTOP_MODULES),
     "desktop/src/renderer/features/loop/loop-console.css",
@@ -54,7 +55,7 @@ def test_new_source_files_do_not_scatter_explanatory_comments(relative_path: str
 
 
 def test_live_api_transport_does_not_own_domain_overlay_queries() -> None:
-    source = (ROOT / "backend/app/desktop/agent_loop/live_api.py").read_text(encoding="utf-8")
+    source = (ROOT / "backend/app/desktop/patrol/agent_loop/live/live_api.py").read_text(encoding="utf-8")
     for forbidden in ("LoopMissionRevision", "LoopContextMembership", "DesktopRun", "LoopFact", "PortfolioRevision"):
         assert forbidden not in source
     assert "LoopLiveProjectionOverlay" in source

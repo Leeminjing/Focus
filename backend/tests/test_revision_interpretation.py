@@ -7,11 +7,11 @@ r"""本文件对外提供跨段诊断与冻结原文理解的真实 Portfolio �
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
     SegmentSemanticUnitDraft,
     SemanticSupportSpan,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
@@ -434,7 +434,7 @@ def test_required_interpretation_failure_cannot_publish_local_only_index(
     async def run(sessions, seed):
         from sqlalchemy import select
 
-        from backend.app.desktop.agent_loop.context_expansion.models import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
             LoopSemanticIndexArtifact,
         )
 
@@ -496,13 +496,13 @@ def test_interpretation_proof_checks_unquoted_read_context_and_units(tmp_path):
     async def run(sessions, seed):
         import copy
 
-        from backend.app.desktop.agent_loop.context_expansion.contracts import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
             stable_expansion_hash,
         )
-        from backend.app.desktop.agent_loop.context_expansion.interpretation_record import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import (
             RevisionInterpretationRecord,
         )
-        from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_index import (
             RevisionSemanticIndex,
         )
 
@@ -513,10 +513,10 @@ def test_interpretation_proof_checks_unquoted_read_context_and_units(tmp_path):
             )
         ).indexes[0]
         record = index.interpretation
-        from backend.app.desktop.agent_loop.context_expansion.interpretation_inputs import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_inputs import (
             FrozenInterpretationInputs,
         )
-        from backend.app.desktop.agent_loop.context_expansion.projection_record_repository import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.projection_record_repository import (
             ProjectionRecordRepository,
         )
 
@@ -593,11 +593,11 @@ def test_interpretation_contract_changes_cannot_hit_old_target(
     tmp_path, monkeypatch, changed
 ):
     async def run(sessions, seed):
-        from backend.app.desktop.agent_loop.context_expansion import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion import (
             portfolio_index,
             revision_interpretation,
         )
-        from backend.app.desktop.agent_loop.context_expansion.interpretation_record import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import (
             RevisionInterpretationProposal,
         )
 
@@ -659,11 +659,11 @@ def test_cancellation_during_synthesis_settles_actual_usage_once(tmp_path):
 
         from sqlalchemy import select
 
-        from backend.app.desktop.agent_loop.context_expansion.models import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
             LoopIndexBudgetReservation,
             LoopSemanticIndexArtifact,
         )
-        from backend.app.desktop.agent_loop.models import LoopBudgetUsage
+        from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
 
         started = asyncio.Event()
 
@@ -706,10 +706,10 @@ def test_concurrent_combined_outputs_adopt_one_persisted_winner(tmp_path):
     async def run(sessions, seed):
         import asyncio
 
-        from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
             SemanticDerivationArtifactRepository,
         )
-        from backend.app.desktop.agent_loop.models import LoopBudgetUsage
+        from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
 
         entered = 0
         ready = asyncio.Event()
@@ -755,13 +755,13 @@ def test_concurrent_combined_outputs_adopt_one_persisted_winner(tmp_path):
 
 def test_curator_receives_an_already_synthesized_joint_diagnosis(tmp_path):
     async def run(sessions, seed):
-        from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
             SemanticDerivationArtifactRepository,
         )
-        from backend.app.desktop.agent_loop.patrol_runtime import (
+        from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
             CuratorCoordinationStage,
         )
-        from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+        from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
         target = await revision(sessions, seed["context_id"], NARRATIVE)
         frozen = observation(seed, target)
@@ -911,7 +911,7 @@ def test_database_rejects_ready_new_contract_without_completed_proof(tmp_path):
         from sqlalchemy import insert
         from sqlalchemy.exc import IntegrityError
 
-        from backend.app.desktop.agent_loop.context_expansion.models import (
+        from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
             LoopSemanticIndexArtifact,
         )
 

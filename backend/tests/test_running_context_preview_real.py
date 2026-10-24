@@ -6,6 +6,10 @@
 示例：python -m pytest backend/tests/test_running_context_preview_real.py -q -s。
 """
 
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+
 import asyncio
 import json
 import os
@@ -75,11 +79,11 @@ class _ControlledModel(BaseChatModel):
 
 
 async def _authorize_contexts(service, loop_id, extra_context_ids):
-    from backend.app.desktop.agent_loop.models import AgentLoop, LoopContextMembership, LoopDelegationGrant, LoopRound
-    from backend.app.desktop.agent_loop.rounds import current_frontier_hash
-    from backend.app.desktop.context_curation.models import CurationLane
-    from backend.app.desktop.context_evolution.schemas import ContextRevisionOriginKind
-    from backend.app.desktop.models import DesktopThread
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopContextMembership, LoopDelegationGrant, LoopRound
+    from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import current_frontier_hash
+    from backend.app.desktop.contexts.curation.models import CurationLane
+    from backend.app.desktop.contexts.evolution.schemas import ContextRevisionOriginKind
+    from backend.app.desktop.persistence.models import DesktopThread
 
     sessions = service.session_factory
     async with sessions.begin() as session:
@@ -110,8 +114,8 @@ async def _authorize_contexts(service, loop_id, extra_context_ids):
 
 
 async def _commit_contexts(service, loop_id, contexts):
-    from backend.app.desktop.agent_loop import LoopKernel, PatrolDecisionIntent
-    from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopRound
+    from backend.app.desktop.patrol.agent_loop import LoopKernel, PatrolDecisionIntent
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopRound
 
     sessions = service.session_factory
     async with sessions() as session:
@@ -130,7 +134,7 @@ async def _commit_contexts(service, loop_id, contexts):
 
 
 async def _dispatch(app, loop_id, round_id, expected):
-    from backend.app.desktop.models import DesktopRun
+    from backend.app.desktop.persistence.models import DesktopRun
 
     assert await app.state.agent_loop_context_runs.drain(loop_id) == 1
     for _ in range(300):
@@ -146,8 +150,8 @@ async def _dispatch(app, loop_id, round_id, expected):
 
 
 def test_parallel_contexts_real_run_sse_and_browser(client, tmp_path, monkeypatch):
-    import backend.app.desktop.service as service_module
-    from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolBootstrap
+    import backend.app.desktop.composition.service as service_module
+    from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
     from backend.app.gateway.app import app
 
     repo = Path(__file__).resolve().parents[2]
@@ -168,7 +172,8 @@ def test_parallel_contexts_real_run_sse_and_browser(client, tmp_path, monkeypatc
             StructuredTool.from_function(coroutine=read_file, name="read_file", description="Read the isolated workspace file"),
         ])
 
-    monkeypatch.setattr(service_module, "make_lead_agent", make_graph)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_graph)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_graph)
     http.portal.call(app.state.agent_loop_runtime.close)
     (workspace / "source.md").write_text("真实文件首行\n工具结果倒数第二行。\n工具结果最后一行：并行隔离。", encoding="utf-8")
     receipt = http.post(f"/desktop/api/agent-loops/workspace/{task['workspace_id']}/inputs", headers=SESSION,
@@ -195,7 +200,7 @@ def test_parallel_contexts_real_run_sse_and_browser(client, tmp_path, monkeypatc
         if payload["phase"] == "disconnect":
             return {"disconnected": bridge.disconnect(f"/desktop/api/runs/{payload['run_id']}/stream")}
         if payload["phase"] == "restart":
-            from backend.app.desktop.models import DesktopThread
+            from backend.app.desktop.persistence.models import DesktopThread
 
             await app.state.agent_loop_run_events.drain("loop-coordinator", app.state.agent_loop_coordinator.handle_run_settled, loop_id=loop_id)
             async with service.session_factory() as session:

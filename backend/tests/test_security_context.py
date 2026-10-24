@@ -248,14 +248,17 @@ def test_spawn_agent_source_holds_no_manual_context_assembly():
 
 def test_launch_points_derive_the_governed_context():
     """两个启动面（桌面服务与空间插件）都改走统一组装入口：不再手工拼装受治理字段或执行命名空间。"""
+    import ast
+
     root = Path(__file__).parents[2]
-    desktop = (root / "backend/app/desktop/service.py").read_text(encoding="utf-8")
+    desktop = "\n".join((root / path).read_text(encoding="utf-8") for path in ("backend/app/desktop/runs/assembly_service.py", "backend/app/desktop/runs/recovery_service.py", "backend/app/desktop/agents/service.py", "backend/app/desktop/runs/service.py"))
     spatial = (root / "plugins/spatial-patrol/routes.py").read_text(encoding="utf-8")
 
     assert "langgraph_context = {" not in desktop
-    assert desktop.count("self._governed_context(") == 2
-    assert 'execution.get("agent_role") not in {"main", "patrol", "teammate", "worker"}' in desktop
-    assert "prepared = await self._prepare(" in desktop
+    assert desktop.count("ports._governed_context(") == 2
+    role_guard = ast.parse('execution.get("agent_role") not in {"main", "patrol", "teammate", "worker"}', mode="eval").body
+    assert any(ast.dump(node) == ast.dump(role_guard) for node in ast.walk(ast.parse(desktop)))
+    assert "prepared = await ports._prepare(" in desktop
     # 插件启动点同样经统一组装入口 + 自己的服务端生产者写回，不再铺开身份投影
     assert "assemble_run_context(" in spatial
     assert "project_spatial_context(" in spatial
@@ -266,7 +269,7 @@ def test_launch_points_derive_the_governed_context():
 def test_execution_namespace_comes_from_the_durable_record():
     """执行命名空间以持久化身份为准：启动点不再临时拼接。"""
     root = Path(__file__).parents[2]
-    desktop = (root / "backend/app/desktop/service.py").read_text(encoding="utf-8")
+    desktop = "\n".join((root / path).read_text(encoding="utf-8") for path in ("backend/app/desktop/runs/assembly_service.py", "backend/app/desktop/runs/recovery_service.py", "backend/app/desktop/agents/service.py", "backend/app/desktop/runs/service.py"))
     spatial = (root / "plugins/spatial-patrol/routes.py").read_text(encoding="utf-8")
 
     assert 'f"swarm:{agent_id}"' not in desktop
@@ -277,7 +280,7 @@ def test_execution_namespace_comes_from_the_durable_record():
 
 def test_swarm_agent_namespace_is_persisted_and_unique():
     """swarm 的执行命名空间自建表起就是持久化且唯一的，因此（会话标识 + 命名空间）唯一。"""
-    from backend.app.desktop.models import SwarmAgent
+    from backend.app.desktop.persistence.models import SwarmAgent
 
     assert SwarmAgent.__table__.c.checkpoint_ns.unique is True
 

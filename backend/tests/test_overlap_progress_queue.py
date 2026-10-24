@@ -17,13 +17,13 @@ from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_round_task_progress import _Checkpointer
 from test_task_progress_validation_recovery import _Model
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDecision, LoopObservation, LoopRound
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.task_progress.models import LoopProgressReceipt, LoopProgressWork, LoopTaskProgress
-from backend.app.desktop.agent_loop.task_progress.repository import TaskProgressRepository
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-from backend.app.desktop.agent_loop.task_progress.work_queue import TaskProgressQueue
-from backend.app.desktop.domain_evidence.repository import DomainResultRepository
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDecision, LoopObservation, LoopRound
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressReceipt, LoopProgressWork, LoopTaskProgress
+from backend.app.desktop.patrol.agent_loop.task_progress.repository import TaskProgressRepository
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+from backend.app.desktop.patrol.agent_loop.task_progress.work_queue import TaskProgressQueue
+from backend.app.desktop.runs.evidence.repository import DomainResultRepository
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

@@ -19,15 +19,15 @@ from langchain_core.messages import AIMessage, ToolMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.execution_attempts.tool import ToolExecutionLedger
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.run_orchestration.dispatch import RunDispatchRecovery
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.run_orchestration.models import RunDispatch, RunOutboxEvent
-from backend.app.desktop.workspace_coordination.leases import WorkspaceLeaseConflict, WorkspaceLeaseManager
-from backend.app.desktop.workspace_coordination.lifecycle import WorkspaceSlotLifecycle
-from backend.app.desktop.workspace_coordination.models import WorkspaceLease, WorkspaceSlot
-from backend.app.desktop.workspace_coordination.schemas import WorkspaceLeaseRequest
+from backend.app.desktop.runs.execution_attempts.tool import ToolExecutionLedger
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRecovery
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.runs.orchestration.models import RunDispatch, RunOutboxEvent
+from backend.app.desktop.workspaces.coordination.leases import WorkspaceLeaseConflict, WorkspaceLeaseManager
+from backend.app.desktop.workspaces.coordination.lifecycle import WorkspaceSlotLifecycle
+from backend.app.desktop.workspaces.coordination.models import WorkspaceLease, WorkspaceSlot
+from backend.app.desktop.workspaces.coordination.schemas import WorkspaceLeaseRequest
 from backend.tests.test_execution_attempt_audit import _seed
 from focus.runtime.runs.manager import RunRecord
 from focus.runtime.runs.schemas import DisconnectMode, RunStatus

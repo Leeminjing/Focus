@@ -11,19 +11,19 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.run_orchestration.executor import RunExecutionResources
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.runs.orchestration.executor import RunExecutionResources
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
 
 async def freeze_patrol_intent(sessions, intent):
     import uuid
-    from backend.app.desktop.agent_loop.models import LoopObservation, LoopRound, LoopContextMembership
-    from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, ContextPermission
-    from backend.app.desktop.agent_loop.observation import observation_hash
-    from backend.app.desktop.agent_loop.directive_equipment import resolve_context_equipment
+    from backend.app.desktop.patrol.agent_loop.models import LoopObservation, LoopRound, LoopContextMembership
+    from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope, ContextPermission
+    from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+    from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_context_equipment
 
     async with sessions.begin() as session:
         loop = await session.get(AgentLoop, intent.loop_id, with_for_update=True)
@@ -57,7 +57,7 @@ async def freeze_patrol_intent(sessions, intent):
 
 
 async def commit_patrol(sessions, intent):
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
 
     return await LoopKernel(sessions).commit(await freeze_patrol_intent(sessions, intent))
 

@@ -17,9 +17,9 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.workspace_coordination import (
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.workspaces.coordination import (
     RunExecutionAnchor,
     WorkspaceAccessMode,
     WorkspaceAdopter,

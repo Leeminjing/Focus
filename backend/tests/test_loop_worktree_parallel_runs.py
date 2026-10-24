@@ -25,24 +25,24 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.tests.test_loop_runtime_pools import _create_wave
 from backend.tests.test_git_workspace_adoption import _git
-from backend.app.desktop.agent_loop import ContextRunPool, LoopCoordinator, LoopKernel, PatrolDecisionIntent
-from backend.app.desktop.agent_loop import workspace_planning
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder, LoopWaveDispatcher
-from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopRound
-from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-from backend.app.desktop.agent_loop.workspace_adoption import LoopWorkspaceAdoptionService
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService, _PreparedViewsChanged
-from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.models import RunDispatch
-from backend.app.desktop.workspace_coordination import WorkspaceFingerprinter, WorkspaceLeaseManager
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop import ContextRunPool, LoopCoordinator, LoopKernel, PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.workspaces import workspace_planning
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopRunWorkspaceBinder, LoopWaveDispatcher
+from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_directive_equipment
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.execution.directive_causality import DirectiveCausalityRecorder
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopRound
+from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_adoption import LoopWorkspaceAdoptionService
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService, _PreparedViewsChanged
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.models import RunDispatch
+from backend.app.desktop.workspaces.coordination import WorkspaceFingerprinter, WorkspaceLeaseManager
+from backend.app.desktop.workspaces.coordination.models import RunExecutionAnchor, WorkspaceSlot
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

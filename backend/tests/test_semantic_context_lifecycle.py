@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.lifecycle import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.lifecycle import (
     ExpansionLifecycleStateMachine,
     ExpansionTransitionRejected,
 )

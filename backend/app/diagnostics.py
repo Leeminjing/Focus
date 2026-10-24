@@ -19,15 +19,15 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import func, select
 
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop, LoopBudgetUsage, LoopDecision, LoopDirective, LoopEventOutbox,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.task_progress.models import LoopProgressWork
-from backend.app.desktop.models import DesktopRun, PatrolContextBinding
-from backend.app.desktop.run_orchestration.models import RunDispatch, RunOutboxEvent
+from backend.app.desktop.patrol.agent_loop.projections.projection_models import LoopProjectionFailure
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressWork
+from backend.app.desktop.persistence.models import DesktopRun, PatrolContextBinding
+from backend.app.desktop.runs.orchestration.models import RunDispatch, RunOutboxEvent
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_LIMIT = 20

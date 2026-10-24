@@ -18,13 +18,13 @@ import pytest
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.completion import CompletionEvidenceService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDecision, LoopDelegationGrant, LoopObservation, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.patrol import PatrolContractViolation
-from backend.app.desktop.agent_loop.patrol_contract import PatrolDecisionContract
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, RequestCompletionAction, LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.completion.service import CompletionEvidenceService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDecision, LoopDelegationGrant, LoopObservation, LoopRound, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.patrol import PatrolContractViolation
+from backend.app.desktop.patrol.agent_loop.patrol_contract import PatrolDecisionContract
+from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract, RequestCompletionAction, LoopObservationEnvelope
 from backend.tests.completion_evidence_support import claim_verifier, record_verified_fixture
 from backend.tests.loop_run_boundary_support import freeze_patrol_intent
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
@@ -108,11 +108,11 @@ def test_unknown_verification_and_missing_identity_are_not_completion_permission
 @pytest.mark.parametrize('exhaust', [False, True])
 def test_stale_candidate_uses_existing_bounded_feedback_and_actual_receipts(tmp_path, monkeypatch, exhaust):
     from langchain_core.messages import AIMessage
-    from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
-    from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
-    from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolSession
-    from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+    from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
+    from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopPatrolSession
+    from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
     from backend.tests.config_helpers import app_config_for, ToolCapableFakeChatModel
 
     async def run():
@@ -128,7 +128,7 @@ def test_stale_candidate_uses_existing_bounded_feedback_and_actual_receipts(tmp_
                         'mission_references': [{'role': 'outcome', 'reference_id': 'outcome'},
                             {'role': 'completion_check', 'reference_id': 'tests'}], 'actions': [chosen]}))
             model = Provider()
-            monkeypatch.setattr('backend.app.desktop.agent_loop.round_orchestration.create_chat_model', lambda **kwargs: model)
+            monkeypatch.setattr('backend.app.desktop.patrol.agent_loop.rounds.round_orchestration.create_chat_model', lambda **kwargs: model)
             config = app_config_for('d10-model', None)
             config.models[0].curation_output_method = 'prompt_json'
             orchestrator = LoopRoundOrchestrator(sessions, config, LoopKernel(sessions), _Checkpointer())
@@ -160,8 +160,8 @@ def test_stale_candidate_uses_existing_bounded_feedback_and_actual_receipts(tmp_
 
 
 def test_credible_complete_verification_passes_candidate_stage_and_kernel(tmp_path):
-    from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionStage
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.patrol.agent_loop.context_expansion.coordinator import ContextExpansionStage
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
     from backend.tests.test_loop_round_progress_admission import _intent
 
     async def run():
@@ -182,7 +182,7 @@ def test_credible_complete_verification_passes_candidate_stage_and_kernel(tmp_pa
     ('unknown', False), ('unknown', True), ('unsatisfied', True),
 ])
 def test_optional_checks_pass_candidate_stage_and_kernel_with_final_explanation(tmp_path, optional_status, optional_unresolved):
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
     from backend.tests.test_loop_round_progress_admission import _intent
 
     async def run():
@@ -208,7 +208,7 @@ def test_optional_checks_pass_candidate_stage_and_kernel_with_final_explanation(
 
 
 def test_all_optional_unknown_checks_can_complete_after_independent_satisfied_conclusion(tmp_path):
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
     from backend.tests.test_loop_round_progress_admission import _intent
 
     async def run():
@@ -231,8 +231,8 @@ def test_all_optional_unknown_checks_can_complete_after_independent_satisfied_co
 
 
 def test_workspace_completion_keeps_delegation_and_waits_for_new_input(tmp_path):
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
-    from backend.app.desktop.context_curation.models import CurationLane
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.contexts.curation.models import CurationLane
     from backend.tests.test_loop_round_progress_admission import _intent
     async def run():
         async with _lab(tmp_path, stale=False, complete=True, mode='workspace_patrol') as (sessions, fixture, frozen, action):
@@ -252,11 +252,11 @@ def test_workspace_completion_keeps_delegation_and_waits_for_new_input(tmp_path)
 
 @pytest.mark.parametrize('change', ['workspace', 'source', 'run', 'pause', 'revoke', 'frontier', 'mission'])
 def test_final_state_changes_reject_previously_eligible_frozen_candidate(tmp_path, change):
-    from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionStage
-    from backend.app.desktop.agent_loop.kernel import LoopKernel
-    from backend.app.desktop.models import DesktopRun, DesktopThread
-    from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-    from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+    from backend.app.desktop.patrol.agent_loop.context_expansion.coordinator import ContextExpansionStage
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+    from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+    from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
     from backend.tests.test_loop_round_progress_admission import _intent
 
     async def run():
@@ -294,7 +294,7 @@ def test_final_state_changes_reject_previously_eligible_frozen_candidate(tmp_pat
 
 
 async def _stage_observation(sessions, frozen):
-    from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionStage
+    from backend.app.desktop.patrol.agent_loop.context_expansion.coordinator import ContextExpansionStage
 
     stage = ContextExpansionStage(sessions, _Checkpointer())
     assessment = await stage.assess(frozen)
@@ -302,7 +302,7 @@ async def _stage_observation(sessions, frozen):
 
 
 def test_historical_absent_eligibility_keeps_original_hash(tmp_path):
-    from backend.app.desktop.agent_loop.observation import observation_hash
+    from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
 
     async def run():
         async with _lab(tmp_path) as (_, _, frozen, _):

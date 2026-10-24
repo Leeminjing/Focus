@@ -30,16 +30,9 @@ _ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
-from backend.app.desktop.models import (  # noqa: E402
-    AgentBoardTask,
-    AgentMessage,
-    DesktopRun,
-    DesktopThread,
-    DesktopWorkspace,
-    SwarmAgent,
-)
-from backend.app.desktop.checkpoint_recovery import select_checkpoint_base  # noqa: E402
-from backend.app.desktop.service import DesktopService  # noqa: E402
+from backend.app.desktop.persistence.models import AgentBoardTask, AgentMessage, DesktopRun, DesktopThread, DesktopWorkspace, SwarmAgent
+from backend.app.desktop.conversations.checkpoint_recovery import select_checkpoint_base  # noqa: E402
+from backend.app.desktop.composition.service import DesktopService  # noqa: E402
 from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer  # noqa: E402
 from focus.runtime.runs.events import serialize_message, validate_messages  # noqa: E402
 from focus.runtime.runs.manager import RunManager  # noqa: E402
@@ -105,7 +98,7 @@ def _service(run_manager=None) -> DesktopService:
 
 
 async def _dispatch(service, run_id):
-    service._run_dispatch_worker._on_started = service.attach_run_sync
+    service._run_dispatch_worker._on_started = service.run_finalization.attach_run_sync
     assert await service._run_dispatch_worker.drain(limit=1) == 1
     async with _SESSION_FACTORY() as session:
         run = await session.get(DesktopRun, run_id)
@@ -134,9 +127,9 @@ def test_swarm_run_uses_clean_context_and_own_metadata(monkeypatch):
 
         manager = FakeRunManager()
         service = _service(manager)
-        monkeypatch.setattr("backend.app.desktop.service.run_agent", fake_run_agent)
-        monkeypatch.setattr(service, "attach_run_sync", lambda record: None)
-        monkeypatch.setattr(service, "_build_agent_factory", lambda *args, **kwargs: object())
+        monkeypatch.setattr('backend.app.desktop.runs.assembly_service.run_agent', fake_run_agent)
+        monkeypatch.setattr(service.run_finalization, "attach_run_sync", lambda record: None)
+        monkeypatch.setattr(service.agent_factory, "_build_agent_factory", lambda *args, **kwargs: object())
         parent = {"metadata": {"run_id": "parent-main-run"}}
         token = var_child_runnable_config.set(parent)
         try:
@@ -190,9 +183,9 @@ def test_second_swarm_run_applies_new_input_and_updates_checkpoint_lineage(monke
             return graph
 
         monkeypatch.setattr(
-            service, "_build_agent_factory", lambda *args, **kwargs: graph_factory
+            service.agent_factory, "_build_agent_factory", lambda *args, **kwargs: graph_factory
         )
-        monkeypatch.setattr(service, "attach_run_sync", lambda record: None)
+        monkeypatch.setattr(service.run_finalization, "attach_run_sync", lambda record: None)
         try:
             first_run = await service._launch_swarm_run(
                 task_id, agent_id, "worker", "first", "worker prompt",
@@ -266,9 +259,9 @@ def test_swarm_run_recovers_from_latest_invalid_checkpoint(monkeypatch):
             return graph
 
         monkeypatch.setattr(
-            service, "_build_agent_factory", lambda *args, **kwargs: graph_factory
+            service.agent_factory, "_build_agent_factory", lambda *args, **kwargs: graph_factory
         )
-        monkeypatch.setattr(service, "attach_run_sync", lambda record: None)
+        monkeypatch.setattr(service.run_finalization, "attach_run_sync", lambda record: None)
         try:
             first_run = await service._launch_swarm_run(
                 task_id, agent_id, "worker", "first", "worker prompt",

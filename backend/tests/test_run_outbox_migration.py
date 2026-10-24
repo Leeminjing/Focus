@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.run_orchestration.outbox import RunOutboxConsumer
+from backend.app.desktop.runs.orchestration.outbox import RunOutboxConsumer
 
 
 def test_upgrade_recovers_legacy_claim_and_downgrade_preserves_events():

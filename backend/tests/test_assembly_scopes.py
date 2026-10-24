@@ -1,5 +1,10 @@
 """桌面装配范围的 API、Run 冻结、durable 重装配与权限边界验收。"""
 
+import backend.app.desktop.capabilities.service as _desktop_capabilities_service
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+
 import json
 import os
 from pathlib import Path
@@ -22,7 +27,7 @@ def _skill(root, description):
 
 @pytest.mark.usefixtures("runtime_postgres_database")
 def test_assembly_scope_binds_catalog_permissions_and_durable_run(tmp_path, monkeypatch):
-    import backend.app.desktop.service as module
+    import backend.app.desktop.composition.service as module
 
     home = tmp_path / "global"
     monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
@@ -45,8 +50,10 @@ def test_assembly_scope_binds_catalog_permissions_and_durable_run(tmp_path, monk
     async def idle_dispatch(self, **kwargs):
         return 0
 
-    monkeypatch.setattr(module, "get_available_tools", pool)
-    monkeypatch.setattr(module, "make_lead_agent", make_agent)
+    monkeypatch.setattr(_desktop_capabilities_service, 'get_available_tools', pool)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', pool)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_agent)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_agent)
     monkeypatch.setattr(module.DurableRunDispatchWorker, "drain", idle_dispatch)
 
     with TestClient(app, client=("127.0.0.1", 50000)) as http:
@@ -84,7 +91,7 @@ def test_assembly_scope_binds_catalog_permissions_and_durable_run(tmp_path, monk
             assert expected in next(context.content for context in kwargs["frozen_contexts"] if context.name == "skill:shared")
             assert task["workspace_path"] in kwargs["system_prompt"]
             # Worker 重启后仍从持久 Run 装配相同目标与提示词。
-            rebuilt = http.portal.call(service.assemble_run, prepared.payload["run_id"])
+            rebuilt = http.portal.call(service.run_assembly.assemble_run, prepared.payload["run_id"])
             assert rebuilt.body.context["workspace"] == prepared.body.context["workspace"]
             http.portal.call(rebuilt.agent_factory)
             assert captured[-1]["system_prompt"] == kwargs["system_prompt"]

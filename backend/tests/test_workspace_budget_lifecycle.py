@@ -9,14 +9,14 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from backend.tests.test_workspace_patrol import _setup
-from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.budget_presets import initial_budgets
-from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.agent_loop.schemas import IncreaseLoopBudgetRequest
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
-from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.resources.budget_presets import initial_budgets
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+from backend.app.desktop.patrol.agent_loop.schemas import IncreaseLoopBudgetRequest
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
+from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

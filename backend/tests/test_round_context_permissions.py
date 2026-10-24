@@ -18,9 +18,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_loop_execution_ownership import _seed_launching_directive
 
-from backend.app.desktop.agent_loop import directive_equipment
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopContextMembership, LoopDecision, LoopDelegationGrant, LoopDirective, LoopRound
-from backend.app.desktop.agent_loop.schemas import ContextPermission
+from backend.app.desktop.patrol.agent_loop.execution import directive_equipment
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopContextMembership, LoopDecision, LoopDelegationGrant, LoopDirective, LoopRound
+from backend.app.desktop.patrol.agent_loop.schemas import ContextPermission
 
 
 def test_permission_inventory_requires_every_context_and_stays_below_role_ceiling(monkeypatch):
@@ -60,8 +60,8 @@ def test_permission_inventory_requires_every_context_and_stays_below_role_ceilin
 @pytest.mark.usefixtures("isolated_postgres_database")
 @pytest.mark.parametrize("case", ["missing", "valid", "forged", "empty", "context", "expired", "mode", "revoked"])
 def test_admission_restores_only_missing_authority_from_verified_directive(tmp_path, case):
-    from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-    from backend.app.desktop.models import DesktopRun
+    from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+    from backend.app.desktop.persistence.models import DesktopRun
 
     async def exercise():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

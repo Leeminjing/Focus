@@ -17,50 +17,50 @@ from typing import ClassVar
 import pytest
 from focus.runtime.runs.usage import ModelUsage
 
-from backend.app.desktop.agent_loop.context_expansion.compiler import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.compiler import (
     DeterministicExpansionPlanCompiler,
 )
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     EvidenceRequirement,
     ExpansionOpportunity,
     ResolvedEvidenceBundle,
     SpawnContextIntent,
     WorkContextSpec,
 )
-from backend.app.desktop.agent_loop.context_expansion.portfolio_index import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
     PortfolioSemanticIndexService,
 )
-from backend.app.desktop.agent_loop.context_expansion.quality import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality import (
     ContextQualityAssessment,
     ContextQualityVerifier,
     QualityDimensionVerdict,
 )
-from backend.app.desktop.agent_loop.context_expansion.quality_verifier import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality_verifier import (
     DeterministicTestContextQualityService,
 )
-from backend.app.desktop.agent_loop.context_expansion.reconciliation import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.reconciliation import (
     WorkSpecReconciler,
     WorkSpecRelation,
 )
-from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import (
     LaneAdviceProposal,
     PlannerQueryProposal,
     PlannerReadProposal,
     RetrievalBackedCognitiveAdvisor,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
     SemanticClaimSupportAssessment,
     SemanticSupportSpan,
     SupervisedSemanticClaimSupportVerifier,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_index import (
     RevisionSemanticIndex,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
     SegmentSemanticUnitDraft,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
     AuthorizedSemanticRetriever,
     PlanningRetrievalSession,
     PlanningRetrievalSessionController,
@@ -68,22 +68,22 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import 
     RetrievalBudget,
     SemanticRetrievalQuery,
 )
-from backend.app.desktop.agent_loop.context_expansion.synthesis import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import (
     ClaimSupportAssessment,
     ContextSynthesisClaim,
     ContextSynthesisDraft,
     ContextSynthesisValidator,
     SynthesisSection,
 )
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import (
     DeterministicTestContextSynthesisService,
 )
-from backend.app.desktop.agent_loop.derivation_worker import (
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
     RoleBoundStructuredModel,
     StructuredResultValidationError,
 )
-from backend.app.desktop.context_curation import evidence_ref_key
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.curation import evidence_ref_key
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionPayloadMode,
     ContextRevisionRef,
 )
@@ -743,10 +743,10 @@ def test_portfolio_index_cancellation_never_publishes_partial_ready_state() -> N
             self.release = asyncio.Event()
 
         async def _model_budget(self, observation, authority_revision=None, *, fencing_token=None):
-            from backend.app.desktop.agent_loop.context_expansion.index_model_budget import (
+            from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import (
                 IndexModelBudget,
             )
-            from backend.app.desktop.agent_loop.expansion_resource_policy import (
+            from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import (
                 resolve_expansion_resources,
             )
 
@@ -1007,7 +1007,7 @@ def test_role_bound_worker_retries_with_per_attempt_usage_audit(monkeypatch) -> 
             )
 
     monkeypatch.setattr(
-        "backend.app.desktop.agent_loop.derivation_worker.StructuredWorkerModel",
+        "backend.app.desktop.patrol.agent_loop.workers.derivation_worker.StructuredWorkerModel",
         Worker,
     )
 
@@ -1062,7 +1062,7 @@ def test_role_bound_worker_retries_result_validation_with_unit_feedback(
             )
 
     monkeypatch.setattr(
-        "backend.app.desktop.agent_loop.derivation_worker.StructuredWorkerModel",
+        "backend.app.desktop.patrol.agent_loop.workers.derivation_worker.StructuredWorkerModel",
         Worker,
     )
 

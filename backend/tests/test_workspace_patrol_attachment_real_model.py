@@ -20,11 +20,11 @@ from PIL import Image, ImageDraw
 from pydantic import BaseModel
 import pytest
 
-from backend.app.desktop.agent_loop.models import LoopObservation
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.agent_loop.round_orchestration import StructuredPatrolDecisionModel
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.agent_loop.workspace_attachments import WorkspaceAttachments
+from backend.app.desktop.patrol.agent_loop.models import LoopObservation
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import StructuredPatrolDecisionModel
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_attachments import WorkspaceAttachments
 from backend.tests.test_workspace_patrol import _setup
 from backend.tests.test_workspace_patrol_attachments import _reference, _upload
 from focus.config.app_config import get_app_config

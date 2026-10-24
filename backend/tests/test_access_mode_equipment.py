@@ -6,6 +6,12 @@
 示例：运行 python -m pytest backend/tests/test_access_mode_equipment.py。
 """
 
+import backend.app.desktop.agents.service as _desktop_agents_service
+import backend.app.desktop.conversations.service as _desktop_conversations_service
+import backend.app.desktop.runs.recovery_service as _desktop_runs_recovery_service
+import backend.app.desktop.runs.service as _desktop_runs_service
+
+
 import asyncio
 import atexit
 import os
@@ -28,18 +34,11 @@ atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 from focus.agents.material_inputs import RunMaterialInputs
 from focus.security.policy import AccessMode
 
-from backend.app.desktop.models import (
-    DesktopRun,
-    DesktopThread,
-    DesktopWorkspace,
-    MainRunCreate,
-    SwarmAgent,
-)
-from backend.app.desktop.service import (
-    _MAIN_RUNTIME_EQUIPMENT_KEY,
-    DesktopService,
-    _resolve_access_mode,
-)
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace, SwarmAgent
+from backend.app.desktop.api.schemas import MainRunCreate
+from backend.app.desktop.persistence.contracts import _MAIN_RUNTIME_EQUIPMENT_KEY
+from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.capabilities.equipment import _resolve_access_mode
 
 _MIGRATION_NAME = "a1b2c3d4e5f6_add_swarm_agent_access_mode.py"
 _VERSIONS = (
@@ -147,26 +146,33 @@ async def _stub_checkpoint_messages(*_args, **_kwargs):
 
 
 def _seed_service(monkeypatch) -> DesktopService:
-    import backend.app.desktop.service as service_module
+    import backend.app.desktop.composition.service as service_module
 
     service = DesktopService.__new__(service_module.DesktopService)
     service.session_factory = _SESSION_FACTORY
     service.app_config = SimpleNamespace(context_run_admission=True)
     service.checkpointer = SimpleNamespace(aget_tuple=_stub_none)
-    service._get_task_entities = _stub_task_entities
-    service._commitment_recovery_payload = _stub_none
-    service._freeze_skills = lambda *_: {}
+    service.workspaces._get_task_entities = _stub_task_entities
+    service.conversations._commitment_recovery_payload = _stub_none
+    service.capabilities._freeze_skills = lambda *_: {}
     service.memory = SimpleNamespace(freeze_selection=lambda _ids: _identity([]))
-    service._prepare = _stub_prepare.__get__(service, DesktopService)
-    service.get_checkpoint_messages = _stub_checkpoint_messages
-    service._validate_model_window = lambda *_: None
+    service.run_assembly._prepare = _stub_prepare.__get__(service, DesktopService)
+    service.conversations.get_checkpoint_messages = _stub_checkpoint_messages
+    service.capabilities._validate_model_window = lambda *_: None
     service.contexts = SimpleNamespace(ensure_runnable=_stub_none)
     service.run_materials = SimpleNamespace(resolve=_stub_resolve_materials)
     service.run_material_history = SimpleNamespace(add=lambda *_: None)
-    monkeypatch.setattr(service_module, "compression_recovery_payload", _stub_none)
-    monkeypatch.setattr(service_module, "must_view_recovery_payload", _stub_none)
-    monkeypatch.setattr(service_module, "main_pending_interrupt", _stub_none)
-    monkeypatch.setattr(service_module, "select_checkpoint_base", _stub_none)
+    monkeypatch.setattr(_desktop_conversations_service, 'compression_recovery_payload', _stub_none)
+    monkeypatch.setattr(_desktop_runs_recovery_service, 'compression_recovery_payload', _stub_none)
+    monkeypatch.setattr(_desktop_runs_service, 'compression_recovery_payload', _stub_none)
+    monkeypatch.setattr(_desktop_conversations_service, 'must_view_recovery_payload', _stub_none)
+    monkeypatch.setattr(_desktop_runs_recovery_service, 'must_view_recovery_payload', _stub_none)
+    monkeypatch.setattr(_desktop_runs_service, 'must_view_recovery_payload', _stub_none)
+    monkeypatch.setattr(_desktop_conversations_service, 'main_pending_interrupt', _stub_none)
+    monkeypatch.setattr(_desktop_runs_recovery_service, 'main_pending_interrupt', _stub_none)
+    monkeypatch.setattr(_desktop_runs_service, 'main_pending_interrupt', _stub_none)
+    monkeypatch.setattr(_desktop_agents_service, 'select_checkpoint_base', _stub_none)
+    monkeypatch.setattr(_desktop_runs_service, 'select_checkpoint_base', _stub_none)
     return service
 
 
@@ -182,17 +188,17 @@ def test_every_launch_takes_the_mode_from_the_subject_equipment():
     desktop = root / "app" / "desktop"
     calls = [
         node
-        for node in ast.walk(ast.parse((desktop / "service.py").read_text(encoding="utf-8")))
+        for node in ast.walk(ast.parse("\n".join((desktop / name).read_text(encoding="utf-8") for name in ("runs/assembly_service.py", "runs/recovery_service.py", "runs/service.py", "agents/service.py"))))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "_governed_context"
     ]
     assert len(calls) == 2, "durable 装配与 resume 均须经同一派生入口"
-    tree = ast.parse((desktop / "service.py").read_text(encoding="utf-8"))
+    tree = ast.parse("\n".join((desktop / name).read_text(encoding="utf-8") for name in ("runs/assembly_service.py", "runs/recovery_service.py", "runs/service.py", "agents/service.py")))
     methods = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)}
     launch = ast.unparse(methods["_launch_swarm_run"])
-    assert "self._admission_service().admit(" in launch
-    assert "self.notify_run_dispatch()" in launch
+    assert "ports._admission_service().admit(" in launch
+    assert "ports.notify_run_dispatch()" in launch
     assert "self._prepare(" in ast.unparse(methods["assemble_run"])
     assembly_calls = [node for node in ast.walk(methods["assemble_run"]) if isinstance(node, ast.Call)
                       and isinstance(node.func, ast.Attribute) and node.func.attr == "_prepare"]
@@ -204,7 +210,7 @@ def test_every_launch_takes_the_mode_from_the_subject_equipment():
         keywords = {keyword.arg for keyword in call.keywords}
         assert "access_mode" in keywords, f"启动点缺少访问模式：行 {call.lineno}"
 
-    curator = (desktop / "context_patrol_service.py").read_text(encoding="utf-8")
+    curator = (desktop / "patrol/context_service.py").read_text(encoding="utf-8")
     assert '"access_mode": draft.equipment.get("access_mode")' in curator, (
         "策展小兵的启动点必须承接草稿装备里的访问模式"
     )

@@ -5,19 +5,23 @@
 示例：pytest backend/tests/test_keyword_compression.py。
 """
 
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+
 import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from backend.app.desktop import compression as desktop_compression
-from backend.app.desktop import service as desktop_service
-from backend.app.desktop.compression import (
+from backend.app.desktop.conversations import compression as desktop_compression
+from backend.app.desktop.composition import service as desktop_service
+from backend.app.desktop.conversations.compression import (
     _SUMMARY_SYSTEM_PROMPT,
     _build_summary_prompt,
 )
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.composition.service import DesktopService
 from focus.agents.compression import (
     apply_compression_ranges,
     build_keyword_ranges,
@@ -196,9 +200,10 @@ def test_quick_apply_preserves_original_source_and_model_only_sees_summary(monke
     async def make_graph(**_kwargs):
         return FakeGraph()
 
-    service._get_task_entities = get_task_entities
-    service.get_checkpoint_messages = get_checkpoint_messages
-    monkeypatch.setattr(desktop_service, "make_lead_agent", make_graph)
+    service.workspaces._get_task_entities = get_task_entities
+    service.conversations.get_checkpoint_messages = get_checkpoint_messages
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_graph)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_graph)
 
     asyncio.run(
         service.quick_compression_apply(

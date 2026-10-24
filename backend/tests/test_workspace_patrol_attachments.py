@@ -24,16 +24,16 @@ from pydantic import BaseModel, ValidationError
 import pytest
 from sqlalchemy import func, select
 
-from backend.app.desktop.agent_loop.dispatch import DesktopDirectiveLaunchPort
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopObservation, LoopUserIntent
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest, request_document
-from backend.app.desktop.agent_loop.patrol_request_capacity import PatrolRequestCapacity
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.agent_loop.workspace_attachments import WorkspaceAttachments
-from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
-from backend.app.desktop.material_upload import MaterialUploadService
-from backend.app.desktop.models import DesktopMaterial, DesktopThread
-from backend.app.desktop.run_materials import RunMaterialResolver
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import DesktopDirectiveLaunchPort
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopObservation, LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest, request_document
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_request_capacity import PatrolRequestCapacity
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_attachments import WorkspaceAttachments
+from backend.app.desktop.materials.snapshots import MaterialSnapshotVerifier
+from backend.app.desktop.materials.upload import MaterialUploadService
+from backend.app.desktop.persistence.models import DesktopMaterial, DesktopThread
+from backend.app.desktop.runs.materials import RunMaterialResolver
 from backend.tests.test_workspace_patrol import _setup
 from focus.agents.image_attachment import ImageModelCannotReadImages, project_image_messages
 from focus.agents.material_inputs import RunMaterialInput, RunMaterialInputs, project_run_material_context
@@ -207,9 +207,9 @@ def test_authorization_selects_exact_observed_input_and_rejects_foreign_sources(
 
 
 def test_patrol_contract_rejects_material_identity_before_kernel():
-    from backend.app.desktop.agent_loop.patrol import PatrolContractViolation
-    from backend.app.desktop.agent_loop.patrol_contract import PatrolDecisionContract
-    from backend.app.desktop.agent_loop.schemas import ContinueContextAction
+    from backend.app.desktop.patrol.agent_loop.patrol import PatrolContractViolation
+    from backend.app.desktop.patrol.agent_loop.patrol_contract import PatrolDecisionContract
+    from backend.app.desktop.patrol.agent_loop.schemas import ContinueContextAction
 
     observation = LoopObservationEnvelope(
         loop_id="loop", loop_revision=1, round_id="round", goal_revision=1,
@@ -286,20 +286,20 @@ def test_frozen_material_fits_windows_path_after_long_workspace_root(tmp_path):
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_kernel_authorizes_frozen_input_and_dispatch_delivers_same_version(tmp_path):
     async def run():
-        from backend.app.desktop.agent_loop.kernel import LoopKernel
-        from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
-        from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-        from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-        from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-        from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
-        from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-        from backend.app.desktop.models import DesktopRun
-        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-        from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
-        from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
-        from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolBootstrap
-        from backend.app.desktop.context_evolution import ContextEvolutionService
-        from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+        from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+        from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopWaveDispatcher
+        from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+        from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
+        from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+        from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+        from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+        from backend.app.desktop.persistence.models import DesktopRun
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+        from backend.app.desktop.patrol.agent_loop.governance.provenance import DelegatedDirectiveFactory
+        from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
+        from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
+        from backend.app.desktop.contexts.evolution import ContextEvolutionService
+        from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
         async def graph_factory():
             builder = StateGraph(LeadAgentState)

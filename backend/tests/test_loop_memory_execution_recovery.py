@@ -16,18 +16,18 @@ from focus.runtime.runs.usage import ModelUsage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound, LoopDelegationGrant
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
-from backend.app.desktop.agent_loop.schemas import LoopWaitResponseRequest
-from backend.app.desktop.agent_loop.task_progress.contracts import ProgressCandidate, SourceAssessment
-from backend.app.desktop.agent_loop.task_progress.execution_policy import ProgressExecutionPolicy
-from backend.app.desktop.agent_loop.task_progress.models import LoopDecisionInputs, LoopProgressWork
-from backend.app.desktop.agent_loop.task_progress.repository import TaskProgressRepository
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound, LoopDelegationGrant
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
+from backend.app.desktop.patrol.agent_loop.schemas import LoopWaitResponseRequest
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import ProgressCandidate, SourceAssessment
+from backend.app.desktop.patrol.agent_loop.task_progress.execution_policy import ProgressExecutionPolicy
+from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopDecisionInputs, LoopProgressWork
+from backend.app.desktop.patrol.agent_loop.task_progress.repository import TaskProgressRepository
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest, LoopWaitResponse
 from backend.tests.test_round_task_progress import _Checkpointer
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop, app_config_for
 

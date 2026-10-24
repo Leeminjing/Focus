@@ -19,8 +19,8 @@ from fastapi import HTTPException, UploadFile
 import pytest
 from starlette.datastructures import Headers
 
-from backend.app.desktop.material_upload import MaterialUploadService, inspect_image_file
-from backend.app.desktop.resource_limits import ImageResourceLimits
+from backend.app.desktop.materials.upload import MaterialUploadService, inspect_image_file
+from backend.app.desktop.materials.limits import ImageResourceLimits
 
 
 @pytest.fixture

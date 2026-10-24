@@ -19,12 +19,12 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionReader, ContextRevisionRepository
-from backend.app.desktop.context_evolution.service import ContextEvolutionService
-from backend.app.desktop.context_evolution.history import build_revision_history
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.models import DesktopWorkspace
-from backend.app.desktop.run_orchestration import RunLifecycleFinalizer, RunRegistrar
+from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionReader, ContextRevisionRepository
+from backend.app.desktop.contexts.evolution.service import ContextEvolutionService
+from backend.app.desktop.contexts.evolution.history import build_revision_history
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.persistence.models import DesktopWorkspace
+from backend.app.desktop.runs.orchestration import RunLifecycleFinalizer, RunRegistrar
 from backend.tests.test_commitment_handoff import _completed
 from backend.tests.test_commitment_handoff_recovery import _middleware
 from backend.tests.test_commitment_resume import _ScriptedDelegator

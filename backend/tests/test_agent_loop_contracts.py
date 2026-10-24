@@ -16,18 +16,18 @@ from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
 import pytest
 
-from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
-from backend.app.desktop.agent_loop.models import LoopDirective
-from backend.app.desktop.agent_loop.patrol_contract import PatrolDecisionContract
-from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
-from backend.app.desktop.agent_loop.round_orchestration import (
+from backend.app.desktop.patrol.agent_loop.resources.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.patrol.agent_loop.models import LoopDirective
+from backend.app.desktop.patrol.agent_loop.patrol_contract import PatrolDecisionContract
+from backend.app.desktop.patrol.agent_loop.governance.provenance import DelegatedDirectiveFactory
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import (
     PatrolCognitiveStep,
     PatrolDecisionProposal,
     PatrolReadRequest,
 )
-from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopInterventionRequest, PATROL_ACTION_ADAPTER
-from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
-from backend.app.desktop.domain_evidence.identity import canonical_hash
+from backend.app.desktop.patrol.agent_loop.schemas import LoopBudgetContract, LoopInterventionRequest, PATROL_ACTION_ADAPTER
+from backend.app.desktop.patrol.agent_loop.facts.fact_projection import LoopFactProjectionService
+from backend.app.desktop.runs.evidence.identity import canonical_hash
 
 
 def test_delegated_model_message_contains_no_provenance_marker() -> None:

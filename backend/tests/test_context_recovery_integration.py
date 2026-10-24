@@ -22,23 +22,23 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_recovery import (
+from backend.app.desktop.patrol.agent_loop.context_recovery import (
     ContextRecoveryOpportunityRepository,
     ContextRecoveryOpportunityService,
     ContextRecoveryStage,
 )
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopContextRecoveryOpportunity,
     LoopDelegationGrant,
     LoopRound,
 )
-from backend.app.desktop.agent_loop.portfolio_publication import LoopPortfolioPublicationService
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolDecisionIntent
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.context_curation import CurationLane
-from backend.app.desktop.context_evolution import ContextRevisionReader, ContextRevisionRepository
-from backend.app.desktop.run_orchestration import RunLifecycleFinalizer, RunRegistrar
+from backend.app.desktop.patrol.agent_loop.curation.portfolio_publication import LoopPortfolioPublicationService
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope, PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.contexts.curation import CurationLane
+from backend.app.desktop.contexts.evolution import ContextRevisionReader, ContextRevisionRepository
+from backend.app.desktop.runs.orchestration import RunLifecycleFinalizer, RunRegistrar
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_unified_run_orchestration import _registration
 from focus.runtime.runs.events import validate_messages

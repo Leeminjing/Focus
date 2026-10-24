@@ -11,12 +11,12 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.evolution_strategies import EvolutionStrategy, freeze_strategies
-from backend.app.desktop.memory import MemoryCreate, MemoryService, MemoryUpdate
-from backend.app.desktop.models import DesktopWorkspace, DesktopThread, Memory
-from backend.app.desktop.strategy_packages import StrategyMetadata, StrategyPackage
+from backend.app.desktop.capabilities.evolution_strategies import EvolutionStrategy, freeze_strategies
+from backend.app.desktop.memory.service import MemoryCreate, MemoryService, MemoryUpdate
+from backend.app.desktop.persistence.models import DesktopWorkspace, DesktopThread, Memory
+from backend.app.desktop.capabilities.strategy_packages import StrategyMetadata, StrategyPackage
 from backend.tests.config_helpers import app_config_for
-from backend.app.desktop.strategy_capacity import strategy_capacity_report, strategy_input_bound
+from backend.app.desktop.capabilities.strategy_capacity import strategy_capacity_report, strategy_input_bound
 
 
 def package(name, size=2500):
@@ -58,7 +58,7 @@ async def services(tmp_path):
 @pytest.mark.parametrize("body", ['中文' * 1000, '"\\\n\t' * 1000])
 def test_size_matches_patrol_request_serialization(body):
     from langchain_core.messages import HumanMessage
-    from backend.app.desktop.agent_loop.patrol_request_capacity import PatrolRequestCapacity
+    from backend.app.desktop.patrol.agent_loop.inputs.patrol_request_capacity import PatrolRequestCapacity
 
     capacity = PatrolRequestCapacity(config().models[0], {})
     snapshots = [{"memory_id": "s", "title": "中文", "content_hash": "a" * 64, "strategy": {"evolution": body}}]
@@ -149,7 +149,7 @@ def test_concurrent_independent_installs_cannot_overfill_the_set(isolated_postgr
     ({}, {"expansion_resources": {"output_token_reserve": 50000}}),
 ])
 def test_existing_patrol_model_and_grant_limit_admission(isolated_postgres_database, tmp_path, equipment, limits):
-    from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant
 
     async def run():
         async with services(tmp_path) as (service, sessions, scopes, owned):

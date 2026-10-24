@@ -19,9 +19,9 @@ from focus.agents.lead_agent_state import LeadAgentState
 from focus.history import FocusItem, messages_to_items, semantic_messages
 from focus.history.bridge import branch_messages, replace_execution_items, synchronize_items
 from focus.history.middleware import TypedHistoryMiddleware
-from backend.app.desktop.context_evolution.checkpoint_writer import LangGraphContextCheckpointWriter
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
-from backend.app.desktop.context_evolution import ContextRevisionRef
+from backend.app.desktop.contexts.evolution.checkpoint_writer import LangGraphContextCheckpointWriter
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
 
 
 def test_history_is_persisted_and_projection_tampering_blocks_sampling():

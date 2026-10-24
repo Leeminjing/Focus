@@ -3,9 +3,9 @@
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.completion import CompletionGuard
-from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract
+from backend.app.desktop.patrol.agent_loop.completion.service import CompletionGuard
+from backend.app.desktop.patrol.agent_loop.completion.completion_policy import CompletionCheckPolicy
+from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract
 
 
 def _checks():

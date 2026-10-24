@@ -16,12 +16,12 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
     SemanticDerivationArtifactRepository,
 )
-from backend.app.desktop.agent_loop.context_expansion.models import LoopSemanticIndexArtifact
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
-from backend.app.desktop.context_evolution import ContextRevisionRepository
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopSemanticIndexArtifact
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
+from backend.app.desktop.contexts.evolution import ContextRevisionRepository
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")

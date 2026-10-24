@@ -13,25 +13,25 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.context_expansion.index_budget_repository import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_budget_repository import (
     IndexBudgetReservationRepository,
 )
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import (
     IndexBudgetExceeded,
 )
-from backend.app.desktop.agent_loop.context_expansion.models import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopIndexBudgetReservation,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopDelegationGrant,
 )
-from backend.app.desktop.agent_loop.usage import LoopUsageDelta
+from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
 from backend.tests.incremental_index_support import (
     ModelProbe,
     messages,
@@ -45,7 +45,7 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 def test_new_observation_reuses_only_identical_revision_index(tmp_path):
     async def run(sessions, seed):
-        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
         from backend.tests.incremental_index_support import Checkpoints
 
         target = await revision(sessions, seed["context_id"], messages(2))
@@ -121,7 +121,7 @@ def test_new_contract_does_not_adopt_old_projection_record(
 
             service._indexer = NextSchemaIndexer()
         else:
-            from backend.app.desktop.agent_loop.context_expansion.segment_projection import (
+            from backend.app.desktop.patrol.agent_loop.context_expansion.segment_projection import (
                 SegmentProjectionRecord,
             )
 
@@ -246,7 +246,7 @@ def test_explicit_new_authorization_can_retry_without_changing_frozen_source(
             (await session.get(AgentLoop, seed["loop_id"])).authority_revision = 2
         assert (await service.build(retry)).blocker_code == "portfolio_index_budget"
         assert (await service.build(frozen, budget_authority_revision=2)).blocker_code == "portfolio_index_budget"
-        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
         from backend.tests.incremental_index_support import Checkpoints
 
         current = await LoopObservationService(sessions, Checkpoints()).refresh(seed["loop_id"], seed["round_id"])
@@ -258,7 +258,7 @@ def test_explicit_new_authorization_can_retry_without_changing_frozen_source(
         if expected_blocker is None:
             assert result.indexes[0].source == target.ref
         else:
-            from backend.app.desktop.agent_loop.context_expansion.models import (
+            from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
                 LoopSemanticIndexArtifact,
             )
 

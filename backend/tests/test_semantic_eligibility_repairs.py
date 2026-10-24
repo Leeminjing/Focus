@@ -11,16 +11,16 @@ import pytest
 
 from backend.tests.test_commitment_handoff import _completed
 from backend.tests.test_context_revision_reader import _ref
-from backend.app.desktop.context_evolution import ContextRevisionPayloadMode
-from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
-from backend.app.desktop.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
-from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+from backend.app.desktop.contexts.evolution import ContextRevisionPayloadMode
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
     SegmentSemanticUnitDraft, SemanticSupportSpan, SemanticClaimSupportAssessment, SemanticGroundingValidator,
 )
-from backend.app.desktop.agent_loop.context_expansion.segment_projection import SegmentProjectionRecord
-from backend.app.desktop.agent_loop.context_expansion.interpretation_record import RevisionInterpretationRecord
-from backend.app.desktop.agent_loop.context_expansion.interpretation_inputs import FrozenInterpretationInputs
+from backend.app.desktop.patrol.agent_loop.context_expansion.segment_projection import SegmentProjectionRecord
+from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import RevisionInterpretationRecord
+from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_inputs import FrozenInterpretationInputs
 from focus.agents.commitment.handoff import compile_handoff
 from focus.history import content_hash, messages_to_items, semantic_messages
 

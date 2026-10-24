@@ -9,11 +9,11 @@ from pydantic import ValidationError
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal, ReplayUnavailable
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopProjectorCursor, LoopReplayRetention, LoopLiveCheckpoint
-from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
-from backend.app.desktop.storage_maintenance import StorageMaintenance, StoragePolicy
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal, ReplayUnavailable
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent, LoopProjectorCursor, LoopReplayRetention, LoopLiveCheckpoint
+from backend.app.desktop.patrol.agent_loop.projections.projection_models import LoopProjectionFailure
+from backend.app.desktop.persistence.maintenance import StorageMaintenance, StoragePolicy
 from backend.tests.test_loop_event_journal import _seed_loop, _draft
 
 
@@ -29,7 +29,7 @@ def test_policy_is_strict_and_bounds_destructive_settings():
 def test_storage_routes_require_local_session_and_validate_policy(tmp_path):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from backend.app.desktop.storage_routes import storage_router
+    from backend.app.desktop.api.storage import storage_router
     from backend.app.gateway.middleware.auth import AuthMiddleware
 
     app = FastAPI()

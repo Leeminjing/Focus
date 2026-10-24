@@ -17,12 +17,12 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
-from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
-from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRecovery, RunDispatchRepository, StaleDispatchFence
-from backend.app.desktop.run_orchestration.models import RunDispatch
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+from backend.app.desktop.runs.orchestration.assembler import RunExecutionAssembly
+from backend.app.desktop.runs.orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRecovery, RunDispatchRepository, StaleDispatchFence
+from backend.app.desktop.runs.orchestration.models import RunDispatch
 
 
 pytestmark = pytest.mark.usefixtures("runtime_postgres_database")

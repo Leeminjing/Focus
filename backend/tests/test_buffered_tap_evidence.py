@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from backend.app.desktop.domain_evidence.tests import TestResultParser
+from backend.app.desktop.runs.evidence.tests import TestResultParser
 
 
 TAP = '''TAP version 13

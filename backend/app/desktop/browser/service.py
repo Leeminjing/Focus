@@ -12,8 +12,8 @@ import uuid
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.state_changes import ChangeSignal
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.persistence.state_changes import ChangeSignal
 from focus.runtime.runs.events import build_envelope
 from focus.runtime.stream_bridge.schemas import StreamEvent
 from .transport import BrowserError, BrowserTransport

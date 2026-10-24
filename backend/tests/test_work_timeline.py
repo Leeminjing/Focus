@@ -16,17 +16,17 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, EventVisibility
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopProjectorCursor, LoopReplayRetention
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopRound, LoopUserIntent
-from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.agent_loop.timeline_events import record_work_decision
-from backend.app.desktop.agent_loop.query_routes import loop_query_router
-from backend.app.desktop.agent_loop.timeline_models import WorkTimelineEntry
-from backend.app.desktop.agent_loop.timeline_projector import WorkTimelineProjector
-from backend.app.desktop.agent_loop.timeline_query import WorkTimelineQuery
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft, EventVisibility
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent, LoopProjectorCursor, LoopReplayRetention
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDecision, LoopRound, LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.journal.timeline_events import record_work_decision
+from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_query_router
+from backend.app.desktop.patrol.agent_loop.journal.timeline_models import WorkTimelineEntry
+from backend.app.desktop.patrol.agent_loop.journal.timeline_projector import WorkTimelineProjector
+from backend.app.desktop.patrol.agent_loop.journal.timeline_query import WorkTimelineQuery
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

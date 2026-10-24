@@ -15,12 +15,12 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopCoordinatorLease, LoopPatrolAttempt, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolPhaseTransition, LoopPatrolSession
-from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
-from backend.app.desktop.agent_loop.rounds import RoundStallLimits, select_stalled_rounds, stall_reasons, terminate_stalled_rounds
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopCoordinatorLease, LoopPatrolAttempt, LoopRound, LoopWorkerRequest
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopPatrolPhaseTransition, LoopPatrolSession
+from backend.app.desktop.patrol.agent_loop.journal.round_events import RoundStateEventRecorder
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import RoundStallLimits, select_stalled_rounds, stall_reasons, terminate_stalled_rounds
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 
 
@@ -130,7 +130,7 @@ def test_progress_does_not_reset_attempt_or_no_progress_limits():
 
 
 def test_watchdog_rechecks_progress_after_candidate_scan(tmp_path, monkeypatch):
-    import backend.app.desktop.agent_loop.rounds as rounds
+    import backend.app.desktop.patrol.agent_loop.rounds.lifecycle as rounds
 
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

@@ -17,8 +17,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
-from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.patrol.agent_loop.workers.structured_worker import StructuredWorkerModel
+from backend.app.desktop.composition.service import DesktopService
 from focus.agents.compression.gate import CompressionGate
 from focus.agents.lead import agent as lead
 from focus.config import AppConfig
@@ -89,7 +89,7 @@ def test_actual_agent_factory_protocol_and_context_sources(provider, role, tmp_p
 @pytest.mark.parametrize("provider", ["openai", "deepseek"])
 def test_actual_structured_worker_has_frozen_sources(provider, monkeypatch):
     async def run():
-        from backend.app.desktop.agent_loop import structured_worker
+        from backend.app.desktop.patrol.agent_loop.workers import structured_worker
         requests = []
         def handle(request):
             requests.append(json.loads(request.content))
@@ -148,8 +148,8 @@ def test_maintenance_admission_preserves_v2_read_and_explicit_new_branch(tmp_pat
 
 
 def test_independent_head_v5_golden_preserves_hash_and_v9_is_a_new_identity():
-    from backend.app.desktop.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
-    from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
     path = Path(__file__).parent / "fixtures/responses/legacy-v5-index.json"
     before = path.read_bytes()
     old = RevisionSemanticIndex.model_validate_json(before)

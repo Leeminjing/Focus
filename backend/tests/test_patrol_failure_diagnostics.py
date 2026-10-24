@@ -13,13 +13,13 @@ from langchain_core.messages import AIMessage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import round_orchestration as module
-from backend.app.desktop.agent_loop.models import LoopDecision, LoopPatrolAttempt
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.agent_loop.patrol import PatrolContractViolation, PortfolioPatrol
-from backend.app.desktop.agent_loop.patrol_audit import proposal_failure_diagnostic
-from backend.app.desktop.agent_loop.round_orchestration import StructuredPatrolDecisionModel
-from backend.app.desktop.agent_loop.schemas import ContinueContextAction, LoopObservationEnvelope, WaitForUserAction
+from backend.app.desktop.patrol.agent_loop.rounds import round_orchestration as module
+from backend.app.desktop.patrol.agent_loop.models import LoopDecision, LoopPatrolAttempt
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.patrol.agent_loop.patrol import PatrolContractViolation, PortfolioPatrol
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_audit import proposal_failure_diagnostic
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import StructuredPatrolDecisionModel
+from backend.app.desktop.patrol.agent_loop.schemas import ContinueContextAction, LoopObservationEnvelope, WaitForUserAction
 from backend.tests.config_helpers import app_config_for
 from backend.tests.test_patrol_session import _create_loop
 

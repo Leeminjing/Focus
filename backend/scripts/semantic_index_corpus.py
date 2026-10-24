@@ -22,14 +22,14 @@ from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.context_evolution import ContextRevisionReader, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.context_evolution.models import ContextPublicationReceipt, ContextRevision
-from backend.app.desktop.context_evolution.repository import ContextRevisionRepositoryError
+from backend.app.desktop.contexts.evolution import ContextRevisionReader, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt, ContextRevision
+from backend.app.desktop.contexts.evolution.repository import ContextRevisionRepositoryError
 
 
 class Snapshot(BaseModel):

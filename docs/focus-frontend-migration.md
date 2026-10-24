@@ -116,6 +116,6 @@
 - desktop/src/renderer/features/map/portfolio-map-view.js；desktop/src/renderer/features/context/context-conversation-view.js；desktop/src/renderer/features/loop/loop-{console-controller,console-store,facts-view,wait-request-view,mission-editor}.js。
 - desktop/src/renderer/features/conversation/conversation-{render,events,reconciler,view}.js；desktop/src/renderer/features/materials/run-material-picker.js；desktop/src/renderer/features/materials/material-content-loader.js；desktop/src/renderer/features/materials/material-grouping.js。
 - desktop/src/renderer/features/patrol/editor/patrol-workbench.js 和 authoring/document/source/assembly/review/branches；desktop/src/renderer/features/plugins/plugin-view.js；desktop/src/renderer/features/memory/memory.js；desktop/src/preload/preload.cjs 与 desktop/src/main/main.cjs。
-- backend/app/desktop/routes.py、plugins_routes.py、memory_routes.py、model_settings_routes.py；agent_loop 的 routes/query_routes/live_routes/task_progress/query/live_access；session_patrol/deployment 与 run_orchestration。
+- backend/app/desktop/api/routes.py、plugins_routes.py、memory_routes.py、model_settings_routes.py；agent_loop 的 routes/query_routes/live_routes/task_progress/query/live_access；session_patrol/deployment 与 run_orchestration。
 
 本清单建立完成后，才创建本次 OpenSpec proposal/design/specs/tasks；清单属于它们共同的业务保留依据。

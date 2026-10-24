@@ -19,23 +19,23 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from focus.agents.lead_agent_state import LeadAgentState
-from backend.app.desktop.models import DesktopWorkspace, DesktopThread, DesktopRun
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopUserIntent
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.agent_loop.workspace_patrol import (
+from backend.app.desktop.persistence.models import DesktopWorkspace, DesktopThread, DesktopRun
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import (
     WorkspacePatrolService,
     WorkspacePatrolBootstrap,
 )
-from backend.app.desktop.context_evolution import ContextEvolutionService
+from backend.app.desktop.contexts.evolution import ContextEvolutionService
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
 def test_legacy_context_main_route_cannot_bypass_workspace_input(tmp_path):
     async def run():
-        from backend.app.desktop.agent_loop.service import AgentLoopService
-        from backend.app.desktop.models import MainRunCreate
-        from backend.app.desktop.routes import start_main_run
+        from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
+        from backend.app.desktop.api.schemas import MainRunCreate
+        from backend.app.desktop.api.runs import start_main_run
 
         engine, sessions, workspace_id, service = await _setup(tmp_path)
         try:
@@ -206,7 +206,7 @@ def test_invalid_workspace_and_history_scope_do_not_start_or_cross(tmp_path):
 
 def test_first_publication_rollback_can_recover_same_thread(tmp_path, monkeypatch):
     async def run():
-        from backend.app.desktop.context_evolution.models import ContextRevision
+        from backend.app.desktop.contexts.evolution.models import ContextRevision
 
         engine, sessions, workspace, service = await _setup(tmp_path)
         try:
@@ -261,10 +261,10 @@ def test_first_publication_rollback_can_recover_same_thread(tmp_path, monkeypatc
 
 def test_real_observation_kernel_input_application_idle_and_wakeup(tmp_path):
     async def run():
-        from backend.app.desktop.agent_loop.kernel import LoopKernel
-        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-        from backend.app.desktop.agent_loop.models import LoopRound, LoopDelegationGrant
-        from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
+        from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+        from backend.app.desktop.patrol.agent_loop.models import LoopRound, LoopDelegationGrant
+        from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
 
         engine, sessions, workspace_id, service = await _setup(tmp_path)
         try:
@@ -338,7 +338,7 @@ def test_real_observation_kernel_input_application_idle_and_wakeup(tmp_path):
                 assert (
                     await session.get(LoopUserIntent, accepted["intent_id"])
                 ).status == "addressed"
-            from backend.app.desktop.agent_loop.service import AgentLoopService
+            from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
 
             controls = AgentLoopService(sessions)
             await controls.control(loop.loop_id, "pause")

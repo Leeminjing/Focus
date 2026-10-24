@@ -11,12 +11,12 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage
 import pytest
 
-import backend.app.desktop.agent_loop.structured_worker as worker_module
-from backend.app.desktop.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel, IndexBudgetExceeded, IndexModelBudget
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ClaimSupportProposal
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
-from backend.app.desktop.context_curation import evidence_ref_key
+import backend.app.desktop.patrol.agent_loop.workers.structured_worker as worker_module
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ResolvedEvidenceBundle
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel, IndexBudgetExceeded, IndexModelBudget
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ClaimSupportProposal
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
+from backend.app.desktop.contexts.curation import evidence_ref_key
 from backend.tests.test_synthesis_claim_feedback import _service
 
 

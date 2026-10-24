@@ -8,6 +8,12 @@
 示例：python -m pytest backend/tests/test_subagent_assembly.py。
 """
 
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
+import backend.app.desktop.capabilities.service as _desktop_capabilities_service
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+
+
 import base64
 import asyncio
 import os
@@ -22,14 +28,8 @@ from sqlalchemy import delete
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
-from backend.app.desktop.models import (
-    AgentMessage,
-    DesktopRun,
-    DesktopThread,
-    DesktopWorkspace,
-    SwarmAgent,
-)
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.persistence.models import AgentMessage, DesktopRun, DesktopThread, DesktopWorkspace, SwarmAgent
+from backend.app.desktop.composition.service import DesktopService
 from backend.app.gateway.app import app
 from backend.tests.patrol_draft_support import save_patrol_draft
 
@@ -42,7 +42,7 @@ def _client():
 
 
 async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thread_id: str):
-    from backend.app.desktop.domain_evidence.models import DesktopDomainResult
+    from backend.app.desktop.runs.evidence.models import DesktopDomainResult
     pending = [task for task in service._sync_tasks if not task.done()
                and (record := task.get_coro().cr_frame.f_locals.get("record")) is not None
                and record.thread_id == thread_id and record.status.value in {"success", "error", "interrupted", "cancelled"}]
@@ -63,7 +63,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
 
     仅替换 make_lead_agent 为捕获型 fake 图，其余（start_run/worker/StreamBridge/DB）全真实。
     """
-    import backend.app.desktop.service as svc
+    import backend.app.desktop.composition.service as svc
 
     captured: list[dict] = []
 
@@ -80,10 +80,12 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
     async def fake_get_available_tools(*, workspace=None):
         return []
 
-    original = svc.make_lead_agent
-    original_tools = svc.get_available_tools
-    svc.make_lead_agent = fake_make_lead_agent
-    svc.get_available_tools = fake_get_available_tools
+    original = _desktop_conversations_compression_service.make_lead_agent
+    original_tools = _desktop_capabilities_service.get_available_tools
+    _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
+    _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
+    _desktop_capabilities_service.get_available_tools = fake_get_available_tools
+    _desktop_runs_agent_factory.get_available_tools = fake_get_available_tools
     try:
         with _client() as client:
             workspace_folder = tmp_path / "ws"
@@ -330,7 +332,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
             async def check_no_mailbox_copy() -> bool:
                 from sqlalchemy import func, select
 
-                from backend.app.desktop.models import AgentMessage
+                from backend.app.desktop.persistence.models import AgentMessage
 
                 async with service.session_factory() as session:
                     count = await session.scalar(
@@ -398,5 +400,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
 
             cleanup()
     finally:
-        svc.make_lead_agent = original
-        svc.get_available_tools = original_tools
+        _desktop_conversations_compression_service.make_lead_agent = original
+        _desktop_runs_agent_factory.make_lead_agent = original
+        _desktop_capabilities_service.get_available_tools = original_tools
+        _desktop_runs_agent_factory.get_available_tools = original_tools

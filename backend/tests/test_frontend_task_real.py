@@ -4,6 +4,10 @@
 具体工作流为关闭本测试 Loop 自主调度后调用生产 Bootstrap 发布版本，共享 ASGI HTTP bridge 逐帧转发生产响应；替换模型采样而保留 Main/SSE、checkpoint 和材料读取，不调用外部 Provider。
 示例：python -m pytest backend/tests/test_frontend_task_real.py -q。
 """
+
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+
 import json
 import os
 from pathlib import Path
@@ -17,15 +21,16 @@ from http_asgi_bridge import ASGIHTTPBridge
 
 
 def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch):
-    import backend.app.desktop.service as service_module
+    import backend.app.desktop.composition.service as service_module
 
     async def make_graph(**kwargs):
         return create_agent(model=FakeListChatModel(responses=["真实任务响应"]), tools=[])
 
-    monkeypatch.setattr(service_module, "make_lead_agent", make_graph)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_graph)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_graph)
     http, task, workspace, _requests = client
     from backend.app.gateway.app import app
-    from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolBootstrap
+    from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
 
     http.portal.call(app.state.agent_loop_runtime.close)
     receipt = http.post(f"/desktop/api/agent-loops/workspace/{task['workspace_id']}/inputs", headers=SESSION, json={

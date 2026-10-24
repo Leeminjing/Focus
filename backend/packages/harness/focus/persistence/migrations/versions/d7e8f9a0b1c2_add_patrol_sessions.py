@@ -17,7 +17,7 @@ depends_on = None
 
 def upgrade() -> None:
     # 读取 revision 图时不加载整个后端；仅在执行 DDL 时注册 ORM。
-    import backend.app.desktop.persistence_registry  # noqa: F401
+    import backend.app.desktop.persistence.registry  # noqa: F401
     from focus.persistence.base import Base
 
     bind = op.get_bind()
@@ -28,7 +28,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # 读取 revision 图时不加载整个后端；仅在执行 DDL 时注册 ORM。
-    import backend.app.desktop.persistence_registry  # noqa: F401
+    import backend.app.desktop.persistence.registry  # noqa: F401
     from focus.persistence.base import Base
 
     bind = op.get_bind()

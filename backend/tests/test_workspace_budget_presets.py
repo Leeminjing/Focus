@@ -3,9 +3,9 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from backend.app.desktop.agent_loop.budget_presets import PRESETS, initial_budgets, increased_budgets
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest, request_document
-from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopGrantMutationRequest
+from backend.app.desktop.patrol.agent_loop.resources.budget_presets import PRESETS, initial_budgets, increased_budgets
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest, request_document
+from backend.app.desktop.patrol.agent_loop.schemas import LoopBudgetContract, LoopGrantMutationRequest
 
 
 def test_workspace_default_is_bounded_without_changing_legacy_loop_defaults():
@@ -53,7 +53,7 @@ def test_public_catalog_and_offline_ui_fixture_match():
     from pathlib import Path
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from backend.app.desktop.agent_loop.routes import agent_loop_router
+    from backend.app.desktop.patrol.agent_loop.routes import agent_loop_router
 
     app = FastAPI()
     app.include_router(agent_loop_router)
@@ -67,7 +67,7 @@ def test_public_catalog_and_offline_ui_fixture_match():
 
 @pytest.mark.parametrize("preset", PRESETS)
 def test_presets_obey_existing_hard_guard(preset):
-    from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard
+    from backend.app.desktop.patrol.agent_loop.resources.budgets import LoopBudgetGuard
 
     budget = initial_budgets(preset)
     guard = LoopBudgetGuard()

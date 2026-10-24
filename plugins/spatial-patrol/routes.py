@@ -106,7 +106,7 @@ def _session_factory():
 
 async def _task_workspace(session: Any, task_id: str) -> tuple[str, str]:
     """返回 (thread_id, workspace_path);任务不存在抛 404。"""
-    from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+    from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
     task = await session.get(DesktopThread, task_id)
     if not task:
@@ -207,7 +207,7 @@ async def create_anchor(body: AnchorCreate, request: Request) -> dict[str, Any]:
 @router.get("/tasks/{task_id}/anchors")
 async def list_anchors(task_id: str, request: Request) -> list[dict[str, Any]]:
     """列出任务全部锚点与小兵;载体失效的条目标记 invalid。"""
-    from backend.app.desktop.models import DesktopRun
+    from backend.app.desktop.persistence.models import DesktopRun
 
     factory = _session_factory()
     async with factory() as session:
@@ -289,7 +289,7 @@ async def deploy(spatial_id: str, body: DeployRequest, request: Request) -> dict
         previous = (
             anchor.kind, anchor.status, anchor.task_instruction, anchor.run_id,
         )
-        from backend.app.desktop.models import DesktopRun
+        from backend.app.desktop.persistence.models import DesktopRun
 
         run_row = DesktopRun(
             run_id=_new_id(),
@@ -305,7 +305,7 @@ async def deploy(spatial_id: str, body: DeployRequest, request: Request) -> dict
         anchor.run_id = run_row.run_id
         session.add(run_row)
         await session.commit()
-        from backend.app.desktop.models import DesktopThread
+        from backend.app.desktop.persistence.models import DesktopThread
 
         task_row = await session.get(DesktopThread, anchor.task_id)
         workspace_id = task_row.workspace_id
@@ -353,7 +353,7 @@ async def copy_anchor(spatial_id: str, body: CopyRequest, request: Request) -> d
         permissions = _normalize_permissions(body.permissions)
         _validate_write_scope(source.content_ref, permissions)
         copy_region = _text_coordinate_region(source.content_ref, body.coordinate_space)
-        from backend.app.desktop.models import DesktopRun, DesktopThread
+        from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 
         copy = SpatialAnchor(
             spatial_id=_new_id(),
@@ -421,7 +421,7 @@ async def continue_patrol(
         _validate_write_scope(anchor.content_ref, permissions)
         _validate_write_anchor(anchor, permissions)
         previous_status, previous_run_id = anchor.status, anchor.run_id
-        from backend.app.desktop.models import DesktopRun, DesktopThread
+        from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 
         run_row = DesktopRun(
             run_id=_new_id(), task_id=anchor.task_id, agent_id=spatial_id,
@@ -594,8 +594,8 @@ async def _launch_spatial_run(
     """经统一 run_agent 链路启动空间小兵(参考桌面 _launch_swarm_run)。"""
     from langchain_core.messages import HumanMessage
 
-    from backend.app.desktop.checkpoint_recovery import select_checkpoint_base
-    from backend.app.desktop.tool_error_provider import build_tool_error_middleware
+    from backend.app.desktop.conversations.checkpoint_recovery import select_checkpoint_base
+    from backend.app.desktop.runs.tool_errors import build_tool_error_middleware
 
     app_config = get_app_config("config.yaml")
     state = request.app.state
@@ -761,7 +761,7 @@ async def _sync_spatial_status(
         await record.task
     except asyncio.CancelledError:
         pass
-    from backend.app.desktop.models import DesktopRun
+    from backend.app.desktop.persistence.models import DesktopRun
 
     factory = _session_factory()
     async with factory() as session:

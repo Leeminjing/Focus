@@ -18,16 +18,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from test_loop_live_projection import _seed_loop
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, EventVisibility
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
-from backend.app.desktop.agent_loop.journal_models import LoopJournalSequence, LoopLiveCheckpoint
-from backend.app.desktop.agent_loop.live_api import LoopLiveSnapshotService
-from backend.app.desktop.agent_loop.live_checkpoint import LoopLiveCheckpointStore
-from backend.app.desktop.agent_loop.live_history import LoopLiveHistoryService
-from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
-from backend.app.desktop.agent_loop.models import LoopDelegationGrant, LoopRound
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft, EventVisibility
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextExpansion
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalSequence, LoopLiveCheckpoint
+from backend.app.desktop.patrol.agent_loop.live.live_api import LoopLiveSnapshotService
+from backend.app.desktop.patrol.agent_loop.live.live_checkpoint import LoopLiveCheckpointStore
+from backend.app.desktop.patrol.agent_loop.live.live_history import LoopLiveHistoryService
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
+from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant, LoopRound
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

@@ -13,24 +13,24 @@ from focus.runtime.runs.usage import ModelUsage
 import pytest
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     CandidateEvidenceIdentity, EvidenceRequirement, ExpansionOpportunity, ResolvedEvidenceBundle, WorkContextSpec,
     stable_expansion_hash,
 )
-from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpus, FrozenEvidenceCorpusReader
-from backend.app.desktop.agent_loop.context_expansion.evidence_resolver import MultiSourceEvidenceResolver
-from backend.app.desktop.agent_loop.context_expansion.compiler import DeterministicExpansionPlanCompiler
-from backend.app.desktop.agent_loop.context_expansion.policy import ExpansionAdmissionPolicy
-from backend.app.desktop.agent_loop.context_expansion.planner import PlannerEvidenceIdentityError, WorkerResultCognitivePlanner
-from backend.app.desktop.agent_loop.context_expansion.reconciliation import WorkSpecReconciler
-from backend.app.desktop.agent_loop.context_expansion.synthesis import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_corpus import FrozenEvidenceCorpus, FrozenEvidenceCorpusReader
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_resolver import MultiSourceEvidenceResolver
+from backend.app.desktop.patrol.agent_loop.context_expansion.compiler import DeterministicExpansionPlanCompiler
+from backend.app.desktop.patrol.agent_loop.context_expansion.policy import ExpansionAdmissionPolicy
+from backend.app.desktop.patrol.agent_loop.context_expansion.planner import PlannerEvidenceIdentityError, WorkerResultCognitivePlanner
+from backend.app.desktop.patrol.agent_loop.context_expansion.reconciliation import WorkSpecReconciler
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import (
     ClaimSupportAssessment, ContextSynthesisClaim, ContextSynthesisDraft, ContextSynthesisValidator,
     SynthesisSection,
 )
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
-from backend.app.desktop.agent_loop.context_expansion.quality_verifier import DeterministicTestContextQualityService
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality_verifier import DeterministicTestContextQualityService
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
     AuthorizedSemanticRetriever,
     PlanningRetrievalSession,
     PlanningRetrievalSessionController,
@@ -38,18 +38,18 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import 
     RetrievalBudget,
     SemanticRetrievalQuery,
 )
-from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import (
     LaneAdviceProposal,
     PlannerQueryProposal,
     PlannerReadProposal,
     RetrievalBackedCognitiveAdvisor,
 )
-from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy, resolve_expansion_resources
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.agent_loop.schemas import LoopBudgetContract
-from backend.app.desktop.context_curation import MultiSourceEvidence, SourceRevisionEvidence
-from backend.app.desktop.context_curation import evidence_ref_key
-from backend.app.desktop.agent_loop.context_expansion.contracts import SpawnContextIntent
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import ExpansionResourcePolicy, resolve_expansion_resources
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.patrol.agent_loop.schemas import LoopBudgetContract
+from backend.app.desktop.contexts.curation import MultiSourceEvidence, SourceRevisionEvidence
+from backend.app.desktop.contexts.curation import evidence_ref_key
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import SpawnContextIntent
 from backend.tests.test_complete_semantic_context_derivation import _long_index
 from backend.tests.test_semantic_context_planning import _observation
 

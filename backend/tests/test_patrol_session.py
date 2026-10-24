@@ -21,19 +21,19 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import (
+from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
     LoopCreateRequest,
     LoopKernel,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinator
-from backend.app.desktop.agent_loop.curator_assignments import (
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim, LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.curation.curator_assignments import (
     CuratorAssignmentRepository,
     CuratorScope,
 )
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDirective,
     LoopObservation,
@@ -41,21 +41,21 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.observation import observation_hash
-from backend.app.desktop.agent_loop.patrol import (
+from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+from backend.app.desktop.patrol.agent_loop.patrol import (
     PatrolContractViolation,
     PortfolioPatrol,
 )
-from backend.app.desktop.agent_loop.patrol_audit import PatrolAuditRepository
-from backend.app.desktop.agent_loop.patrol_runtime import (
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_audit import PatrolAuditRepository
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
     CuratorCoordinationStage,
     PatrolSessionLifecycle,
 )
-from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssignment
-from backend.app.desktop.agent_loop.patrol_session_repository import (
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopCuratorAssignment
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_repository import (
     PatrolSessionRepository,
 )
-from backend.app.desktop.agent_loop.patrol_session_state import (
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import (
     PatrolActivity,
     PatrolEvidenceReference,
     PatrolPhase,
@@ -63,13 +63,13 @@ from backend.app.desktop.agent_loop.patrol_session_state import (
     PatrolTransitionRejected,
     PatrolWaitTarget,
 )
-from backend.app.desktop.agent_loop.round_orchestration import (
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import (
     LoopObservationService,
     LoopRoundOrchestrator,
 )
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.agent_loop.workers import LaneAdviceProposal, LoopWorkerRuntime
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LaneAdviceProposal, LoopWorkerRuntime
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -77,7 +77,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -414,7 +414,7 @@ def test_expansion_assessment_is_persisted_and_readable(tmp_path) -> None:
                 row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
                 assert row.envelope["expansion_assessment"] is None
 
-            from backend.app.desktop.agent_loop.decision_context import (
+            from backend.app.desktop.patrol.agent_loop.decisions.decision_context import (
                 DecisionSupplementRepository,
                 PatrolDecisionContext,
             )

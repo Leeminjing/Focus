@@ -15,12 +15,12 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 import pytest
 
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.must_view_recovery import (
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.runs.must_view_recovery import (
     must_view_recovery_payload,
     validate_must_view_resume,
 )
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.composition.service import DesktopService
 from focus.agents.material_inputs import RunMaterialInputs
 
 
@@ -113,14 +113,14 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
     async def apply_memory(prompt, _memory_ids):
         return prompt
 
-    service._material_context = material_context
+    service.materials._material_context = material_context
     service._apply_memory_block = apply_memory
     def build_agent_factory(*_args, preparation_observer=None):
         assert preparation_observer is None
         return lambda: None
 
-    service._build_agent_factory = build_agent_factory
-    service._model_supports_image_input = lambda _name: True
+    service.agent_factory._build_agent_factory = build_agent_factory
+    service.capabilities._model_supports_image_input = lambda _name: True
     inputs = RunMaterialInputs.build(
         "origin-run",
         "origin-message",

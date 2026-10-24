@@ -17,7 +17,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from focus.history import FocusItem, HistoryPayload, messages_to_items
 
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextFrontierSummary,
     ContextRevisionContract,
     ContextRevisionHistoricalView,

@@ -14,13 +14,13 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop import ContextRunPool, LoopCoordinator
-from backend.app.desktop.agent_loop import workspace_planning
-from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
-from backend.app.desktop.agent_loop.models import LoopDirective
-from backend.app.desktop.workspace_coordination import WorkspaceFingerprinter, IsolationRequest
-from backend.app.desktop.workspace_coordination.git_worktree import GitWorktreeIsolationProvider, WorkspaceIsolationCapacity
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop import ContextRunPool, LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.workspaces import workspace_planning
+from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopWaveDispatcher
+from backend.app.desktop.patrol.agent_loop.models import LoopDirective
+from backend.app.desktop.workspaces.coordination import WorkspaceFingerprinter, IsolationRequest
+from backend.app.desktop.workspaces.coordination.git_worktree import GitWorktreeIsolationProvider, WorkspaceIsolationCapacity
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 from backend.tests.test_loop_runtime_pools import _create_wave
 from backend.tests.test_loop_worktree_parallel_runs import _FileWorker
 from backend.tests.test_git_workspace_adoption import _git

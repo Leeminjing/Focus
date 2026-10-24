@@ -14,18 +14,18 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_FILES = (
-    "backend/app/desktop/agent_loop/persistence_safety.py",
-    "backend/app/desktop/agent_loop/wait_models.py",
-    "backend/app/desktop/agent_loop/wait_requests.py",
-    "backend/app/desktop/agent_loop/activation_eligibility.py",
-    "backend/app/desktop/agent_loop/projection_recovery.py",
-    "backend/app/desktop/agent_loop/curation_ownership.py",
-    "backend/app/desktop/agent_loop/terminal_lifecycle.py",
-    "backend/app/desktop/agent_loop/runtime_convergence.py",
+    "backend/app/desktop/patrol/agent_loop/persistence/persistence_safety.py",
+    "backend/app/desktop/patrol/agent_loop/waits/wait_models.py",
+    "backend/app/desktop/patrol/agent_loop/waits/wait_requests.py",
+    "backend/app/desktop/patrol/agent_loop/governance/activation_eligibility.py",
+    "backend/app/desktop/patrol/agent_loop/recovery/projection_recovery.py",
+    "backend/app/desktop/patrol/agent_loop/curation/curation_ownership.py",
+    "backend/app/desktop/patrol/agent_loop/lifecycle/terminal_lifecycle.py",
+    "backend/app/desktop/patrol/agent_loop/lifecycle/runtime_convergence.py",
     "backend/packages/harness/focus/persistence/migrations/versions/2c3d4e5f6a7b_retire_terminal_loop_curation_ownership.py",
-    "backend/app/desktop/run_orchestration/admission.py",
-    "backend/app/desktop/run_orchestration/assembler.py",
-    "backend/app/desktop/run_orchestration/dispatch.py",
+    "backend/app/desktop/runs/orchestration/admission.py",
+    "backend/app/desktop/runs/orchestration/assembler.py",
+    "backend/app/desktop/runs/orchestration/dispatch.py",
     "desktop/src/renderer/features/conversation/task-run-operations.js",
     "desktop/src/renderer/features/loop/loop-wait-request-view.js",
     "desktop/src/renderer/shared/http/http-response.js",
@@ -62,9 +62,9 @@ def test_response_decoder_has_no_dom_or_loop_dependency() -> None:
 
 
 def test_curation_ownership_and_terminal_lifecycle_dependencies_are_acyclic() -> None:
-    ownership = (ROOT / "backend/app/desktop/agent_loop/curation_ownership.py").read_text(encoding="utf-8")
-    terminal = (ROOT / "backend/app/desktop/agent_loop/terminal_lifecycle.py").read_text(encoding="utf-8")
-    runtime = (ROOT / "backend/app/desktop/agent_loop/runtime_convergence.py").read_text(encoding="utf-8")
+    ownership = (ROOT / "backend/app/desktop/patrol/agent_loop/curation/curation_ownership.py").read_text(encoding="utf-8")
+    terminal = (ROOT / "backend/app/desktop/patrol/agent_loop/lifecycle/terminal_lifecycle.py").read_text(encoding="utf-8")
+    runtime = (ROOT / "backend/app/desktop/patrol/agent_loop/lifecycle/runtime_convergence.py").read_text(encoding="utf-8")
     assert "fastapi" not in ownership
     assert "terminal_lifecycle" not in ownership
     assert "terminal_lifecycle" not in runtime
@@ -79,7 +79,7 @@ def test_ownership_repair_migration_has_no_application_dependency() -> None:
 
 
 def test_terminal_loop_status_writes_do_not_bypass_lifecycle_coordinator() -> None:
-    root = ROOT / "backend/app/desktop/agent_loop"
+    root = ROOT / "backend/app/desktop/patrol/agent_loop"
     assignment = re.compile(r"loop\.status\s*=\s*[\"'](?:completed|stopped|failed)[\"']")
     offenders = []
     for path in root.rglob("*.py"):
@@ -92,12 +92,12 @@ def test_terminal_loop_status_writes_do_not_bypass_lifecycle_coordinator() -> No
 
 def test_every_in_scope_persistence_port_uses_the_shared_normalizer() -> None:
     ports = (
-        "backend/app/desktop/agent_loop/event_journal.py",
-        "backend/app/desktop/agent_loop/fact_lifecycle.py",
-        "backend/app/desktop/agent_loop/wait_requests.py",
-        "backend/app/desktop/run_orchestration/admission.py",
-        "backend/app/desktop/run_orchestration/lifecycle.py",
-        "backend/app/desktop/run_orchestration/outbox.py",
+        "backend/app/desktop/patrol/agent_loop/journal/event_journal.py",
+        "backend/app/desktop/patrol/agent_loop/facts/fact_lifecycle.py",
+        "backend/app/desktop/patrol/agent_loop/waits/wait_requests.py",
+        "backend/app/desktop/runs/orchestration/admission.py",
+        "backend/app/desktop/runs/orchestration/lifecycle.py",
+        "backend/app/desktop/runs/orchestration/outbox.py",
     )
     for relative_path in ports:
         source = (ROOT / relative_path).read_text(encoding="utf-8")

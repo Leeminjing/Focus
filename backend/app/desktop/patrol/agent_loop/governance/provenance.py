@@ -1,0 +1,94 @@
+r"""本文件对外提供 DelegatedDirectiveFactory 与 MessageHistoryProjector。
+
+输入为已授权 directive 事实或持久消息/provenance；输出为模型可见的纯 HumanMessage 与 UI 可见的
+来源投影。具体工作流为 create 从授权幂等键确定性生成 Directive、Message 与 provenance identity，Patrol 或 Mission bootstrap 来源只写外部表；
+to_model_message 仅设置 id/content，绝不加入 Patrol、grant、delegated metadata 或 system prompt。
+示例：`message = factory.to_model_message(directive)`。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import uuid
+from typing import Any
+
+from langchain_core.messages import HumanMessage
+
+from backend.app.desktop.patrol.agent_loop.models import LoopDirective, MessageProvenance
+
+
+class DelegatedDirectiveFactory:
+    @staticmethod
+    def create(
+        *,
+        loop_id: str,
+        round_id: str,
+        decision_id: str,
+        action_id: str,
+        context_id: str,
+        context_revision_id: str,
+        content: str,
+        actor_id: str,
+        grant_id: str,
+        grant_revision: int,
+        goal_revision: int,
+        idempotency_key: str,
+        origin_kind: str = "patrol",
+        correlation_id: str | None = None,
+        causation_event_id: str | None = None,
+    ) -> tuple[LoopDirective, MessageProvenance]:
+        message_id = DelegatedDirectiveFactory._identity("message", idempotency_key)
+        directive_id = DelegatedDirectiveFactory._identity("directive", idempotency_key)
+        directive = LoopDirective(
+            directive_id=directive_id,
+            loop_id=loop_id,
+            round_id=round_id,
+            decision_id=decision_id,
+            action_id=action_id,
+            target_context_id=context_id,
+            target_context_revision_id=context_revision_id,
+            message_id=message_id,
+            content=content,
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            actor_kind="system" if origin_kind == "mission_bootstrap" else "patrol",
+            actor_id=actor_id,
+            origin_kind=origin_kind,
+            correlation_id=correlation_id or directive_id,
+            causation_event_id=causation_event_id,
+            grant_id=grant_id,
+            grant_revision=grant_revision,
+            goal_revision=goal_revision,
+            idempotency_key=idempotency_key,
+        )
+        provenance = MessageProvenance(
+            provenance_id=DelegatedDirectiveFactory._identity("provenance", idempotency_key),
+            context_revision_id=context_revision_id,
+            message_id=message_id,
+            source_kind="mission_bootstrap" if origin_kind == "mission_bootstrap" else "delegated_patrol",
+            actor_id=actor_id,
+            directive_id=directive.directive_id,
+            audit={"loop_id": loop_id, "round_id": round_id, "grant_revision": grant_revision, "mission_revision": goal_revision, "origin_kind": origin_kind},
+        )
+        return directive, provenance
+
+    @staticmethod
+    def _identity(kind: str, idempotency_key: str) -> str:
+        return uuid.uuid5(uuid.NAMESPACE_URL, f"focus:{kind}:{idempotency_key}").hex
+
+    @staticmethod
+    def to_model_message(directive: LoopDirective) -> HumanMessage:
+        return HumanMessage(id=directive.message_id, content=directive.content)
+
+
+class MessageHistoryProjector:
+    @staticmethod
+    def project(message: dict[str, Any], provenance: MessageProvenance | None) -> dict[str, Any]:
+        return {
+            **message,
+            "provenance": None if provenance is None else {
+                "source_kind": provenance.source_kind,
+                "actor_id": provenance.actor_id,
+                "directive_id": provenance.directive_id,
+                "audit": provenance.audit,
+            },
+        }

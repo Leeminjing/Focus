@@ -6,11 +6,11 @@ import logging
 import pytest
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.context_expansion.models import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopSegmentProjectionRecord,
     LoopSemanticIndexArtifact,
 )
-from backend.app.desktop.agent_loop.models import LoopBudgetUsage
+from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
 from backend.tests.incremental_index_support import ModelProbe, messages, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 

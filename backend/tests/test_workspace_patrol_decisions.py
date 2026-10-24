@@ -16,21 +16,21 @@ from sqlalchemy import select
 
 from focus.agents.lead_agent_state import LeadAgentState
 from backend.tests.test_workspace_patrol import _setup
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDelegationGrant,
     LoopUserIntent,
     LoopRound,
 )
-from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
-from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.agent_loop.rounds import create_observation_round
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
-from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolBootstrap
-from backend.app.desktop.context_evolution import ContextEvolutionService
+from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import create_observation_round
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest, LoopWaitResponse
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
+from backend.app.desktop.contexts.evolution import ContextEvolutionService
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 _checkpointers = {}
@@ -52,7 +52,7 @@ async def _prepare(sessions, loop_id):
 
 
 async def _decision(sessions, loop_id, actions):
-    from backend.app.desktop.agent_loop.task_progress.models import LoopProgressWork
+    from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressWork
     from backend.tests.test_loop_round_progress_admission import _publish_memory
 
     async with sessions() as session:
@@ -273,10 +273,10 @@ def test_information_request_survives_proactive_input_and_targeted_answer(tmp_pa
 
 def test_explicit_successor_preserves_context_progress_grant_and_old_inputs(tmp_path):
     async def run():
-        from backend.app.desktop.agent_loop.terminal_lifecycle import LoopTerminalLifecycle
-        from backend.app.desktop.agent_loop.task_progress.repository import TaskProgressRepository
-        from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
-        from backend.app.desktop.agent_loop.models import LoopContextMembership
+        from backend.app.desktop.patrol.agent_loop.lifecycle.terminal_lifecycle import LoopTerminalLifecycle
+        from backend.app.desktop.patrol.agent_loop.task_progress.repository import TaskProgressRepository
+        from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
+        from backend.app.desktop.patrol.agent_loop.models import LoopContextMembership
 
         engine, sessions, workspace, service = await _setup(tmp_path)
         try:
@@ -364,18 +364,18 @@ def test_first_input_through_real_run_settlement_and_views(tmp_path, runtime_pos
     async def run():
         from types import SimpleNamespace
         from langchain_core.messages import HumanMessage, AIMessage
-        from backend.app.desktop.agent_loop.dispatch import (
+        from backend.app.desktop.patrol.agent_loop.execution.dispatch import (
             LoopWaveDispatcher,
             LoopRunWorkspaceBinder,
         )
-        from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-        from backend.app.desktop.agent_loop.fact_projector import FactProjector
-        from backend.app.desktop.agent_loop.live_api import LoopLiveSnapshotService
-        from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-        from backend.app.desktop.run_orchestration.outbox import RunOutboxConsumer
+        from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+        from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+        from backend.app.desktop.patrol.agent_loop.live.live_api import LoopLiveSnapshotService
+        from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+        from backend.app.desktop.runs.orchestration.outbox import RunOutboxConsumer
         from backend.tests.test_loop_execution_ownership import _admit_run
         from backend.tests.loop_run_boundary_support import start_loop_run
-        from backend.app.desktop.models import DesktopThread, DesktopRun
+        from backend.app.desktop.persistence.models import DesktopThread, DesktopRun
 
         engine, sessions, workspace, service = await _setup(tmp_path)
         try:
@@ -472,7 +472,7 @@ def test_first_input_through_real_run_settlement_and_views(tmp_path, runtime_pos
             lineage = await service.lineage(loop.loop_id)
             assert lineage["complete"] and len(lineage["nodes"]) >= 2
             from backend.tests.test_loop_round_progress_admission import _publish_memory
-            from backend.app.desktop.agent_loop.task_progress.query import TaskProgressQuery
+            from backend.app.desktop.patrol.agent_loop.task_progress.query import TaskProgressQuery
 
             await _publish_memory(sessions, loop.loop_id)
             async with sessions() as session:
@@ -492,7 +492,7 @@ def test_first_input_through_real_run_settlement_and_views(tmp_path, runtime_pos
 @pytest.mark.parametrize("failure", ["quote", "partition", "late", "rollback"])
 def test_rejected_application_preserves_mission_and_input(tmp_path, monkeypatch, failure):
     async def run():
-        from backend.app.desktop.agent_loop.mission_service import MissionRevisionService
+        from backend.app.desktop.patrol.agent_loop.missions.mission_service import MissionRevisionService
 
         engine, sessions, workspace, service = await _setup(tmp_path)
         try:
@@ -565,11 +565,11 @@ def test_rejected_application_preserves_mission_and_input(tmp_path, monkeypatch,
 
 def test_information_card_is_independent_of_safety_wait_and_pause(tmp_path):
     async def run():
-        from backend.app.desktop.agent_loop.wait_requests import (
+        from backend.app.desktop.patrol.agent_loop.waits.wait_requests import (
             LoopWaitRequestFactory,
             LoopWaitRequestService,
         )
-        from backend.app.desktop.agent_loop.service import AgentLoopService
+        from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
 
         engine, sessions, workspace, service = await _setup(tmp_path)
         try:

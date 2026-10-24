@@ -17,16 +17,16 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound, LoopUserIntent, LoopDelegationGrant
-from backend.app.desktop.agent_loop.rounds import create_observation_round
-from backend.app.desktop.agent_loop.schemas import LoopWaitResponseRequest, RevokeLoopGrantRequest
-from backend.app.desktop.agent_loop.schemas import ResumeWithCurrentMissionRequest
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
-from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound, LoopUserIntent, LoopDelegationGrant
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import create_observation_round
+from backend.app.desktop.patrol.agent_loop.schemas import LoopWaitResponseRequest, RevokeLoopGrantRequest
+from backend.app.desktop.patrol.agent_loop.schemas import ResumeWithCurrentMissionRequest
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest, LoopWaitResponse
+from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
 from sqlalchemy import text
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 

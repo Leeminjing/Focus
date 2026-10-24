@@ -12,48 +12,48 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     stable_expansion_hash,
 )
-from backend.app.desktop.agent_loop.context_expansion.index_assembly import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_assembly import (
     assemble_revision_index,
 )
-from backend.app.desktop.agent_loop.context_expansion.index_build_contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_build_contracts import (
     IndexBuildPlan,
 )
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import (
     BudgetedIndexModel,
     IndexModelBudget,
 )
-from backend.app.desktop.agent_loop.context_expansion.interpretation_inputs import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_inputs import (
     FrozenInterpretationInputs,
 )
-from backend.app.desktop.agent_loop.context_expansion.interpretation_record import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import (
     RevisionInterpretationRecord,
 )
-from backend.app.desktop.agent_loop.context_expansion.models import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopIndexBudgetReservation,
     LoopSemanticIndexArtifact,
 )
-from backend.app.desktop.agent_loop.context_expansion.projection_record_repository import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.projection_record_repository import (
     ProjectionRecordRepository,
 )
-from backend.app.desktop.agent_loop.context_expansion.segment_projection import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.segment_projection import (
     SegmentProjectionRecord,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
     SegmentSemanticUnitDraft,
     SemanticClaimSupportAssessment,
     SemanticSupportSpan,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_index import (
     RevisionSemanticIndex,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.agent_loop.models import LoopBudgetUsage
-from backend.app.desktop.context_evolution import ContextRevisionRef
+from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
 from backend.tests.incremental_index_support import observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 from backend.tests.test_revision_interpretation import ControlledInterpretationProbe

@@ -2,8 +2,8 @@
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )

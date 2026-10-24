@@ -11,12 +11,12 @@ import pytest
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.agent_loop.workspace_cleanup import LoopWorkspaceCleanup
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.models import DesktopRun, DesktopWorkspace
-from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
-from backend.app.desktop.workspace_coordination import (
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_cleanup import LoopWorkspaceCleanup
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
+from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.workspaces.coordination import (
     GitWorktreeIsolationProvider, IsolationRequest, RunExecutionAnchor,
     WorkspaceAdoption, WorkspaceFingerprinter, WorkspaceLease, WorkspaceSlot,
     WorkspaceSlotLifecycle, WorkspaceSlotTombstone,
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 @asynccontextmanager
 async def _environment(tmp_path, monkeypatch):
-    import backend.app.desktop.workspace_coordination.lifecycle as lifecycle
+    import backend.app.desktop.workspaces.coordination.lifecycle as lifecycle
 
     monkeypatch.setattr(lifecycle, "global_home", lambda: tmp_path / "home")
     engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -134,7 +134,7 @@ def test_background_cleanup_preserves_protected_worktrees(tmp_path, monkeypatch,
                 elif guard == "external_edit":
                     (root / "valuable.txt").write_text("keep user edits", encoding="utf-8")
                 elif guard == "outside_managed_root":
-                    monkeypatch.setattr("backend.app.desktop.workspace_coordination.lifecycle.global_home",
+                    monkeypatch.setattr("backend.app.desktop.workspaces.coordination.lifecycle.global_home",
                         lambda: tmp_path / "different-home")
             assert await LoopWorkspaceCleanup(sessions).drain() == 0
             assert root.is_dir()

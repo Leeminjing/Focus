@@ -6,9 +6,9 @@
 示例：python -m pytest backend/tests/test_workspace_patrol_contracts.py -q。
 """
 
-from backend.app.desktop.agent_loop.mission_contract import LoopMissionContract
-from backend.app.desktop.agent_loop.task_progress.consolidation import initial_progress
-from backend.app.desktop.agent_loop.schemas import LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.missions.mission_contract import LoopMissionContract
+from backend.app.desktop.patrol.agent_loop.task_progress.consolidation import initial_progress
+from backend.app.desktop.patrol.agent_loop.schemas import LoopCreateRequest
 from pydantic import ValidationError
 import pytest
 
@@ -20,9 +20,9 @@ def test_task_progress_has_one_shared_http_query(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from backend.app.desktop.agent_loop.query_routes import loop_query_router
-    from backend.app.desktop.agent_loop.routes import agent_loop_router
-    from backend.app.desktop.agent_loop.task_progress.query import TaskProgressQuery
+    from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_query_router
+    from backend.app.desktop.patrol.agent_loop.routes import agent_loop_router
+    from backend.app.desktop.patrol.agent_loop.task_progress.query import TaskProgressQuery
 
     query_session = object()
     reads = []

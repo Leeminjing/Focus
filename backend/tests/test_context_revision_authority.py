@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
-import backend.app.desktop.persistence_registry  # noqa: F401
+import backend.app.desktop.persistence.registry  # noqa: F401
 from focus.config.app_config import AppConfig
 from focus.persistence.base import Base
 

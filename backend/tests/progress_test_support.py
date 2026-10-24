@@ -8,8 +8,8 @@
 from datetime import UTC, datetime
 import uuid
 
-from backend.app.desktop.agent_loop.models import LoopDecision, LoopRound
-from backend.app.desktop.agent_loop.task_progress.work_queue import TaskProgressQueue
+from backend.app.desktop.patrol.agent_loop.models import LoopDecision, LoopRound
+from backend.app.desktop.patrol.agent_loop.task_progress.work_queue import TaskProgressQueue
 
 
 async def register_progress(sessions, observation):

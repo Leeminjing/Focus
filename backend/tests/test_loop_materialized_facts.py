@@ -25,42 +25,42 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.fact_identity import FactIdentityResolver
-from backend.app.desktop.agent_loop.fact_lifecycle import (
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.facts.fact_identity import FactIdentityResolver
+from backend.app.desktop.patrol.agent_loop.facts.fact_lifecycle import (
     FactLifecycleRepository,
     FactTransitionRejected,
 )
-from backend.app.desktop.agent_loop.fact_models import (
+from backend.app.desktop.patrol.agent_loop.facts.fact_models import (
     LoopFact,
     LoopFactRelationship,
     LoopFactRevision,
 )
-from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.fact_verification import (
+from backend.app.desktop.patrol.agent_loop.facts.fact_projection import LoopFactProjectionService
+from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
+from backend.app.desktop.patrol.agent_loop.facts.fact_verification import (
     FactActor,
     FactEvidenceReference,
     FactVerificationDecision,
     FactVerificationPolicy,
 )
-from backend.app.desktop.agent_loop.journal_models import (
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
     LoopJournalEvent,
     LoopProjectorCursor,
     LoopReplayRetention,
 )
-from backend.app.desktop.agent_loop.live_api import (
+from backend.app.desktop.patrol.agent_loop.live.live_api import (
     LoopLiveEventFeed,
     LoopLiveSnapshotService,
 )
-from backend.app.desktop.agent_loop.materialized_fact_query import (
+from backend.app.desktop.patrol.agent_loop.facts.materialized_fact_query import (
     FactParityService,
     MaterializedFactQueryService,
 )
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -68,7 +68,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

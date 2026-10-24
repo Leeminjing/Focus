@@ -15,17 +15,17 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionOpportunity
-from backend.app.desktop.agent_loop.context_expansion.quality import ContextQualityVerifier
-from backend.app.desktop.agent_loop.context_expansion.quality_revision import QualityRevisionBlocked, QualityRevisionRepository, QualityRevisionCoordinator, admit_manual_revision
-from backend.app.desktop.agent_loop.context_expansion.start_readiness import ExecutionReadiness, QuestionDisposition, work_question_id
-from backend.app.desktop.agent_loop.context_expansion.synthesis import ContextSynthesisDraft, ContextSynthesisValidator, ContextSynthesisResult
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopCoordinatorFence, LoopCoordinatorLease
-from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import ExpansionOpportunity
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality import ContextQualityVerifier
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality_revision import QualityRevisionBlocked, QualityRevisionRepository, QualityRevisionCoordinator, admit_manual_revision
+from backend.app.desktop.patrol.agent_loop.context_expansion.start_readiness import ExecutionReadiness, QuestionDisposition, work_question_id
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import ContextSynthesisDraft, ContextSynthesisValidator, ContextSynthesisResult
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopCoordinatorFence, LoopCoordinatorLease
+from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestFactory
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
 from test_round_task_progress import _Checkpointer
-from backend.app.desktop.agent_loop.models import LoopRound
+from backend.app.desktop.patrol.agent_loop.models import LoopRound
 from backend.tests.test_synthesis_claim_feedback import _inputs
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 

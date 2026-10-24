@@ -30,7 +30,7 @@ async function run(){
   const d=add('message','developer','你负责检查这个问题：区分任务事实与运行状态，核对引用来源。');
   const u=add('message','user','帮我分析 Focus 的上下文编译链路，看看工具调用是否独立保留。');u.source_ref='ref';u.source_hash='frozen';u.source_item_id='original-user-item';
   add('message','assistant','我会检查语义 Item、编译结果与实际请求之间的映射。');
-  const c=add('function_call');c.payload={name:'read_file',call_id:'read-architecture',arguments:'{\n  "path": "backend/app/desktop/session_patrol/compiler.py"\n}'};
+  const c=add('function_call');c.payload={name:'read_file',call_id:'read-architecture',arguments:'{\n  "path": "backend/app/desktop/patrol/session_patrol/compiler.py"\n}'};
   const o=add('function_call_output');o.payload={call_id:'read-architecture',output:'读取完成：编译器直接生成 typed FocusItems，兼容消息仅作为下游 bridge。'};
   wb.renderList();wb.list.scrollTop=0;
   assert(wb.doc.value.entries.every(e=>e.kind&&e.payload),'typed authoring document');

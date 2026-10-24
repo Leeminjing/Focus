@@ -17,10 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop.live_routes import live_loop_router
-from backend.app.desktop.agent_loop.query_routes import loop_query_router
-from backend.app.desktop.agent_loop.service import AgentLoopService
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop.live.live_routes import live_loop_router
+from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_query_router
+from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
 
 
 class RevisionCheckpointer:

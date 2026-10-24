@@ -197,7 +197,7 @@ def _assert_all_declared(tools, expected: ToolEffectKind):
 
 
 def test_collab_tools_have_no_local_effect():
-    from backend.app.desktop.collab import AgentCollab
+    from backend.app.desktop.agents.collaboration import AgentCollab
 
     collab = AgentCollab(session_factory=None)
     tools = [
@@ -210,7 +210,7 @@ def test_collab_tools_have_no_local_effect():
 
 
 def test_desktop_spawn_tools_are_delegated_and_wait_is_effect_free():
-    from backend.app.desktop.service import DesktopService
+    from backend.app.desktop.composition.service import DesktopService
 
     service = DesktopService.__new__(DesktopService)
     kinds = {item.name: effect_of(item).kind for item in service._build_swarm_tools()}
@@ -221,7 +221,7 @@ def test_desktop_spawn_tools_are_delegated_and_wait_is_effect_free():
 
 
 def test_desktop_reader_tools_have_no_local_effect():
-    from backend.app.desktop.service import DesktopService
+    from backend.app.desktop.composition.service import DesktopService
 
     service = DesktopService.__new__(DesktopService)
     tools = [*service._build_patrol_reader_tools("task-1"), *service._build_swarm_reader_tools("task-1")]

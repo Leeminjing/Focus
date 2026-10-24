@@ -18,20 +18,21 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.directive_equipment import resolve_context_equipment
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.agent_loop.user_message_delivery import LoopUserMessageDelivery, UserMessageDeliveryRejected
-from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository, InterventionTransitionRejected
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopUserIntent, LoopObservation, LoopRound, LoopInterventionTransition
-from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
-from backend.app.desktop.agent_loop.patrol import PortfolioPatrol
-from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent, RequestCompletionAction
-from backend.app.desktop.agent_loop.service import AgentLoopService
-from backend.app.desktop.context_curation.models import CurationLane
-from backend.app.desktop.models import DesktopRun, MainRunCreate
-from backend.app.desktop.routes import start_main_run
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_context_equipment
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.patrol.agent_loop.inputs.user_message_delivery import LoopUserMessageDelivery, UserMessageDeliveryRejected
+from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository, InterventionTransitionRejected
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopUserIntent, LoopObservation, LoopRound, LoopInterventionTransition
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.patrol.agent_loop.patrol import PortfolioPatrol
+from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent, RequestCompletionAction
+from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
+from backend.app.desktop.contexts.curation.models import CurationLane
+from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.api.schemas import MainRunCreate
+from backend.app.desktop.api.runs import start_main_run
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_loop_failure_repair_transaction import _launch, _finish
 from backend.tests.test_round_task_progress import _Checkpointer
@@ -42,7 +43,7 @@ pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
 async def authorize_message(sessions, fixture, claim, intent_id):
     observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], claim.round_id)
-    from backend.app.desktop.agent_loop.schemas import ContextPermission
+    from backend.app.desktop.patrol.agent_loop.schemas import ContextPermission
 
     async with sessions() as session:
         loop = await session.get(AgentLoop, fixture["loop_id"])
@@ -211,7 +212,7 @@ def test_delivery_rejects_unfrozen_changed_or_unresolved_message(tmp_path, tampe
                 elif tamper == "mission":
                     intent.goal_revision += 1
                 if tamper == "completion":
-                    from backend.app.desktop.agent_loop.kernel import KernelRejected
+                    from backend.app.desktop.patrol.agent_loop.kernel import KernelRejected
 
                     with pytest.raises(KernelRejected, match="user_message_pending"):
                         await LoopKernel._validate_completion(session, loop, round_row,

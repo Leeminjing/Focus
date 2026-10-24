@@ -9,14 +9,14 @@ import json
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.synthesis import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import (
     ClaimSupportAssessment,
     ContextSynthesisClaim,
     ContextSynthesisDraft,
     ContextSynthesisValidator,
     SynthesisSection,
 )
-from backend.app.desktop.context_curation import evidence_ref_key
+from backend.app.desktop.contexts.curation import evidence_ref_key
 from backend.tests.test_synthesis_claim_feedback import _inputs, _service
 
 

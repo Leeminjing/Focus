@@ -11,10 +11,10 @@ import asyncio
 
 import pytest
 
-from backend.app.desktop.agent_loop.context_expansion.compiler import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.compiler import (
     DeterministicExpansionPlanCompiler,
 )
-from backend.app.desktop.agent_loop.context_expansion.contracts import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     EvidenceRequirement,
     ExpansionOpportunity,
     ResolvedEvidenceBundle,
@@ -22,20 +22,20 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     SpawnContextIntent,
     WorkContextSpec,
 )
-from backend.app.desktop.agent_loop.context_expansion.quality_verifier import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality_verifier import (
     DeterministicTestContextQualityService,
 )
-from backend.app.desktop.agent_loop.context_expansion.synthesis import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis import (
     ClaimSupportAssessment,
     ContextSynthesisClaim,
     ContextSynthesisDraft,
     ContextSynthesisValidator,
     SynthesisSection,
 )
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import (
     DeterministicTestContextSynthesisService,
 )
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     ComposeMessage,
     CopyMessage,
     ToolExchange,

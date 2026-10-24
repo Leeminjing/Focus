@@ -25,10 +25,10 @@ from test_atomic_portfolio_publication import _CheckpointWriter, _compiled, _con
 from test_round_task_progress import _Checkpointer
 from progress_test_support import register_progress
 
-from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.kernel import LoopKernel
-from backend.app.desktop.agent_loop.models import (
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
+from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopContextMembership,
@@ -38,28 +38,28 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.observation import observation_hash
-from backend.app.desktop.agent_loop.observation_capture import (
+from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
     LoopObservationService,
     _PreparedViewsChanged,
 )
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
-from backend.app.desktop.agent_loop.schemas import RevokeLoopGrantRequest
-from backend.app.desktop.agent_loop.task_progress.contracts import SourceAssessment
-from backend.app.desktop.agent_loop.task_progress.models import (
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
+from backend.app.desktop.patrol.agent_loop.schemas import RevokeLoopGrantRequest
+from backend.app.desktop.patrol.agent_loop.task_progress.contracts import SourceAssessment
+from backend.app.desktop.patrol.agent_loop.task_progress.models import (
     LoopDecisionInputs,
     LoopProgressHead,
     LoopProgressReceipt,
     LoopProgressWork,
     LoopTaskProgress,
 )
-from backend.app.desktop.agent_loop.task_progress.repository import (
+from backend.app.desktop.patrol.agent_loop.task_progress.repository import (
     ProgressNotReady,
     TaskProgressRepository,
 )
-from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
-from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
+from backend.app.desktop.contexts.curation import (
     AtomicPortfolioPublisher,
     CurationLane,
     CurationProgramRepository,
@@ -69,11 +69,11 @@ from backend.app.desktop.context_curation import (
     PortfolioLaneAction,
     PortfolioLaneIntent,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionPublisher,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopThread
+from backend.app.desktop.persistence.models import DesktopThread
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

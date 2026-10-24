@@ -18,16 +18,16 @@ import pytest
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.completion_sources import CompletionSourceValidator
-from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant
-from backend.app.desktop.domain_evidence.artifacts import ArtifactObservationRecorder
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.domain_evidence.run_outcomes import RunOutcomeRecorder
-from backend.app.desktop.models import DesktopRun, DesktopWorkspace
-from backend.app.desktop.execution_attempts.tool import ToolExecutionLedger
-from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.completion.completion_sources import CompletionSourceValidator
+from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant
+from backend.app.desktop.runs.evidence.artifacts import ArtifactObservationRecorder
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.runs.evidence.run_outcomes import RunOutcomeRecorder
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
+from backend.app.desktop.runs.execution_attempts.tool import ToolExecutionLedger
+from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_loop_failure_repair_transaction import _authorize, _launch, _finish
 from backend.tests.runtime_context_support import tool_runtime
@@ -108,7 +108,7 @@ def test_real_file_tool_records_current_artifact_and_rejects_stale_or_forged_cal
                         SimpleNamespace(kind="artifact", source_id=sources[0].result_key)])])
                 checks = [{"check_id": "files", "required": True}]
                 await CompletionSourceValidator().validate(session, checks, contract)
-                from backend.app.desktop.agent_loop.completion_evidence_catalog import CompletionEvidenceCatalog
+                from backend.app.desktop.patrol.agent_loop.completion.completion_evidence_catalog import CompletionEvidenceCatalog
 
                 frozen = {'completion_sources': [{'source_id': sources[0].result_key, 'kind': 'artifact',
                     'run_id': row.run_id, 'payload': sources[0].payload}]}

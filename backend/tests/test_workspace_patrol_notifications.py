@@ -7,10 +7,10 @@ import uuid
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopContextMembership, LoopPendingDecision
-from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopContextMembership, LoopPendingDecision
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.composition.service import DesktopService
 
 
 def test_workspace_patrol_summaries_include_members_waits_and_successors(isolated_postgres_database):

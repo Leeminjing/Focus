@@ -1,5 +1,11 @@
 """普通会话补充、结算后队列、撤回和启动回执恢复的真实 PostgreSQL/Graph 回归。"""
 
+import backend.app.desktop.capabilities.service as _desktop_capabilities_service
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+import backend.app.desktop.runs.lifecycle_service as _desktop_runs_lifecycle_service
+
+
 import asyncio
 from datetime import UTC, datetime
 from itertools import cycle
@@ -17,10 +23,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.conversation_inputs import ConversationInput, ConversationInputCreate, ConversationInputs
-from backend.app.desktop.conversation_input_delivery import ConversationInputDelivery
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.run_orchestration.admission import RunAdmissionService
+from backend.app.desktop.conversations.inputs import ConversationInput, ConversationInputCreate, ConversationInputs
+from backend.app.desktop.conversations.input_delivery import ConversationInputDelivery
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
 from focus.agents.lead_agent_state import LeadAgentState
 from focus.context.middleware import WorldStateMiddleware
 from focus.history.middleware import TypedHistoryMiddleware
@@ -222,7 +228,7 @@ def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_pa
 def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypatch, wait_until, finalization_fault):
     """HTTP→准入→真实 dispatcher/worker→精确补充 checkpoint→结算→下一轮。"""
     from backend.app.gateway.app import app
-    from backend.app.desktop import service as service_module
+    from backend.app.desktop.composition import service as service_module
     from fastapi.testclient import TestClient
 
     controls, sampled, assembled = {}, [], []
@@ -245,9 +251,11 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
                 WorldStateMiddleware([], "base", frozenset(), "test", "v1"), TypedHistoryMiddleware()],
             state_schema=LeadAgentState, context_schema=dict)
 
-    monkeypatch.setattr(service_module, "get_available_tools", empty_tools)
-    monkeypatch.setattr(service_module, "make_lead_agent", make_agent)
-    monkeypatch.setattr(service_module, "_RUN_FINALIZATION_RETRY_INITIAL_SECONDS", 0.01)
+    monkeypatch.setattr(_desktop_capabilities_service, 'get_available_tools', empty_tools)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', empty_tools)
+    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_agent)
+    monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_agent)
+    monkeypatch.setattr(_desktop_runs_lifecycle_service, '_RUN_FINALIZATION_RETRY_INITIAL_SECONDS', 0.01)
     headers = {"X-Focus-Session": "focus-dev-session"}
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         config = app.state.desktop_service.app_config
@@ -345,8 +353,8 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
         wait_until(lambda: run["run_id"] not in service._pending_run_finalizations, timeout=30)
 
         async def settlement_facts():
-            from backend.app.desktop.context_evolution.models import ContextRevision
-            from backend.app.desktop.run_orchestration.models import RunDispatch, RunOutboxEvent
+            from backend.app.desktop.contexts.evolution.models import ContextRevision
+            from backend.app.desktop.runs.orchestration.models import RunDispatch, RunOutboxEvent
 
             async with service.session_factory() as session:
                 runs = (await session.scalars(select(DesktopRun).where(DesktopRun.task_id == task["task_id"]))).all()

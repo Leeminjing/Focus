@@ -15,31 +15,31 @@ import pytest
 from focus.runtime.runs.usage import ModelUsage
 from pydantic import ValidationError
 
-from backend.app.desktop.agent_loop.expansion_resource_policy import (
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import (
     ExpansionResourcePolicy,
     resolve_expansion_resources,
 )
-from backend.app.desktop.agent_loop.expansion_usage import ExpansionUsageCharge, ExpansionUsageLedger
-from backend.app.desktop.agent_loop.expansion_resource_projection import expansion_resource_view, planning_session_view, repeated_expansion_blocker
-from backend.app.desktop.agent_loop.schemas import AdjustLoopBudgetsRequest, LoopBudgetContract, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.resources.expansion_usage import ExpansionUsageCharge, ExpansionUsageLedger
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_projection import expansion_resource_view, planning_session_view, repeated_expansion_blocker
+from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest, LoopBudgetContract, LoopCreateRequest
 
-from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import (
     LaneAdviceProposal,
     PlannerQueryProposal,
     PlannerReadProposal,
     RetrievalBackedCognitiveAdvisor,
 )
-from backend.app.desktop.agent_loop.context_expansion.candidate_paging import CandidateDescriptorPager
-from backend.app.desktop.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded, IndexModelBudget
-from backend.app.desktop.agent_loop.context_expansion.contracts import CognitivePlanResult, DerivationStageRecord, ExpansionOpportunity, ResolvedEvidenceBundle, stable_expansion_hash
-from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionCoordinator
-from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import CorpusEvidenceItem, FrozenEvidenceCorpus
-from backend.app.desktop.agent_loop.context_expansion.evidence_resolver import MultiSourceEvidenceResolver
-from backend.app.desktop.agent_loop.context_expansion.planner import WorkerResultCognitivePlanner
-from backend.app.desktop.agent_loop.context_expansion.quality_verifier import DeterministicTestContextQualityService
-from backend.app.desktop.agent_loop.context_expansion.signals import ExpansionSignalCollector
-from backend.app.desktop.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+from backend.app.desktop.patrol.agent_loop.context_expansion.candidate_paging import CandidateDescriptorPager
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded, IndexModelBudget
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import CognitivePlanResult, DerivationStageRecord, ExpansionOpportunity, ResolvedEvidenceBundle, stable_expansion_hash
+from backend.app.desktop.patrol.agent_loop.context_expansion.coordinator import ContextExpansionCoordinator
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_corpus import CorpusEvidenceItem, FrozenEvidenceCorpus
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_resolver import MultiSourceEvidenceResolver
+from backend.app.desktop.patrol.agent_loop.context_expansion.planner import WorkerResultCognitivePlanner
+from backend.app.desktop.patrol.agent_loop.context_expansion.quality_verifier import DeterministicTestContextQualityService
+from backend.app.desktop.patrol.agent_loop.context_expansion.signals import ExpansionSignalCollector
+from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
     AuthorizedSemanticRetriever,
     PlanningRetrievalSession,
     PlanningRetrievalSessionController,
@@ -49,7 +49,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import 
 )
 from backend.tests.test_complete_semantic_context_derivation import _long_index
 from backend.tests.test_semantic_context_planning import _observation
-from backend.app.desktop.context_curation import MultiSourceEvidence, NamespacedMessageRef, SourceMessageEvidence, SourceRevisionEvidence, evidence_ref_key
+from backend.app.desktop.contexts.curation import MultiSourceEvidence, NamespacedMessageRef, SourceMessageEvidence, SourceRevisionEvidence, evidence_ref_key
 
 
 def test_expansion_policy_defaults_and_round_trip() -> None:

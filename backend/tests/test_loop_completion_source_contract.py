@@ -14,10 +14,10 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.completion_sources import CompletionSourceValidator
-from backend.app.desktop.agent_loop.models import AgentLoop
-from backend.app.desktop.domain_evidence.models import DesktopDomainResult
-from backend.app.desktop.models import DesktopRun, DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop.completion.completion_sources import CompletionSourceValidator
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
 from completion_evidence_support import record_verified_fixture
 from test_agent_loop_round_liveness import _seed_loop, _stop
 

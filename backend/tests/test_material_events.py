@@ -1,13 +1,18 @@
 """Directory events, bounded invalidation and independent compensation scheduling."""
 
+import backend.app.desktop.agents.service as _desktop_agents_service
+import backend.app.desktop.materials.service as _desktop_materials_service
+import backend.app.desktop.runs.service as _desktop_runs_service
+
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from backend.app.desktop.material_events import MaterialChangeFeed, path_key
-from backend.app.desktop.service import DesktopService
-from backend.app.desktop.state_changes import ChangeSignal
-from backend.app.desktop.material_watch import MaterialFileMonitor
+from backend.app.desktop.materials.events import MaterialChangeFeed, path_key
+from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.persistence.state_changes import ChangeSignal
+from backend.app.desktop.materials.watch import MaterialFileMonitor
 
 
 def test_event_overflow_requires_full_reconciliation():
@@ -45,17 +50,17 @@ def test_idle_controller_does_not_query_every_two_seconds(tmp_path):
     async def run():
         service = object.__new__(DesktopService)
         service.state_changes = SimpleNamespace(materials=ChangeSignal())
-        service._scan_materials = AsyncMock(return_value=({}, set()))
-        service._digest = lambda _path: "digest"
+        service.materials._scan_materials = AsyncMock(return_value=({}, set()))
+        service.materials._digest = lambda _path: "digest"
         task = asyncio.create_task(service._watch_materials())
         try:
             await asyncio.sleep(0.05)
-            assert service._scan_materials.await_count == 1
+            assert service.materials._scan_materials.await_count == 1
             service.state_changes.materials.publish()
             await asyncio.sleep(0.05)
-            assert service._scan_materials.await_count == 2
+            assert service.materials._scan_materials.await_count == 2
             await asyncio.sleep(0.05)
-            assert service._scan_materials.await_count == 2
+            assert service.materials._scan_materials.await_count == 2
         finally:
             task.cancel()
             await task
@@ -82,14 +87,14 @@ def test_unrelated_event_cannot_shorten_material_stability_interval(tmp_path):
 
 
 def test_failed_pending_scan_applies_backoff_instead_of_zero_timeout_loop(monkeypatch):
-    import backend.app.desktop.service as module
+    import backend.app.desktop.composition.service as module
     async def run():
         now = [0.0]
         waits = []
         service = object.__new__(DesktopService)
         service.state_changes = SimpleNamespace(materials=ChangeSignal())
-        service._digest = lambda _path: "digest"
-        service._scan_materials = AsyncMock(side_effect=[({"one": "/one.txt"}, {"one"}), OSError("database offline")])
+        service.materials._digest = lambda _path: "digest"
+        service.materials._scan_materials = AsyncMock(side_effect=[({"one": "/one.txt"}, {"one"}), OSError("database offline")])
         class Feed:
             def __init__(self):
                 self.signal = ChangeSignal()
@@ -105,9 +110,10 @@ def test_failed_pending_scan_applies_backoff_instead_of_zero_timeout_loop(monkey
             now[0] = 2.0
             if len(waits) > 1:
                 raise asyncio.CancelledError
-        monkeypatch.setattr(module, "monotonic", lambda: now[0])
-        monkeypatch.setattr(module, "MaterialChangeFeed", Feed)
-        monkeypatch.setattr(module.asyncio, "wait", wait)
+        monkeypatch.setattr(_desktop_materials_service, 'monotonic', lambda: now[0])
+        monkeypatch.setattr(_desktop_runs_service, 'monotonic', lambda: now[0])
+        monkeypatch.setattr(_desktop_materials_service, 'MaterialChangeFeed', Feed)
+        monkeypatch.setattr(_desktop_agents_service.asyncio, "wait", wait)
         original_wait = ChangeSignal.wait
         timeouts = []
         async def record_wait(self, generation, timeout=60):
@@ -115,7 +121,7 @@ def test_failed_pending_scan_applies_backoff_instead_of_zero_timeout_loop(monkey
             return await original_wait(self, generation, timeout)
         monkeypatch.setattr(ChangeSignal, "wait", record_wait)
         await service._watch_materials()
-        assert service._scan_materials.await_count == 2
+        assert service.materials._scan_materials.await_count == 2
         assert timeouts[-2:] == [3.0, 3.0]
         assert waits == [0.0, 2.0]
     asyncio.run(run())

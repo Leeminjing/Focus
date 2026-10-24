@@ -14,9 +14,9 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopContextMembership, LoopDelegationGrant
-from backend.app.desktop.context_curation.models import CurationLane
+from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_directive_equipment
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopContextMembership, LoopDelegationGrant
+from backend.app.desktop.contexts.curation.models import CurationLane
 from backend.tests.runtime_context_support import tool_runtime
 from focus.security.policy import AccessMode
 from focus.tools.builtins.workspace_tools import read_file, list_files, write_file, powershell, select_workspace_tools

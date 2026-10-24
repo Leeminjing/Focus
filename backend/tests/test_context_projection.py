@@ -7,7 +7,7 @@ r"""本文件对外提供 Context 消息协议投影的回归测试。
 
 from copy import deepcopy
 
-from backend.app.desktop.context_projection import ProtocolRepairContext, compile_context_messages
+from backend.app.desktop.contexts.projection import ProtocolRepairContext, compile_context_messages
 from focus.runtime.runs.events import validate_messages
 
 

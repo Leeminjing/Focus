@@ -4,8 +4,8 @@ import asyncio
 
 from focus.runtime.stream_bridge.schemas import StreamEvent
 
-from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBridge
-from backend.app.desktop.agent_loop.submission_latency import (
+from backend.app.desktop.patrol.agent_loop.execution.run_activity_bridge import LoopRunActivityBridge
+from backend.app.desktop.patrol.agent_loop.diagnostics.submission_latency import (
     MILESTONES, SubmissionSample, measure_submission, summarize,
 )
 
@@ -104,7 +104,7 @@ def test_tool_call_is_effective_output_without_text():
 
 
 def test_host_suspension_is_not_reported_as_a_normal_latency_sample(monkeypatch):
-    from backend.app.desktop.agent_loop import submission_latency
+    from backend.app.desktop.patrol.agent_loop.diagnostics import submission_latency
 
     ticks = iter((0, .001, 12, 12))
     monkeypatch.setattr(submission_latency, "perf_counter", lambda: next(ticks))

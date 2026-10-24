@@ -92,7 +92,7 @@ def test_invalid_escalation_is_a_recoverable_tool_result(tmp_path, target, reaso
 
 def test_agent_corrects_invalid_escalation_without_losing_the_run(tmp_path, monkeypatch):
     from langchain_core.messages import AIMessage, HumanMessage
-    from backend.app.desktop.tool_error_provider import build_tool_error_middleware
+    from backend.app.desktop.runs.tool_errors import build_tool_error_middleware
     from backend.tests.config_helpers import app_config_for, ToolCapableFakeChatModel
     from backend.tests.tool_catalog_support import registry_for
     import focus.agents.lead.agent as lead

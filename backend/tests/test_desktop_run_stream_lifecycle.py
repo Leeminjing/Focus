@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
-from backend.app.desktop.routes import stream_run
+from backend.app.desktop.api.runs import stream_run
 from focus.runtime.runs.manager import RunManager
 from focus.runtime.runs.schemas import RunStatus
 from focus.runtime.stream_bridge.memory import MemoryStreamBridge

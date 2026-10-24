@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-from backend.app.desktop.agent_loop.submission_latency import SCENARIOS, SubmissionSample, summarize
+from backend.app.desktop.patrol.agent_loop.diagnostics.submission_latency import SCENARIOS, SubmissionSample, summarize
 
 
 def write_report(directory: Path):

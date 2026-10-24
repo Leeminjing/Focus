@@ -19,7 +19,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-from backend.app.desktop.agent_loop.models import LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.models import LoopUserIntent
 from backend.tests.test_agent_loop_round_liveness import _seed_loop
 
 

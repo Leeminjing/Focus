@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import os
 from types import SimpleNamespace
 
-from backend.app.desktop.service import DesktopService
+from backend.app.desktop.composition.service import DesktopService
 import focus.tools.registry as registry
 from focus.tools.tools import get_available_tools
 
@@ -61,7 +61,7 @@ def test_refresh_reloads_added_changed_removed_tools_and_keeps_existing_graph(mo
         return None, SimpleNamespace(path=str(workspace))
 
     service.session_factory = session
-    service._get_task_entities = entities
+    service.workspaces._get_task_entities = entities
 
     async def run():
         old_registry = registry.get_tool_registry()

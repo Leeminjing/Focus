@@ -12,12 +12,12 @@ import uuid
 
 import pytest
 
-from backend.app.desktop.context_curation import (
+from backend.app.desktop.contexts.curation import (
     LaneCompilationError,
     MultiSourceEvidence,
     compile_lane,
 )
-from backend.app.desktop.context_evolution import (
+from backend.app.desktop.contexts.evolution import (
     ContextRevisionPayloadMode,
     ContextRevisionRef,
 )
