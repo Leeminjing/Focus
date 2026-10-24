@@ -2,13 +2,13 @@
 
 Windows 上的每个 Context 在 Run 执行前默认创建并绑定一个真实原生浏览器。
 Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、Run 或 Patrol。
-当前固定源码版本为 `8eea976de275a657138c73815e4b2abf174c0f67`，已核对该版本的
-[协议](https://github.com/Leeminjing/focus-distinct-browser/blob/8eea976de275a657138c73815e4b2abf174c0f67/docs/protocol.md)
-和[设计](https://github.com/Leeminjing/focus-distinct-browser/blob/8eea976de275a657138c73815e4b2abf174c0f67/docs/design.md)。
+固定浏览器版本为 v0.3.2，源码 `8837b4f40a8aac875ebb800fd119a8c9a906c9fa`，对应
+[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/8837b4f40a8aac875ebb800fd119a8c9a906c9fa/docs/protocol.md)
+和[设计](https://github.com/Leeminjing/focus-distinct-browser/blob/8837b4f40a8aac875ebb800fd119a8c9a906c9fa/docs/design.md)。
 
 ## 用户操作
 
-1. 在 Windows 11 x64 和可用的 WebView2 Evergreen Runtime 环境中正常启动 Focus。
+1. 在 Windows 11 x64 和 WebView2 Evergreen Runtime 138+ 环境中正常启动 Focus。
    Focus 随源码/安装版本携带 EXE，`npm start` 和托管更新会校验其摘要。
    浏览器能力不额外依赖基建的 Python 演示、C++ 工具、SDK 或 .NET。
    Focus 自身原有的后端运行依赖仍适用；macOS 保持既有执行路径。
@@ -18,7 +18,7 @@ Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、R
    **浏览器**按钮也可以再次展示。展示保留页面、登录、输入和执行进度，
    不取得租约，也不隐藏/最小化其他 Context 的浏览器。
    Windows 拒绝前台激活时会提示从任务栏查看，不把它当作浏览器丢失。
-4. 点击原生工具栏的**接管**进行人工操作。已发动作仍可能收尾；新动作不会继续派发。
+4. 直接点击、输入或滚动网页即可自动接管，也可点击原生工具栏的**接管**。已发动作仍可能收尾；新动作不会继续派发。
    最小化/隐藏原生窗口也会暂停自动操作；恢复窗口后还需要点击**交还**。
    Focus 的下一次模型决策等待交还，并要求 Agent 重新观察，不恢复旧动作队列。
 5. Run 成功、失败或取消都只释放本 Run 的控制权，浏览器页面保留，后续 Run 复用。
@@ -85,4 +85,4 @@ Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中
 也可向 `desktop/scripts/build-browser.ps1` 传 `-MsvcRoot`、`-WindowsSdkRoot`。
 开发时可用 `FOCUS_DISTINCT_BROWSER_EXE` 指定兼容协议 v1 的本地 EXE。
 
-验收命令、实际结果与截图见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)。
+复跑命令及旧版接入基线见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)；该历史记录使用 8eea976，不作为 v0.3.2 的物理设备验收证明。
