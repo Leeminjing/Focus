@@ -130,17 +130,29 @@
           renderMessage = null;
           // PDF is rendered on the backend so no active document is embedded.
           if (type === "pdf") {
-            let page = 1;
+            let page = 1, pageRequest = 0;
             body.innerHTML = localize('<div class="file-preview-pages"><button type="button" data-prev-page>上一页</button><span data-page-label></span><button type="button" data-next-page>下一页</button></div><img class="file-preview-image" alt="PDF 页面">');
             const renderPage = async next => {
-              const data = await (await request(`pdf-page?page=${next}`, target)).json();
-              if (host.__filePreview !== owner) return;
+              const requestId = ++pageRequest;
+              let data;
+              try { data = await (await request(`pdf-page?page=${next}`, target)).json(); }
+              catch (error) {
+                if (host.__filePreview !== owner || requestId !== pageRequest) return;
+                throw error;
+              }
+              if (host.__filePreview !== owner || requestId !== pageRequest) return;
               page = next; body.querySelector("img").src = `data:image/png;base64,${data.image}`;
               body.querySelector("[data-page-label]").textContent = `${page}/${data.page_count}`;
               body.querySelector("[data-prev-page]").disabled = page <= 1;
               body.querySelector("[data-next-page]").disabled = page >= data.page_count;
             };
-            const change = next => renderPage(next).catch(error => { host.querySelector("[data-file-status]").textContent = error.message; });
+            const change = next => {
+              const rendering = renderPage(next), requestId = pageRequest;
+              return rendering.catch(error => {
+                if (host.__filePreview !== owner || requestId !== pageRequest) return;
+                host.querySelector("[data-file-status]").textContent = error.message;
+              });
+            };
             body.querySelector("[data-prev-page]").addEventListener("click", () => change(page - 1));
             body.querySelector("[data-next-page]").addEventListener("click", () => change(page + 1));
             await renderPage(1); return;

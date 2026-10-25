@@ -37,3 +37,74 @@ test("historical file operations keep the fixed identity and label current file 
   assert.match(html, /打开当前文件/);
   assert.match(html, /此版本另存为/);
 });
+
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+async function mountPdf(t) {
+  const requests = [];
+  t.mock.method(globalThis, "fetch", url => {
+    const deferred = Promise.withResolvers();
+    const page = Number(new URL(url, "http://localhost").searchParams.get("page"));
+    requests.push({
+      page,
+      complete: () => deferred.resolve({ ok: true, json: async () => ({ image: `page-${page}`, page_count: 3 }) }),
+      fail: () => deferred.reject(new Error("PDF request failed")),
+    });
+    return deferred.promise;
+  });
+  const host = createElement("div");
+  const mounting = preview.mount(host, { name: "report.pdf", target: { task_id: "t", content_ref: "report.pdf" } });
+  requests[0].complete();
+  await mounting;
+  const previous = host.querySelector("[data-prev-page]"), next = host.querySelector("[data-next-page]");
+  next.dispatchEvent({ type: "click" });
+  requests[1].complete();
+  await tick();
+  assert.equal(host.querySelector("[data-page-label]").textContent, "2/3");
+  return { host, requests, previous, next };
+}
+
+for (const staleResult of ["complete", "fail"]) {
+  for (const staleFirst of [true, false]) {
+    test(`PDF ignores stale ${staleResult} ${staleFirst ? "before" : "after"} the latest page completes`, async t => {
+      const { host, requests, previous, next } = await mountPdf(t);
+      next.dispatchEvent({ type: "click" });
+      previous.dispatchEvent({ type: "click" });
+      assert.deepEqual(requests.map(request => request.page), [1, 2, 3, 1]);
+
+      if (staleFirst) {
+        requests[2][staleResult]();
+        await tick();
+        assert.equal(host.querySelector("img").src, "data:image/png;base64,page-2");
+        assert.equal(host.querySelector("[data-page-label]").textContent, "2/3");
+        assert.equal(previous.disabled, false);
+        assert.equal(next.disabled, false);
+        assert.equal(host.querySelector("[data-file-status]").textContent, "");
+      }
+
+      requests[3].complete();
+      await tick();
+      if (!staleFirst) {
+        requests[2][staleResult]();
+        await tick();
+      }
+      assert.equal(host.querySelector("img").src, "data:image/png;base64,page-1");
+      assert.equal(host.querySelector("[data-page-label]").textContent, "1/3");
+      assert.equal(previous.disabled, true);
+      assert.equal(next.disabled, false);
+      assert.equal(host.querySelector("[data-file-status]").textContent, "");
+    });
+  }
+}
+
+test("PDF shows failures from the latest page request without changing the displayed page", async t => {
+  const { host, requests, previous, next } = await mountPdf(t);
+  next.dispatchEvent({ type: "click" });
+  requests[2].fail();
+  await tick();
+  assert.equal(host.querySelector("[data-file-status]").textContent, "PDF request failed");
+  assert.equal(host.querySelector("img").src, "data:image/png;base64,page-2");
+  assert.equal(host.querySelector("[data-page-label]").textContent, "2/3");
+  assert.equal(previous.disabled, false);
+  assert.equal(next.disabled, false);
+});
