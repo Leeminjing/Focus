@@ -51,7 +51,7 @@
         if (selected !== contextId || presentation.sequence !== sequence) return;
         update(result);
         if (selected === contextId && result.foreground === false) onStatus("浏览器已展示；Windows 未允许前台激活，可从任务栏查看。", false);
-      } catch (error) { if (selected === contextId) onStatus(error.message, true); }
+      } catch (error) { if (selected === contextId && presentation.sequence === sequence) onStatus(error.message, true); }
     }
     function pages(contextId) {
       pageDialog?.dialog.close();

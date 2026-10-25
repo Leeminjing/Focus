@@ -130,17 +130,29 @@
           renderMessage = null;
           // PDF is rendered on the backend so no active document is embedded.
           if (type === "pdf") {
-            let page = 1;
+            let page = 1, pageRequest = 0;
             body.innerHTML = localize('<div class="file-preview-pages"><button type="button" data-prev-page>上一页</button><span data-page-label></span><button type="button" data-next-page>下一页</button></div><img class="file-preview-image" alt="PDF 页面">');
             const renderPage = async next => {
-              const data = await (await request(`pdf-page?page=${next}`, target)).json();
-              if (host.__filePreview !== owner) return;
+              const requestId = ++pageRequest;
+              let data;
+              try { data = await (await request(`pdf-page?page=${next}`, target)).json(); }
+              catch (error) {
+                if (host.__filePreview !== owner || requestId !== pageRequest) return;
+                throw error;
+              }
+              if (host.__filePreview !== owner || requestId !== pageRequest) return;
               page = next; body.querySelector("img").src = `data:image/png;base64,${data.image}`;
               body.querySelector("[data-page-label]").textContent = `${page}/${data.page_count}`;
               body.querySelector("[data-prev-page]").disabled = page <= 1;
               body.querySelector("[data-next-page]").disabled = page >= data.page_count;
             };
-            const change = next => renderPage(next).catch(error => { host.querySelector("[data-file-status]").textContent = error.message; });
+            const change = next => {
+              const rendering = renderPage(next), requestId = pageRequest;
+              return rendering.catch(error => {
+                if (host.__filePreview !== owner || requestId !== pageRequest) return;
+                host.querySelector("[data-file-status]").textContent = error.message;
+              });
+            };
             body.querySelector("[data-prev-page]").addEventListener("click", () => change(page - 1));
             body.querySelector("[data-next-page]").addEventListener("click", () => change(page + 1));
             await renderPage(1); return;
@@ -171,6 +183,12 @@
     let source = !!range || !["markdown", "csv"].includes(kind(name)), query = "", matches = [], selected = -1;
     let selection = range;
     const lines = text.split("\n");
+    // Keep the existing 10,000-line preview/search scope, including deep links.
+    const start = range?.start_line > 10000 ? Math.max(0, Math.min(range.start_line - 51, lines.length - 10000)) : 0;
+    const visibleEnd = Math.min(lines.length, start + 10000);
+    const searchableLines = lines.slice(start, visibleEnd).map(line => line.toLowerCase());
+    let matchingLines = new Set(), sourcePre = null, lineHeight = 21.45, searchTimer = null;
+    const mountedLines = new Map();
     body.innerHTML = localize`<div class="file-text-tools"><button type="button" data-source-toggle>${source ? localize("查看排版") : localize("查看源码")}</button><label><span data-file-search-label>查找</span> <input type="search" data-file-search aria-label="查找文件内容"></label><button type="button" data-search-next>下一个</button><span data-search-count role="status"></span><button type="button" data-copy-file>复制全文</button>${onReference ? localize('<button type="button" data-add-reference disabled>加入当前问题</button><span data-line-selection role="status">选择代码文本，或点击行号（Shift 连选）</span>') : ""}</div><div class="file-text-body" tabindex="0"></div>`;
     const content = body.querySelector(".file-text-body"), toggle = body.querySelector("[data-source-toggle]");
     toggle.hidden = !["markdown", "csv"].includes(kind(name));
@@ -184,24 +202,88 @@
       render();
     });
     function render() {
+      sourcePre = null;
+      mountedLines.clear();
       if (!source && kind(name) === "markdown" && root.markdownit) content.innerHTML = root.markdownit({ html: false, linkify: true }).render(text);
       else if (!source && kind(name) === "csv") {
         const rows = parseCsv(text, extension(name) === "tsv" ? "\t" : ",");
         content.innerHTML = `${rows.length > 1000 || rows.some(row => row.length > 100) ? localize("<p>仅预览前 1000 行、100 列，复制和另存为保留全文。</p>") : ""}<table class="file-csv"><tbody>${rows.slice(0, 1000).map((row, i) => `<tr>${row.slice(0, 100).map(cell => `<${i ? "td" : "th"}>${escape(cell)}</${i ? "td" : "th"}>`).join("")}</tr>`).join("")}</tbody></table>`;
       } else {
-        const start = range?.start_line > 10000 ? Math.max(0, Math.min(range.start_line - 51, lines.length - 10000)) : 0;
-        const visibleEnd = Math.min(lines.length, start + 10000);
         const notice = lines.length > 10000 ? localize`<p>仅预览和查找${start ? localize`第 ${start + 1}–${visibleEnd}` : localize("前 10000")} 行，复制和另存为保留全文。</p>` : "";
-        content.innerHTML = `${notice}<pre class="file-source">${lines.slice(start, visibleEnd).map((line, index) => localize`<span data-line="${start + index + 1}" class="file-source-line${query && line.toLowerCase().includes(query) ? " is-match" : ""}"><button type="button" class="file-line-number" data-select-line="${start + index + 1}" aria-label="选择第 ${start + index + 1} 行" tabindex="-1"></button>${highlight(line, name)}</span>`).join("")}</pre>`;
+        content.innerHTML = `${notice}<pre class="file-source"></pre>`;
+        sourcePre = content.querySelector(".file-source");
+        lineHeight = parseFloat(root.getComputedStyle?.(sourcePre).lineHeight) || 21.45;
+        renderWindow();
       }
       toggle.textContent = source ? localize("查看排版") : localize("查看源码");
-      matches = [...content.querySelectorAll(".is-match")]; selected = -1;
-      body.querySelector("[data-search-count]").textContent = query ? localize`${matches.length} 行匹配` : "";
+      updateSearchCount();
       paintSelection();
     }
-    function paintSelection() {
-      for (const node of content.querySelectorAll("[data-line]")) {
+    function renderWindow() {
+      if (!sourcePre) return;
+      // A shorter incoming row must not collapse an existing horizontal scroll position.
+      const width = sourcePre.scrollWidth;
+      if (width) sourcePre.style.setProperty("min-width", `${width}px`);
+      const count = visibleEnd - start;
+      const size = count <= 200 ? count : Math.min(200, Math.max(100, Math.ceil((content.clientHeight || 600) / lineHeight) + 80));
+      const top = Math.max(0, (content.scrollTop || 0) - (sourcePre.offsetTop || 0));
+      const first = Math.min(Math.max(0, count - size), Math.max(0, Math.floor(top / lineHeight) - 40));
+      const last = Math.min(count, first + size);
+      // Retain overlapping rows when scrolling; syntax markup is built only for new rows.
+      for (const [number, node] of mountedLines) {
+        if (number <= start + first || number > start + last) { node.remove(); mountedLines.delete(number); }
+      }
+      const markup = number => localize`<span data-line="${number}" class="file-source-line"><button type="button" class="file-line-number" data-select-line="${number}" aria-label="选择第 ${number} 行" tabindex="-1"></button>${highlight(lines[number - 1], name)}</span>`;
+      let prefix = "", suffix = "";
+      const existingFirst = mountedLines.size ? Number(sourcePre.firstElementChild.dataset.line) : Infinity;
+      for (let number = start + first + 1; number <= start + last; number++) {
+        if (mountedLines.has(number)) continue;
+        if (number < existingFirst) prefix += markup(number); else suffix += markup(number);
+      }
+      if (prefix) sourcePre.insertAdjacentHTML("afterbegin", prefix);
+      if (suffix) sourcePre.insertAdjacentHTML("beforeend", suffix);
+      for (const node of sourcePre.children) {
         const number = Number(node.dataset.line);
+        if (!mountedLines.has(number)) { mountedLines.set(number, node); paintLine(node, number); }
+      }
+      sourcePre.style.setProperty("padding-top", `${first * lineHeight}px`);
+      sourcePre.style.setProperty("padding-bottom", `${(count - last) * lineHeight}px`);
+    }
+    function paintLine(node, number) {
+      node.classList.toggle("is-match", matchingLines.has(number));
+      node.classList.toggle("is-current", number === matches[selected]);
+      node.classList.toggle("is-referenced", !!selection && number >= selection.start_line && number <= selection.end_line);
+    }
+    function updateSearchCount() {
+      let count = "";
+      if (query) count = selected < 0 ? localize`${matches.length} 行匹配` : localize`${selected + 1}/${matches.length} 行匹配`;
+      body.querySelector("[data-search-count]").textContent = count;
+    }
+    function search() {
+      clearTimeout(searchTimer); searchTimer = null;
+      if (body.querySelector(".file-text-body") !== content) return;
+      query = body.querySelector("[data-file-search]").value.toLowerCase();
+      matches = [];
+      if (query) {
+        for (let index = 0; index < searchableLines.length; index++) {
+          if (searchableLines[index].includes(query)) matches.push(start + index + 1);
+        }
+      }
+      matchingLines = new Set(matches); selected = -1;
+      if (query && !source) { source = true; render(); }
+      else {
+        for (const [number, node] of mountedLines) paintLine(node, number);
+        updateSearchCount();
+      }
+    }
+    function scrollToLine(number) {
+      if (!sourcePre || number <= start || number > visibleEnd) return;
+      content.scrollTop = Math.max(0, (sourcePre.offsetTop || 0) + (number - start - 0.5) * lineHeight - (content.clientHeight || 0) / 2);
+      renderWindow();
+    }
+    content.addEventListener("scroll", renderWindow, { passive: true });
+    function paintSelection() {
+      for (const [number, node] of mountedLines) {
         node.classList.toggle("is-referenced", !!selection && number >= selection.start_line && number <= selection.end_line);
       }
       const add = body.querySelector("[data-add-reference]");
@@ -238,13 +320,21 @@
       if (!selection || selection.start_line > lines.length || selection.end_line > lines.length) return;
       onReference({ ...selection, text: lines.slice(selection.start_line - 1, selection.end_line).join("\n") });
     });
-    toggle.addEventListener("click", () => { source = !source; query = ""; body.querySelector("[data-file-search]").value = ""; render(); });
-    body.querySelector("[data-file-search]").addEventListener("input", event => { query = event.target.value.toLowerCase(); if (query) source = true; render(); });
+    toggle.addEventListener("click", () => {
+      clearTimeout(searchTimer); searchTimer = null;
+      source = !source; query = ""; matches = []; matchingLines.clear(); selected = -1;
+      body.querySelector("[data-file-search]").value = ""; render();
+    });
+    body.querySelector("[data-file-search]").addEventListener("input", () => {
+      clearTimeout(searchTimer); searchTimer = setTimeout(search, 150);
+    });
     body.querySelector("[data-search-next]").addEventListener("click", () => {
+      if (searchTimer !== null) search();
       if (!matches.length) return;
-      matches[selected]?.classList.remove("is-current"); selected = (selected + 1) % matches.length;
-      matches[selected].classList.add("is-current"); matches[selected].scrollIntoView({ block: "center" });
-      body.querySelector("[data-search-count]").textContent = localize`${selected + 1}/${matches.length} 行匹配`;
+      mountedLines.get(matches[selected])?.classList.remove("is-current"); selected = (selected + 1) % matches.length;
+      scrollToLine(matches[selected]);
+      mountedLines.get(matches[selected])?.classList.add("is-current");
+      updateSearchCount();
     });
     body.querySelector("[data-copy-file]").addEventListener("click", async event => {
       try { await root.navigator.clipboard.writeText(text); event.target.textContent = localize("已复制"); }
@@ -252,7 +342,7 @@
     });
     render();
     if (range) {
-      content.querySelector(`[data-line="${range.start_line}"]`)?.scrollIntoView?.({ block: "center" });
+      scrollToLine(range.start_line);
       if (range.start_line > lines.length || range.end_line > lines.length) body.querySelector("[data-search-count]").textContent = localize("引用行范围超出当前文件，文件可能已变化");
     }
   }

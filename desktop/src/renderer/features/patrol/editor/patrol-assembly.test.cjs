@@ -78,15 +78,23 @@ test('historical policy changes invalidate pending full row requests',async()=>{
   assert.equal(controller.fingerprint,'historical');assert.equal(controller.details.size,0);assert.equal(controller.expanded.size,0);
 });
 
-test('large material directories and exact versions remain bounded without choosing unseen rows',async()=>{
+test('material directories remain bounded while version pages retain the snapshot and earlier versions',async()=>{
   const controller=new PatrolSourceController({draft:{draft_id:'d',task_id:'t'},api:async(url,options)=>url.endsWith('/materials')?
     Array.from({length:1000},(_,i)=>({material_id:'m'+i,relative_path:'file-'+i})):url.endsWith('/versions')?
     Array.from({length:1000},(_,i)=>({version_id:'version-'+i})):page(JSON.parse(options.body),[row('only')])});
   await controller.directory('material');for(let i=0;i<19;i++)await controller.directory('material',true);
   assert.equal(controller.catalog.length,100);assert.equal(controller.catalog.at(-1).source_ref.material_id,'m999');assert.equal(controller.ref,null);
   const ref=controller.catalog[0].source_ref;await controller.materialVersions(ref);assert.equal(controller.versions.length,51);
-  for(let i=0;i<19;i++)await controller.materialVersions(ref,true);
-  assert.equal(controller.versions.length,50);assert.equal(controller.versions.at(-1).source_ref.version_id,'version-999');assert.equal(controller.ref,ref);assert.equal(controller.selected.size,0);
+  const snapshot=controller.versions[0];assert.equal(snapshot.source_ref,ref);
+  for(let i=0;i<19;i++){
+    await controller.materialVersions(ref,true);
+    assert.equal(controller.versions[0],snapshot);
+    assert.deepEqual(controller.versions.slice(1).map(version=>version.source_ref.version_id),Array.from({length:(i+2)*50},(_,j)=>'version-'+j));
+    assert.equal(controller.materialNext,i<18);
+  }
+  assert.equal(controller.versions.length,1001);assert.equal(controller.versions.at(-1).source_ref.version_id,'version-999');assert.equal(controller.ref,ref);assert.equal(controller.selected.size,0);
+  await controller.materialVersions(ref);
+  assert.equal(controller.versions.length,51);assert.equal(controller.versions[0].source_ref,ref);assert.equal(controller.versions[1].source_ref.version_id,'version-0');assert.equal(controller.materialOffset,50);assert.equal(controller.materialNext,true);
 });
 
 test('refresh recovers a changed source from a stale page and requires selecting the new snapshot',async()=>{

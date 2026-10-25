@@ -48,7 +48,7 @@ test("a reference beyond line 10000 opens a bounded window with original line nu
   const host = createElement("div");
   await preview.mount(host, { name: "large.txt", target: { link: { path: "large.txt", start_line: 11990, end_line: 11995 } },
     text: Array.from({ length: 12000 }, (_, index) => `line ${index + 1}`).join("\n") });
-  assert.equal(host.querySelectorAll(".file-source-line").length, 10000);
+  assert.ok(host.querySelectorAll(".file-source-line").length <= 200);
   assert.equal(host.querySelectorAll(".is-referenced").length, 6);
   assert.equal(host.querySelector('[data-line="11990"]').textContent, "line 11990");
 });

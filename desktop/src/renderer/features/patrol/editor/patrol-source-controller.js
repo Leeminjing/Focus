@@ -49,7 +49,7 @@
         const versions=await this.api(`/desktop/api/materials/${ref.material_id}/versions`);
         if(ticket!==this.catalogRequest)return;
         const offset=append?this.materialOffset || 0:0;this.materialRef=ref;this.materialOffset=offset+50;this.materialNext=this.materialOffset<versions.length;
-        this.versions=[...(append?[]:[{label: localize("当前文件快照"),source_ref:ref}]),...versions.slice(offset,this.materialOffset).map(version=>({label:localize`版本 ${version.version_id.slice(0,8)}`,source_ref:{...ref,version_id:version.version_id}}))];
+        this.versions=[...(append?this.versions:[{label: localize("当前文件快照"),source_ref:ref}]),...versions.slice(offset,this.materialOffset).map(version=>({label:localize`版本 ${version.version_id.slice(0,8)}`,source_ref:{...ref,version_id:version.version_id}}))];
         if(!append)this.choose(ref);
       }catch(error){if(ticket===this.catalogRequest)this.error=error.message;}
       finally{if(ticket===this.catalogRequest){this.catalogLoading=false;this._emit();}}

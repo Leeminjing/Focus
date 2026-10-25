@@ -6,7 +6,7 @@
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
  * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
  * 控制材质复用语义 token；检查器显隐使用 FocusSurfaceTransition 保留壳层，退出即隔离命中、结束后退出布局；业务状态仍来自原 API/Live。
- * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
+ * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。历史 Revision 读取按最新请求、Loop、Context 和页面生命周期隔离，过期成功/失败不写状态或重绘。全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
  * 任务工具提供手工整理并复用既有 quick-apply；已有压缩待决仍使用原 resume。授权/等待表单解析复用共享视图，文件预览暂时隐藏材料检查器，关闭后恢复原 UI 偏好；独立会话的内部目录不呈现为用户已绑定工作区。
  * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
  * 传统任务与独立会话在同任务刷新时保持输入区及其祖先挂载，只更新消息与外围状态；后台其他任务结束只更新任务列表，回执不清除正在组字的草稿。
@@ -459,6 +459,7 @@ let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
 let memoryViewRequestSequence = 0;
+let loopRevisionRequestSequence = 0;
 let memoryHydrationSequence = 0;
 let memoryCompressionRequestSequence = 0;
 let contextTreeRequestSequence = 0;
@@ -734,6 +735,7 @@ function cancelPendingViewRequests() {
   draftOpenRequestSequence += 1;
   pluginViewRequestSequence += 1;
   memoryViewRequestSequence += 1;
+  loopRevisionRequestSequence += 1;
 }
 
 async function hydratePluginAssets(bootstrapPlugins = null) {
@@ -1074,7 +1076,10 @@ function render() {
   }
   const shownDraft = document.querySelector('#patrolWorkbench')?.dataset?.draftId;
   if (shownDraft && (state.view !== 'draft' || state.drafts.get(state.activeTaskId)?.draft_id !== shownDraft)) window.FocusPatrolWorkbench?.leave(shownDraft);
-  if (state.view !== "loop") loopConnection?.stop();
+  if (state.view !== "loop") {
+    loopRevisionRequestSequence += 1;
+    loopConnection?.stop();
+  }
   document.body.dataset.view = state.view;
   renderShellChrome();
   if (!state.tasks.length && ["draft", "compress", "context", "loop"].includes(state.view)) {
@@ -1366,10 +1371,18 @@ setInterval(() => {
 }, 60000);
 
 async function openLoopRevision(revisionId) {
-  if (!loopApi || !revisionId) return;
+  const loopId = state.loop.loopId;
+  if (!loopApi || !revisionId || !loopId || state.view !== "loop") return;
+  const requestId = ++loopRevisionRequestSequence;
+  const taskId = state.activeTaskId;
+  const isCurrent = () => requestId === loopRevisionRequestSequence
+    && state.view === "loop" && state.loop.loopId === loopId && state.activeTaskId === taskId;
   try {
-    state.loop.revisionSnapshot = await loopApi.revision(revisionId);
+    const snapshot = await loopApi.revision(revisionId);
+    if (!isCurrent()) return;
+    state.loop.revisionSnapshot = snapshot;
   } catch (error) {
+    if (!isCurrent()) return;
     loopStore.fail(error);
   }
   renderLoop();
@@ -8410,7 +8423,7 @@ async function handleDocumentClick(event) {
   if (action === "loop-fact-scope") return loopConsoleController?.setFactScope(button.dataset.scope);
   if (action === "loop-revoke-grant") return mutateAgentLoopGrant({ command: "revoke" });
   if (action === "open-loop-revision") return openLoopRevision(button.dataset.openRevision);
-  if (action === "close-loop-revision") { state.loop.revisionSnapshot = null; return renderLoop(); }
+  if (action === "close-loop-revision") { loopRevisionRequestSequence += 1; state.loop.revisionSnapshot = null; return renderLoop(); }
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
   if (action === "refresh-run-causality") {
     readRunCausality(sessionUsageRun(state.activeTaskId), true);
