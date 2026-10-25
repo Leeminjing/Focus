@@ -98,24 +98,6 @@
     return true;
   }
 
-  function render(state) {
-    const all = (state.facts?.facts || []).filter(item => item.kind !== "tool");
-    const factStatus = state.factStatus || "all";
-    const filtered = all.filter(item => (state.factFilter === "all" || item.kind === state.factFilter) && (factStatus === "all" || item.status === factStatus || item.outcome_status === factStatus) && (state.factScope === "all" || !state.selectedContextId || item.context_id === state.selectedContextId));
-    const tests = filtered.filter(item => item.kind === "test");
-    const totals = tests.reduce((result, item) => {
-      if (item.metrics?.count_status !== "exact") result.unknown += 1;
-      else ["passed", "failed", "skipped"].forEach(key => { result[key] += Number(item.metrics[key] || 0); });
-      return result;
-    }, { passed: 0, failed: 0, skipped: 0, unknown: 0 });
-    const filters = ["all", "run", "test", "workspace", "artifact", "context_revision", "directive"];
-    const statuses = [["all", localize("全部状态")], ["failed", localize("失败")], ["unknown", localize("未知")]];
-    const older = state.facts?.has_more
-      ? localize('<div class="fact-sentinel" data-loop-fact-sentinel aria-hidden="true"></div><button type="button" class="load-facts" data-action="loop-load-older-facts">加载更早事实</button>')
-      : "";
-    return localize`<section class="loop-facts-drawer"><header><div><span class="loop-kicker">Live Facts</span><h3>持续演化的事实</h3></div><div class="fact-totals"><strong>${totals.passed}</strong> passed <strong>${totals.failed}</strong> failed <strong>${totals.skipped}</strong> skipped${totals.unknown ? ` · ${totals.unknown} unknown` : ""}</div><div class="fact-filters"><button type="button" data-action="loop-fact-scope" data-scope="${state.factScope === "all" ? "current" : "all"}">${state.factScope === "all" ? localize("全部 Context") : localize("当前 Context")}</button>${filters.map(value => `<button type="button" data-action="loop-fact-filter" data-filter="${value}" class="${state.factFilter === value ? "is-active" : ""}">${value}</button>`).join("")}${statuses.map(([value, label]) => `<button type="button" data-action="loop-fact-status" data-status="${value}" class="${factStatus === value ? "is-active" : ""}">${label}</button>`).join("")}</div></header><div class="fact-table-scroll" data-loop-fact-list>${older}<table class="fact-table"><thead><tr><th>时间</th><th>Context</th><th>类型</th><th>事实内容</th><th>状态</th><th>证据</th></tr></thead><tbody>${renderRows(filtered)}</tbody></table></div></section>`;
-  }
-
   function renderDetail(detail) {
     if (detail.file) return renderFile(detail.file);
     const fact = detail.fact || {};
@@ -275,5 +257,5 @@
     const summary = comparison && !comparison.limited ? ` · +${comparison.added} / −${comparison.removed}` : "";
     return localize`<section class="file-version"><h3>${escape(file.path)}</h3><p>版本 ${(file.sha256 || file.result_key).slice(0, 12)}${before?.redacted || after?.redacted ? localize(" · 已脱敏") : ""}</p><p>执行位置 ${escape(file.slot_id)}${file.context_id ? localize` · 工作线 ${escape(file.context_id)}` : ""}</p><button type="button" data-patrol-file-add="${escape(JSON.stringify(inputFileReference(file)))}">＠ 引用此版本</button><details open><summary>此版本内容</summary><div data-version-preview>${snapshot(after)}</div></details><details><summary>Diff${reliable ? summary : localize(" · 不可用")}</summary>${reliable ? renderLineDiff(comparison) : snapshot(before?.available ? after : before)}</details><details><summary>写入前内容</summary>${snapshot(before)}</details></section>`;
   }
-  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, buildLineDiff, renderLineDiff, fileReference, inputFileReference, markFileReferences, get statusOptions() { return statusOptions(); }, get outcomeOptions() { return outcomeOptions(); } });
+  return Object.freeze({ renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, buildLineDiff, renderLineDiff, fileReference, inputFileReference, markFileReferences, get statusOptions() { return statusOptions(); }, get outcomeOptions() { return outcomeOptions(); } });
 });

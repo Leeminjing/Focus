@@ -22,7 +22,6 @@ from backend.app.desktop.patrol.agent_loop.feature_flags import LoopFeatureFlags
         ("FOCUS_LOOP_SUPERVISOR", "supervisor_scheduling"),
         ("FOCUS_LOOP_MATERIALIZED_FACTS", "materialized_fact_reads"),
         ("FOCUS_LOOP_LIVE_API", "live_api"),
-        ("FOCUS_LOOP_FRONTEND_PROJECTION", "frontend_projection"),
         (
             "FOCUS_LOOP_AUTOMATIC_CONTEXT_EXPANSION_WRITES",
             "automatic_context_expansion_writes",
@@ -36,7 +35,6 @@ def test_each_loop_stage_can_be_disabled_independently(environment_key: str, fie
         "supervisor_scheduling": flags.supervisor_scheduling,
         "materialized_fact_reads": flags.materialized_fact_reads,
         "live_api": flags.live_api,
-        "frontend_projection": flags.frontend_projection,
         "automatic_context_expansion_writes": flags.automatic_context_expansion_writes,
     }
     assert values[field] is False

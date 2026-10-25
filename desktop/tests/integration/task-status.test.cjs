@@ -56,16 +56,19 @@ test("notification click navigates to its task without relying on cached details
   assert.equal(run("openedTasks.length"), 1);
 });
 
-test("notification click discovers its loop from the server after restart", async () => {
+test("retired task Loop notification falls back to task recovery", async () => {
   const run = harness();
   await run(`
-    globalThis.openedLoops = [];
+    globalThis.openedTasks = [];
     refreshTasks = async () => { state.tasks = [{task_id: "target", loop: {loop_id: "loop"}}]; };
-    switchTask = async id => { state.activeTaskId = id; };
-    openLoopView = async () => { openedLoops.push(localStorage.getItem("focus-agent-loop:target")); };
+    switchTask = async id => { openedTasks.push(id); state.activeTaskId = id; state.view = "focus"; };
+    render = () => {};
     openTaskNotification({taskId: "target", loopId: "loop", attentionId: "wait"});
   `);
-  assert.equal(run("openedLoops[0]"), "loop");
+  assert.equal(run("openedTasks[0]"), "target");
+  assert.equal(run("state.view"), "focus");
+  assert.equal(run("state.inspector.tab"), "run");
+  assert.equal(run('localStorage.getItem("focus-agent-loop:target")'), null);
 });
 
 test("Patrol notification opens its workspace and wait instead of the Context loop", async () => {
@@ -82,4 +85,18 @@ test("Patrol notification opens its workspace and wait instead of the Context lo
   assert.deepEqual(JSON.parse(run("JSON.stringify(openedPatrols[0])")), {
     workspaceId: "workspace", loopId: "patrol", attentionId: "budget",
   });
+});
+
+test("task Patrol details save task state and use the task workspace", async () => {
+  const run = harness();
+  await run(`
+    state.view = "focus"; state.activeTaskId = "target";
+    state.tasks = [{task_id: "target", workspace_id: "task-workspace"}];
+    state.patrolWorkspace = {workspace_id: "other-workspace"};
+    globalThis.navigation = [];
+    persistFocusState = () => navigation.push("saved");
+    openPatrolWorkbench = async target => navigation.push(target);
+    handleDocumentClick({target: {closest: selector => selector === "[data-action]" ? {dataset: {action: "show-task-patrol"}} : null}});
+  `);
+  assert.deepEqual(JSON.parse(run("JSON.stringify(navigation)")), ["saved", {workspaceId: "task-workspace"}]);
 });

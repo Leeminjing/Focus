@@ -113,21 +113,6 @@ async function testVersionPreview() {
   await pending;
   assert.equal(container.innerHTML, beforeLate);
 
-  // Clicking a displayed Fact revision must request that revision, even if a
-  // newer revision exists on the server by the time the click is handled.
-  let selectedRevision;
-  const factHarness = createAppHarness({ globals: { FocusLoopApi: { create: () => ({
-    factDetail: async (_loop, _fact, _signal, revision) => { selectedRevision = revision; throw new Error("stop after request"); },
-  }) } } });
-  factHarness.vm.runInContext(readAppSource(), factHarness.context);
-  factHarness.vm.runInContext("state.loop.loopId = 'loop';", factHarness.context);
-  const button = { dataset: { action: "inspect-loop-fact", factId: "fact" },
-    closest: selector => selector === "[data-fact-revision]" ? { dataset: { factRevision: "3" } } : null };
-  await assert.rejects(factHarness.context.handleDocumentClick({ target: {
-    closest: selector => selector === "[data-action]" ? button : null,
-  } }), /stop after request/);
-  assert.equal(selectedRevision, 3);
-
   let previewOptions;
   h.context.FocusFilePreview = { mount: async (_host, options) => { previewOptions = options; } };
   h.context.openFileLink({ path: "data.csv", slot_id: "tree-a", run_id: "run-a" });

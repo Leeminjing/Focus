@@ -41,28 +41,6 @@
       const response = await fetchImpl(`${base}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } });
       return decode(response, `Agent Loop ${options.method || "GET"} ${path || "/"}`);
     }
-    async function stream(loopId, after, onEvents, signal) {
-      const response = await fetchImpl(`${base}/${encodeURIComponent(loopId)}/events/stream?after=${Number(after) || 0}`, { headers, signal });
-      if (!response.ok || !response.body) throw new Error("Agent Loop 事件流连接失败");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let cursor = Number(after) || 0;
-      while (true) {
-        const chunk = await reader.read();
-        buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() || "";
-        for (const frame of frames) {
-          const data = frame.split("\n").filter(line => line.startsWith("data: ")).map(line => line.slice(6)).join("\n");
-          if (!data) continue;
-          const event = JSON.parse(data);
-          cursor = Math.max(cursor, Number(event.cursor) || 0);
-          onEvents([event]);
-        }
-        if (chunk.done) return cursor;
-      }
-    }
     async function liveStream(loopId, afterSequence, onFrame, signal) {
       const response = await fetchImpl(`${base}/${encodeURIComponent(loopId)}/live/stream?after_sequence=${Number(afterSequence) || 0}`, { headers, signal });
       if (!response.ok) return decode(response, `Agent Loop GET /${loopId}/live/stream`);
@@ -107,18 +85,12 @@
         return request(`/workspace/${encodeURIComponent(workspaceId)}/inputs${query.size ? `?${query}` : ""}`);
       },
       committedLineage: (loopId, signal) => request(`/${encodeURIComponent(loopId)}/lineage`, { signal }),
-      start: body => request("", { method: "POST", body: JSON.stringify(body) }),
-      activationEligibility: contextId => request(`/activation-eligibility/by-context/${encodeURIComponent(contextId)}`),
-      findByContext: contextId => request(`/by-context/${encodeURIComponent(contextId)}`),
       get: loopId => request(`/${encodeURIComponent(loopId)}`),
       waitRequest: loopId => request(`/${encodeURIComponent(loopId)}/wait-request`),
       resolveWait: (loopId, requestId, body) => request(`/${encodeURIComponent(loopId)}/wait-requests/${encodeURIComponent(requestId)}/responses`, { method: "POST", body: JSON.stringify(body) }),
       resumeWithCurrentMission: (loopId, requestId, body) => request(`/${encodeURIComponent(loopId)}/wait-requests/${encodeURIComponent(requestId)}/resume-with-current-mission`, { method: "POST", body: JSON.stringify(body) }),
       control: (loopId, command) => request(`/${encodeURIComponent(loopId)}/control`, { method: "POST", body: JSON.stringify({ command }) }),
       mutateGrant: (loopId, body) => request(`/${encodeURIComponent(loopId)}/grant`, { method: "POST", body: JSON.stringify(body) }),
-      override: (loopId, body) => request(`/${encodeURIComponent(loopId)}/override`, { method: "POST", body: JSON.stringify(body) }),
-      reviseMission: (loopId, mission) => request(`/${encodeURIComponent(loopId)}/missions`, { method: "POST", body: JSON.stringify({ confirmation: "activate", mission }) }),
-      intervene: (loopId, body) => request(`/${encodeURIComponent(loopId)}/interventions`, { method: "POST", body: JSON.stringify(body) }),
       console: loopId => request(`/${encodeURIComponent(loopId)}/console`),
       conversation: (loopId, contextId, options = {}) => {
         const query = new URLSearchParams();
@@ -167,26 +139,6 @@
         return request(`/${encodeURIComponent(loopId)}/live/history?${query}`, { signal });
       },
       liveStream,
-      async directMessage(contextId, content, requestId = crypto.randomUUID()) {
-        const response = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}/main/runs`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            message: content,
-            idempotency_key: requestId,
-          }),
-        });
-        return decode(response, "发送 Context 消息");
-      },
-      async restoreCompression(contextId, messageId) {
-        const response = await fetchImpl(`${root}/compression/quick-apply`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ task_id: contextId, ranges: [{ source_ids: [messageId], restore: true }], scrub_terms: [] }),
-        });
-        return decode(response, "恢复压缩来源");
-      },
-      events: (loopId, after = 0) => request(`/${encodeURIComponent(loopId)}/events?after=${Number(after) || 0}`),
       revisions: async (contextId, signal) => {
         const response = await fetchImpl(`${root}/contexts/${encodeURIComponent(contextId)}/revisions`, { headers, signal });
         return decode(response, "读取 Context 版本列表");
@@ -194,21 +146,6 @@
       revision: async (revisionId, signal) => {
         const response = await fetchImpl(`${root}/context-revisions/${encodeURIComponent(revisionId)}`, { headers, signal });
         return decode(response, "读取 Context revision");
-      },
-      stream,
-      async related(snapshot) {
-        const requestRoot = async path => {
-          const response = await fetchImpl(`${root}${path}`, { headers });
-          return decode(response, `读取 Agent Loop 关联数据 ${path}`);
-        };
-        const [portfolio, evolution, tree, audit, slots] = await Promise.all([
-          snapshot.program_id ? requestRoot(`/curation-programs/${encodeURIComponent(snapshot.program_id)}`) : null,
-          requestRoot(`/workspaces/${encodeURIComponent(snapshot.workspace_id)}/context-evolution`),
-          requestRoot(`/workspaces/${encodeURIComponent(snapshot.workspace_id)}/context-tree`),
-          requestRoot(`/agent-loops/${encodeURIComponent(snapshot.loop_id)}/audit`),
-          requestRoot(`/workspaces/${encodeURIComponent(snapshot.workspace_id)}/slots`),
-        ]);
-        return { portfolio, evolution, tree, audit, slots };
       },
     });
   }

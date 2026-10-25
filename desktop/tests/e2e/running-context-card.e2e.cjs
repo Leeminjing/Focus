@@ -18,7 +18,7 @@ if (!process.versions.electron) {
     const win = new BrowserWindow({ show: false, width: 1440, height: 900, webPreferences: { offscreen: true, backgroundThrottling: false } });
     win.webContents.on("console-message", (event) => { if (event.level === "error") console.error(event.message); });
     const source = file => fs.readFileSync(path.join(__dirname, file), "utf8");
-    const styles = ["../../src/renderer/shared/styles/tokens.css", "../../src/renderer/shared/styles/base.css", "../../src/renderer/features/loop/loop-console.css"].map(source).join("\n");
+    const styles = ["../../src/renderer/shared/styles/tokens.css", "../../src/renderer/shared/styles/base.css", "../../src/renderer/features/map/portfolio-map.css"].map(source).join("\n");
     await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html><head><meta charset="utf-8"><style>${styles} body{margin:0;background:#d7d9d9} #graph{width:100vw;height:100vh}</style></head><body><main id="graph"></main><script>${source("../../src/renderer/features/map/portfolio-map-layout.js")}</script><script>${source("../../src/renderer/features/map/portfolio-map-view.js")}</script></body></html>`));
     const run = script => win.webContents.executeJavaScript(`(()=>{try{return eval(${JSON.stringify(script)})}catch(error){throw new Error(error.stack)}})()`, true).catch(error => { throw new Error(script + "\n" + error.message); });
     await run(`
