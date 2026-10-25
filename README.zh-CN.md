@@ -259,6 +259,15 @@ npm --prefix desktop start
 
 默认使用本地 PostgreSQL 保存任务状态和上下文；模型调用连接你配置的服务，并向它发送本次调用所需的内容。
 
+内置 `web_search` 与 `web_fetch` 使用 [DeepSeek Search / Fetch](https://api-docs.deepseek.com/guides/search/)。在 `config.yaml` 声明联网凭据；`~/.focus/config.yaml` 中的同名配置优先：
+
+```yaml
+web_tools:
+  api_key: $DEEPSEEK_API_KEY
+```
+
+将引用变量的实际值写入 `~/.focus/.env` 或进程环境变量后重启 Focus；进程环境变量优先。该字段也支持直接填写密钥。如果现有 DeepSeek 模型密钥已存于 `OPENAI_API_KEY`，可显式设置 `web_tools.api_key: $OPENAI_API_KEY` 复用它；工具始终使用此处声明的凭据，不受所选模型影响。省略整个配置段时默认引用 `$DEEPSEEK_API_KEY`，缺少凭据仅在调用联网工具时返回可恢复错误。查询最长 128 个 Unicode 字符，结果数保持 1～10 条；抓取的 Markdown 正文最多返回 30,000 字符。
+
 ## Skill、MCP 与记忆
 
 Focus 可以装配具体工作所需的技能与工具，并保存可复用的项目知识。

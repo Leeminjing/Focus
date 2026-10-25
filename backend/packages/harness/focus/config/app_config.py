@@ -2,7 +2,7 @@
 本文件对外提供 get_app_config、reload_app_config、build_app_config、apply_app_config 四个公开函数，
 以及 AppConfig 配置聚合类。
 
-AppConfig: 声明式配置数据模型，聚合 models / stream_bridge / database / checkpointer / extensions 配置
+AppConfig: 声明式配置数据模型，聚合 models / web_tools / stream_bridge / database / checkpointer / extensions 配置
 get_app_config: 组合根入口，将 config.yaml 加载为全局单例 AppConfig 对象；Gateway 可选择模型修复模式
 reload_app_config: 强制替换全局单例（仅用于测试与显式重载；运行期生效走 apply_app_config）
 build_app_config: 由两层原始 map 构造一个已校验的 AppConfig（不触碰全局单例）
@@ -39,6 +39,7 @@ from focus.config.extensions_config import ExtensionsConfig
 from focus.config.langgraph_store_config import LanggraphStoreConfig
 from focus.config.model_config import ModelConfig
 from focus.config.stream_bridge_config import StreamBridgeConfig
+from focus.config.web_config import WebToolsConfig
 
 
 DEFAULT_MODEL_ENV_VAR = "FOCUS_MODEL"
@@ -70,6 +71,7 @@ class AppConfig(BaseModel):
     extensions: ExtensionsConfig = ExtensionsConfig(mcp_servers={})
     commitment: CommitmentConfig = CommitmentConfig()
     compression: CompressionConfig = CompressionConfig()
+    web_tools: WebToolsConfig = Field(default_factory=WebToolsConfig)
 
     @model_validator(mode="after")
     def validate_curation_default(self) -> "AppConfig":

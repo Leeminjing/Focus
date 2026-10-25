@@ -101,6 +101,7 @@ def test_role_factory_preserves_ordinary_tools_and_plugin_hooks(monkeypatch, tmp
             assert ("custom_probe" in names) == (role == "main")
             assert ("mcp_probe" in names) == (role == "main")
             assert ("web_search" in names) == (role != "patrol")
+            assert ("web_fetch" in names) == (role != "patrol")
             assert ("send_message" in names) == (role != "patrol")
             assert "read_file" in names and hooks == ["before"]
             equipment = await service._equipment_tools()

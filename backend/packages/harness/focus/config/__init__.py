@@ -7,6 +7,7 @@
     DatabaseConfig — 数据库连接配置的数据模型
     ExtensionsConfig — extensions_config.json 的 Pydantic 模型
     McpServerConfig — 单个 MCP Server 的配置模型
+    WebToolsConfig — 独立于所选模型的联网工具凭据配置
     get_app_config — 加载 config.yaml 并返回 AppConfig 单例
     get_extensions_config — 加载 extensions_config.json 并返回 ExtensionsConfig
     get_enabled_mcp_servers — 从 ExtensionsConfig 筛选已启用的 MCP Server
@@ -32,6 +33,7 @@ from focus.config.extensions_config import (
 )
 from focus.config.langgraph_store_config import LanggraphStoreConfig
 from focus.config.stream_bridge_config import StreamBridgeConfig
+from focus.config.web_config import WebToolsConfig
 
 __all__ = [
     "AppConfig",
@@ -41,6 +43,7 @@ __all__ = [
     "LanggraphStoreConfig",
     "McpServerConfig",
     "StreamBridgeConfig",
+    "WebToolsConfig",
     "apply_app_config",
     "build_app_config",
     "get_app_config",
