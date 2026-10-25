@@ -344,3 +344,68 @@ def test_real_agent_tool_calls_through_run_worker():
             fixture.close()
             await engine.dispose()
     asyncio.run(scenario())
+
+
+def test_real_multi_page_targets_and_browser_scoped_sharing():
+    async def scenario():
+        engine, browsers, (a, b, c) = await setup()
+        fixture = BrowserFixture()
+        resources = []
+        try:
+            ra, rb = browsers.resource(a, "pages-A"), browsers.resource(b, "pages-B")
+            resources.extend((ra, rb))
+            await asyncio.gather(ra.start(), rb.start())
+            parent = await ra.observe()
+            await ra.act(parent["observation_id"], {"type": "navigate", "url": fixture.url("Parent")})
+            parent = await ra.observe()
+            await ra.act(parent["observation_id"], {"type": "click", "x": 80, "y": 215}, "css_viewport")
+            for _ in range(100):
+                listing = await ra.list_pages()
+                if len(listing["pages"]) == 2 and any(row["url"] == fixture.url("Child") for row in listing["pages"]) and all(row["ready"] and not row["loading"] for row in listing["pages"]):
+                    break
+                await asyncio.sleep(.05)
+            assert len(listing["pages"]) == 2
+            child_id = next(row["page_id"] for row in listing["pages"] if row["page_id"] != parent["page_id"])
+            child = await ra.observe(child_id)
+            await error_code("page_not_found", rb.observe(child_id))
+            await rb.release()
+            await ra.page_command("select_page", parent["page_id"])
+            await error_code("observation_required", ra.act(child["observation_id"], {"type": "text", "text": "wrong-page"}))
+            await error_code("page_not_selected", ra.observe(child_id))
+            await ra.release()
+            await browsers.replace(c, a)
+            rc = browsers.resource(c, "pages-sharer")
+            resources.append(rc)
+            await rc.start()
+            shared_pages = await rc.list_pages()
+            assert {row["page_id"] for row in shared_pages["pages"]} == {parent["page_id"], child_id}
+            await rc.page_command("select_page", child_id)
+            child = await rc.observe(child_id)
+            await rc.page_command("close_page", child_id)
+            assert rc.failure is None and rc.token and rc.observation is None
+            remaining = await rc.list_pages()
+            assert remaining["selected_page_id"] == parent["page_id"] and len(remaining["pages"]) == 1
+            await rc.observe(parent["page_id"])
+            hwnd = int(rc.browser.hwnd)
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+            user32.SendMessageW(hwnd, 0x0111, 101, 0)
+            await wait_for(lambda: rc.browser.state == "manual")
+            await error_code("control_unavailable", rc.page_command("select_page", parent["page_id"]))
+            independent = await rb.observe()
+            assert independent["page_id"] != parent["page_id"]
+            user32.SendMessageW(hwnd, 0x0111, 101, 0)
+            await wait_for(lambda: rc.browser.state == "available")
+            await error_code("observation_required", rc.act(child["observation_id"], {"type": "text", "text": "stale"}))
+            await rc.observe(parent["page_id"])
+            print("PASS shared multi-page lease, exact page targets, stale observations, child close, human handoff and independent B")
+        finally:
+            for resource in resources:
+                await resource.finish()
+            for browser in tuple(browsers.browsers.values()):
+                if browser.state not in {"closed", "disconnected"}:
+                    await browsers.transport.call("close", browser_id=browser.browser_id)
+            await browsers.close()
+            fixture.close()
+            await engine.dispose()
+    asyncio.run(scenario())

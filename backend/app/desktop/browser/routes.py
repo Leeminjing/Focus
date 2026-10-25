@@ -15,6 +15,14 @@ class BrowserPresentation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     client_id: str = Field(min_length=1, max_length=128)
     sequence: int = Field(ge=1)
+    page_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+@browser_router.get("/contexts/{context_id}/browser/pages")
+async def browser_pages(context_id: str, request: Request):
+    try:
+        return await request.app.state.desktop_service.browsers.pages(context_id)
+    except BrowserError as error:
+        raise HTTPException(409, error.payload()) from error
 
 @browser_router.get("/contexts/{context_id}/browser")
 async def browser_status(context_id: str, request: Request):

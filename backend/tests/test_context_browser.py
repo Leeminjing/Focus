@@ -3,6 +3,8 @@ import asyncio
 from dataclasses import replace
 import json
 import sys
+
+import pytest
 from types import SimpleNamespace
 
 from backend.app.desktop.browser.transport import BrowserError, BrowserTransport
@@ -157,4 +159,79 @@ def test_late_context_selection_cannot_present_over_the_newer_context():
         delayed.set()
         assert (await earlier)["superseded"] is True
         assert presented == ["B"]
+    asyncio.run(scenario())
+
+
+def page_run():
+    from backend.app.desktop.browser.service import BrowserSession, ContextBrowsers
+    owner = ContextBrowsers(None, MemoryStreamBridge())
+    browser = BrowserSession("browser", "automatic", owner.transport.host_id, selected_page_id="parent")
+    owner.browsers[browser.browser_id] = browser
+    run = owner.resource("context", "run")
+    run.browser, run.token, run._task = browser, "lease", None
+    owner.runs.add(run)
+    owner.lease_owners[browser.browser_id] = run
+    return owner, run
+
+
+def test_page_targets_are_bound_to_observation_and_selection_revokes_only_observation():
+    async def scenario():
+        owner, run = page_run()
+        calls = []
+        async def call(method, **params):
+            calls.append((method, params))
+            if method == "observe":
+                return {"page_id": "parent", "viewport": {"width": 100, "height": 100}, "image": {"width": 200, "height": 200}}
+            return {"control_still_valid": True}
+        owner.transport.call = call
+        view = await run.observe("parent")
+        owner._event({"event": "navigation_completed", "browser_id": "browser", "state": "automatic", "detail": {"page_id": "background"}})
+        await run.act(view["observation_id"], {"type": "click", "x": 80, "y": 40})
+        assert calls[-1][1]["page_id"] == "parent" and calls[-1][1]["action"]["x"] == 40
+        owner._event({"event": "page_selected", "browser_id": "browser", "state": "automatic", "detail": {"page_id": "child"}})
+        assert run.token == "lease" and owner.lease_owners["browser"] is run
+        with pytest.raises(BrowserError, match="observation_required"):
+            await run.act(view["observation_id"], {"type": "text", "text": "stale"})
+        assert len(calls) == 2
+        owner._event({"event": "page_closed", "browser_id": "browser", "state": "automatic", "detail": {"page_id": "child"}})
+        assert run.failure is None and run.token == "lease"
+    asyncio.run(scenario())
+
+
+def test_late_capture_cannot_restore_observation_after_page_switch():
+    async def scenario():
+        owner, run = page_run()
+        entered, finish = asyncio.Event(), asyncio.Event()
+        async def call(method, **params):
+            entered.set()
+            await finish.wait()
+            return {"page_id": "parent"}
+        owner.transport.call = call
+        task = asyncio.create_task(run.observe())
+        await entered.wait()
+        owner._event({"event": "page_selected", "browser_id": "browser", "state": "automatic", "detail": {"page_id": "child"}})
+        finish.set()
+        with pytest.raises(BrowserError, match="page_changed"):
+            await task
+        assert run.observation is None and run.token == "lease"
+    asyncio.run(scenario())
+
+
+def test_page_management_needs_browser_lease_and_never_grants_an_observation():
+    async def scenario():
+        owner, run = page_run()
+        calls = []
+        async def call(method, **params):
+            calls.append((method, params))
+            return {"pages": [], "selected_page_id": "parent"} if method == "list_pages" else {"page_id": params["page_id"]}
+        owner.transport.call = call
+        run.observation = {"observation_id": "old", "page_id": "parent"}
+        await run.list_pages()
+        assert run.observation is not None and "token" not in calls[-1][1]
+        await run.page_command("select_page", "child")
+        assert run.observation is None and calls[-1][1]["token"] == "lease"
+        owner._event({"event": "control_changed", "browser_id": "browser", "state": "manual", "detail": {"reason": "human_input"}})
+        with pytest.raises(BrowserError, match="control_unavailable"):
+            await run.page_command("close_page", "child")
+        assert len(calls) == 2 and run.token is None
     asyncio.run(scenario())

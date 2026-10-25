@@ -2,9 +2,8 @@
 
 Windows 上的每个 Context 在 Run 执行前默认创建并绑定一个真实原生浏览器。
 Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、Run 或 Patrol。
-固定浏览器版本为 v0.3.2，源码 `8837b4f40a8aac875ebb800fd119a8c9a906c9fa`，对应
-[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/8837b4f40a8aac875ebb800fd119a8c9a906c9fa/docs/protocol.md)
-和[设计](https://github.com/Leeminjing/focus-distinct-browser/blob/8837b4f40a8aac875ebb800fd119a8c9a906c9fa/docs/design.md)。
+固定浏览器版本为 v0.4.0，源码 `6fe11bbf964c6cbd8a7c3a82c6ca5f6fb9415696`，对应
+[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/6fe11bbf964c6cbd8a7c3a82c6ca5f6fb9415696/docs/protocol.md)。
 
 ## 用户操作
 
@@ -18,6 +17,7 @@ Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、R
    **浏览器**按钮也可以再次展示。展示保留页面、登录、输入和执行进度，
    不取得租约，也不隐藏/最小化其他 Context 的浏览器。
    Windows 拒绝前台激活时会提示从任务栏查看，不把它当作浏览器丢失。
+   **页面**按钮可列出全部页面并展示已有页面，保持各页输入、登录和滚动位置。
 4. 直接点击、输入或滚动网页即可自动接管，也可点击原生工具栏的**接管**。已发动作仍可能收尾；新动作不会继续派发。
    最小化/隐藏原生窗口也会暂停自动操作；恢复窗口后还需要点击**交还**。
    Focus 的下一次模型决策等待交还，并要求 Agent 重新观察，不恢复旧动作队列。
@@ -25,7 +25,7 @@ Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、R
    原生窗口关闭、故障或连接失效使绑定失效，相关活跃 Run 及时报告错误。
    后端重启也不会把旧 ID 当成可恢复会话；旧窗口可能仍可人工使用。
 6. 需要共享时，先结束目标 Context 的 Run，在**浏览器绑定**中选同一工作区的来源 Context。
-   两者会使用同一个真实页面。也可明确创建新独立浏览器来解除共享或替换失效绑定。
+   两者会共享同一浏览器会话及其全部页面。也可明确创建新独立浏览器来解除共享或替换失效绑定。
    更换后只有没有任何 Context 引用的旧浏览器才调用 `close`；共享者不会被误关。
    断连后的显式替换使用全新的宿主连接，不接续旧窗口或旧令牌。
 
@@ -36,7 +36,10 @@ Windows 桌面 Agent 工厂装配以下内置工具，全部通过服务端 Cont
 
 | 工具 | 用途 |
 | --- | --- |
-| `browser_observe()` | 申请/持有租约，观察当前页面，返回图片、URL、视口及 `observation_id` |
+| `browser_observe(page_id=None)` | 申请/持有租约，观察选中页，返回图片、URL、视口、`page_id` 及 `observation_id` |
+| `browser_list_pages()` | 列出本浏览器页面与当前页；不取得租约 |
+| `browser_select_page(page_id)` | 取得浏览器级租约并展示页面，之后必须重新观察 |
+| `browser_close_page(page_id)` | 取得同一租约并关闭页面；最后一页关闭时浏览器失效 |
 | `browser_navigate(url, observation_id)` | 导航；之后重新观察 |
 | `browser_click(x, y, observation_id, coordinate_space="image")` | 坐标点击 |
 | `browser_type(text, observation_id)` | 向网页当前焦点输入文字 |
@@ -46,10 +49,10 @@ Windows 桌面 Agent 工厂装配以下内置工具，全部通过服务端 Cont
 
 典型顺序为 `observe → navigate → observe → click → type → click → observe → release`。
 同一段操作保持同一租约，模型思考期间自动续租。共享者的观察由 Focus 等待当前持有者释放；
-只有观察可等待，动作不会排队或自动重放。不同浏览器的请求独立进行。
+观察、选择或关闭页面申请租约时可以等待；网页动作不会排队或自动重放。不同浏览器的请求独立进行。
 
 每次新租约都需要新的观察。导航、URL/视口变化、接管、暂停、释放后，旧观察不能继续操作。
-动作参数必须引用该 Run 的最近观察编号。默认坐标为返回图片像素，Focus 按
+动作参数必须引用该 Run 的最近观察编号；Focus 将该观察的 `page_id` 原样传给宿主，禁止把动作重定向到后来选中的页面。用户切页、关闭观察页时旧观察失效，租约仍属于整个浏览器；子页关闭不终止 Run，最后一页关闭才使整个浏览器失效。后台页导航不清除另一页的有效观察。默认坐标为返回图片像素，Focus 按
 `x * viewport.width / image.width`、`y * viewport.height / image.height` 换算为 CSS 视口像素；
 也可明确提供 `css_viewport` 坐标。
 
@@ -73,9 +76,9 @@ Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中
   Context 装配在 durable dispatch 标记数据库 running 前确认创建成功；统一 `run_agent`
   在内存 running 前再次核对资源，finally 释放；没有新增 Run 执行器。
 - `browser/routes.py`：既有会话认证下的 Context 查询、展示、更换与 SSE 快照。
-  路径为 `/desktop/api/contexts/{context_id}/browser`、其 `/present` 和 `/stream`。
+  路径为 `/desktop/api/contexts/{context_id}/browser`、其 `/present`、`/pages` 和 `/stream`。展示请求可带 `page_id`，只选择展示，不取得租约。
   更换使用 PUT `{ "source_context_id": "来源 Context ID" }`；`null` 表示显式新建独立实例。
-- `desktop/src/renderer/features/context/context-browser.*`：Context 按钮、共享选择和实时状态；
+- `desktop/src/renderer/features/context/context-browser.*`：Context 按钮、页面列表/展示、共享选择和实时状态；
   被任务视图、图检查器和 Loop 控制台复用。被动刷新不反复激活原生窗口。
 - `desktop/resources/distinct-browser/`：固定版本 EXE 与 SHA-256 清单。
   `npm --prefix desktop run prepare:browser` 验证产物；托管安装/更新调用同一命令。
@@ -85,4 +88,4 @@ Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中
 也可向 `desktop/scripts/build-browser.ps1` 传 `-MsvcRoot`、`-WindowsSdkRoot`。
 开发时可用 `FOCUS_DISTINCT_BROWSER_EXE` 指定兼容协议 v1 的本地 EXE。
 
-复跑命令及旧版接入基线见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)；该历史记录使用 8eea976，不作为 v0.3.2 的物理设备验收证明。
+复跑命令及旧版接入基线见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)；该历史记录使用 8eea976，不作为新版的物理设备验收证明。

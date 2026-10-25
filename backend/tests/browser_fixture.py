@@ -14,7 +14,7 @@ if(!localStorage.identity)localStorage.identity=crypto.randomUUID();
 if(!document.cookie)document.cookie='identity='+crypto.randomUUID();
 function report(){fetch('/report',{method:'POST',body:JSON.stringify({name,text:input.value,count:+output.textContent,cookie:document.cookie,storage:localStorage.identity})})}
 input.addEventListener('input',report);document.querySelector('button').onclick=()=>{output.textContent=+output.textContent+1;report()};report();
-</script></body></html>'''
+</script><button style="top:200px" onclick="window.open('/Child','focus-child')">Open child</button></body></html>'''
 
 
 class BrowserFixture:

@@ -33,6 +33,9 @@ class BrowserSession:
     hwnd: str = ""
     detail: dict = field(default_factory=dict)
     epoch: int = 0
+    selected_page_id: str | None = None
+    pages_revision: int = 0
+    selection_revision: int = 0
 
 
 class ContextBrowsers:
@@ -106,6 +109,7 @@ class ContextBrowsers:
             browser = BrowserSession(result["browser_id"], result["state"], self.transport.host_id, result["hwnd"])
             self.browsers[browser.browser_id] = browser
         browser.hwnd = result["hwnd"]
+        browser.selected_page_id = result["page_id"]
         try:
             await self._save(context_id, browser)
         except BaseException:
@@ -128,7 +132,15 @@ class ContextBrowsers:
                 DesktopThread.ui_state[BINDING_KEY]["browser_id"].astext == browser.browser_id))).all()
         return {"context_id": context_id, "browser_id": browser.browser_id,
                 "state": browser.state, "detail": browser.detail,
+                "selected_page_id": browser.selected_page_id, "pages_revision": browser.pages_revision,
                 "shared_context_ids": sorted(users)}
+
+    async def pages(self, context_id):
+        browser = await self.binding(context_id)
+        if browser is None:
+            return {"selected_page_id": None, "pages": []}
+        self._check(browser)
+        return await self.transport.call("list_pages", browser_id=browser.browser_id)
 
     async def present(self, context_id, selection=None):
         if selection:
@@ -143,7 +155,10 @@ class ContextBrowsers:
         await self.transport.start()
         if selection and self._selections.get(selection.client_id) != selection.sequence:
             return {**await self.snapshot(context_id), "superseded": True}
-        result = await self.transport.call("present", browser_id=browser.browser_id)
+        params = {"browser_id": browser.browser_id}
+        if selection and getattr(selection, "page_id", None):
+            params["page_id"] = selection.page_id
+        result = await self.transport.call("present", **params)
         # Never clear a pause here. Only the native handback opens a new lease.
         return {**result, **await self.snapshot(context_id)}
 
@@ -180,6 +195,7 @@ class ContextBrowsers:
                 result["browser_id"], result["state"], self.transport.host_id, result["hwnd"])
             self.browsers[browser.browser_id] = browser
             browser.hwnd = result["hwnd"]
+            browser.selected_page_id = result["page_id"]
             try:
                 await self._save(context_id, browser)
             except BaseException:
@@ -210,12 +226,23 @@ class ContextBrowsers:
             if "state" in event:
                 browser.state = event["state"]
             browser.detail = event.get("detail", {})
-            invalidated = browser.state in STOPPED or event["event"] in {"control_changed", "navigation_completed"}
-            if invalidated and event["event"] != "navigation_completed":
+            kind, page_id = event["event"], browser.detail.get("page_id")
+            if kind == "page_selected":
+                browser.selected_page_id = page_id
+                browser.selection_revision += 1
+            if kind in {"page_created", "page_selected", "page_closed", "navigation_completed"}:
+                browser.pages_revision += 1
+            if kind == "page_closed" and page_id == browser.selected_page_id:
+                browser.selected_page_id = None
+                browser.selection_revision += 1
+            invalidated = browser.state in STOPPED or kind in {"control_changed", "page_selected"}
+            if browser.state in STOPPED or kind == "control_changed":
                 browser.epoch += 1
             for run in tuple(self.runs):
                 if run.browser is browser:
-                    run.changed(event, invalidated)
+                    page_changed = kind in {"navigation_completed", "page_closed"} and (
+                        not page_id or run.observation and run.observation.get("page_id") == page_id)
+                    run.changed(event, invalidated or page_changed)
         self.changes.publish()
 
     async def close(self):
@@ -288,43 +315,52 @@ class BrowserRun:
             self.token, self.observation = None, None
             self.publish({"event": "lease_lost", "state": self.browser.state, "detail": error.payload()})
 
-    async def observe(self):
+    async def _ensure_lease(self):
+        if self.browser.state in STOPPED:
+            raise BrowserError("control_unavailable", "请在原生浏览器中恢复窗口并点击交还，然后重新观察")
+        if not self.token:
+            # Lease acquisition waits for Focus's current holder. No
+            # action queue survives a handoff. Native busy still means reject.
+            while (holder := self.owner.lease_owners.get(self.browser.browser_id)) is not None and holder is not self:
+                self.publish({"event": "waiting_for_control", "state": self.browser.state})
+                generation = self.owner.changes.generation
+                await self.owner.changes.wait(generation, timeout=30)
+                self.check()
+                if self.browser.state in STOPPED:
+                    raise BrowserError("control_unavailable", "等待期间用户已接管或暂停，请重新观察")
+            self.owner.lease_owners[self.browser.browser_id] = self
+            epoch = self.browser.epoch
+            self._acquisition = asyncio.create_task(self.owner.transport.call(
+                "acquire", browser_id=self.browser.browser_id, client_id=self.run_id, ttl_ms=LEASE_TTL_MS))
+            lease = await asyncio.shield(self._acquisition)
+            self._acquisition = None
+            # acquire itself emits control_changed(automatic). A subsequent
+            # takeover must still defeat its late response.
+            if self.browser.state != "automatic" or self.browser.epoch > epoch + 1:
+                raise BrowserError("invalid_token", "申请期间控制权已改变，请重新观察")
+            self.token = lease["token"]
+            self._renewal = asyncio.create_task(self._renew())
+
+    async def observe(self, page_id=None):
         self.check()
         if self._inflight:
             raise BrowserError("busy", "该 Run 已有浏览器调用在途，请求未接受")
         self._inflight = True
         try:
-            if self.browser.state in STOPPED:
-                raise BrowserError("control_unavailable", "请在原生浏览器中恢复窗口并点击交还，然后重新观察")
-            if not self.token:
-                # Only observations wait for Focus's current lease holder. No
-                # action queue survives a handoff. Native busy still means reject.
-                while (holder := self.owner.lease_owners.get(self.browser.browser_id)) is not None and holder is not self:
-                    self.publish({"event": "waiting_for_control", "state": self.browser.state})
-                    generation = self.owner.changes.generation
-                    await self.owner.changes.wait(generation, timeout=30)
-                    self.check()
-                    if self.browser.state in STOPPED:
-                        raise BrowserError("control_unavailable", "等待期间用户已接管或暂停，请重新观察")
-                self.owner.lease_owners[self.browser.browser_id] = self
-                epoch = self.browser.epoch
-                self._acquisition = asyncio.create_task(self.owner.transport.call(
-                    "acquire", browser_id=self.browser.browser_id, client_id=self.run_id, ttl_ms=LEASE_TTL_MS))
-                lease = await asyncio.shield(self._acquisition)
-                self._acquisition = None
-                # acquire itself emits control_changed(automatic). A subsequent
-                # takeover must still defeat its late response.
-                if self.browser.state != "automatic" or self.browser.epoch > epoch + 1:
-                    raise BrowserError("invalid_token", "申请期间控制权已改变，请重新观察")
-                self.token = lease["token"]
-                self._renewal = asyncio.create_task(self._renew())
+            await self._ensure_lease()
             token = self.token
-            result = await self.owner.transport.call("observe", browser_id=self.browser.browser_id, token=token)
+            revision = self.browser.selection_revision
+            params = {"browser_id": self.browser.browser_id, "token": token}
+            if page_id is not None:
+                params["page_id"] = page_id
+            result = await self.owner.transport.call("observe", **params)
             # The native capture validates navigation/viewport revisions. A
             # navigation_completed event from the preceding act may arrive while
             # this fresh capture is pending; it does not invalidate its result.
-            if self.token != token:
+            if self.token != token or self.browser.selection_revision != revision:
                 raise BrowserError("page_changed", "观察期间控制权已变化，请重新观察")
+            if not result.get("page_id") or page_id is not None and result["page_id"] != page_id:
+                raise BrowserError("protocol_mismatch", "观察结果缺少匹配的页面标识")
             self.observation = {**result, "observation_id": uuid.uuid4().hex}
             return self.observation
         except (BrowserError, asyncio.CancelledError) as error:
@@ -353,7 +389,8 @@ class BrowserRun:
                 action[axis] *= observed["viewport"][size] / observed["image"][size]
         self._inflight = True
         try:
-            result = await self.owner.transport.call("act", browser_id=self.browser.browser_id, token=self.token, action=action)
+            result = await self.owner.transport.call("act", browser_id=self.browser.browser_id, token=self.token,
+                page_id=observed["page_id"], action=action)
             if action["type"] == "navigate" or result.get("control_still_valid") is False:
                 self.observation = None
             return result
@@ -363,6 +400,34 @@ class BrowserRun:
             raise
         finally:
             self._inflight = False
+
+    async def list_pages(self):
+        self.check()
+        return await self.owner.transport.call("list_pages", browser_id=self.browser.browser_id)
+
+    async def page_command(self, method, page_id):
+        self.check()
+        if method not in {"select_page", "close_page"}:
+            raise ValueError("unsupported page command")
+        if self._inflight:
+            raise BrowserError("busy", "该 Run 已有浏览器调用在途，请求未接受")
+        self._inflight = True
+        try:
+            await self._ensure_lease()
+            # Page management never grants an observation. Even an uncertain
+            # result requires a fresh list/observe, never an automatic replay.
+            self.observation = None
+            return await self.owner.transport.call(method, browser_id=self.browser.browser_id,
+                                                   token=self.token, page_id=page_id)
+        except BrowserError as error:
+            if error.code in {"invalid_token", "control_unavailable", "window_paused"}:
+                self.token = None
+            raise
+        finally:
+            self._inflight = False
+            if not self.token and self.owner.lease_owners.get(self.browser.browser_id) is self:
+                self.owner.lease_owners.pop(self.browser.browser_id, None)
+                self.owner.changes.publish()
 
     async def release(self):
         token, self.token = self.token, None
