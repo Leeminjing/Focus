@@ -96,8 +96,14 @@ def desktop_service(config):
 def install_fixture(monkeypatch, registry, model, *, custom=(), mcp=()):
     async def custom_tools():
         return [discovery._wrap_as_toolinfo(item, "custom") for item in custom]
-    async def mcp_tools():
+    async def mcp_tools(workspace=None):
         return [discovery._wrap_as_toolinfo(item, "mcp") for item in mcp]
+    async def no_pending_inputs(self, routing):
+        return []
+    monkeypatch.setattr(
+        "backend.app.desktop.conversations.input_delivery.ConversationInputDelivery.pending",
+        no_pending_inputs,
+    )
     monkeypatch.setattr(plugins, "get_plugin_registry", lambda: registry)
     monkeypatch.setattr(lead, "get_plugin_registry", lambda: registry)
     monkeypatch.setattr(lead, "create_chat_model", lambda **kwargs: model)

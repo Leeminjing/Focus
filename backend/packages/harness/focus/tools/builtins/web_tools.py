@@ -1,47 +1,43 @@
-"""
-本文件对外提供 web_search 与 web_fetch 两个免 API key 的联网内置工具，供 main /
-teammate / worker 角色装配（patrol 与承诺层内部 Worker/Evaluator 不装配）。
+"""通过 DeepSeek Search / Fetch 提供联网工具，保持 Agent 的工具与效果契约。
 
-效果声明：两个工具只发网络请求并返回内存文本，不产生受治理的本地副作用，因此由本模块
-声明为无本地副作用；访问模式不限制网络，因此该声明与访问模式无关。
+输入为 web_search(query, max_results=5) 或 web_fetch(url)，使用独立的
+DEEPSEEK_API_KEY，与 Run 选择的模型无关。搜索返回编号、标题、完整 URL 与摘要；
+抓取返回至多 30000 字符的 Markdown 正文及必要的截断提示。
 
-输入:
-    web_search(query, max_results=5) — 关键词与结果数上限；默认实现为 ddgs
-        （DuckDuckGo Search 库），经 asyncio.to_thread 异步化
-    web_fetch(url) — 目标 http(s) URL；默认实现为 Jina Reader（r.jina.ai），
-        返回可读性提取后的 Markdown 文本
+工作流：校验参数 → 异步 POST DeepSeek JSON API → 转换结果。缺少凭据、HTTP / 网络
+错误及无效响应统一抛 ToolException，由现有工具错误处理闭合调用，不中断 Agent。
+两个工具仅访问网络并返回内存文本，无受治理的本地副作用；main / teammate / worker
+继续装配，patrol 与承诺层内部 Worker/Evaluator 不直接装配。
 
-输出:
-    web_search → 至多 max_results 条结果的文本，每条含序号、标题、完整 URL 与摘要
-    web_fetch → 截断至 30000 字符的可读 Markdown；非 http(s) 协议抛 ValueError
-
-具体工作流:
-    (1) web_search 校验 max_results（1..10）后在线程池中调用 DDGS().text()
-    (2) 搜索成功 → 逐条组装 [N] title / URL / body 文本；无结果或引擎异常 → ToolException
-    (3) web_fetch 校验协议白名单后经 httpx 请求 https://r.jina.ai/{url}
-    (4) 抓取成功 → 截断返回；网络错误/非 2xx → ToolException
-    (5) 两工具的可恢复错误统一转 ToolException，由既有工具错误 middleware
-        闭合为匹配原调用 ID 的 ToolMessage，不中断 Agent 主流程
-
-示例:
-    text = await web_search.ainvoke({"query": "python asyncio", "max_results": 5})
-    md = await web_fetch.ainvoke({"url": "https://docs.python.org/3/"})
+示例：await web_search.ainvoke({"query": "python asyncio", "max_results": 5})。
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
 from typing import Any
 
+import httpx
+from focus.config.web_config import get_deepseek_api_key
+from focus.security.effects import NO_LOCAL_EFFECT, declare_effect
+from httpx import AsyncClient
 from langchain_core.tools import ToolException, tool
 
-from focus.security.effects import NO_LOCAL_EFFECT, declare_effect
-
-_WEB_FETCH_TIMEOUT_SECONDS = 30
+_WEB_TIMEOUT_SECONDS = 30
 _WEB_FETCH_MAX_CHARS = 30000
 _WEB_SEARCH_MAX_RESULTS = 10
-_JINA_BASE_URL = "https://r.jina.ai/"
+_WEB_SEARCH_MAX_QUERY_CHARS = 128
+_DEEPSEEK_TOOLS_BASE_URL = "https://api.deepseek.com/v1/tools"
+_HTTP_ERROR_HINTS = {
+    400: "请求参数无效，请调整查询或 URL",
+    401: "鉴权失败，请检查 DEEPSEEK_API_KEY",
+    402: "DeepSeek 账户余额不足，请充值后重试",
+    403: "请求被 DeepSeek 安全策略拒绝，请尝试其他 URL",
+    404: "未能提取可用网页正文，请尝试其他 URL",
+    408: "请求超时，请稍后重试",
+    413: "请求内容过大，请缩短查询或 URL",
+    429: "DeepSeek 请求限流，请稍后重试",
+    504: "DeepSeek 上游请求超时，请稍后重试",
+}
 
 
 def _truncate(text: str, limit: int = _WEB_FETCH_MAX_CHARS) -> str:
@@ -50,69 +46,83 @@ def _truncate(text: str, limit: int = _WEB_FETCH_MAX_CHARS) -> str:
     return text[:limit] + f"\n\n…（内容过长，已截断至 {limit} 字符）"
 
 
-def _ddgs_search(query: str, max_results: int) -> list[dict[str, Any]]:
-    """在线程池中执行 ddgs 同步搜索；引擎异常在此层统一转换为 ToolException。"""
-    from ddgs import DDGS
-    from ddgs.exceptions import DDGSException, TimeoutException
-
+async def _deepseek_request(endpoint: str, payload: dict[str, Any], *, action: str) -> dict[str, Any]:
+    """共用鉴权与错误边界；诊断不包含凭据、响应正文或底层异常文本。"""
     try:
-        with DDGS(timeout=20) as ddgs:
-            results = ddgs.text(
-                query,
-                region="wt-wt",
-                safesearch="moderate",
-                max_results=max_results,
+        api_key = get_deepseek_api_key()
+    except ValueError as exc:
+        raise ToolException(f"{action}失败：{exc}") from exc
+    try:
+        async with AsyncClient(timeout=_WEB_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                f"{_DEEPSEEK_TOOLS_BASE_URL}/{endpoint}",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=payload,
             )
-    except (DDGSException, TimeoutException) as exc:
-        raise ToolException(f"搜索失败：{exc}") from exc
-    return results or []
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        hint = _HTTP_ERROR_HINTS.get(status, "DeepSeek 服务暂不可用，请稍后重试")
+        raise ToolException(f"{action}失败：HTTP {status}，{hint}") from exc
+    except httpx.TimeoutException as exc:
+        raise ToolException(f"{action}失败：DeepSeek 请求超时，请稍后重试") from exc
+    except httpx.HTTPError as exc:
+        raise ToolException(f"{action}失败：无法连接 DeepSeek，请检查网络后重试") from exc
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise ToolException(f"{action}失败：DeepSeek 返回的数据格式无效") from exc
+    if not isinstance(data, dict):
+        raise ToolException(f"{action}失败：DeepSeek 返回的数据格式无效")
+    return data
 
 
 @tool
 async def web_search(query: str, max_results: int = 5) -> str:
-    """搜索网页并返回标题、URL 与摘要；结果可直接引用。使用默认实现的 DuckDuckGo 搜索，无需 API key。"""
+    """搜索网页并返回标题、URL 与摘要；结果可直接引用。查询限 128 字符，使用 DeepSeek 搜索。"""
     if not isinstance(query, str) or not query.strip():
         raise ValueError("查询关键词不能为空")
+    query = query.strip()
+    if len(query) > _WEB_SEARCH_MAX_QUERY_CHARS:
+        raise ValueError(f"查询关键词不能超过 {_WEB_SEARCH_MAX_QUERY_CHARS} 个 Unicode 字符，请缩短查询")
     if not isinstance(max_results, int) or isinstance(max_results, bool):
-        raise ValueError("max_results 必须是整数")
+        raise ValueError("max_results 必须是整数")  # noqa: TRY004 — 保持现有工具参数错误契约
     if not 1 <= max_results <= _WEB_SEARCH_MAX_RESULTS:
         raise ValueError(f"max_results 必须在 1..{_WEB_SEARCH_MAX_RESULTS} 之间")
-    results = await asyncio.to_thread(_ddgs_search, query.strip(), max_results)
+    data = await _deepseek_request(
+        "search", {"query": query, "count": max_results, "need_content": False}, action="搜索"
+    )
+    results = data.get("results")
+    if not isinstance(results, list):
+        raise ToolException("搜索失败：DeepSeek 返回的数据格式无效")
     if not results:
         raise ToolException("搜索无结果，请更换关键词重试")
     lines: list[str] = []
-    for index, item in enumerate(results, start=1):
-        title = str(item.get("title", "")).strip()
-        href = str(item.get("href", "")).strip()
-        body = str(item.get("body", "")).strip()
-        lines.append(f"[{index}] {title}\nURL: {href}\n{body}")
+    for index, item in enumerate(results[:max_results], start=1):
+        if not isinstance(item, dict) or not all(isinstance(item.get(key), str) for key in ("title", "url")):
+            raise ToolException("搜索失败：DeepSeek 返回的数据格式无效")
+        body = item.get("summary") or item.get("snippet", "")
+        if not isinstance(body, str):
+            raise ToolException("搜索失败：DeepSeek 返回的摘要格式无效")
+        lines.append(f"[{index}] {item['title'].strip()}\nURL: {item['url'].strip()}\n{body.strip()}")
     return "\n\n".join(lines)
 
 
 @tool
 async def web_fetch(url: str) -> str:
-    """抓取单个网页，返回可读性提取后的 Markdown 文本；适用于文档、文章与页面内容。无需 API key。"""
+    """抓取单个网页，返回可读性提取后的 Markdown 文本；适用于文档、文章与页面内容。使用 DeepSeek 抓取。"""
     if not isinstance(url, str) or not url.strip():
         raise ValueError("URL 不能为空")
+    url = url.strip()
     if not url.startswith(("http://", "https://")):
         raise ValueError("只支持 http:// 或 https:// 协议的 URL")
-    import httpx
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-    api_key = os.environ.get("JINA_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    try:
-        async with httpx.AsyncClient(
-            timeout=_WEB_FETCH_TIMEOUT_SECONDS, follow_redirects=True
-        ) as client:
-            response = await client.get(f"{_JINA_BASE_URL}{url.strip()}", headers=headers)
-            response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise ToolException(f"抓取失败：目标返回 HTTP {exc.response.status_code}") from exc
-    except httpx.HTTPError as exc:
-        raise ToolException(f"抓取失败：{exc}") from exc
-    return _truncate(response.text)
+    data = await _deepseek_request("fetch", {"url": url}, action="抓取")
+    content = data.get("content")
+    if not isinstance(content, str):
+        raise ToolException("抓取失败：DeepSeek 返回的正文格式无效")
+    if not content.strip():
+        raise ToolException("抓取失败：DeepSeek 未返回可用的网页正文，请尝试其他 URL")
+    return _truncate(content)
 
 
 declare_effect(web_search, NO_LOCAL_EFFECT)
