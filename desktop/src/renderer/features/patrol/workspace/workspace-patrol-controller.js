@@ -142,6 +142,78 @@
       else if (projection) { patchGraph(); void refreshLineage(projection); void refreshObservation(); }
     }
     function closeInspection() { inspector?.close(); }
+    function bindPanelSplit() {
+      const panels = host.querySelector("[data-patrol-panel-split]");
+      const handle = panels.querySelector("[data-patrol-panel-resizer]");
+      const progress = panels.querySelector(".patrol-progress-card");
+      const observation = panels.querySelector(".patrol-observation-card");
+      const storageKey = "focus-patrol-panel-split-v1", options = { signal: lifetime.signal };
+      let ratio = .6, drag = null;
+      try {
+        const stored = Number(root.localStorage?.getItem(storageKey));
+        if (stored > 0 && stored < 1) ratio = stored;
+      } catch { /* 本地存储不可用时仍可调整当前视图。 */ }
+      const bounds = () => {
+        if (!handle.getBoundingClientRect().height) return null;
+        const style = root.getComputedStyle(panels);
+        const minimum = parseFloat(style.getPropertyValue("--patrol-progress-min"));
+        const observationMinimum = parseFloat(style.getPropertyValue("--patrol-observation-min"));
+        const available = Math.max(panels.clientHeight - handle.getBoundingClientRect().height, minimum + observationMinimum);
+        return { available, minimum, maximum: available - observationMinimum };
+      };
+      const sync = () => {
+        const limits = bounds();
+        if (!limits) return;
+        for (const [name, value] of Object.entries({ min: limits.minimum, max: limits.maximum, now: progress.getBoundingClientRect().height })) {
+          handle.setAttribute(`aria-value${name}`, String(Math.round(value / limits.available * 100)));
+        }
+      };
+      const apply = () => {
+        panels.style.setProperty("--patrol-progress-weight", `${ratio}fr`);
+        panels.style.setProperty("--patrol-observation-weight", `${1 - ratio}fr`);
+        sync();
+      };
+      const persist = () => { try { root.localStorage?.setItem(storageKey, String(ratio)); } catch { /* 调整无需依赖存储。 */ } };
+      const resize = height => {
+        const limits = bounds();
+        if (!limits || limits.minimum >= limits.maximum) return;
+        ratio = Math.max(limits.minimum, Math.min(limits.maximum, height)) / limits.available;
+        apply();
+      };
+      handle.addEventListener("pointerdown", event => {
+        if (event.button !== 0 || !bounds() || drag) return;
+        event.preventDefault();
+        handle.focus({ preventScroll: true });
+        drag = { id: event.pointerId, y: event.clientY, height: progress.getBoundingClientRect().height, ratio };
+        handle.setPointerCapture(event.pointerId);
+      }, options);
+      handle.addEventListener("pointermove", event => {
+        if (drag?.id === event.pointerId) resize(drag.height + event.clientY - drag.y);
+      }, options);
+      const finish = event => {
+        if (drag?.id !== event.pointerId) return;
+        if (event.type === "pointerup") persist();
+        else { ratio = drag.ratio; apply(); }
+        drag = null;
+        if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      };
+      for (const event of ["pointerup", "pointercancel", "lostpointercapture"]) handle.addEventListener(event, finish, options);
+      handle.addEventListener("keydown", event => {
+        const limits = bounds();
+        if (!limits || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const delta = (event.key === "ArrowUp" ? -1 : 1) * (event.shiftKey ? 64 : 24);
+        resize(event.key === "Home" ? limits.minimum : event.key === "End" ? limits.maximum : progress.getBoundingClientRect().height + delta);
+        persist();
+      }, options);
+      handle.addEventListener("dblclick", () => { ratio = .6; apply(); persist(); }, options);
+      apply();
+      if (root.ResizeObserver) {
+        const observer = new root.ResizeObserver(sync);
+        observer.observe(panels); observer.observe(progress); observer.observe(observation);
+        lifetime.signal.addEventListener("abort", () => observer.disconnect(), { once: true });
+      }
+    }
     async function openFilePicker() {
       if (!loopId) return;
       const owner = token, version = ++fileVersion;
@@ -833,6 +905,7 @@
       inspector.mount(host.querySelector("[data-patrol-context]"));
       unlisten = inputs.subscribe(patchInputs);
       const options = { signal: lifetime.signal };
+      bindPanelSplit();
       host.querySelector("[data-patrol-composer]").addEventListener("submit", event => {
         event.preventDefault();
         if (onCompose) { void onCompose({ workspaceId: bound.workspace_id }).catch(error); return; }

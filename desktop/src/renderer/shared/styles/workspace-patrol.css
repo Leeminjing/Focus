@@ -197,8 +197,23 @@
 .workbench-panel p { font-size: 12px; line-height: 1.8; }
 .workbench-panel small { font-size: 10px; color: var(--workbench-muted); }
 .workbench-panel footer { margin-top: auto; border-top: 1px solid #96a9b51c; padding-top: 10px; font-size: 10px; color: var(--workbench-muted); }
-.patrol-progress-card { grid-column: 1; grid-row: 1; align-self: start; height: 75%; }
-.patrol-observation-card { grid-column: 1; grid-row: 1; align-self: end; height: 22%; padding: 16px 20px; }
+.patrol-progress-observation {
+  --patrol-progress-min: 360px;
+  --patrol-observation-min: 260px;
+  grid-column: 1; grid-row: 1; min-width: 0; min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(var(--patrol-progress-min), var(--patrol-progress-weight, .6fr)) 12px minmax(var(--patrol-observation-min), var(--patrol-observation-weight, .4fr));
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.patrol-panel-resizer { position: relative; cursor: row-resize; touch-action: none; user-select: none; border-radius: 6px; }
+.patrol-panel-resizer::before { content: ""; position: absolute; width: 36px; height: 3px; left: calc(50% - 18px); top: calc(50% - 1.5px); border-radius: 3px; background: #91a6b280; }
+.patrol-panel-resizer:hover::before, .patrol-panel-resizer:focus-visible::before { background: var(--workbench-blue); }
+.patrol-panel-resizer:focus-visible { outline: 2px solid var(--workbench-blue); outline-offset: -2px; }
+.patrol-progress-card { height: auto; }
+.patrol-observation-card { height: auto; padding: 16px 20px; }
+.patrol-observation-scroll { flex: 1; min-height: 0; overflow: auto; }
+.patrol-observation-scroll [data-patrol-observation] { overflow: visible; }
 .patrol-facts-card { grid-column: 3; grid-row: 1; align-self: start; height: 61%; }
 .patrol-selected-card { grid-column: 3; grid-row: 1 / 3; align-self: end; height: 44%; }
 .patrol-graph-card { grid-column: 2; grid-row: 1; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -298,6 +313,12 @@
 .workspace-patrol:not(.is-quiet) [data-patrol-error] { margin: 2px 0; }
 .workbench-panel-tabs { display: none; }
 .workspace-patrol .is-workbench .portfolio-map-zoom { position: fixed; bottom: 26px; left: 8px; width: var(--workbench-left); justify-content: space-evenly; height: 46px; padding: 3px; border-radius: 18px; font-size: 10px; color: var(--workbench-muted); }
+@media (max-width: 1199px) {
+  .has-patrol-workbench #app { overflow-y: auto; }
+  .workspace-patrol:not(.is-quiet) { min-height: 600px; }
+  .patrol-progress-observation { display: contents; }
+  .patrol-panel-resizer { display: none; }
+}
 @media (min-width: 900px) and (max-width: 1199px) {
   .workspace-patrol:not(.is-quiet) { grid-template-columns: minmax(0, 1fr) 248px; grid-template-rows: 26px 32px minmax(0, 1fr) auto; gap: 14px; }
   .patrol-page-heading { position: static; grid-column: 1 / 3; grid-row: 1; }

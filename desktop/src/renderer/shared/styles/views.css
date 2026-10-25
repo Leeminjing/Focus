@@ -556,6 +556,7 @@
 
 /* 全图：先按工作区，再按根 Context 分组；技术标识保持可展开而不抢占扫描层级。 */
 .map-view { height: auto; min-height: 100%; grid-template-rows: auto auto; align-content: start; gap: var(--space-3); padding: 26px 30px; }
+.app-workspace:has(.map-portfolio-surface) { container: map-workspace / inline-size; }
 #app:has(.map-portfolio-surface) { overflow: hidden; }
 .map-view:has(.map-portfolio-surface) { height: 100%; min-height: 0; grid-template-rows: auto auto auto minmax(0, 1fr); align-content: stretch; }
 .map-view:has(.map-portfolio-surface):has(> .patrol-context-drawer:not([hidden])) { grid-template-columns: minmax(0, 1fr) minmax(290px, 340px); }
@@ -574,7 +575,8 @@
 html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .map-relationship-dialog { width: min(720px, calc(100vw - 32px)); max-height: 85dvh; overflow: auto; }
 .map-relationship-dialog > header { display: flex; justify-content: space-between; align-items: center; }
-@media (max-width: 899px) {
+/* 横排需留给图谱至少 600px，另计抽屉 340px、间距 12px 和两层内边距 84px。 */
+@container map-workspace (max-width: 1040px) {
   .map-view:has(.map-portfolio-surface) { padding: 18px 10px; }
   .map-view:has(.map-portfolio-surface):has(> .patrol-context-drawer:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(240px, 1fr) auto; }
   .map-view > .patrol-context-drawer { grid-column: 1; grid-row: 5; max-height: 50dvh; }
@@ -1223,6 +1225,7 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .memory-list > header { display: flex; min-height: 48px; align-items: center; justify-content: space-between; padding: 12px 20px; border: 1px solid var(--material-rim); border-radius: 14px; background: var(--surface-panel); font-size: 12px; margin-bottom: 16px; }
 .memory-list-scroll { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); align-content: start; gap: 22px; min-height: 0; padding: 0; }
 .memory-card { display: grid; width: 100%; min-height: 200px; align-items: start; align-content: start; justify-content: stretch; gap: 20px; padding: 26px; border: 1px solid var(--material-rim); border-radius: 20px; background: var(--surface-reading); box-shadow: var(--shadow-raised); color: var(--text-primary); text-align: left; }
+.memory-list:not(.is-list) .memory-card { max-width: 440px; justify-self: start; }
 .memory-card:hover { background: var(--surface-subtle); }
 .memory-card.is-selected { background: var(--surface-selected); box-shadow: none; }
 .memory-card.is-selected:hover { background: var(--surface-selected-hover); }
