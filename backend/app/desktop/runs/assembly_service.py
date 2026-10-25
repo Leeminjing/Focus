@@ -10,6 +10,7 @@ from focus.runtime.runs.manager import RunRecord
 from focus.runtime.runs.worker import run_agent
 from langgraph.graph.state import CompiledStateGraph
 
+from backend.app.desktop.capabilities.equipment import _resolve_access_mode
 from backend.app.desktop.materials.context import MaterialContextProjector
 from backend.app.desktop.materials.policy import _must_view_prompt
 from backend.app.desktop.persistence.models import (
@@ -138,6 +139,10 @@ class RunAssemblyService:
                 raise RuntimeError(
                     f"Run 不可由 durable dispatch 装配: {run.run_id}@{run.status}"
                 )
+            if execution["agent_role"] == "main" and not run.loop_id:
+                saved_mode = (task.ui_state or {}).get("access_mode")
+                if saved_mode:
+                    equipment["access_mode"] = _resolve_access_mode(saved_mode).value
             workspace_path = str(
                 (run.workspace_anchor or {}).get("workspace_path") or workspace.path
             )
@@ -289,7 +294,7 @@ class RunAssemblyService:
                 ),
             },
         )
-        if agent_role == "main" and run.origin == "direct_user":
+        if agent_role == "main":
             ports._attach_session_mode_resolver(context, run, equipment)
         project_run_material_context(
             context,

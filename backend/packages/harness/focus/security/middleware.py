@@ -198,6 +198,9 @@ def _admit(request: ToolCallRequest) -> _Admission:
             return _Admission(False, args, capability_denied="缺少受治理执行身份")
         if contract.kind is ToolEffectKind.SANDBOXED_SHELL and "host_command" not in security.authorization.permissions:
             return _Admission(False, args, capability_denied="host_command")
+        replayed = _replay_admission(request)
+        if replayed is not None:
+            return replayed
     policy = policy_from_context(context)
 
     if args.get("requested_mode") is not None:
@@ -212,6 +215,48 @@ def _admit(request: ToolCallRequest) -> _Admission:
     if contract.kind is ToolEffectKind.STRUCTURED_FS:
         return _admit_structured(request, policy, context, args, contract)
     return _admit_opaque(request, policy, args)
+
+
+def _replay_admission(request: ToolCallRequest) -> _Admission | None:
+    """Recheck the checkpoint's approval using its original identity, once per replay.
+
+    A new Run and a changed standing mode must not change the request the user
+    reviewed. Capability checks still use the current authorization. This state
+    comes only from server-side recovery and never grants approval by itself.
+    """
+    security = security_context_of(_context_of(request))
+    replay = security.extras.get("access_review_replay")
+    if not isinstance(replay, dict):
+        return None
+    payload = replay.get("request")
+    if not isinstance(payload, dict):
+        return None
+    if (replay["agent_id"] != security.routing.agent_id
+            or payload.get("tool") != request.tool_call.get("name")
+            or (payload.get("call_id") and payload["call_id"] != request.tool_call.get("id"))):
+        return None
+    previous = replace(
+        security,
+        authorization=replace(security.authorization, access_mode=AccessMode(payload["access_mode"])),
+        routing=replace(security.routing, run_id=replay["run_id"]),
+        extras={key: value for key, value in security.extras.items() if key != "access_review_replay"},
+    )
+    old_request = request.override(runtime=replace(
+        request.runtime, context={**request.runtime.context, **previous.to_runtime_context()},
+    ))
+    admission = _admit(old_request)
+    original = ApprovalRequest.from_payload(payload)
+    # Compare the original digest (including arguments) for escalations and the
+    # complete target/command projection for older ordinary approvals.
+    if (original is None or admission.request is None
+            or admission.request.payload() != original.payload()):
+        return _Admission(False, _args_of(request), invalid_escalation=True)
+    replay.pop("request")
+    if admission.requested_mode is None:
+        current = _admit(request)
+        if current.denied or current.capability_denied:
+            return current
+    return admission
 
 
 def _admit_escalation(

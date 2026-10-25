@@ -326,6 +326,44 @@ const flush = async () => {
   assert.match(harness.statusNode.textContent, /offline/);
   harness.context.fetch = normalFetch;
 
+  // Changing the picker only persists the mode; the pending call needs an explicit click.
+  seedTask();
+  fetches.length = 0;
+  open("main:task");
+  await new vm.Script('applyAccessMode("main", "danger-full-access", "task")').runInContext(harness.context);
+  assert.equal(fetches.length, 1);
+  assert.ok(fetches[0].url.endsWith("/access-mode"));
+  assert.equal(panel.querySelector(".approve-once-button").textContent, "按新模式继续");
+  actionButton("approve_once").click();
+  await flush();
+  assert.equal(fetches.length, 2);
+  assert.ok(fetches[1].url.endsWith("/runs/resume"));
+  assert.deepEqual(JSON.parse(fetches[1].options.body), { resume: { decision: "approve" } });
+
+  seedTask();
+  fetches.length = 0;
+  open("main:task");
+  let finishSave;
+  harness.context.fetch = async (url, options) => {
+    if (String(url).endsWith("/access-mode")) {
+      fetches.push({ url, options });
+      await new Promise(resolve => { finishSave = resolve; });
+      return { ok: true, status: 200, json: async () => ({}) };
+    }
+    return normalFetch(url, options);
+  };
+  const pendingSave = new vm.Script('applyAccessMode("main", "danger-full-access", "task")').runInContext(harness.context);
+  await flush();
+  actionButton("approve_once").click();
+  await flush();
+  assert.equal(fetches.length, 1, "恢复必须等待正在保存的会话模式");
+  finishSave();
+  await pendingSave;
+  await flush();
+  assert.equal(fetches.length, 2);
+  assert.ok(fetches[1].url.endsWith("/runs/resume"));
+  harness.context.fetch = normalFetch;
+
   // 7f) 拒绝 → 提交 reject 并给出可读结果
   seedTask();
   fetches.length = 0;

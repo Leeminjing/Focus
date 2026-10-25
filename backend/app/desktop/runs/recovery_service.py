@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -9,10 +10,12 @@ from fastapi import HTTPException
 from focus.agents.commitment.middleware import commitment_subgraph_thread_id
 from focus.agents.material_inputs import RunMaterialInputs, project_run_material_context
 from focus.security.approval import APPROVAL_TYPE
+from focus.security.context import security_context_of
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.desktop.capabilities.equipment import _resolve_access_mode
 from backend.app.desktop.capabilities.prompts import (
     MAIN_SYSTEM_PROMPT as _MAIN_SYSTEM_PROMPT,
 )
@@ -184,6 +187,7 @@ class RunRecoveryService:
                     await self._resume_workspace(session, task),
                     resume,
                     run_identity,
+                    access_review=access_recovery["request"],
                 )
             raise HTTPException(409, "无可恢复的人工决定")
 
@@ -218,6 +222,8 @@ class RunRecoveryService:
         workspace: DesktopWorkspace,
         resume: dict[str, Any],
         run_identity: dict[str, Any] | None = None,
+        *,
+        access_review: dict[str, Any] | None = None,
     ) -> PreparedRun:
         ports = self._ports
         interrupted_run = await latest_main_run(session, task)
@@ -244,6 +250,16 @@ class RunRecoveryService:
         equipment.pop("run_image_inputs", None)
         equipment.update(run_materials.to_equipment())
         identity = dict(run_identity or {})
+        if interrupted_run is not None and interrupted_run.loop_id and not identity.get("loop_id"):
+            # Human recovery continues the interrupted Round's authorization.
+            # A session picker change cannot turn it into an ordinary Run.
+            identity.update({
+                "loop_id": interrupted_run.loop_id,
+                "round_id": interrupted_run.round_id,
+                "action_id": interrupted_run.action_id,
+                "directive_id": interrupted_run.directive_id,
+                "user_intent_id": interrupted_run.user_intent_id,
+            })
         requested_run_id = str(identity.get("run_id") or new_id())
         run = (
             await session.get(DesktopRun, requested_run_id)
@@ -252,6 +268,11 @@ class RunRecoveryService:
         )
         if run is not None and run.status != "pending":
             raise HTTPException(409, "自治恢复 Run 已经启动或终止")
+        loop_id = run.loop_id if run is not None else identity.get("loop_id")
+        if not loop_id:
+            saved_mode = (task.ui_state or {}).get("access_mode")
+            if saved_mode:
+                equipment["access_mode"] = _resolve_access_mode(saved_mode).value
         run = run or DesktopRun(
             run_id=requested_run_id,
             task_id=task.task_id,
@@ -264,6 +285,8 @@ class RunRecoveryService:
             loop_id=identity.get("loop_id"),
             round_id=identity.get("round_id"),
             action_id=identity.get("action_id"),
+            directive_id=identity.get("directive_id"),
+            user_intent_id=identity.get("user_intent_id"),
             idempotency_key=identity.get("idempotency_key"),
             execution_thread_id=execution_identity.thread_id,
             checkpoint_ns=execution_identity.checkpoint_ns,
@@ -285,6 +308,7 @@ class RunRecoveryService:
                 ),
             },
         )
+        run.equipment = equipment
         session.add(run)
         await session.commit()
         projection = MaterialContextProjector.project(run_materials, workspace.path)
@@ -329,8 +353,20 @@ class RunRecoveryService:
             allow_global_config=task.thread_id == _ASSEMBLY_THREAD_ID,
             extras={"skills": equipment.get("skills") or []},
         )
-        if run.origin == "direct_user":
-            ports._attach_session_mode_resolver(context, run, equipment)
+        ports._attach_session_mode_resolver(context, run, equipment)
+        if access_review is not None and interrupted_run is not None:
+            security = security_context_of(context)
+            context["security_context"] = replace(
+                security,
+                extras={
+                    **security.extras,
+                    "access_review_replay": {
+                        "request": access_review,
+                        "run_id": access_review.get("run_id") or interrupted_run.run_id,
+                        "agent_id": interrupted_run.agent_id,
+                    },
+                },
+            )
         project_run_material_context(
             context,
             run_materials,

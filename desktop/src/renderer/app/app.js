@@ -6396,6 +6396,7 @@ async function applyAccessMode(target, mode, taskId) {
     const changed = accessMode.readMode(next);
     await config.persist(id, changed);
     config.set(id, next);
+    if (target === "main" && state.accessReviews.taskId === id) updateAccessReviewModeAction();
     setStatus(uiText(
       changed === "danger-full-access" ? "access.mode_changed_full" : "access.mode_changed_workspace",
       changed === "danger-full-access" ? "未应用文件沙箱" : `已切换为${accessMode.labelFallback(changed)}`,
@@ -6440,6 +6441,7 @@ function showAccessReview(task, payload, agentId) {
 
   closeAccessReview();
   state.accessReviews = { panel, payload, taskId: task.task_id, key, busy: false };
+  updateAccessReviewModeAction();
   attachAccessReviewPanel(panel, mainSubject);
   setStatus(uiText("access.badge", "等待批准"), false);
 }
@@ -6464,8 +6466,19 @@ function restoreAccessReviewPanels(conversation) {
   if (!conversation || !panel) return;
   if (state.accessReviews.taskId !== state.activeTaskId) return;
   if (panel.dataset.subject !== "main") return;
+  updateAccessReviewModeAction();
   conversation.append(panel);
   hideAccessPendingWhenEmpty();
+}
+
+function updateAccessReviewModeAction() {
+  const { panel, payload, taskId } = state.accessReviews;
+  if (!panel) return;
+  const changed = panel.dataset.subject === "main"
+    && accessMode.normalize(payload?.access_mode) !== accessModeOf("main", taskId);
+  const button = panel.querySelector(".approve-once-button");
+  button.dataset.i18n = changed ? "access.resume_current_mode" : "access.approve_once";
+  button.textContent = uiText(button.dataset.i18n, changed ? "按新模式继续" : "仅允许这一次");
 }
 
 function hideAccessPendingWhenEmpty() {
@@ -6534,6 +6547,7 @@ async function resumeAccessReview(task, payload, action) {
   const switched = accessApproval.switchedMode(action, payload);
   try {
     if (switched) await applyAccessMode("main", switched, task.task_id);
+    else await accessModeSaves.get(task.task_id);
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
       method: "POST",
       body: JSON.stringify({ resume: accessApproval.resumeValue(action, payload) }),
