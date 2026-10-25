@@ -5,6 +5,8 @@
 :root {
   color-scheme: light;
 
+  --font-mono: ui-monospace, Consolas, monospace;
+
   --surface-canvas: #f3f6fb;
   --surface-reading: rgb(255 255 255 / 92%);
   --surface-panel: rgb(255 255 255 / 70%);
