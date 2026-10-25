@@ -5,6 +5,18 @@ const vm = require("node:vm");
 const fs = require("node:fs");
 const path = require("node:path");
 
+test('restored manual browser exposes uncertain prior work without acquiring control', async () => {
+  const h = harness();
+  await h.controller.select('A', { present: false });
+  h.sources[0].emit({ context_id: 'A', state: 'manual', recovered: true,
+    interrupted_operation: { kind: 'navigate', result_unknown: true, settled: false } });
+  assert.match(h.node.textContent, /恢复/);
+  assert.match(h.node.textContent, /结果未知/);
+  assert.match(h.node.textContent, /交还/);
+  assert.equal(h.requests.length, 1);
+  h.controller.close();
+});
+
 function harness(apiImpl) {
   const requests = [], sources = [], status = [];
   const node = { dataset: { browserStatus: "A" }, textContent: "" };
@@ -16,7 +28,7 @@ function harness(apiImpl) {
   }
   const context = vm.createContext({ module: { exports: {} },
     crypto: { randomUUID: () => "window-id" },
-    document: { querySelectorAll: () => [node], addEventListener() {} } });
+    document: { querySelectorAll: selector => selector === '[data-browser-status]' ? [node] : [], addEventListener() {} } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "context-browser.js"), "utf8"), context);
   const controller = context.module.exports.create({ runtime: { apiBase: "http://localhost:1234", session: "session" },
     EventSourceImpl: Source, onStatus: (...args) => status.push(args), api: async (url, options) => {

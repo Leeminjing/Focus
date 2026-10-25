@@ -175,6 +175,7 @@ class DesktopService:
         return self.runs._admission_service()
 
     async def start(self) -> None:
+        await self.browsers.start()
         self.state_changes = DesktopStateChanges(self.session_factory)
         self.state_changes.start()
         self._performance = None

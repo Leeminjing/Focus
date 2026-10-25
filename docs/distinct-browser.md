@@ -23,7 +23,7 @@ Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、R
    Focus 的下一次模型决策等待交还，并要求 Agent 重新观察，不恢复旧动作队列。
 5. Run 成功、失败或取消都只释放本 Run 的控制权，浏览器页面保留，后续 Run 复用。
    原生窗口关闭、故障或连接失效使绑定失效，相关活跃 Run 及时报告错误。
-   后端重启也不会把旧 ID 当成可恢复会话；旧窗口可能仍可人工使用。
+   默认的匿名管道会话在后端重启后不能恢复；旧窗口可能仍可人工使用。开发模式的 v0.6 恢复见下文。
 6. 需要共享时，先结束目标 Context 的 Run，在**浏览器绑定**中选同一工作区的来源 Context。
    两者会共享同一浏览器会话及其全部页面。也可明确创建新独立浏览器来解除共享或替换失效绑定。
    更换后只有没有任何 Context 引用的旧浏览器才调用 `close`；共享者不会被误关。
@@ -97,5 +97,42 @@ Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中
 脚本检出固定基线并调用上游构建脚本（包括其控制状态机测试），然后更新 EXE 和摘要。
 也可向 `desktop/scripts/build-browser.ps1` 传 `-MsvcRoot`、`-WindowsSdkRoot`。
 开发时可用 `FOCUS_DISTINCT_BROWSER_EXE` 指定兼容协议 v1 的本地 EXE。
+
+## v0.6 开发模式：连接原宿主
+
+生产内置产物仍为 v0.5.0。Windows 开发环境可以显式启用已构建的
+`focus-distinct-browser` v0.6 原型（源码 `5b0c6e5a5ad3d903ef0c120b9941ddc52f592d4b`）：
+
+```powershell
+$env:FOCUS_DISTINCT_BROWSER_EXE = 'D:\focus-distinct-browser\build\v06\distinct-browser.exe'
+$env:FOCUS_DISTINCT_BROWSER_RECOVERY = '1'
+npm --prefix desktop start
+```
+
+启动器把所选 EXE 按 SHA-256 缓存在 `%LOCALAPPDATA%\Focus\BrowserRuntime`，
+然后由一个短暂的独立父进程启动 `--reconnect` 宿主。原安装路径可以更换，
+存活宿主的缓存不会被更新脚本覆盖或清理；启动失败不退回受父 Job 约束的模式。
+测试可通过 `FOCUS_DISTINCT_BROWSER_CACHE` 使用独立目录。不要在宿主仍存活时清理缓存。
+
+Context 保存 `browser_id`、`host_id`、受信任的本机 endpoint 路径和产物摘要。
+连接前核对当前登录会话的受保护 ACL、DPAPI 凭据、进程创建时间、真实映像路径、
+映像摘要及 Named Pipe 服务端 PID。明文凭据不写数据库、日志或前端。
+管道编解码器基于上游同版本演示客户端，使用 Python 标准库与 Windows API。
+
+后端启动时按宿主恢复一次，以 `snapshot.revision` 为基线应用同一 `host_id` / `connection_id`
+的后续事件；快照期间先缓冲事件，每 5 秒发送保活。恢复同一工作区的共享绑定时，
+它们仍指向同一个真实浏览器、页面及登录环境。页面列表和当前选中页来自原宿主。
+旧版匿名管道绑定、退出的宿主、身份不符或缺少缓存都显示不可恢复，绝不自动重建。
+竞争客户端占用时显示连接冲突，可在**浏览器绑定 → 重新连接原宿主**中显式重试。
+
+恢复只恢复页面及状态。原 Run 沿用现有耐久恢复规则标记中断，旧租约、截图和动作不继续。
+界面显示 `interrupted_operation` 的来源页、已派发/完成步数及结果未知提示；迟到回调只更新收尾信息。
+用户检查页面并在原生工具栏**交还**后，新执行才能取得新租约、重新观察。
+下载/权限的断连收尾仍由基建处理；Focus 不补发下载、不代做网站权限决定。
+
+测试入口为 `backend/tests/test_browser_recovery.py`，显式设置 `FOCUS_BROWSER_RECOVERY_REAL=1`
+和 `FOCUS_BROWSER_RECOVERY_EXE` 后运行。使用独立数据库与缓存，真实 Gateway 的模型采样被固定，
+其余持久化、策略、Run 调度、浏览器工具和原生宿主均为实际实现。
+系统消息交还、桌面自动化与真实物理设备验收分别记录。
 
 复跑命令及旧版接入基线见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)；该历史记录使用 8eea976，不作为新版的物理设备验收证明。
