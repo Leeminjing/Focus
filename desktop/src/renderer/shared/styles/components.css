@@ -22,9 +22,8 @@ button {
 
 :where(button):hover:not(:disabled):where(:not(.portfolio-context-node, .app-nav-item)) { background-color: var(--control-hover); }
 button:active:not(:disabled) { background-color: var(--control-press); box-shadow: inset 0 1px 3px var(--material-shade); }
+/* 加载反馈不追加布局内容，避免紧凑按钮和图标按钮宽度跳变。 */
 button[aria-busy="true"] { outline: 1px solid var(--border-accent); outline-offset: 1px; cursor: progress; }
-button[aria-busy="true"]::after { content: "请求中"; font-size: 12px; color: var(--text-secondary); }
-html[lang="en-US"] button[aria-busy="true"]::after { content: "Requesting"; }
 .glass-surface {
   background: linear-gradient(135deg, rgb(255 255 255 / 16%), transparent 42%, rgb(201 212 229 / 6%)), var(--material-fill);
   border: 1px solid var(--material-rim);
