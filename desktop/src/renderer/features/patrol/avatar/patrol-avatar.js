@@ -20,6 +20,7 @@
   const ROTATE_ENTER_RATIO = 1.6;
   const ROTATE_EXIT_RATIO = 2.2;
   const DEFAULT_SIZE = 116;
+  const BUBBLE_GAP = 8;
   const STATUS = Object.freeze({
     ready: { asset: "idle", get label() { return localize("就绪"); }, get message() { return localize("我在这里，需要时可以继续安排任务。"); } },
     pending: { asset: "loading", get label() { return localize("排队中"); }, get message() { return localize("任务已收到，正在等待开始。"); } },
@@ -141,6 +142,19 @@
       return { width: rectangle.width || DEFAULT_SIZE, height: rectangle.height || DEFAULT_SIZE };
     }
 
+    function positionBubble(record) {
+      if (record.bubble.hidden) return;
+      const above = Math.max(0, Math.round(record.top) - BUBBLE_GAP);
+      const below = Math.max(0, layerBounds().height - Math.round(record.top) - recordSize(record).height - BUBBLE_GAP);
+      record.bubble.style.maxHeight = "";
+      const height = record.bubble.getBoundingClientRect().height;
+      const placement = height <= above || above >= below ? "above" : "below";
+      const available = placement === "above" ? above : below;
+      record.element.dataset.bubblePlacement = placement;
+      record.element.dataset.bubbleConstrained = String(height > available);
+      if (height > available) record.bubble.style.maxHeight = `${available}px`;
+    }
+
     function applyPixelPosition(record, left, top) {
       const bounds = layerBounds();
       const size = recordSize(record);
@@ -153,6 +167,7 @@
       record.element.style.transform = `translate3d(${Math.round(safeLeft)}px, ${Math.round(safeTop)}px, 0)`;
       const x = maximumX ? safeLeft / maximumX : 0;
       record.element.dataset.bubbleAlign = x < 0.22 ? "start" : x > 0.78 ? "end" : "center";
+      positionBubble(record);
     }
 
     function applyNormalizedPosition(record, position) {
@@ -184,6 +199,7 @@
       record.button.setAttribute("aria-label", localize`${avatarLabel(record.avatar)}，${statusLabel}。点击查看状态，方向键移动位置。`);
       record.statusNode.textContent = statusLabel;
       record.message.textContent = record.avatar.message || presentation.message;
+      positionBubble(record);
     }
 
     function closeBubble(record) {
@@ -196,6 +212,7 @@
       records.forEach(item => closeBubble(item));
       if (!willOpen) return;
       record.bubble.hidden = false;
+      positionBubble(record);
       record.button.setAttribute("aria-expanded", "true");
       record.element.style.zIndex = String(++zIndex);
     }

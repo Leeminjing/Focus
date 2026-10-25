@@ -943,6 +943,7 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .review-panel[data-recovery-status="orphaned"] { border-color: var(--status-danger); background: var(--surface-danger); }
 
 /* 压缩是“选择来源 → 审阅计划 → 确认写入”的双栏工作区。 */
+#app:has(.compression-view) { container: compression-workbench / inline-size; overflow: auto; }
 .compression-view { display: grid; height: 100%; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-3); padding: 0; }
 .compression-heading {
   display: flex;
@@ -999,6 +1000,16 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .compression-messages > footer,
 .compression-plan > footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border-subtle); background: var(--surface-base); }
 .compression-plan > footer { position: sticky; bottom: 0; z-index: 1; }
+
+/* 两栏至少需要 300px + 420px + 16px；按工作区内容宽度而非窗口宽度堆叠。 */
+@container compression-workbench (width < 736px) {
+  .compression-view { height: auto; min-height: 100%; grid-template-rows: auto auto; }
+  .compression-heading { align-items: flex-start; }
+  .compression-heading-actions { align-items: center; flex-direction: row; }
+  .compression-panels { min-height: auto; grid-template-columns: minmax(0, 1fr); }
+  .compression-messages { min-height: 520px; }
+  .compression-plan { min-height: 440px; overflow: visible; }
+}
 .compression-stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); padding: var(--space-4); }
 .compression-stats > span { display: grid; gap: var(--space-1); padding: var(--space-3) 0; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: transparent; }
 .compression-stats small { color: var(--text-secondary); }
@@ -1136,13 +1147,6 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
   .context-definition-panel > footer { bottom: -88px; margin: var(--space-4) calc(-1 * var(--space-4)) -88px; padding-inline: var(--space-4); }
   .context-diff { grid-template-columns: 1fr; }
   .draft-heading { align-items: flex-start; }
-  #app:has(.compression-view) { overflow: auto; }
-  .compression-view { height: auto; min-height: 100%; grid-template-rows: auto auto; }
-  .compression-heading { align-items: flex-start; }
-  .compression-heading-actions { align-items: center; flex-direction: row; }
-  .compression-panels { min-height: auto; grid-template-columns: 1fr; }
-  .compression-messages { min-height: 520px; }
-  .compression-plan { min-height: 440px; overflow: visible; }
   .plugins-view { height: auto; min-height: 100%; overflow: visible; }
   .plugins-workbench { grid-template-columns: minmax(0, 1fr); }
 }
