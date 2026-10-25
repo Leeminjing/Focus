@@ -93,6 +93,22 @@
   border-left: 1px solid var(--border-subtle);
 }
 
+/* 深层关系保留真实 DOM 嵌套与外侧连接线，仅停止继续占用标题宽度。 */
+.map-collapsible-children.is-depth-capped {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+}
+
+.map-collapsible-depth {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
 .map-collapsible-toggle,
 .map-collapsible-toggle-spacer {
   display: grid;

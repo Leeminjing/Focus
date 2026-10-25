@@ -103,6 +103,23 @@ test("展开路径只包含当前项的可见祖先", () => {
   });
 });
 
+test("深层树限制视觉缩进，同时保留真实层级、父级与完整展开路径", () => {
+  const tasks = Array.from({ length: 16 }, (_, index) => task(`c${index}`));
+  tasks[14].title = '<parent "title">';
+  const tree = tasks.map((item, index) => node(item.task_id, index ? [`c${index - 1}`] : []));
+  const model = view.buildModel(tasks, { "workspace-a": tree });
+  const html = view.render(model, {
+    tasks,
+    expandedWorkspaceIds: ["workspace-a"],
+    expandedContextIds: tasks.map(item => item.task_id),
+  });
+  assert.equal((html.match(/class="map-collapsible-children is-depth-capped"/g) || []).length, 12);
+  assert.equal((html.match(/class="map-collapsible-depth"/g) || []).length, 12);
+  assert.match(html, /aria-level="17"[^>]*data-tree-parent-key="context:c14"[^>]*data-task-id="c15"/);
+  assert.match(html, /第 16 层 · 直接父级：&lt;parent &quot;title&quot;&gt;/);
+  assert.deepEqual(view.expansionForTask(model, "c15").contextIds, tasks.slice(0, 15).map(item => item.task_id));
+});
+
 test("键盘动作遵循可见树项顺序和父子关系", () => {
   const items = [
     { key: "workspace:w", parentKey: "", hasChildren: true, expanded: true },
