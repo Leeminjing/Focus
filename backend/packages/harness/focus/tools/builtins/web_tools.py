@@ -1,7 +1,7 @@
 """通过 DeepSeek Search / Fetch 提供联网工具，保持 Agent 的工具与效果契约。
 
-输入为 web_search(query, max_results=5) 或 web_fetch(url)，使用独立的
-DEEPSEEK_API_KEY，与 Run 选择的模型无关。搜索返回编号、标题、完整 URL 与摘要；
+输入为 web_search(query, max_results=5) 或 web_fetch(url)，凭据由 config.yaml 的
+web_tools.api_key 声明，默认引用 DEEPSEEK_API_KEY，与 Run 选择的模型无关。搜索返回编号、标题、完整 URL 与摘要；
 抓取返回至多 30000 字符的 Markdown 正文及必要的截断提示。
 
 工作流：校验参数 → 异步 POST DeepSeek JSON API → 转换结果。缺少凭据、HTTP / 网络
@@ -29,7 +29,7 @@ _WEB_SEARCH_MAX_QUERY_CHARS = 128
 _DEEPSEEK_TOOLS_BASE_URL = "https://api.deepseek.com/v1/tools"
 _HTTP_ERROR_HINTS = {
     400: "请求参数无效，请调整查询或 URL",
-    401: "鉴权失败，请检查 DEEPSEEK_API_KEY",
+    401: "鉴权失败，请检查 config.yaml 中 web_tools.api_key 配置及其引用的凭据",
     402: "DeepSeek 账户余额不足，请充值后重试",
     403: "请求被 DeepSeek 安全策略拒绝，请尝试其他 URL",
     404: "未能提取可用网页正文，请尝试其他 URL",

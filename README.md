@@ -260,7 +260,14 @@ Focus provides OpenAI / DeepSeek configurations and model connections using Resp
 
 Task state and contexts are stored in local PostgreSQL by default. Model calls connect to your configured service and send the content needed for that request.
 
-The built-in `web_search` and `web_fetch` tools use [DeepSeek Search / Fetch](https://api-docs.deepseek.com/guides/search/). Set `DEEPSEEK_API_KEY` in `~/.focus/.env` or your process environment (which takes precedence), then restart Focus. This key is independent of the selected model, including OpenAI models; you can reuse your DeepSeek model key. Without it, web calls report a recoverable tool error while other tools remain available. Search queries support up to 128 Unicode characters and 1–10 results; fetched Markdown is limited to 30,000 content characters.
+The built-in `web_search` and `web_fetch` tools use [DeepSeek Search / Fetch](https://api-docs.deepseek.com/guides/search/). Declare their credential in `config.yaml` (a `~/.focus/config.yaml` override takes precedence):
+
+```yaml
+web_tools:
+  api_key: $DEEPSEEK_API_KEY
+```
+
+Set the referenced variable in `~/.focus/.env` or your process environment (which takes precedence), then restart Focus. The field also accepts a literal key. To reuse an existing DeepSeek model key stored under `OPENAI_API_KEY`, explicitly set `web_tools.api_key: $OPENAI_API_KEY`; the tools use this declared credential regardless of the selected model. Omitting the section defaults to `$DEEPSEEK_API_KEY`. Missing credentials only cause recoverable errors when a web tool is called. Search queries support up to 128 Unicode characters and 1–10 results; fetched Markdown is limited to 30,000 content characters.
 
 ## Skills, MCP, and memory
 

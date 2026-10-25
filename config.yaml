@@ -28,6 +28,11 @@ models:
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
 
+# 联网工具独立于所选模型；环境变量的实际值可放在 ~/.focus/.env。
+# 复用已有 DeepSeek 模型密钥时，可显式改成 $OPENAI_API_KEY。
+web_tools:
+  api_key: $DEEPSEEK_API_KEY
+
 stream_bridge:
   type: memory
   queue_maxsize: 512

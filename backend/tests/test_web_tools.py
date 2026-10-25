@@ -8,12 +8,19 @@ import json
 
 import httpx
 import pytest
+from focus.config import app_config as config_module
+from focus.config.app_config import AppConfig
 from focus.config.layered import load_global_dotenv
 from focus.config.web_config import get_deepseek_api_key
 from focus.tools.builtins import web_tools
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import ToolException
 from langgraph.checkpoint.memory import InMemorySaver
+
+
+@pytest.fixture(autouse=True)
+def isolated_app_config(monkeypatch):
+    monkeypatch.setattr(config_module, "_app_config", AppConfig(models=[]))
 
 
 @pytest.fixture
@@ -128,7 +135,7 @@ def test_missing_key_is_recoverable_and_does_not_use_model_key(monkeypatch, deep
         monkeypatch.delenv("DEEPSEEK_API_KEY")
     else:
         monkeypatch.setenv("DEEPSEEK_API_KEY", key)
-    with pytest.raises(ToolException, match="DEEPSEEK_API_KEY"):
+    with pytest.raises(ToolException, match="DEEPSEEK_API_KEY|web_tools.api_key"):
         asyncio.run(tool.ainvoke(args))
     assert not requests
 
@@ -251,7 +258,9 @@ def test_real_agent_search_fetch_citation_and_error_recovery(monkeypatch, tmp_pa
             monkeypatch.delenv("DEEPSEEK_API_KEY")
         install_fixture(monkeypatch, registry_for([]), model)
         try:
-            service = desktop_service(app_config("openai", False))
+            config = app_config("openai", False)
+            monkeypatch.setattr(config_module, "_app_config", config)
+            service = desktop_service(config)
             graph = await service._build_agent_factory("task", "main", str(tmp_path),
                 {"permissions": ["read"], "model_name": "fixture"}, "base", "", "main")()
             graph.checkpointer = InMemorySaver()
