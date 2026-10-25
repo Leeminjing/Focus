@@ -204,8 +204,12 @@
 .workbench-panel footer { margin-top: auto; border-top: 1px solid #96a9b51c; padding-top: 10px; font-size: 10px; color: var(--workbench-muted); }
 .patrol-progress-card { grid-column: 1; grid-row: 1; align-self: start; height: 75%; }
 .patrol-observation-card { grid-column: 1; grid-row: 1; align-self: end; height: 22%; padding: 16px 20px; }
-.patrol-facts-card { grid-column: 3; grid-row: 1; align-self: start; height: 61%; }
-.patrol-selected-card { grid-column: 3; grid-row: 1 / 3; align-self: end; height: 44%; }
+.workbench-timeline-column { grid-column: 3; grid-row: 1 / 3; display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0; }
+.patrol-facts-card { flex: 1; padding: 16px; }
+.patrol-selected-card { flex: 0 1 200px; padding: 16px; }
+@media (min-width: 1200px) and (max-height: 720px) {
+  .patrol-selected-card { flex-basis: 160px; }
+}
 .patrol-graph-card { grid-column: 2; grid-row: 1; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .patrol-graph-card > header { display: flex; align-items: center; justify-content: space-between; color: var(--workbench-muted); font-size: 10px; min-height: 28px; }
 .patrol-graph-card > header button { font-size: 10px; border: 1px solid #ffffff66; border-radius: 18px; padding: 4px 12px; min-height: 28px; }
@@ -242,15 +246,17 @@
 .workbench-fact-stream button { display: block; text-align: left; font-size: 12px; min-height: 26px; padding: 2px 0; line-height: 1.6; overflow-wrap: anywhere; color: #57748b; }
 .workbench-fact-stream p { font-size: 11px; margin: 2px 0 6px; color: var(--workbench-muted); }
 .workbench-fact-stream article > small { padding: 1px 4px; border: 1px solid #bbcbd52e; border-radius: 4px; font-size: 9px; }
-.patrol-facts-card footer { display: flex; align-items: center; justify-content: space-between; }
+.patrol-facts-card footer { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; padding-top: 6px; }
 .patrol-facts-card footer button { font-size: 10px; color: var(--workbench-muted); min-height: 20px; padding: 0; }
-.work-timeline-filters { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
-.work-timeline-filters button { padding: 4px 8px; border-radius: 12px; font-size: 11px; color: var(--workbench-muted); }
+.work-timeline-filters { display: flex; flex-shrink: 0; gap: 4px; margin: 4px 0; overflow-x: auto; }
+.work-timeline-filters button { flex-shrink: 0; min-height: 28px; padding: 4px 8px; border-radius: 12px; font-size: 11px; color: var(--workbench-muted); }
 .work-timeline-filters [aria-pressed=true] { background: #91a6b21c; color: var(--text-primary); }
-.work-timeline-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 10px; color: var(--workbench-muted); }
+.work-timeline-scope { display: flex; flex-shrink: 0; align-items: center; gap: 6px; overflow-x: auto; white-space: nowrap; font-size: 10px; color: var(--workbench-muted); }
+.work-timeline-scope > * { flex-shrink: 0; }
 .work-timeline-scope button { padding: 2px 4px; min-height: 24px; font-size: 10px; }
 .patrol-facts-card [data-timeline-status] { margin: 2px 0; font-size: 11px; color: var(--workbench-muted); }
 .patrol-facts-card [data-timeline-status]:empty { display: none; }
+.patrol-facts-card > :is([data-timeline-retry], [data-timeline-older]) { flex-shrink: 0; min-height: 24px; padding: 2px 4px; font-size: 11px; }
 .workbench-fact-stream .work-timeline-entry { padding: 8px 2px 14px 20px; margin-left: 10px; }
 .workbench-fact-stream .work-timeline-entry.file-fact { display: block; height: auto; }
 .workbench-fact-stream .work-timeline-entry.is-important { border-left-color: #916420; background: #c3902410; }
@@ -280,8 +286,8 @@
 .workbench-scope { display: block; margin-top: 4px; }
 .patrol-selected-card .patrol-tabs { padding: 10px 0; gap: 8px; border: 0; }
 .patrol-selected-card .patrol-tabs button { font-size: 11px; min-height: 28px; color: var(--workbench-blue); }
-.patrol-selected-card footer p { font-size: 10px; margin: 0 0 7px; }
-.patrol-selected-card footer button { color: var(--workbench-blue); font-size: 12px; padding: 0; }
+.patrol-selected-card footer p { font-size: 10px; line-height: 1.4; margin: 0 0 7px; }
+.patrol-selected-card footer button { min-height: 24px; color: var(--workbench-blue); font-size: 12px; padding: 0; }
 .patrol-selected-card.is-expanded { height: auto; position: absolute; z-index: 15; right: 16px; top: 46px; bottom: 22px; width: min(510px, 48vw); background: var(--surface-reading); }
 .patrol-selected-card.is-expanded h2 { overflow-wrap: anywhere; }
 .workspace-patrol:not(.is-quiet) [data-patrol-composer] { grid-column: 2; grid-row: 2; position: relative; min-width: 0; padding: 12px 20px 8px; border-radius: 26px; }
@@ -305,6 +311,7 @@
 .workspace-patrol .is-workbench .portfolio-map-zoom { position: fixed; bottom: 26px; left: 8px; width: var(--workbench-left); justify-content: space-evenly; height: 46px; padding: 3px; border-radius: 18px; font-size: 10px; color: var(--workbench-muted); }
 /* 320px 详情 + 14px 间距 + 24px 内边距，给图谱保留至少约 640px。 */
 @container patrol-workbench (1000px <= width < 1200px) {
+  .workbench-timeline-column { display: contents; }
   .workspace-patrol:not(.is-quiet) { grid-template-columns: minmax(0, 1fr) 320px; grid-template-rows: 26px 32px minmax(0, 1fr) auto; gap: 14px; }
   .patrol-page-heading { position: static; grid-column: 1 / 3; grid-row: 1; }
   .workbench-panel-tabs { display: flex; grid-column: 2; grid-row: 2; overflow: auto; }
@@ -319,6 +326,7 @@
   .workspace-patrol .is-workbench .portfolio-map-zoom { position: absolute; bottom: 30px; left: 8px; width: 188px; }
 }
 @container patrol-workbench (width < 1000px) {
+  .workbench-timeline-column { display: contents; }
   .workspace-patrol:not(.is-quiet) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 36px minmax(0, 1fr) auto; gap: 10px; padding: 0 10px 24px; }
   .patrol-page-heading { position: static; grid-row: 1; flex-wrap: wrap; grid-column: 1; font-size: 10px; gap: 2px 8px; }
   .patrol-page-heading .workbench-workspace { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
