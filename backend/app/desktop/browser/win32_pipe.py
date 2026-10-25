@@ -4,6 +4,7 @@ The caller persists the bootstrap endpoint path and supplies its trusted EXE.
 No lease, action, or failed request is ever retried by this client.
 """
 from concurrent.futures import Future
+from contextlib import contextmanager
 import base64
 import ctypes as C
 from ctypes import wintypes as W
@@ -14,6 +15,7 @@ from pathlib import Path
 import queue
 import threading
 import time
+import uuid
 from .errors import BrowserError
 
 K, A, D = C.WinDLL('kernel32', use_last_error=True), C.WinDLL('advapi32', use_last_error=True), C.WinDLL('crypt32', use_last_error=True)
@@ -51,6 +53,9 @@ for library, name, args, result in [
     (K, 'QueryFullProcessImageNameW', [W.HANDLE, W.DWORD, W.LPWSTR, C.POINTER(W.DWORD)], W.BOOL),
     (K, 'GetNamedPipeServerProcessId', [W.HANDLE, C.POINTER(W.ULONG)], W.BOOL),
     (K, 'GetFileInformationByHandle', [W.HANDLE, C.c_void_p], W.BOOL),
+    (K, 'GetFinalPathNameByHandleW', [W.HANDLE, W.LPWSTR, W.DWORD, W.DWORD], W.DWORD),
+    (K, 'SetFileInformationByHandle', [W.HANDLE, C.c_int, C.c_void_p, W.DWORD], W.BOOL),
+    (K, 'WaitNamedPipeW', [W.LPCWSTR, W.DWORD], W.BOOL),
     (K, 'LocalFree', [C.c_void_p], C.c_void_p),
     (A, 'OpenProcessToken', [W.HANDLE, W.DWORD, C.POINTER(W.HANDLE)], W.BOOL),
     (A, 'GetTokenInformation', [W.HANDLE, C.c_int, C.c_void_p, W.DWORD, C.POINTER(W.DWORD)], W.BOOL),
@@ -82,16 +87,23 @@ def logon():
         K.CloseHandle(token)
 
 
-def private_file(path, directory=False):
-    handle = K.CreateFileW(str(path), 0x80000000, 1, None, 3, 0x02200000, None)
+@contextmanager
+def _private_handle(path, *, directory=False, deleting=False):
+    # Cleanup holds exclusive handles, including DELETE access. Validation and
+    # deletion target the same object, never a path reopened after validation.
+    handle = K.CreateFileW(str(path), 0x80000000 | (0x10000 if deleting else 0),
+        0 if deleting else 1, None, 3, 0x02200000, None)
     if handle == INVALID:
         raise C.WinError(C.get_last_error())
     descriptor, acl = C.c_void_p(), C.c_void_p()
     try:
         info = C.create_string_buffer(64)
         checked(K.GetFileInformationByHandle(handle, info))
-        if W.DWORD.from_buffer(info).value & 0x400:
+        attributes = W.DWORD.from_buffer(info).value
+        if attributes & 0x400:
             raise PermissionError('Recovery endpoint cannot be a reparse point')
+        if bool(attributes & 0x10) != directory:
+            raise PermissionError('Recovery endpoint has an unexpected file type')
         status = A.GetSecurityInfo(handle, 1, 4, None, None, C.byref(acl), None, C.byref(descriptor))
         if status:
             raise C.WinError(status)
@@ -106,16 +118,83 @@ def private_file(path, directory=False):
         ace = C.c_void_p(); checked(A.GetAce(acl, 0, C.byref(ace)))
         if C.c_ubyte.from_address(ace.value).value != 0 or not A.EqualSid(ace.value + 8, GROUPS.from_buffer(identity).groups[0].sid):
             raise PermissionError('Endpoint belongs to a different logon')
-        if directory:
-            return None
-        content, read = C.create_string_buffer(16385), W.DWORD()
-        checked(K.ReadFile(handle, content, len(content), C.byref(read), None))
-        if read.value > 16384:
-            raise ValueError('Oversized recovery descriptor')
-        return json.loads(content.raw[:read.value])
+        yield handle
     finally:
         if descriptor.value: K.LocalFree(descriptor)
         K.CloseHandle(handle)
+
+
+def _read_descriptor(handle):
+    content, read = C.create_string_buffer(16385), W.DWORD()
+    checked(K.ReadFile(handle, content, len(content), C.byref(read), None))
+    if read.value > 16384:
+        raise ValueError('Oversized recovery descriptor')
+    return json.loads(content.raw[:read.value])
+
+
+def private_file(path, directory=False):
+    with _private_handle(path, directory=directory) as handle:
+        return None if directory else _read_descriptor(handle)
+
+
+def _handle_path(handle):
+    name = C.create_unicode_buffer(32768)
+    length = checked(K.GetFinalPathNameByHandleW(handle, name, len(name), 0))
+    if length >= len(name) or not name.value.startswith('\\\\?\\'):
+        raise PermissionError('Cleanup endpoint has an unsupported final path')
+    return Path(name.value[4:])
+
+
+@contextmanager
+def _endpoint_root(path):
+    # Anchor the application's actual directory, including Windows packaged-app
+    # LocalAppData virtualization. Pin its name without requiring a private DACL
+    # on the shared Hosts root; each target directory/file still requires one.
+    handle = K.CreateFileW(str(path), 0x80, 3, None, 3, 0x02200000, None)
+    if handle == INVALID:
+        raise C.WinError(C.get_last_error())
+    try:
+        info = C.create_string_buffer(64)
+        checked(K.GetFileInformationByHandle(handle, info))
+        attributes = W.DWORD.from_buffer(info).value
+        if attributes & 0x400 or not attributes & 0x10:
+            raise PermissionError('Cleanup root cannot be a reparse point or file')
+        yield _handle_path(handle)
+    finally:
+        K.CloseHandle(handle)
+
+
+def _discard_exited_endpoint(endpoint, description):
+    """Best effort after a pinned client's OS check proves the PID has exited.
+
+    Never scan directories, decrypt credentials, remove cache/data, or infer death
+    from an access denial, identity mismatch or busy connection. A surviving pipe
+    also vetoes cleanup, including descriptors with a corrupted PID.
+    """
+    try:
+        identity = str(uuid.UUID(description['host_id'])).upper()
+        root = (Path(os.environ['LOCALAPPDATA']) / 'DistinctBrowser' / 'Hosts').absolute()
+        expected = root / identity / 'endpoint.json'
+        if endpoint != expected or type(description['pid']) is not int or not 0 < description['pid'] <= 0xffffffff:
+            return
+        with _endpoint_root(root) as actual, _private_handle(expected.parent, directory=True, deleting=True) as directory:
+            if _handle_path(directory) != actual / identity:
+                return
+            with _private_handle(expected, deleting=True) as file:
+                if _handle_path(file) != actual / identity / 'endpoint.json':
+                    return
+                if _read_descriptor(file) != description:
+                    return
+                # NMPWAIT_NOWAIT. Only an absent local pipe permits deletion;
+                # busy, inaccessible and all other outcomes preserve metadata.
+                if K.WaitNamedPipeW(description['pipe_name'], 1) or C.get_last_error() != 2:
+                    return
+                disposition = C.c_ubyte(1)  # FILE_DISPOSITION_INFO.DeleteFile
+                checked(K.SetFileInformationByHandle(file, 4, C.byref(disposition), C.sizeof(disposition)))
+            # Windows rejects a nonempty directory. No recursive deletion.
+            K.SetFileInformationByHandle(directory, 4, C.byref(disposition), C.sizeof(disposition))
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # Recovery must still fail; cleanup never broadens permissions.
 
 
 class ReconnectClient:
@@ -141,10 +220,15 @@ class ReconnectClient:
             raise ConnectionError('Invalid host endpoint')
         self._peer = K.OpenProcess(0x101000, False, description['pid'])
         if not self._peer:
+            if expected_host_id and expected_sha256 and C.get_last_error() == 87:
+                _discard_exited_endpoint(self.endpoint, description)
             raise ConnectionError('Original host process is unavailable; no browser was recreated')
         self._pipe = None
         try:
-            if K.WaitForSingleObject(self._peer, 0) != 258:
+            status = K.WaitForSingleObject(self._peer, 0)
+            if status != 258:
+                if status == 0 and expected_host_id and expected_sha256:
+                    _discard_exited_endpoint(self.endpoint, description)
                 raise ConnectionError('Original host process has exited; no browser was recreated')
             times = [C.c_ulonglong() for _ in range(4)]
             image, size = C.create_unicode_buffer(32768), W.DWORD(32768)
