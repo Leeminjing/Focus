@@ -72,7 +72,6 @@ contextBridge.exposeInMainWorld("focusDesktop", {
     apiBase: process.env.FOCUS_DESKTOP_API,
     session: process.env.FOCUS_DESKTOP_SESSION,
     nativeMaterial,
-    features: { liveLoopProjection: !["0", "false", "off", "no"].includes(String(process.env.FOCUS_LOOP_FRONTEND_PROJECTION || "true").toLowerCase()) },
   }),
   selectWorkspace: () => ipcRenderer.invoke("focus:select-workspace"),
   openExternal: url => ipcRenderer.invoke("focus:open-external", url),

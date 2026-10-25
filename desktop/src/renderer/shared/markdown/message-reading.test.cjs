@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const reading = require("./message-reading.js");
-const contextView = require("../../features/context/context-conversation-view.js");
+const contextView = require("../../features/context/context-inspection-view.js");
 const { createAppHarness, readAppSource } = require("../../../../tests/helpers/test-helper.cjs");
 const source = '## 结果\n\n- 列表\n\n| 文件 | 状态 |\n| --- | --- |\n| a.js | 完成 |\n\n[文件](file:///C:/work/a.js)\n\n```js\n\t  x < 2 && y\n```\n';
 const message = { role: "assistant", content: [{ type: "text", text: source }], tool_calls: [{ name: "read_file", args: { path: "a.js" } }] };

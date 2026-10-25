@@ -1,4 +1,4 @@
-/* 本文件对外提供任务三栏、材料检查器、插件/记忆卡片、对话、Composer、Loop Mission 与其它工作流视图的布局样式。输入为 app.js
+/* 本文件对外提供任务三栏、材料检查器、插件/记忆卡片、对话、Composer、Loop 授权预算与其它工作流视图的布局样式。输入为 app.js
    输出的语义 class 和公共设计 token，输出为可滚动工作区、职责分离的 Mission 编辑器、可折叠材料组、材料项内逐轮备注框
    与历史材料卡片及全图连续关系区域；全图仅定位共享玻璃图控件，保持图内滚动和原检查抽屉；Composer 输入与操作分行，控制层消费共用玻璃材质、正文采用高不透明度阅读底，反馈仅在有内容时占位，文件模式菜单显示清楚的选择层级。工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
    .run-material-note 把本轮备注输入框就近排在其所属材料条目内。 */
@@ -1194,19 +1194,6 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 
 }
 
-.loop-dashboard { display: grid; gap: var(--space-4); padding: var(--space-5); }
-.loop-dashboard > header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.loop-kicker { color: var(--text-secondary); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
-.loop-status { display: inline-flex; align-items: center; border: 1px solid var(--border-default); border-radius: 999px; padding: 3px 9px; font-size: 12px; }
-.loop-status.is-running { border-color: var(--border-accent); color: var(--text-accent); }
-.loop-status.is-waiting_user, .loop-error { color: var(--text-danger); }
-.loop-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-3); margin: 0; }
-.loop-facts div { border: 1px solid var(--border-subtle); border-radius: var(--radius-card); padding: var(--space-3); background: var(--surface-subtle); }
-.loop-facts dt { color: var(--text-secondary); font-size: 11px; }
-.loop-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; }
-.loop-budget, .loop-controls { display: flex; flex-wrap: wrap; gap: var(--space-3); }
-.loop-budget h3 { flex-basis: 100%; margin: 0; }
-
 @media (max-width: 900px) {
   .conversation { padding: var(--space-5) var(--space-5) var(--space-3); }
   .work-record.human { max-inline-size: min(88%, 680px); }
@@ -1399,120 +1386,10 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
   .memory-list { border-right: 0; }
   .memory-detail { overflow: visible; }
 }
-.loop-start-form {
-  display: grid;
-  gap: var(--space-4);
-  max-width: 760px;
-  margin-top: var(--space-5);
-}
-
-.loop-start-options > summary {
-  cursor: pointer;
-  color: var(--text-secondary);
-}
-
-.loop-start-options[open] > summary,
-.loop-start-options > .loop-delegation-option {
-  margin-bottom: var(--space-3);
-}
-
-.loop-start-form > label,
 .loop-start-budget label {
   display: grid;
   gap: var(--space-2);
   color: var(--text-secondary);
-}
-
-.loop-start-form textarea,
-.loop-start-form input {
-  width: 100%;
-}
-
-.loop-mission-editor {
-  container: loop-mission / inline-size;
-  display: grid;
-  min-width: 0;
-  gap: var(--space-3);
-}
-
-.loop-mission-section {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--surface-base);
-}
-
-.loop-mission-section > header,
-.loop-mission-boundary > header {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.loop-mission-section > header > span {
-  display: grid;
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  font-weight: 700;
-}
-
-.loop-mission-section h3,
-.loop-mission-section p,
-.loop-mission-boundary strong,
-.loop-mission-boundary small { margin: 0; }
-.loop-mission-section p,
-.loop-mission-boundary small { color: var(--text-secondary); }
-.loop-mission-section > header > div,
-.loop-mission-boundary > header > div { display: grid; gap: 4px; }
-.loop-mission-boundaries { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
-.loop-mission-boundary { display: grid; align-content: start; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
-.loop-mission-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); margin-top: var(--space-2); }
-.loop-mission-checks { display: grid; gap: var(--space-2); }
-.loop-mission-check { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, .45fr) auto auto; gap: var(--space-2); align-items: end; padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
-.loop-mission-check label { display: grid; gap: 5px; }
-.loop-mission-check .loop-mission-required { display: flex; align-items: center; align-self: center; white-space: nowrap; }
-.loop-mission-check .loop-mission-required input { width: auto; }
-.loop-mission-legacy { padding: var(--space-2) var(--space-3); border-inline-start: 3px solid var(--border-accent); background: var(--surface-muted); }
-.loop-mission-legacy pre { overflow: auto; white-space: pre-wrap; }
-
-@container loop-mission (max-width: 640px) {
-  .loop-mission-boundaries { grid-template-columns: 1fr; }
-  .loop-mission-check { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
-}
-
-.loop-start-form .loop-delegation-option {
-  grid-template-columns: auto 1fr;
-  align-items: start;
-}
-
-.loop-start-form .loop-delegation-option input {
-  width: auto;
-  margin-top: 3px;
-}
-
-.loop-override {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  padding: var(--space-3);
-}
-
-.loop-override form {
-  display: grid;
-  gap: var(--space-3);
-  padding-top: var(--space-3);
-}
-
-.loop-override label {
-  display: grid;
-  gap: var(--space-2);
 }
 
 .context-first-parent-tree li {
@@ -1522,46 +1399,6 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .evolution-graph li.is-adopted {
   border-inline-start: 3px solid var(--border-accent);
   padding-inline-start: var(--space-2);
-}
-
-.loop-revision-snapshot {
-  position: fixed;
-  inset: 5rem 2rem 2rem auto;
-  z-index: 30;
-  width: min(42rem, calc(100vw - 4rem));
-  overflow: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--surface-base);
-  box-shadow: 0 1.25rem 4rem rgb(0 0 0 / 24%);
-  padding: var(--space-4);
-}
-
-.loop-revision-snapshot > header {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.loop-revision-snapshot dl {
-  display: grid;
-  gap: var(--space-2);
-  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-}
-
-.loop-revision-snapshot ol {
-  display: grid;
-  gap: var(--space-3);
-  padding-left: var(--space-4);
-}
-
-.loop-revision-snapshot pre {
-  margin: var(--space-1) 0 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font: inherit;
-  color: var(--text-secondary);
 }
 
 .loop-start-budget {

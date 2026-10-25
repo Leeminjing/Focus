@@ -4,9 +4,9 @@
  * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面工作台使用独立 userData 仓库，浏览器使用 IndexedDB，恢复后开放编辑；机器人继续使用独立输入仓库。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
- * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
+ * 任务继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
  * 控制材质复用语义 token；检查器显隐使用 FocusSurfaceTransition 保留壳层，退出即隔离命中、结束后退出布局；业务状态仍来自原 API/Live。
- * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。历史 Revision 读取按最新请求、Loop、Context 和页面生命周期隔离，过期成功/失败不写状态或重绘。全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
+ * 全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
  * 任务工具提供手工整理并复用既有 quick-apply；已有压缩待决仍使用原 resume。授权/等待表单解析复用共享视图，文件预览暂时隐藏材料检查器，关闭后恢复原 UI 偏好；独立会话的内部目录不呈现为用户已绑定工作区。
  * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
  * 传统任务与独立会话在同任务刷新时保持输入区及其祖先挂载，只更新消息与外围状态；后台其他任务结束只更新任务列表，回执不清除正在组字的草稿。
@@ -206,7 +206,6 @@ const state = {
   accessReviews: { panel: null, payload: null, taskId: null, key: null, busy: false },
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
-  loop: { loopId: null, loading: false, revisionSnapshot: null },
   inspector: { open: window.innerWidth > 1100, tab: "materials", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
   panelWidth: normalizePanelWidth(preferenceStorage.getItem("focus-panel-width") || 400),
@@ -388,58 +387,6 @@ const mapRunPreviews = createRunPreviews((values, structural) => {
   if (structural) scheduleMapGraphPatch();
   else window.FocusPortfolioMapView.patchPreviews(app.querySelector("[data-map-graph]"), values);
 });
-const loopWaitDrafts = window.FocusLoopWaitRequestView?.createDraftStore();
-const loopWaitUi = new Map();
-const loopLiveSelectors = window.FocusLoopLiveSelectors;
-const loopLiveStore = window.FocusLoopLiveStore?.create();
-const loopStore = window.FocusLoopStore?.create();
-const loopView = window.FocusLoopView;
-const loopMissionEditor = window.FocusLoopMissionEditor;
-const loopConsoleView = window.FocusLoopConsoleView;
-const loopConsoleStore = window.FocusLoopConsoleStore?.create();
-const loopConsoleController = loopApi && loopConsoleStore && window.FocusLoopConsoleController
-  ? window.FocusLoopConsoleController.create({
-      api: loopApi,
-      store: loopConsoleStore,
-      onChange: () => { if (state.view === "loop") patchLoopConsole(); },
-    })
-  : null;
-const loopLiveConnection = loopApi && loopLiveStore && window.FocusLoopLiveConnection
-  ? window.FocusLoopLiveConnection.create({ api: loopApi, store: loopLiveStore })
-  : null;
-const loopLegacyConnection = loopApi && loopStore && window.FocusLoopLegacyConnection
-  ? window.FocusLoopLegacyConnection.create({ api: loopApi, loopStore, consoleController: loopConsoleController, onChange: scheduleLoopLifecyclePatch })
-  : null;
-const loopConnection = runtime.features?.liveLoopProjection === false ? loopLegacyConnection : loopLiveConnection;
-let loopLifecycleFrame = null;
-let projectedLoopState = null;
-loopLiveStore?.subscribe(liveState => {
-  loopStore?.projectHistory(liveState.history);
-  loopConsoleStore?.projectHistory(liveState.history);
-  if (!liveState.projection) {
-    projectedLoopState = null;
-    loopStore?.clearLive(liveState.connection);
-    scheduleLoopLifecyclePatch();
-    return;
-  }
-  if (projectedLoopState === liveState.projection) {
-    loopStore?.projectConnection(liveState.connection);
-    scheduleLoopLifecyclePatch();
-    return;
-  }
-  projectedLoopState = liveState.projection;
-  loopStore?.projectLive(liveState.projection, liveState.connection);
-  const previousConversation = loopConsoleStore?.get().conversation;
-  const previousAuthority = loopConsoleStore?.get().authorityRevision;
-  const nextConsole = loopConsoleStore?.projectLive(liveState.projection, loopLiveSelectors);
-  if (previousAuthority != null && previousAuthority !== nextConsole?.authorityRevision) {
-    void loopConsoleController?.reloadFacts();
-  }
-  if (previousConversation && nextConsole?.selectedContextId === previousConversation.context_id && !nextConsole.conversation) {
-    void loopConsoleController?.selectContext(nextConsole.selectedContextId, { preserveSelection: true });
-  }
-  scheduleLoopLifecyclePatch();
-});
 const accessApproval = window.FocusAccessApproval;
 interfaceI18n.apply(document);
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
@@ -451,7 +398,6 @@ let contextPointerDrag = null;
 let contextUndoTimer = null;
 let agentDetailsRequestSequence = 0;
 let taskSwitchSequence = 0;
-let loopViewRequestSequence = 0;
 // 各资源独立提交；导航复用在途请求，事务刷新仍以最新请求为准。
 const taskResourceLoads = new Map();
 let compressionRequestSequence = 0;
@@ -459,7 +405,6 @@ let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
 let memoryViewRequestSequence = 0;
-let loopRevisionRequestSequence = 0;
 let memoryHydrationSequence = 0;
 let memoryCompressionRequestSequence = 0;
 let contextTreeRequestSequence = 0;
@@ -728,14 +673,12 @@ function loadPluginScript(src) {
 }
 
 function cancelPendingViewRequests() {
-  loopViewRequestSequence += 1;
-  state.loop.loading = false;
+  workspacePatrolNavigation += 1;
   contextRequestSequence += 1;
   compressionRequestSequence += 1;
   draftOpenRequestSequence += 1;
   pluginViewRequestSequence += 1;
   memoryViewRequestSequence += 1;
-  loopRevisionRequestSequence += 1;
 }
 
 async function hydratePluginAssets(bootstrapPlugins = null) {
@@ -1076,13 +1019,9 @@ function render() {
   }
   const shownDraft = document.querySelector('#patrolWorkbench')?.dataset?.draftId;
   if (shownDraft && (state.view !== 'draft' || state.drafts.get(state.activeTaskId)?.draft_id !== shownDraft)) window.FocusPatrolWorkbench?.leave(shownDraft);
-  if (state.view !== "loop") {
-    loopRevisionRequestSequence += 1;
-    loopConnection?.stop();
-  }
   document.body.dataset.view = state.view;
   renderShellChrome();
-  if (!state.tasks.length && ["draft", "compress", "context", "loop"].includes(state.view)) {
+  if (!state.tasks.length && ["draft", "compress", "context"].includes(state.view)) {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     interfaceI18n.apply(app);
     return;
@@ -1099,7 +1038,6 @@ function render() {
   else if (state.view === "compress") renderCompress();
   else if (state.view === "plugins") renderPlugins();
   else if (state.view === "memory") renderMemory();
-  else if (state.view === "loop") renderLoop();
   else if (state.view && pluginViews[state.view]) {
     app.replaceChildren();
     pluginViews[state.view].render(app, state);
@@ -1175,454 +1113,12 @@ async function renderWorkspacePatrol() {
   performance.mark("focus:patrol-mounted");
 }
 
-function observeLoopConnection(loopId, isCurrent = () => state.view === "loop" && state.loop.loopId === loopId) {
-  if (!loopConnection) return;
-  void loopConnection.start(loopId).catch(error => {
-    if (!isCurrent()) return;
-    if (loopConnection === loopLiveConnection) {
-      loopLiveStore.setConnection("unavailable", { error: String(error?.message || error) });
-    } else {
-      loopStore?.fail(error);
-    }
-  });
-}
-
-async function openLoopView() {
-  if (state.view === "focus") persistFocusState();
-  cancelPendingViewRequests();
-  const requestId = loopViewRequestSequence;
-  const navigationId = taskSwitchSequence;
-  state.view = "loop";
-  state.loop.revisionSnapshot = null;
-  state.inspector.open = false;
-  const task = activeTask();
-  const taskId = task?.task_id ?? null;
-  const previousLoopId = state.loop.loopId;
-  let loopId = task ? localStorage.getItem(`focus-agent-loop:${taskId}`) : null;
-  state.loop.loopId = loopId;
-  const isCurrent = () => requestId === loopViewRequestSequence
-    && navigationId === taskSwitchSequence && state.activeTaskId === taskId
-    && state.view === "loop" && state.loop.loopId === loopId;
-  if (previousLoopId && previousLoopId !== state.loop.loopId) {
-    loopConnection?.stop();
-    loopStore?.load(null);
-    loopConsoleStore?.reset();
-  }
-  if (!state.loop.loopId) {
-    loopStore?.load(null);
-    loopConsoleStore?.reset();
-  }
-  state.loop.loading = Boolean(task && loopApi);
-  render();
-  if (!task || !loopApi) return;
-  try {
-    if (!loopId) {
-      const found = await loopApi.findByContext(taskId);
-      if (!isCurrent()) return;
-      if (found?.loop_id) {
-        loopId = found.loop_id;
-        state.loop.loopId = loopId;
-        localStorage.setItem(`focus-agent-loop:${taskId}`, loopId);
-        loopStore.load(found);
-      }
-    }
-    if (!loopId) {
-      const eligibility = await loopApi.activationEligibility(taskId);
-      if (!isCurrent()) return;
-      const detail = state.details.get(taskId) || {};
-      detail.loop_activation = eligibility;
-      state.details.set(taskId, detail);
-      return;
-    }
-    const snapshot = await loopApi.get(loopId);
-    if (!isCurrent()) return;
-    if (snapshot.interaction_mode === "workspace_patrol") {
-      state.loop.loading = false;
-      state.patrolWorkspace = { workspace_id: snapshot.workspace_id, display_name: task.workspace_name || localize("工作区") };
-      state.view = "patrol";
-      return render();
-    }
-    loopStore.reconcile(snapshot);
-    const related = await loopApi.related(snapshot);
-    if (!isCurrent()) return;
-    loopStore.reconcileRelated(related);
-    await loopConsoleController?.load(loopId, { isCurrent });
-    if (!isCurrent()) return;
-    observeLoopConnection(loopId, isCurrent);
-  } catch (error) {
-    if (isCurrent()) loopStore.fail(error);
-  } finally {
-    if (isCurrent()) {
-      state.loop.loading = false;
-      renderLoop();
-    }
-  }
-}
-
-function renderLoop() {
-  if (!loopView || !loopStore) {
-    app.innerHTML = localize('<section class="empty-state"><h1>Agent Loop</h1><p>Loop 视图模块不可用。</p></section>');
-    return;
-  }
-  const priorTranscript = app.querySelector?.("[data-loop-transcript]");
-  const priorMap = app.querySelector?.(".portfolio-map-scroll");
-  const priorSearch = app.querySelector?.("[data-loop-message-search]");
-  const priorComposer = app.querySelector?.("#loopInterventionForm textarea");
-  const priorWaitForm = app.querySelector?.("[data-loop-wait-response]");
-  const priorWaitId = priorWaitForm?.closest?.("[data-wait-request-id]")?.dataset.waitRequestId;
-  if (priorWaitId && loopWaitDrafts) loopWaitDrafts.set(priorWaitId, serializeWaitDraft(priorWaitForm));
-  const focusedLoopField = document.activeElement === priorSearch ? "search" : document.activeElement === priorComposer ? "composer" : null;
-  const viewport = {
-    transcriptContextId: priorTranscript?.dataset.contextId || null,
-    transcriptTop: priorTranscript?.scrollTop || 0,
-    transcriptHeight: priorTranscript?.scrollHeight || 0,
-    transcriptRangeStart: Number(priorTranscript?.dataset.rangeStart || 0),
-    transcriptNearBottom: priorTranscript ? priorTranscript.scrollHeight - priorTranscript.scrollTop - priorTranscript.clientHeight < 48 : true,
-    mapTop: priorMap?.scrollTop || 0,
-    mapLeft: priorMap?.scrollLeft || 0,
-    search: priorSearch?.value || "",
-    composer: priorComposer?.value || "",
-    focusedLoopField,
-    selectionStart: focusedLoopField ? document.activeElement.selectionStart : null,
-    selectionEnd: focusedLoopField ? document.activeElement.selectionEnd : null,
-  };
-  const task = activeTask();
-  const detail = task ? state.details.get(task.task_id) : null;
-  const consoleState = currentLoopConsoleState();
-  const loopState = loopStore.get();
-  const waitRequest = loopState.snapshot?.wait_request;
-  const waitRequestId = waitRequest?.request_id;
-  const waitUi = waitRequestId ? { ...(loopWaitUi.get(waitRequestId) || {}), draft: loopWaitDrafts?.get(waitRequestId) || "" } : {};
-  app.innerHTML = loopView.render(loopState, task ? {
-    ...task,
-    active_run: detail?.active_run || task.active_run,
-    latest_direct_user_run: detail?.latest_direct_user_run,
-    loop_activation: detail?.loop_activation,
-  } : {}, consoleState, waitUi);
-  const nextTranscript = app.querySelector?.("[data-loop-transcript]");
-  const nextMap = app.querySelector?.(".portfolio-map-scroll");
-  const nextSearch = app.querySelector?.("[data-loop-message-search]");
-  const nextComposer = app.querySelector?.("#loopInterventionForm textarea");
-  if (nextSearch && viewport.search) {
-    nextSearch.value = viewport.search;
-    const query = viewport.search.trim().toLowerCase();
-    app.querySelectorAll("[data-loop-transcript] .loop-message").forEach(message => {
-      message.hidden = !message.textContent.toLowerCase().includes(query);
-    });
-  }
-  if (nextComposer && viewport.composer) nextComposer.value = viewport.composer;
-  const nextFocused = viewport.focusedLoopField === "search" ? nextSearch : viewport.focusedLoopField === "composer" ? nextComposer : null;
-  if (nextFocused) {
-    nextFocused.focus({ preventScroll: true });
-    nextFocused.setSelectionRange(viewport.selectionStart, viewport.selectionEnd);
-  }
-  if (nextTranscript) {
-    const contextChanged = Boolean(viewport.transcriptContextId && viewport.transcriptContextId !== nextTranscript.dataset.contextId);
-    const prepended = Number(nextTranscript.dataset.rangeStart || 0) < viewport.transcriptRangeStart;
-    const restoredTop = Number(consoleState?.conversationViewport?.scrollTop);
-    nextTranscript.scrollTop = contextChanged && consoleState?.conversationViewport && Number.isFinite(restoredTop)
-      ? restoredTop
-      : viewport.transcriptNearBottom
-        ? nextTranscript.scrollHeight
-        : viewport.transcriptTop + (prepended ? Math.max(0, nextTranscript.scrollHeight - viewport.transcriptHeight) : 0);
-  }
-  if (nextMap) {
-    nextMap.scrollTop = viewport.mapTop;
-    nextMap.scrollLeft = viewport.mapLeft;
-  }
-  loopConsoleController?.bind(app);
-  if (state.loop.revisionSnapshot) {
-    const revision = state.loop.revisionSnapshot;
-    const messages = revision.messages || revision.authored_messages || revision.execution_messages || [];
-    app.insertAdjacentHTML("beforeend", localize`<aside class="loop-revision-snapshot" aria-label="Context revision snapshot"><header><div><span class="loop-kicker">Historical snapshot</span><h3>${escapeHtml(revision.ref?.context_id || revision.context_id || "Context")} · R${escapeHtml(revision.ref?.generation || revision.generation || "—")}</h3></div><button type="button" data-action="close-loop-revision" aria-label="关闭历史快照">×</button></header><dl><div><dt>Revision</dt><dd>${escapeHtml(revision.ref?.revision_id || revision.revision_id || "—")}</dd></div><div><dt>Projection</dt><dd>${escapeHtml(revision.projection_status || "—")}</dd></div></dl><ol>${messages.map(message => `<li><strong>${escapeHtml(message.type || message.role || "message")}</strong><pre>${escapeHtml(typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? message, null, 2))}</pre></li>`).join("") || localize("<li>该历史视图没有内联消息。</li>")}</ol></aside>`);
-  }
-  const error = loopStore.get().error;
-  if (error) app.insertAdjacentHTML("beforeend", `<p class="loop-error" role="alert">${escapeHtml(error)}</p>`);
-}
-
-function patchLoopConsole() {
-  if (state.view !== "loop") return;
-  if (!loopConsoleView?.patch?.(app, currentLoopConsoleState())) {
-    renderLoop();
-    return;
-  }
-  loopConsoleController?.bind(app);
-}
-
-function currentLoopConsoleState() {
-  const consoleState = loopConsoleStore?.get() || {};
-  const loopStatus = loopStore?.get().snapshot?.status || null;
-  return { ...consoleState, loopStatus, terminal: ["completed", "stopped", "failed"].includes(loopStatus) };
-}
-
-function scheduleLoopLifecyclePatch() {
-  if (loopLifecycleFrame !== null) return;
-  loopLifecycleFrame = requestAnimationFrame(() => {
-    loopLifecycleFrame = null;
-    if (state.view !== "loop") return;
-    if (!loopView?.patchLifecycle?.(app, loopStore?.get())) renderLoop();
-  });
-}
-
-setInterval(() => {
-  if (state.view !== "loop") return;
-  const runs = Object.values(loopStore?.get().live?.runs || {});
-  if (runs.some(item => ["pending", "running"].includes(item.state?.status))) scheduleLoopLifecyclePatch();
-}, 60000);
-
-async function openLoopRevision(revisionId) {
-  const loopId = state.loop.loopId;
-  if (!loopApi || !revisionId || !loopId || state.view !== "loop") return;
-  const requestId = ++loopRevisionRequestSequence;
-  const taskId = state.activeTaskId;
-  const isCurrent = () => requestId === loopRevisionRequestSequence
-    && state.view === "loop" && state.loop.loopId === loopId && state.activeTaskId === taskId;
-  try {
-    const snapshot = await loopApi.revision(revisionId);
-    if (!isCurrent()) return;
-    state.loop.revisionSnapshot = snapshot;
-  } catch (error) {
-    if (!isCurrent()) return;
-    loopStore.fail(error);
-  }
-  renderLoop();
-}
-
-async function exitAgentLoop(prepareNew = false) {
-  cancelPendingViewRequests();
-  const task = activeTask();
-  const exitedLoopId = state.loop.loopId;
-  loopConnection?.stop();
-  if (loopLifecycleFrame !== null) cancelAnimationFrame(loopLifecycleFrame);
-  loopLifecycleFrame = null;
-  if (task) localStorage.removeItem(`focus-agent-loop:${task.task_id}`);
-  state.loop.loopId = null;
-  state.loop.revisionSnapshot = null;
-  loopStore?.load(null);
-  loopLiveStore?.reset();
-  loopConsoleStore?.reset();
-  if (task) {
-    const cached = state.details.get(task.task_id);
-    if (cached) {
-      for (const key of ["active_run", "latest_direct_user_run"]) {
-        if (cached[key]?.run_id && !cached[key].loop_id) cached[key] = { ...cached[key], loop_id: exitedLoopId };
-      }
-      state.details.set(task.task_id, cached);
-    }
-    try {
-      state.details.set(task.task_id, await api(`/desktop/api/tasks/${task.task_id}`));
-    } catch (error) {
-      setStatus(localize`已退出 Loop；刷新 Context 状态失败：${error.message}`, true);
-    }
-  }
-  if (prepareNew) {
-    state.view = "focus";
-    render();
-    setStatus(localize("请在当前 Context 发送一条新的直接用户消息，再进入 Agent Loop 创建后继 Loop。"), false);
-    return;
-  }
-  renderLoop();
-}
-
-async function startAgentLoop(form) {
-  const task = activeTask();
-  if (!task || !loopApi) return;
-  const values = new FormData(form);
-  const mission = loopMissionEditor.read(form);
-  const taskDetail = state.details.get(task.task_id);
-  const submit = form.querySelector('button[type="submit"]');
-  const status = form.querySelector("[data-loop-start-status]");
-  if (submit?.disabled) return;
-  if (submit) submit.disabled = true;
-  if (status) status.textContent = localize("正在复核最新直接用户 Run…");
-  let eligibility;
-  try {
-    eligibility = await loopApi.activationEligibility(task.task_id);
-  } catch (error) {
-    if (submit) submit.disabled = false;
-    if (status) status.textContent = localize`复核失败：${error.message}`;
-    return;
-  }
-  if (taskDetail) taskDetail.loop_activation = eligibility;
-  if (!eligibility.eligible || !eligibility.candidate_run_id) {
-    if (submit) submit.disabled = false;
-    if (status) status.textContent = localize`当前不能启动：${eligibility.reason || localize("没有可用 Run")}`;
-    return;
-  }
-  const initialRunId = eligibility.candidate_run_id;
-  const loopId = form.dataset.loopId || crypto.randomUUID().replaceAll("-", "");
-  const activationKey = form.dataset.activationKey || `loop-activation:${initialRunId}`;
-  form.dataset.loopId = loopId;
-  form.dataset.activationKey = activationKey;
-  const capabilities = ["continue_context", "create_lane", "update_lane", "merge_contexts", "pause_lane", "discard_membership", "request_lane_curator", "request_completion_verifier", "request_completion", "wait_for_user", "stop_loop"];
-  const autonomousCompression = values.get("autonomousCompression") === "on";
-  if (autonomousCompression) capabilities.push("apply_context_compression");
-  if (values.get("isolatedWrites") === "on") {
-    capabilities.push("isolate_workspace", "adopt_workspace_result");
-  }
-  const body = {
-    loop_id: loopId,
-    workspace_id: task.workspace_id,
-    initial_context_id: task.task_id,
-    initial_run_id: initialRunId,
-    readiness_token: eligibility.consistency_token,
-    activation_key: activationKey,
-    holder_id: `patrol:${loopId}`,
-    mission,
-    capabilities,
-    context_scope: [task.task_id],
-    permission_scope: [],
-    inherit_initial_equipment: true,
-    delegable_gates: autonomousCompression ? ["compression"] : [],
-    compression_policy: autonomousCompression ? {
-      version: 1,
-      allow_replace: true,
-      allow_delete: false,
-      protected_anchors: ["mission", "task_contract", "acceptance_criteria", "latest_direct_user_message", "unconsumed_material", "active_tool_protocol", "system_safety"],
-      max_source_messages: 64,
-      max_source_tokens: 60000,
-      max_attempts_per_gate: 3,
-      candidate_ttl_seconds: 900,
-      min_reduction_tokens: 256,
-    } : null,
-    budgets: loopBudgetPayload(values, true),
-    equipment: {},
-  };
-  state.loop.loading = true;
-  if (status) status.textContent = localize`正在授权 Run ${initialRunId}…`;
-  try {
-    const snapshot = await loopApi.start(body);
-    state.loop.loopId = snapshot.loop_id;
-    localStorage.setItem(`focus-agent-loop:${task.task_id}`, snapshot.loop_id);
-    if (taskDetail) {
-      for (const key of ["active_run", "latest_direct_user_run"]) {
-        if (taskDetail[key]?.run_id === initialRunId) taskDetail[key] = { ...taskDetail[key], loop_id: snapshot.loop_id };
-      }
-      state.details.set(task.task_id, taskDetail);
-    }
-    loopStore.load(snapshot);
-    loopStore.reconcileRelated(await loopApi.related(snapshot));
-    await loopConsoleController?.load(snapshot.loop_id);
-    renderLoop();
-    observeLoopConnection(snapshot.loop_id);
-  } catch (error) {
-    loopStore.fail(error);
-    if (status) status.textContent = localize`授权失败：${error.message}`;
-  } finally {
-    state.loop.loading = false;
-    if (submit?.isConnected) submit.disabled = false;
-  }
-}
-
-async function respondToLoopWait(request, answer) {
-  const loopId = state.loop.loopId;
-  if (!loopId || !request?.request_id) return;
-  const requestId = request.request_id;
-  loopWaitUi.set(requestId, { pending: true, error: null });
-  renderLoop();
-  try {
-    await loopApi.resolveWait(loopId, requestId, {
-      request_revision: request.revision,
-      idempotency_key: crypto.randomUUID(),
-      answer,
-    });
-    loopWaitDrafts?.delete(requestId);
-    loopWaitUi.delete(requestId);
-    loopStore.reconcile(await loopApi.get(loopId));
-    renderLoop();
-  } catch (error) {
-    loopWaitUi.set(requestId, { pending: false, error: error.message, draft: loopWaitDrafts?.get(requestId) || "" });
-    renderLoop();
-  }
-}
-
-async function resumeLoopWithCurrentMission(request) {
-  const loopId = state.loop.loopId;
-  try {
-    const resumed = await window.FocusLoopWaitRecovery.confirmAndResume({
-      request,
-      loopId,
-      confirm: prompt => window.confirm(prompt),
-      submit: (id, requestId, body) => loopApi.resumeWithCurrentMission(id, requestId, body),
-      beforeSubmit: () => {
-        loopWaitUi.set(request.request_id, { pending: true, error: null });
-        renderLoop();
-      },
-    });
-    if (!resumed) return;
-    loopWaitDrafts?.delete(request.request_id);
-    loopWaitUi.delete(request.request_id);
-    loopStore.reconcile(await loopApi.get(loopId));
-    renderLoop();
-  } catch (error) {
-    loopWaitUi.set(request.request_id, { pending: false, error: error.message, draft: loopWaitDrafts?.get(request.request_id) || "" });
-    renderLoop();
-  }
-}
-
-function loopBudgetPayload(values, starting = false) {
-  return window.FocusLoopExpansionBudget.readLoop(values, starting);
-}
-
-async function mutateAgentLoopGrant(body) {
-  const loopId = state.loop.loopId;
-  if (!loopId || !loopApi) return;
-  loopStore.beginControl(body.command);
-  renderLoop();
-  try {
-    const snapshot = await loopApi.mutateGrant(loopId, body);
-    loopStore.reconcile(snapshot);
-    loopStore.reconcileRelated(await loopApi.related(snapshot));
-  } catch (error) {
-    loopStore.fail(error);
-  }
-  renderLoop();
-}
-
-function narrowAgentLoopGrant(form) {
-  return mutateAgentLoopGrant(loopView.readNarrowGrant(form, state.loop.snapshot?.grant));
-}
-
-function adjustAgentLoopBudgets(form) {
-  return mutateAgentLoopGrant({ command: "adjust_budgets", budgets: loopBudgetPayload(new FormData(form)) });
-}
-
-async function controlLoop(command) {
-  const loopId = state.loop.loopId;
-  if (!loopId || !loopApi) return;
-  loopStore.beginControl(command);
-  renderLoop();
-  try {
-    loopStore.reconcile(await loopApi.control(loopId, command));
-  } catch (error) {
-    loopStore.fail(error);
-  }
-  renderLoop();
-}
-
-async function overrideAgentLoop(form) {
-  const loopId = state.loop.loopId;
-  if (!loopId || !loopApi) return;
-  const mission = loopMissionEditor.read(form);
-  loopStore.beginControl("override");
-  renderLoop();
-  try {
-    const snapshot = await loopApi.reviseMission(loopId, mission);
-    loopStore.reconcile(snapshot);
-    loopStore.reconcileRelated(await loopApi.related(snapshot));
-  } catch (error) {
-    loopStore.fail(error);
-  }
-  renderLoop();
-}
-
 function activeNavigationKey() {
   if (state.view === "history") return "map";
   if (state.view === "patrol") return "patrol";
   if (state.view === "map") return "map";
   if (state.view === "plugins") return "plugins";
   if (state.view === "memory") return "memory";
-  if (state.view === "loop") return "focus";
   if (activeTask()?.harness_mode === "assembly") return "assembly";
   return "focus";
 }
@@ -2345,8 +1841,8 @@ function renderFocus(task = activeTask()) {
     <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? localize("独立会话") : escapeHtml(task.workspace_name || localize("本地工作区"))}</small><h1>${task.harness_mode === "assembly" ? localize("无工作区模式") : localize("任务")}</h1><p>${task.harness_mode === "assembly" ? localize("从一个问题或一份材料开始。") : localize("一条任务，一条持续会话。")}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
-        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong>${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
-        ${admission ? localize`<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-loop">查看任务 Loop 的交付状态</button></section>` : ""}
+        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong>${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-task-patrol">工作区 Patrol 详情</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
+        ${admission ? localize`<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-task-patrol">查看工作区 Patrol 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
           <div class="progress-heading"><strong>任务合同</strong><span id="progressLabel"></span></div>
@@ -8364,67 +7860,19 @@ async function handleDocumentClick(event) {
     persistFocusState();
     return;
   }
-  if (action === "show-loop") return openLoopView();
-  if (loopMissionEditor?.handleAction(button)) return;
-  if (action === "loop-control") return controlLoop(button.dataset.loopControl);
-  if (action === "inspect-loop-fact") {
-    const loopId = state.loop.loopId;
-    if (!loopId) return;
-    const revision = button.closest("[data-fact-revision]")?.dataset.factRevision;
-    const detail = await loopApi.factDetail(loopId, button.dataset.factId, undefined, revision ? Number(revision) : undefined);
-    if (state.loop.loopId !== loopId) return;
-    const panel = document.createElement("dialog");
-    panel.className = "patrol-dialog glass-surface";
-    panel.setAttribute("aria-label", localize("事实与来源"));
-    panel.innerHTML = localize`<header><h2>事实与来源</h2><form method="dialog"><button aria-label="关闭">×</button></form></header><div data-patrol-dialog-body>${window.FocusLoopFactsView.renderDetail(detail)}</div>`;
-    if (detail.file) window.FocusFilePreview?.mountHistory(panel, detail.file, loopId);
-    document.body.append(panel);
-    panel.addEventListener("close", () => panel.remove(), { once: true });
-    const dismiss = event => { event.preventDefault(); void window.FocusSurfaceTransition.visible(panel, false, { modal: true }); };
-    panel.addEventListener("cancel", dismiss);
-    panel.querySelector("form").addEventListener("submit", dismiss);
-    void window.FocusSurfaceTransition.visible(panel, true, { modal: true, source: button });
-    return;
-  }
-  if (action === "loop-resume-current-mission") return resumeLoopWithCurrentMission(loopStore?.get().snapshot?.wait_request);
-  if (button.dataset.waitAction) {
-    const request = loopStore?.get().snapshot?.wait_request;
-    if (!request) return;
-    const answer = { action: button.dataset.waitAction };
-    if (answer.action === "revise_budget") {
-      const form = button.closest("[data-loop-wait-response]");
-      answer.budgets = Object.fromEntries(
-        [...form.querySelectorAll('[name^="budget:"]')].map(input => [input.name.slice(7), Number(input.value)])
-      );
+  if (action === "show-task-patrol") {
+    const task = activeTask();
+    if (task?.workspace_id) {
+      if (state.view === "focus") persistFocusState();
+      return openPatrolWorkbench({ workspaceId: task.workspace_id });
     }
-    return respondToLoopWait(request, answer);
+    return setStatus(localize("当前任务没有关联工作区"));
   }
-  if (action === "loop-exit") return exitAgentLoop(false);
-  if (action === "loop-prepare-new" || action === "loop-new-run") return exitAgentLoop(true);
-  if (action === "loop-select-context") {
-    if (state.view !== "map") return loopConsoleController?.selectContext(button.dataset.contextId);
+  if (action === "loop-select-context" && state.view === "map") {
     if (state.selectionMode) return toggleSelectSession(button.dataset.contextId);
     if (state.soldierArmed) return openDraft(button.dataset.contextId);
     return inspectMapContext(button.dataset.contextId, button, button.dataset.revisionId);
   }
-  if (action === "loop-restore-compression") return runUiAction(async () => {
-    await loopApi.restoreCompression(button.dataset.contextId, button.dataset.messageId);
-    await loopConsoleController?.selectContext(button.dataset.contextId, { preserveSelection: true, force: true });
-    setStatus(localize("压缩来源已恢复并发布新 Context Revision"));
-  });
-  if (action === "loop-load-older") return loopConsoleController?.loadOlder();
-  if (action === "loop-load-older-activity") return loopLiveConnection?.loadHistory(true);
-  if (action === "loop-load-latest-activity") return loopLiveConnection?.loadHistory(false);
-  if (action === "loop-load-newer") return loopConsoleController?.loadNewer();
-  if (action === "loop-load-older-facts") return loopConsoleController?.loadOlderFacts();
-  if (action === "loop-intervention-mode") return loopConsoleStore?.setMode(button.dataset.mode);
-  if (action === "loop-message-filter") return loopConsoleStore?.setMessageFilter(button.dataset.filter);
-  if (action === "loop-fact-filter") return loopConsoleController?.setFactFilter(button.dataset.filter);
-  if (action === "loop-fact-status") return loopConsoleController?.setFactStatus(button.dataset.status);
-  if (action === "loop-fact-scope") return loopConsoleController?.setFactScope(button.dataset.scope);
-  if (action === "loop-revoke-grant") return mutateAgentLoopGrant({ command: "revoke" });
-  if (action === "open-loop-revision") return openLoopRevision(button.dataset.openRevision);
-  if (action === "close-loop-revision") { loopRevisionRequestSequence += 1; state.loop.revisionSnapshot = null; return renderLoop(); }
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
   if (action === "refresh-run-causality") {
     readRunCausality(sessionUsageRun(state.activeTaskId), true);
@@ -9265,56 +8713,9 @@ document.addEventListener("submit", event => {
     runUiAction(() => createTask(event.target));
     return;
   }
-  if (event.target.matches("[data-loop-wait-response]")) {
-    event.preventDefault();
-    const request = loopStore?.get().snapshot?.wait_request;
-    if (!request) return;
-    const answer = window.FocusLoopWaitRequestView.readAnswer(event.target, request.response_mode);
-    respondToLoopWait(request, answer);
-    return;
-  }
-  if (event.target.id === "agentLoopStartForm") {
-    event.preventDefault();
-    runUiAction(() => startAgentLoop(event.target));
-    return;
-  }
-  if (event.target.id === "agentLoopOverrideForm") {
-    event.preventDefault();
-    runUiAction(() => overrideAgentLoop(event.target));
-    return;
-  }
-  if (event.target.id === "agentLoopGrantForm") {
-    event.preventDefault();
-    runUiAction(() => narrowAgentLoopGrant(event.target));
-    return;
-  }
-  if (event.target.id === "agentLoopBudgetForm") {
-    event.preventDefault();
-    runUiAction(() => adjustAgentLoopBudgets(event.target));
-    return;
-  }
-  if (event.target.id === "loopInterventionForm") {
-    event.preventDefault();
-    const form = event.target;
-    const content = new FormData(form).get("content");
-    const submitted = loopConsoleStore.get();
-    runUiAction(async () => {
-      await loopConsoleController?.submit(content);
-      const current = loopConsoleStore.get();
-      const currentForm = document.querySelector("#loopInterventionForm");
-      if (current.selectedContextId === submitted.selectedContextId && current.interventionMode === submitted.interventionMode
-          && currentForm?.elements.content.value === content) currentForm.reset();
-    });
-    return;
-  }
   if (event.target.id !== "agentInspectorContinueForm") return;
   event.preventDefault();
   runUiAction(continueAgentDetails);
-});
-document.addEventListener("input", event => {
-  const form = event.target.closest?.("[data-loop-wait-response]");
-  const requestId = form?.closest?.("[data-wait-request-id]")?.dataset.waitRequestId;
-  if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
   if (["sessionModel", "sessionReasoning"].includes(event.target.id)) {
@@ -9360,14 +8761,8 @@ document.addEventListener("change", event => {
     return;
   }
   if (event.target.matches?.("[data-strategy-file]")) { readStrategyFile(event.target.files?.[0]); return; }
-  const form = event.target.closest?.("[data-loop-wait-response]");
-  const requestId = form?.closest?.("[data-wait-request-id]")?.dataset.waitRequestId;
-  if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 
-function serializeWaitDraft(form) {
-  return window.FocusLoopWaitRequestView.serializeDraft(form);
-}
 async function uploadMaterialFile(file, taskId = state.activeTaskId, entry = null) {
   if (!file) return;
   if (!taskId) return setStatus(localize("请先选择任务，再添加材料"), true);
@@ -9569,9 +8964,6 @@ window.addEventListener("beforeunload", () => {
   stopMapLive();
   workspacePatrolController?.dispose();
   for (const source of state.streams.values()) source.close();
-  loopConnection?.stop();
-  if (loopLifecycleFrame !== null) cancelAnimationFrame(loopLifecycleFrame);
-  loopConsoleController?.destroy();
   materialContentLoader.releaseAll();
   for (const entries of [...state.composerAttachments.values()]) {
     for (const entry of [...entries.values()]) releaseComposerAttachment(entry);
@@ -9589,7 +8981,7 @@ restoreZoomLevel();
 async function openPatrolWorkbench(target) {
   if (target.setupModels) return ensureModelSetup({ onboarding: true });
   cancelPendingViewRequests();
-  const navigation = ++workspacePatrolNavigation;
+  const navigation = workspacePatrolNavigation;
   const workspace = target.workspaceId ? await workspacePatrolIntake.workspace(target.workspaceId) : state.patrolWorkspace;
   if (navigation !== workspacePatrolNavigation) return;
   state.patrolWorkspace = workspace;
@@ -9641,12 +9033,7 @@ async function openTaskNotification(target) {
     return;
   }
   await switchTask(task.task_id);
-  if (target.loopId && task.loop?.loop_id === target.loopId) {
-    localStorage.setItem(`focus-agent-loop:${task.task_id}`, target.loopId);
-    await openLoopView();
-    const pending = [...app.querySelectorAll("[data-wait-request-id]")].find(node => node.dataset.waitRequestId === target.attentionId);
-    pending?.scrollIntoView?.({ block: "center" });
-  } else if (target.attentionId) {
+  if (target.attentionId) {
     state.inspector.open = true;
     state.inspector.tab = "run";
     render();

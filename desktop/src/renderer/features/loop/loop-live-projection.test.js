@@ -2,7 +2,6 @@
  * 本文件对外提供前端 Live Loop schema、reducer、序列防护、连接恢复、选择器与界面状态的回归测试。
  * 输入为有效/畸形 snapshot、重复/陈旧/缺口事件、HTTP 故障和模拟 Live API；输出为确定性 projection、原子重同步、取消信号、退避及单连接断言。
  * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection/API，验证新 Round/Patrol 的局部版本与迟到旧实体隔离；示例：`node --test desktop/src/renderer/features/loop/loop-live-projection.test.js`。
- * Mission交付使用服务端评估，覆盖Patrol真实来源、终态Run身份保留及跨Mission事件隔离。
  * 运行选择优先真实 running，保留独立的最新排队 Run 身份，避免队列遮盖实时输出。
   * 独立 Task Progress head 按 generation/revision 归约，陈旧事件不能回退已提交记忆。
  */
@@ -17,8 +16,6 @@ const Selectors = require("./loop-live-selectors.js");
 const LiveStore = require("./loop-live-store.js");
 const Connection = require("./loop-live-connection.js");
 const LoopApi = require("./loop-api.js");
-const LoopStore = require("./loop-store.js");
-const ConsoleStore = require("./loop-console-store.js");
 const PortfolioMap = require("../map/portfolio-map-view.js");
 
 const entity = (id, revision, sequence, state = {}) => ({ entity_id: id, revision, updated_sequence: sequence, state });
@@ -100,66 +97,6 @@ test("latest activity page advances its older cursor as live events arrive", () 
   assert.equal(page.items.length, 50);
   assert.equal(page.beforeSequence, 111);
   assert.equal(page.items.at(-1).sequence, 160);
-});
-
-test("separate history restores selected Context causality without replaying events", () => {
-  const store = ConsoleStore.create();
-  store.loadManifest({ loop_id: "l1", initial_context_id: "c1", nodes: [{ context_id: "c1" }, { context_id: "c2" }] });
-  const projection = Schema.validateSnapshot(snapshot(80, {
-    contexts: { c1: entity("c1", 1, 1, {}), c2: entity("c2", 1, 1, {}) },
-  }));
-  store.projectLive(projection, Selectors);
-  assert.deepEqual(store.get().causality, []);
-  const canonical = Reducer.reduce(Schema.validateSnapshot(snapshot(3)), event(4, {
-    entity_type: "directive", entity_id: "old-directive", payload: { target_context_id: "c1" },
-  })).activity_timeline[0];
-  store.projectHistory({ initialized: true, older: true, next_before_sequence: null, items: [
-    canonical,
-    { sequence: 5, entity_id: "other", detail: { context_id: "c2" } },
-  ] });
-  assert.deepEqual(store.get().causality.map(item => item.sequence), [4]);
-  store.selectContext("c2");
-  assert.deepEqual(store.get().causality.map(item => item.sequence), [5]);
-  assert.equal(projection.last_sequence, 80);
-});
-
-test("scoped paginated facts survive a bounded global snapshot and unrelated SSE", () => {
-  const store = ConsoleStore.create();
-  store.loadManifest({ loop_id: "l1", initial_context_id: "c1", nodes: [{ context_id: "c1" }] });
-  store.loadFacts({ facts: [{ fact_id: "old-a", revision: 2, context_id: "c1", kind: "test", status: "verified" }],
-    range: { start: 20, end: 21 }, has_more: true, next_before: 20, total: 21 });
-  const projection = Schema.validateSnapshot(snapshot(200, {
-    contexts: { c1: entity("c1", 1, 1, {}) },
-    facts: Object.fromEntries(Array.from({ length: 200 }, (_, index) => [`b-${index}`, entity(`b-${index}`, 1, index + 1,
-      { context_id: "c2", kind: "test", status: "verified" })])),
-  }));
-  store.projectLive(projection, Selectors);
-  store.projectLive(Reducer.reduce(projection, event(201)), Selectors);
-  assert.deepEqual(store.get().facts.facts.map(item => item.fact_id), ["old-a"]);
-  assert.equal(store.get().facts.has_more, true);
-  assert.equal(store.get().facts.next_before, 20);
-});
-
-test("redacted snapshots replace same-revision fact data and invalidate old-authority pages", () => {
-  const store = ConsoleStore.create();
-  store.loadManifest({ loop_id: "l1", initial_context_id: "c1", nodes: [{ context_id: "c1" }] });
-  const projection = authority => Schema.validateSnapshot(snapshot(2, {
-    loop: entity("l1", 1, 2, { authority_revision: authority }),
-    contexts: { c1: entity("c1", 1, 1, {}) },
-    facts: { f1: entity("f1", 1, 1, { context_id: "c1", kind: "test", status: "verified" }) },
-  }));
-  store.projectLive(projection(1), Selectors);
-  const page = { facts: [
-    { fact_id: "f1", revision: 1, context_id: "c1", evidence: ["private"] },
-    { fact_id: "old", revision: 1, context_id: "c1", evidence: ["private"] },
-  ], has_more: true, next_before: 20 };
-  store.loadFacts(page);
-  store.projectLive(projection(1), Selectors);
-  assert.equal(store.get().facts.facts.find(item => item.fact_id === "f1").evidence, undefined);
-  store.loadFacts(page);
-  store.projectLive(projection(2), Selectors);
-  assert.deepEqual(store.get().facts.facts.map(item => item.fact_id), ["f1"]);
-  assert.equal(store.get().facts.facts[0].evidence, undefined);
 });
 
 test("history failure and late responses do not disturb a running or switched Loop", async () => {
@@ -274,51 +211,6 @@ test("Round and Patrol identity switches use local revisions and reject late old
   assert.equal(state.last_sequence, 6);
 });
 
-test("Patrol Mission delivery uses the authoritative assessment and retains its settled Run", () => {
-  const store = LoopStore.create();
-  store.load({ goal_revision: 1, mission_delivery: { state: "pending", mission_revision: 1 } });
-  const delivery = { state: "delivered", mission_revision: 1, directive_id: "d1", run_id: "r1", reason: null };
-  const current = snapshot(2, {
-    loop: entity("l1", 2, 2, { goal_revision: 1, status: "running" }),
-    directives: { d1: entity("d1", 4, 2, { origin: "patrol", state: "settled", mission_revision: 1,
-      run_id: null, mission_delivery: delivery }) },
-  });
-  store.projectLive(current);
-  assert.deepEqual(store.get().snapshot.mission_delivery, delivery);
-  const newer = { ...delivery, mission_revision: 2, state: "authorized", directive_id: "d2", run_id: null };
-  store.projectLive(snapshot(4, { loop: entity("l1", 3, 4, { goal_revision: 2 }), directives: {
-    ...current.directives, d2: entity("d2", 2, 3, { origin: "patrol", mission_revision: 2, mission_delivery: newer }),
-    late: entity("late", 7, 4, { origin: "patrol", mission_revision: 1, mission_delivery: delivery }),
-  } }));
-  assert.deepEqual(store.get().snapshot.mission_delivery, newer);
-});
-
-test("ordinary Patrol directives cannot assert Mission delivery without its assessment", () => {
-  const store = LoopStore.create();
-  store.load({ goal_revision: 1, mission_delivery: { state: "pending", mission_revision: 1 } });
-  store.projectLive(snapshot(2, { loop: entity("l1", 1, 1, { goal_revision: 1 }),
-    directives: { d1: entity("d1", 3, 2, { origin: "patrol", mission_revision: 1, run_id: "r1", state: "run_started" }) } }));
-  assert.equal(store.get().snapshot.mission_delivery.state, "pending");
-  store.projectLive(snapshot(3, { loop: entity("l1", 1, 1, { goal_revision: 1 }),
-    directives: { old: entity("old", 3, 3, { origin: "mission_bootstrap", mission_revision: 1, run_id: "legacy" }) } }));
-  assert.equal(store.get().snapshot.mission_delivery.run_id, "legacy");
-});
-
-test("a reconnected Mission snapshot outranks older events and accepts a newer delivery event", () => {
-  const store = LoopStore.create();
-  const delivered = { state: "delivered", mission_revision: 1, directive_id: "d1", run_id: "r1" };
-  const authorized = { ...delivered, state: "authorized", run_id: null };
-  const restored = snapshot(5, { loop: entity("l1", 2, 5, { goal_revision: 1, mission_delivery: delivered }),
-    directives: { d1: entity("d1", 2, 2, { origin: "patrol", mission_delivery: authorized }) } });
-  store.projectLive(restored);
-  assert.deepEqual(store.get().snapshot.mission_delivery, delivered);
-  const blocked = { ...authorized, state: "blocked", reason: "delivery_failed" };
-  store.projectLive({ ...restored, last_sequence: 6, directives: {
-    d1: entity("d1", 3, 6, { origin: "patrol", mission_delivery: blocked }),
-  } });
-  assert.deepEqual(store.get().snapshot.mission_delivery, blocked);
-});
-
 test("user interventions retain acceptance before a Run and ignore a late old phase", () => {
   let state = Schema.emptyProjection("l1");
   state = Reducer.reduce(state, event(1, { kind: "intervention.accepted", entity_type: "intervention", entity_id: "u1",
@@ -335,14 +227,12 @@ test("user interventions retain acceptance before a Run and ignore a late old ph
 });
 
 test("accounting events update budget occupancy independently of frozen Loop control revision", () => {
-  const legacy = LoopStore.create();
   let state = Schema.validateSnapshot(snapshot(1, { loop: entity("l1", 4, 1, { status: "paused", revision: 4, goal_revision: 1, usage: { model_calls: 0 } }) }));
   state = Reducer.reduce(state, event(2, { kind: "loop.accounting.updated", entity_type: "accounting", entity_id: "l1", entity_revision: 2, payload: { accounting: { consumption: { actual: { model_calls: 1 }, occupied: { model_calls: 2 } } }, usage: { model_calls: 1 } } }));
-  legacy.projectLive(state, null);
   assert.equal(state.loop.revision, 4);
-  assert.equal(legacy.get().snapshot.status, "paused");
-  assert.equal(legacy.get().snapshot.usage.model_calls, 1);
-  assert.equal(legacy.get().snapshot.accounting.consumption.occupied.model_calls, 2);
+  assert.equal(state.loop.state.status, "paused");
+  assert.equal(state.accounting.state.usage.model_calls, 1);
+  assert.equal(state.accounting.state.accounting.consumption.occupied.model_calls, 2);
 });
 
 test("Run activity updates only from confirmed model and tool events", () => {
@@ -600,9 +490,6 @@ test("initial HTTP 500 stays in connection state and recovers on the next snapsh
 
 test("repeated snapshot failures use bounded backoff without changing Loop business state", async () => {
   const store = LiveStore.create();
-  const legacy = LoopStore.create();
-  legacy.load({ loop_id: "l1", status: "running" });
-  legacy.beginControl("pause");
   const waits = [];
   let connection;
   connection = Connection.create({
@@ -611,14 +498,11 @@ test("repeated snapshot failures use bounded backoff without changing Loop busin
     maxBackoff: 500,
     wait: async milliseconds => {
       waits.push(milliseconds);
-      legacy.projectConnection(store.get().connection);
       if (waits.length === 3) connection.stop();
     },
   });
   await connection.start("l1");
   assert.deepEqual(waits, [250, 500, 500]);
-  assert.equal(legacy.get().snapshot.status, "running");
-  assert.equal(legacy.get().pendingControl, "pause");
 });
 
 test("nonretryable snapshot failures stop at one request", async () => {
@@ -769,16 +653,6 @@ test("switching during retry wait cancels the old Loop retry", async () => {
   await Promise.all([old, current]);
 });
 
-test("clearing Live state leaves the committed Loop snapshot intact", () => {
-  const legacy = LoopStore.create();
-  legacy.load({ loop_id: "l1", status: "running" });
-  legacy.projectLive(snapshot(1), { status: "live" });
-  legacy.clearLive({ status: "syncing" });
-  assert.equal(legacy.get().snapshot.status, "running");
-  assert.equal(legacy.get().live, null);
-  assert.equal(legacy.get().connection.status, "syncing");
-});
-
 test("gap resynchronization retries a transient snapshot error and resumes once", async () => {
   const store = LiveStore.create();
   let reads = 0;
@@ -825,7 +699,7 @@ test("app delegates Loop domain reduction and stream recovery to dedicated modul
   const source = fs.readFileSync(require.resolve("../../app/app.js"), "utf8");
   assert.doesNotMatch(source, /function startLoopStream|function scheduleLoopRefresh|function scheduleLoopPoll/);
   assert.doesNotMatch(source, /loopApi\.events\(|loopStore\.apply\(/);
-  assert.match(source, /loopConnection\.start\(loopId\)\.catch/);
+  assert.match(source, /FocusLoopLiveConnection\.create\(\{ api: loopApi, store \}\)/);
 });
 
 test("long-running selectors bound graph effects and fact rows while durable state remains queryable", () => {
@@ -867,9 +741,9 @@ test("a newer queued run cannot hide the Context's running output", () => {
 });
 
 test("live workspace exposes semantic labels and a reduced-motion equivalent", () => {
-  const styles = fs.readFileSync(require.resolve("./loop-console.css"), "utf8");
-  const view = fs.readFileSync(require.resolve("./loop-view.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../map/portfolio-map.css"), "utf8");
+  const view = fs.readFileSync(require.resolve("../patrol/workspace/workspace-patrol-view.js"), "utf8");
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(view, /aria-label="Loop 实时活动"/);
-  assert.match(view, /aria-live="polite"/);
+  assert.match(view, /aria-label="只读 Context 检查"/);
+  assert.match(view, /data-patrol-state role="status"/);
 });

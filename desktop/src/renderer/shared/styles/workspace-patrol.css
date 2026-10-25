@@ -1,7 +1,7 @@
 /* 本文件对外提供 Patrol 安静输入、工作详情、冻结检查与目录确认的布局。
  * 输入为 workspace-patrol/picker 的语义 DOM 和宿主 token；输出为透明侧面板、连续关系画布、紧凑输入与窄屏视图切换。
  * 具体工作流为安静态以窗口比例决定大标题、横向 composer 和圆形发送控件，显式详情通过三列网格承接图/进度/观察/事实，临时导航由语义 class 控制；dialog 处理模态，Context 保持非模态，长请求身份在输入区换行可读。
- * 示例：.workspace-patrol.is-quiet；阅读与状态颜色沿用宿主 token，玻璃亮边在当前模块定义，共用节点与边材质由 loop-console.css 提供，图工具栏独立于平移画布。
+ * 示例：.workspace-patrol.is-quiet；阅读与状态颜色沿用宿主 token，玻璃亮边在当前模块定义，共用节点与边材质由 portfolio-map.css 提供，图工具栏独立于平移画布。
  * data-patrol-dialog-kind 的 requests/progress/grant/observation/facts 与独立 picker 使用连续玻璃正文和局部分组，外壳负责模糊，内层消费可降级 material token；fact/relationship 等未选详情仍保留原阅读底。
  * 文件事实固定 60px 高，文件详情锚定实际输入区上沿并留出间距，窄屏继续使用同一草稿节点。
  * 输入记录为固定非模态滚动区域：安静态锚定清空按钮左侧与底边，宽度按 composer 的 34.4% 校准，高度不超过半个视口和 360px，并受锚点上方剩余空间限制；详情锚定 composer 上方。

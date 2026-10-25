@@ -7,10 +7,10 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const Budget = require("./loop-expansion-budget.js");
-const LoopView = require("./loop-view.js");
+const GrantView = require("./loop-grant-view.js");
 
-test("start and edit UI expose every effective expansion resource", () => {
-  const start = LoopView.render(null, { title: "Large task" });
+test("grant UI exposes every effective expansion resource", () => {
+  const start = GrantView.grantControls({ status: "running", grant: { budgets: Budget.LOOP_DEFAULTS } });
   for (const key of Object.keys(Budget.DEFAULTS).filter(key => key !== "version")) {
     assert.match(start, new RegExp(`name="expansion_${key}"`));
   }
@@ -48,13 +48,9 @@ test("running status uses API limits and identifies causal blocker", () => {
   assert.match(html, /连续 2 轮 Context Expansion 阻断/);
 });
 
-test("start settings are closed and defaults submit maxima or no extra limit", () => {
-  const html = LoopView.render(null, { title: "Large task" });
-  const details = html.match(/<details class="loop-start-options"[^>]*>([\s\S]*?)<\/details>/);
-  assert.ok(details);
-  assert.doesNotMatch(details[0].split(">")[0], /\bopen\b/);
-  assert.match(details[1], /name="isolatedWrites"/);
-  assert.match(details[1], /name="expansion_output_token_reserve"[^>]*placeholder="按模型配置"/);
+test("grant settings submit maxima or no extra limit", () => {
+  const html = GrantView.grantControls({ status: "running", grant: { budgets: Budget.LOOP_DEFAULTS } });
+  assert.match(html, /name="expansion_output_token_reserve"[^>]*placeholder="按模型配置"/);
   const values = new Map([...html.matchAll(/<input name="([^"]+)" type="number"[^>]*value="([^"]*)"/g)].map(([, name, value]) => [name, value]));
   assert.deepEqual(Budget.readLoop(values, true), Budget.LOOP_DEFAULTS);
   values.set("maxModelCalls", "10");
@@ -64,4 +60,19 @@ test("start settings are closed and defaults submit maxima or no extra limit", (
   assert.equal(explicit.expansion_resources.output_token_reserve, 1024);
   values.set("maxRounds", "1001");
   assert.throws(() => Budget.readLoop(values), /maxRounds/);
+});
+
+test("narrowing a grant revokes compression without expanding remaining scopes", () => {
+  const previous = globalThis.FormData;
+  globalThis.FormData = class { constructor(values) { return new Map(values); } };
+  const form = [["capabilities", "continue_context, apply_context_compression"], ["contextScope", " c1, c2 "], ["permissionScope", "read"], ["delegableGates", "compression, access"], ["expiresAt", " "]];
+  const grant = {compression_policy: {version: 1}};
+  try {
+    const revoked = GrantView.readNarrowGrant(form, grant);
+    assert.deepEqual(revoked, {command:"narrow",capabilities:["continue_context"],context_scope:["c1","c2"],permission_scope:["read"],delegable_gates:["access"],compression_policy:null,expires_at:null});
+    const kept = GrantView.readNarrowGrant([...form, ["autonomousCompression", "on"]], grant);
+    assert.equal(kept.compression_policy, grant.compression_policy);
+    assert.ok(kept.capabilities.includes("apply_context_compression"));
+    assert.ok(kept.delegable_gates.includes("compression"));
+  } finally { globalThis.FormData = previous; }
 });

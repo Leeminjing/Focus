@@ -1,8 +1,8 @@
 <!doctype html>
 <!--
   本文件提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
-  输出为受内容安全策略保护的六项主导航、默认 Patrol、传统任务三栏、Loop Portfolio 控制台、检查器、
-  材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载 Expansion 预算模块、无状态 UI、共享 Run 订阅/短预览、共享图纯布局、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，加载独立 Patrol 文档/来源/编排/交互/检查/分支模块，最后启动 app.js。
+  输出为受内容安全策略保护的六项主导航、默认 Patrol、传统任务三栏、Patrol 工作台、检查器、
+  材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载 Expansion 预算模块、无状态 UI、共享 Run 订阅/短预览、共享图纯布局、Live Loop schema/reducer/连接器、共享授权/只读会话检查与材料 loader，加载独立 Patrol 文档/来源/编排/交互/检查/分支模块，最后启动 app.js。
   示例：浏览器加载 index.html 后由 app.js 挂载 #app。
   工作区输入编排与材料预览由共享 intake/preview 加载，原生宿主将输入入口转给独立机器人面板。
 -->
@@ -27,7 +27,10 @@
   <link rel="stylesheet" href="./features/conversation/conversation-events.css">
   <link rel="stylesheet" href="./features/files/round-changes.css">
   <link rel="stylesheet" href="./features/patrol/avatar/patrol-avatar.css?v=20260905b">
-  <link rel="stylesheet" href="./features/loop/loop-console.css?v=20260916b">
+  <link rel="stylesheet" href="./features/map/portfolio-map.css?v=20260916b">
+  <link rel="stylesheet" href="./features/loop/loop-wait-request.css">
+  <link rel="stylesheet" href="./features/loop/loop-facts.css">
+  <link rel="stylesheet" href="./features/context/context-inspection.css">
   <link rel="stylesheet" href="./shared/styles/workspace-patrol.css?v=20261009-filesystem">
   <link rel="stylesheet" href="./features/patrol/workspace/workspace-patrol-feedback.css">
   <link rel="stylesheet" href="./features/files/artifact-drawer.css">
@@ -260,26 +263,20 @@
   <script src="./features/loop/loop-live-selectors.js?v=20260919a"></script>
   <script src="./features/loop/loop-live-store.js?v=20260919a"></script>
   <script src="./features/loop/loop-live-connection.js?v=20260919a"></script>
-  <script src="./features/loop/loop-legacy-connection.js?v=20260919a"></script>
   <script src="./shared/http/http-response.js?v=20260920a"></script>
   <script src="./features/loop/loop-api.js?v=20260920a"></script>
   <script src="./features/loop/loop-wait-recovery.js?v=20260927a"></script>
   <script src="./features/loop/loop-wait-request-view.js?v=20260920a"></script>
-  <script src="./features/loop/loop-mission-editor.js?v=20260919a"></script>
-  <script src="./features/loop/loop-store.js?v=20260915a"></script>
-  <script src="./features/loop/loop-console-store.js?v=20260916a"></script>
-  <script src="./features/loop/loop-console-controller.js?v=20260916a"></script>
   <script src="./features/map/portfolio-map-layout.js"></script>
   <script src="./features/map/portfolio-map-view.js?v=20260916b"></script>
-  <script src="./features/context/context-conversation-view.js?v=20260916b"></script>
   <script src="./features/files/file-links.js"></script><script src="./features/files/file-preview.js"></script>
   <script src="./features/loop/loop-facts-view.js?v=20260916b"></script>
   <script src="./features/files/work-timeline.js"></script>
   <script src="./features/files/round-changes.js"></script>
   <script src="./features/files/artifact-drawer.js"></script>
-  <script src="./features/loop/loop-console-view.js?v=20260916b"></script>
   <script src="./features/loop/loop-expansion-budget.js?v=20260926a"></script>
-  <script src="./features/loop/loop-view.js?v=20261017-strategy"></script>
+  <script src="./features/context/context-inspection-view.js"></script>
+  <script src="./features/loop/loop-grant-view.js?v=20261017-strategy"></script>
   <script src="./shared/ui/surface-transition.js"></script>
   <script src="./features/patrol/workspace/workspace-patrol-inputs.js"></script>
   <script src="./features/patrol/workspace/workspace-patrol-feedback.js"></script>

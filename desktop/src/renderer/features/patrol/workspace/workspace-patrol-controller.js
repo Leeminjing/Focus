@@ -380,7 +380,7 @@
       const value = await api.get(loopId);
       if (owner !== token || dialogKind !== "grant") return;
       grantInspection = value;
-      showDialog("grant", localize("工作区授权与预算"), root.FocusLoopView.grantControls(value) || localize("当前没有可修改的有效授权。历史工作仍可检查。"));
+      showDialog("grant", localize("工作区授权与预算"), root.FocusLoopGrantView.grantControls(value) || localize("当前没有可修改的有效授权。历史工作仍可检查。"));
     }
     function patchRequests() {
       if (!host || !projection) return;
@@ -961,7 +961,7 @@
         const submit = event.submitter;
         if (submit) submit.disabled = true;
         try {
-          const body = form.id === "agentLoopGrantForm" ? root.FocusLoopView.readNarrowGrant(form, grantInspection?.grant) : { command: "adjust_budgets", budgets: root.FocusLoopExpansionBudget.readLoop(new FormData(form)) };
+          const body = form.id === "agentLoopGrantForm" ? root.FocusLoopGrantView.readNarrowGrant(form, grantInspection?.grant) : { command: "adjust_budgets", budgets: root.FocusLoopExpansionBudget.readLoop(new FormData(form)) };
           await api.mutateGrant(loopId, body);
           if (owner === token) await openGrant();
         } catch (failure) {
