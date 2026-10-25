@@ -17,6 +17,13 @@
   margin: 0;
 }
 
+/* 展开时使用消息栏的可用宽度，折叠时仍保持紧凑事件行。 */
+.conversation-event-sequence:has(> .conversation-event[open]),
+.conversation-event[open] {
+  width: 100%;
+  min-width: 0;
+}
+
 .conversation-event > summary {
   display: inline-grid;
   max-width: 100%;
@@ -89,7 +96,9 @@
 }
 
 .conversation-event-detail {
-  width: min(720px, calc(100vw - 120px));
+  width: min(720px, calc(100% - 20px));
+  min-width: 0;
+  box-sizing: border-box;
   margin: var(--space-1) 0 var(--space-2) 20px;
   padding: var(--space-2) var(--space-3);
   border-left: 1px solid var(--border-default);
@@ -119,5 +128,4 @@
 
 @media (max-width: 900px) {
   .conversation-event-preview { max-width: 28vw; }
-  .conversation-event-detail { width: min(620px, calc(100vw - 100px)); }
 }

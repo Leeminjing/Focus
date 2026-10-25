@@ -282,19 +282,14 @@
       const layout = container?.querySelector?.(".loop-console-main");
       const handle = container?.querySelector?.("[data-loop-console-resizer]");
       if (!layout || !handle) return;
-      let resizeFrame = null;
       let historyObserver = null;
       let newerObserver = null;
       let factsObserver = null;
-      let resizeObserver = null;
       const applyRatio = value => {
         mapRatio = Math.min(0.68, Math.max(0.32, value));
         const percent = Math.round(mapRatio * 1000) / 10;
-        if (globalThis.innerWidth <= 1100) {
-          layout.style.removeProperty("grid-template-columns");
-          return;
-        }
-        layout.style.gridTemplateColumns = `${percent}% 5px calc(${100 - percent}% - 5px)`;
+        layout.style.setProperty("--loop-map-ratio", `${percent}fr`);
+        layout.style.setProperty("--loop-conversation-ratio", `${100 - percent}fr`);
         handle.setAttribute("aria-valuenow", String(Math.round(percent)));
       };
       applyRatio(mapRatio);
@@ -320,20 +315,6 @@
       handle.addEventListener("pointerup", onPointerUp);
       handle.addEventListener("pointercancel", onPointerUp);
       handle.addEventListener("keydown", onKeyDown);
-      if (typeof ResizeObserver === "function") {
-        let observedWidth = 0;
-        resizeObserver = new ResizeObserver(entries => {
-          const width = entries[0]?.contentRect?.width || 0;
-          if (Math.abs(width - observedWidth) < 1) return;
-          observedWidth = width;
-          if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
-          resizeFrame = requestAnimationFrame(() => {
-            resizeFrame = null;
-            applyRatio(mapRatio);
-          });
-        });
-        resizeObserver.observe(layout);
-      }
       if (typeof IntersectionObserver === "function") {
         const transcript = container.querySelector("[data-loop-transcript]");
         const historySentinel = transcript?.querySelector("[data-loop-history-sentinel]");
@@ -363,8 +344,6 @@
         historyObserver?.disconnect();
         newerObserver?.disconnect();
         factsObserver?.disconnect();
-        resizeObserver?.disconnect();
-        if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
         handle.removeEventListener("pointerdown", onPointerDown);
         handle.removeEventListener("pointermove", onPointerMove);
         handle.removeEventListener("pointerup", onPointerUp);

@@ -2,10 +2,15 @@
  * 本文件对外提供任务 Loop 活动轨、真实因果图、Context 实时卡、会话因果带、事实表与终止态视觉层级；共享紧凑图节点供工作区 Patrol 与全图使用。
  * 输入为 Loop 生命周期、Live 连接状态及专用视图语义 class；输出为连接提示、宽屏左图表/右会话工作台、活动抽屉、窄屏布局、稳定滚动区和 reduced-motion 等价呈现。
  * 具体工作流为连接提示独立于 Loop 状态，命令栏与活动轨固定信息密度，图/事实/会话各自滚动，活动效果仅响应实体状态，默认点阵与 workbench 连续图共用唯一节点/边样式，宿主决定控件定位、缩放控制消费共用材质；长列表使用有界内容与原位更新降低重绘成本。
- * 示例：`.loop-console-main` 在宽屏按可调比例分栏，在 1100px 以下自动切换为单列。
+ * 示例：`.loop-console-main` 按可调比例分栏，Loop 容器不足 955px 时自动切换为单列。
  * `.is-live-card` 承接当前 running Run 的固定 280×164 玻璃卡；正文为固定两行末端对齐窗口，短文本顶部显示，长文本自然裁去开头，换行/缩放无需逐帧测量。
  * `.context-live-preview[data-preview-status]` 只呈现真实角色、正文与连接状态，无循环假输出或逐 token 可访问播报；历史和终态由视图移除该区域。
  */
+.loop-layout-container {
+  container: loop-layout / inline-size;
+  min-width: 0;
+}
+
 .loop-dashboard.console-shell {
   display: flex;
   flex-direction: column;
@@ -248,7 +253,7 @@
 
 .loop-console-main {
   display: grid;
-  grid-template-columns: minmax(520px, 1.08fr) 5px minmax(430px, .92fr);
+  grid-template-columns: minmax(520px, var(--loop-map-ratio, 1.08fr)) 5px minmax(430px, var(--loop-conversation-ratio, .92fr));
   height: 100%;
   min-height: 0;
   background: #fff;
@@ -475,7 +480,8 @@
   .loop-command-metric { min-width: 94px; padding-inline: 11px; }
 }
 
-@media (max-width: 1100px) {
+/* 520px workspace + 5px divider + 430px conversation. */
+@container loop-layout (width < 955px) {
   .loop-dashboard.console-shell { height: auto; min-height: calc(100vh - 65px); overflow: visible; }
   .loop-command-bar { grid-template-columns: 1fr; }
   .loop-command-metrics { overflow-x: auto; border-top: 1px solid #e5e9f0; }
