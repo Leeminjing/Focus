@@ -142,13 +142,59 @@ if (!process.versions.electron) {
       await until(`document.querySelectorAll('.workbench-node').length===${count}`);
       metrics.push(await run(`(()=>{const graph=document.querySelector('[data-patrol-lineage]');const data=FocusWorkspacePatrolView.lineageManifest(window.patrolFixture.lineage,{});const durations=[];for(let i=0;i<30;i++){const start=performance.now();FocusPortfolioMapView.reconcile(graph,data,null,[],{presentation:'workbench'});durations.push(performance.now()-start)}return {nodes:${count},durations}})()`));
     }
-    for (const [width,height,zoom] of [[1440,900,1],[900,800,1],[390,844,1],[1280,900,2]]) {
+    const checkWorkbenchLayout = async () => {
+      const host = document.querySelector('#app');
+      const workspace = document.querySelector('.workspace-patrol');
+      const graph = workspace.querySelector('.patrol-graph-card');
+      const tabs = workspace.querySelector('.workbench-panel-tabs');
+      const composer = workspace.querySelector('[data-patrol-composer]');
+      const single = host.clientWidth < 1000;
+      const compact = host.clientWidth < 1200;
+      const visible = node => getComputedStyle(node).display !== 'none';
+      const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const check = (value, message) => { if (!value) throw new Error(host.clientWidth + 'px: ' + message); };
+      check(visible(tabs) === compact, 'workbench tabs must follow available width');
+      if (!compact) return;
+      const graphButton = tabs.querySelector('[data-workbench-show=graph]');
+      check(visible(graphButton) === single, 'graph tab must be available when details replace the graph');
+      for (const [name, selector] of [
+        ['progress', '.patrol-progress-card'], ['observation', '.patrol-observation-card'],
+        ['facts', '.patrol-facts-card'], ['context', '.patrol-selected-card'],
+      ]) {
+        tabs.querySelector('[data-workbench-show=' + name + ']').click();
+        await settle();
+        const panel = workspace.querySelector(selector);
+        check(visible(panel), name + ' must remain accessible');
+        check(visible(graph) === !single, 'details must release the graph column in single view');
+        if (single) check(panel.clientWidth >= host.clientWidth - 40, 'details must use the available width');
+        else {
+          check(panel.getBoundingClientRect().width >= 320, 'detail column must remain readable');
+          check(graph.clientWidth >= 640, 'detail column must leave enough graph space');
+        }
+        check(workspace.scrollWidth <= workspace.clientWidth + 1, 'workbench must not overflow horizontally');
+        check(workspace.querySelector('[data-patrol-composer]') === composer, 'tab changes must preserve the composer');
+      }
+      graphButton.click();
+      await settle();
+      check(visible(graph), 'graph must remain accessible');
+      if (single) {
+        const node = graph.querySelector('[data-context-id]');
+        node?.click();
+        await settle();
+        if (node) check(workspace.dataset.workbenchPanel === 'context' && visible(workspace.querySelector('.patrol-selected-card')), 'node selection must open details at any viewport width');
+        graphButton.click();
+      }
+    };
+    for (const [width,height,zoom,available] of [[1440,900,1],[1199,900,1],[1100,900,1],[1000,900,1],[999,900,1],[900,800,1],[1440,900,1,900],[390,844,1],[1280,900,2]]) {
       win.webContents.setZoomFactor(zoom);win.setContentSize(width,height);await sleep(300);
+      await run(`document.querySelector('#app').style.width=${JSON.stringify(available ? available + 'px' : '')}`);
+      await run(`(${checkWorkbenchLayout})()`);
       await capture(`responsive-${width}-${zoom}`);
       assert.ok(await run('document.documentElement.scrollWidth<=innerWidth+1'));
       assert.ok(await run('(()=>{const r=document.querySelector("[data-patrol-composer]").getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight})()'));
-      if(width/zoom<1200) for(const panel of ['progress','observation','facts','context','graph']) {
-        if(panel==='graph'&&width/zoom>=900) continue;
+      const workspaceWidth = await run('document.querySelector("#app").clientWidth');
+      if(workspaceWidth<1200) for(const panel of ['progress','observation','facts','context','graph']) {
+        if(panel==='graph'&&workspaceWidth>=1000) continue;
         await click(`[data-workbench-show="${panel}"]`);
         await until(`document.querySelector(".workspace-patrol").dataset.workbenchPanel===${JSON.stringify(panel)}`);
       }

@@ -8,7 +8,7 @@
  * 安静态采用 safe center 与正常输入框定位，短视口通过页面滚动维持标题、清空按钮和输入框的间距。
  * 原生工作台显示机器人唤起按钮；浏览器材料卡保持有界图片与引用文字预览，不改变发送目标。
 */
-#app:has(.workspace-patrol) { padding: 0; }
+#app:has(.workspace-patrol) { padding: 0; container: patrol-workbench / inline-size; }
 .patrol-projection-failure { margin-block: 12px; padding: 12px; border: 1px solid var(--material-rim); border-radius: 10px; }
 .patrol-projection-failure summary { cursor: pointer; overflow-wrap: anywhere; }
 .patrol-projection-failure dd { margin: 4px 0 12px; overflow-wrap: anywhere; }
@@ -298,8 +298,9 @@
 .workspace-patrol:not(.is-quiet) [data-patrol-error] { margin: 2px 0; }
 .workbench-panel-tabs { display: none; }
 .workspace-patrol .is-workbench .portfolio-map-zoom { position: fixed; bottom: 26px; left: 8px; width: var(--workbench-left); justify-content: space-evenly; height: 46px; padding: 3px; border-radius: 18px; font-size: 10px; color: var(--workbench-muted); }
-@media (min-width: 900px) and (max-width: 1199px) {
-  .workspace-patrol:not(.is-quiet) { grid-template-columns: minmax(0, 1fr) 248px; grid-template-rows: 26px 32px minmax(0, 1fr) auto; gap: 14px; }
+/* 320px 详情 + 14px 间距 + 24px 内边距，给图谱保留至少约 640px。 */
+@container patrol-workbench (1000px <= width < 1200px) {
+  .workspace-patrol:not(.is-quiet) { grid-template-columns: minmax(0, 1fr) 320px; grid-template-rows: 26px 32px minmax(0, 1fr) auto; gap: 14px; }
   .patrol-page-heading { position: static; grid-column: 1 / 3; grid-row: 1; }
   .workbench-panel-tabs { display: flex; grid-column: 2; grid-row: 2; overflow: auto; }
   .workbench-panel-tabs button { padding: 3px 6px; min-height: 28px; font-size: 11px; white-space: nowrap; }
@@ -312,7 +313,7 @@
   .workspace-patrol:not(.is-quiet) [data-patrol-delivery] { grid-column: 1; grid-row: 5; }
   .workspace-patrol .is-workbench .portfolio-map-zoom { position: absolute; bottom: 30px; left: 8px; width: 188px; }
 }
-@media (max-width: 899px) {
+@container patrol-workbench (width < 1000px) {
   .workspace-patrol:not(.is-quiet) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 36px minmax(0, 1fr) auto; gap: 10px; padding: 0 10px 24px; }
   .patrol-page-heading { position: static; grid-row: 1; flex-wrap: wrap; grid-column: 1; font-size: 10px; gap: 2px 8px; }
   .patrol-page-heading .workbench-workspace { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
