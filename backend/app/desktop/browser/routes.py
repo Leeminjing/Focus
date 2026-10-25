@@ -42,6 +42,13 @@ async def present_browser(context_id: str, request: Request, body: BrowserPresen
     except BrowserError as error:
         raise HTTPException(409, error.payload()) from error
 
+@browser_router.post('/contexts/{context_id}/browser/recover')
+async def recover_browser(context_id: str, request: Request):
+    try:
+        return await request.app.state.desktop_service.browsers.recover(context_id)
+    except BrowserError as error:
+        raise HTTPException(409, error.payload()) from error
+
 @browser_router.put("/contexts/{context_id}/browser")
 async def bind_browser(context_id: str, body: BrowserBindingUpdate, request: Request):
     try:

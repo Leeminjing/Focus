@@ -1,7 +1,7 @@
 """Context ownership is application policy; the native host knows none of it.
 
-Bindings are server-owned entries in Context ui_state. A prior connection's IDs
-remain tombstones after restart until the user explicitly replaces the binding.
+Bindings are server-owned entries in Context ui_state. Opt-in recovery restores
+only authenticated live hosts; legacy/missing sessions remain tombstones.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from backend.app.desktop.persistence.state_changes import ChangeSignal
 from focus.runtime.runs.events import build_envelope
 from focus.runtime.stream_bridge.schemas import StreamEvent
 from .transport import BrowserError, BrowserTransport
+from .host_artifact import recovery_enabled
 
 BINDING_KEY = "_distinct_browser"
 STOPPED = {"taking_over", "manual", "paused", "faulted", "closed", "disconnected"}
@@ -40,6 +41,9 @@ class BrowserSession:
     downloads: dict = field(default_factory=dict)
     permissions: dict = field(default_factory=dict)
     rejected_downloads: list = field(default_factory=list)
+    recovered: bool = False
+    can_reconnect: bool = False
+    interrupted_operation: dict = field(default_factory=dict)
 
     def site_interactions(self):
         downloads, permissions = list(self.downloads.values()), list(self.permissions.values())
@@ -68,9 +72,14 @@ class BrowserSession:
 
 
 class ContextBrowsers:
-    def __init__(self, sessions, bridge, executable=None):
+    def __init__(self, sessions, bridge, executable=None, *, recovery=None, cache_root=None):
         self.sessions, self.bridge = sessions, bridge
-        self.transport = BrowserTransport(executable, self._event)
+        self.recovery = recovery_enabled() if recovery is None else recovery
+        self.executable, self.cache_root = executable, cache_root
+        self.transports = {}
+        self.transport = self._new_transport()
+        self._restore_locks, self._restore_attempted = {}, set()
+        self._metadata_tasks = {}
         self.bindings = {}
         self.browsers = {}
         self.runs = set()
@@ -80,6 +89,66 @@ class ContextBrowsers:
         self._context_locks = {}
         self._selections = {}
         self._policy_lock = asyncio.Lock()
+
+    def _new_transport(self, **options):
+        source = BrowserTransport(self.executable, lambda event: self._event(event, source),
+                                  recovery=self.recovery, cache_root=self.cache_root, **options)
+        return source
+
+    def transport_for(self, browser):
+        source = self.transports.get(browser.host_id)
+        if source is None and browser.host_id == self.transport.host_id:
+            source = self.transport
+        if source is None:
+            raise BrowserError('host_unrecoverable', '原浏览器宿主未连接；没有创建替代页面')
+        return source
+
+    async def start(self):
+        if not self.recovery: return
+        async with self.sessions() as session:
+            contexts = (await session.scalars(select(DesktopThread).where(
+                DesktopThread.ui_state[BINDING_KEY].astext.is_not(None)))).all()
+            identities = [context.task_id for context in contexts]
+        for context_id in identities:
+            await self.binding(context_id)  # Per-host lock/attempt prevents duplicate clients.
+
+    async def _restore(self, saved, *, retry=False):
+        host_id = saved['host_id']
+        async with self._restore_locks.setdefault(host_id, asyncio.Lock()):
+            if host_id in self._restore_attempted and not retry: return
+            self._restore_attempted.add(host_id)
+            source = self.transports.get(host_id)
+            if source is None or source.failure:
+                if source: await source.disconnect()
+                source = self._new_transport(endpoint=saved['endpoint'], expected_host_id=host_id,
+                                             artifact_sha256=saved['artifact_sha256'])
+                self.transports[host_id] = source
+            try:
+                await source.start()
+                # The host_snapshot callback installs state before buffered
+                # events. Never apply this stale snapshot again after awaits.
+                if self.transport.pid is None and not self.transport.failure:
+                    self.transport = source
+                browser = self.browsers[saved['browser_id']]
+                if not any(item['browser_id'] == browser.browser_id for item in source.recovery_snapshot['browsers']):
+                    browser.state = 'closed'
+                    browser.detail = {'reason': 'browser_missing', 'message': '原浏览器已关闭；未创建替代页面'}
+            except BrowserError as error:
+                for browser in self.browsers.values():
+                    if browser.host_id == host_id:
+                        browser.state, browser.detail = 'disconnected', {'reason': error.code, 'message': str(error)}
+            self.changes.publish()
+
+    async def recover(self, context_id):
+        async with self._policy_lock:
+            saved = await self._saved(context_id)
+            if not self.recovery or saved.get('transport') != 'named_pipe':
+                raise BrowserError('host_unrecoverable', '此绑定不支持恢复；旧版会话不会自动升级')
+            await self.binding(context_id)
+            source = self.transports.get(saved['host_id'])
+            if source is None or source.failure:
+                await self._restore(saved, retry=True)
+            return await self.snapshot(context_id)
 
     async def _saved(self, context_id):
         async with self.sessions() as session:
@@ -96,6 +165,19 @@ class ContextBrowsers:
         self.bindings[context_id] = browser_id
         if browser_id not in self.browsers:
             self.browsers[browser_id] = BrowserSession(browser_id, "disconnected", saved["host_id"])
+            self.browsers[browser_id].detail = {'reason': 'legacy_session' if saved.get('transport') != 'named_pipe' else 'recovery_disabled'}
+            source = self.transports.get(saved['host_id'])
+            if source and source.failure:
+                self.browsers[browser_id].detail = {'reason': source.failure.code, 'message': str(source.failure)}
+            elif source and source.recovery_snapshot is not None:
+                self.browsers[browser_id].state = 'closed'
+                self.browsers[browser_id].detail = {'reason': 'browser_missing', 'message': '原浏览器已关闭；没有重建页面'}
+        browser = self.browsers[browser_id]
+        if browser.host_id != saved['host_id']:
+            raise BrowserError('binding_identity_mismatch', '浏览器绑定的宿主身份不一致')
+        browser.can_reconnect = bool(self.recovery and saved.get('transport') == 'named_pipe')
+        if browser.can_reconnect and saved.get('endpoint') and saved.get('artifact_sha256'):
+            await self._restore(saved)
         return self.browsers[browser_id]
 
     async def _save(self, context_id, browser):
@@ -103,9 +185,11 @@ class ContextBrowsers:
             context = await session.scalar(select(DesktopThread).where(DesktopThread.task_id == context_id).with_for_update())
             if context is None:
                 raise HTTPException(404, "Context 不存在")
-            context.ui_state = {**(context.ui_state or {}), BINDING_KEY: {
-                "browser_id": browser.browser_id, "host_id": browser.host_id,
-            }}
+            source = self.transport_for(browser)
+            saved = {"browser_id": browser.browser_id, "host_id": browser.host_id}
+            if source.recovery:
+                saved.update(transport='named_pipe', endpoint=source.endpoint, artifact_sha256=source.artifact_sha256)
+            context.ui_state = {**(context.ui_state or {}), BINDING_KEY: saved}
             await session.commit()
         self.bindings[context_id] = browser.browser_id
         self.changes.publish()
@@ -148,9 +232,9 @@ class ContextBrowsers:
         return browser
 
     def _check(self, browser):
-        if browser.host_id != self.transport.host_id or browser.state in FATAL:
+        if browser.state in FATAL:
             raise BrowserError(browser.state, "浏览器会话已失效；请显式更换绑定后再运行")
-        self.transport.check()
+        self.transport_for(browser).check()
 
     async def snapshot(self, context_id):
         browser = await self.binding(context_id)
@@ -158,11 +242,14 @@ class ContextBrowsers:
             return {"context_id": context_id, "state": "unbound", "browser_id": None}
         async with self.sessions() as session:
             users = (await session.scalars(select(DesktopThread.task_id).where(
-                DesktopThread.ui_state[BINDING_KEY]["browser_id"].astext == browser.browser_id))).all()
+                DesktopThread.ui_state[BINDING_KEY]["browser_id"].astext == browser.browser_id,
+                DesktopThread.ui_state[BINDING_KEY]["host_id"].astext == browser.host_id))).all()
         return {"context_id": context_id, "browser_id": browser.browser_id,
                 "state": browser.state, "detail": browser.detail,
                 "selected_page_id": browser.selected_page_id, "pages_revision": browser.pages_revision,
                 "interactions_revision": browser.interactions_revision, "site_interactions": browser.site_interactions(),
+                "recovered": browser.recovered, "can_reconnect": browser.can_reconnect,
+                "interrupted_operation": browser.interrupted_operation,
                 "shared_context_ids": sorted(users)}
 
     async def pages(self, context_id):
@@ -170,7 +257,7 @@ class ContextBrowsers:
         if browser is None:
             return {"selected_page_id": None, "pages": []}
         self._check(browser)
-        return await self.transport.call("list_pages", browser_id=browser.browser_id)
+        return await self.transport_for(browser).call("list_pages", browser_id=browser.browser_id)
 
     async def downloads(self, context_id):
         return await self._downloads(await self.binding(context_id))
@@ -179,7 +266,7 @@ class ContextBrowsers:
         if browser is None:
             return {"downloads": [], "permissions": [], "rejected": [], "interaction_pending": False}
         self._check(browser)
-        result = await self.transport.call("list_downloads", browser_id=browser.browser_id)
+        result = await self.transport_for(browser).call("list_downloads", browser_id=browser.browser_id)
         # Permission decisions arrive through events. A late RPC cannot clear
         # a newer wait; report pending conservatively until the next query.
         interactions = browser.site_interactions()
@@ -196,13 +283,14 @@ class ContextBrowsers:
         if browser is None:
             return await self.snapshot(context_id)
         self._check(browser)
-        await self.transport.start()
+        source = self.transport_for(browser)
+        await source.start()
         if selection and self._selections.get(selection.client_id) != selection.sequence:
             return {**await self.snapshot(context_id), "superseded": True}
         params = {"browser_id": browser.browser_id}
         if selection and getattr(selection, "page_id", None):
             params["page_id"] = selection.page_id
-        result = await self.transport.call("present", **params)
+        result = await source.call("present", **params)
         # Never clear a pause here. Only the native handback opens a new lease.
         return {**result, **await self.snapshot(context_id)}
 
@@ -229,7 +317,7 @@ class ContextBrowsers:
         if self.transport.failure:
             # Explicit replacement starts a new connection, never reconnects
             # old IDs/tokens or claims the retained manual windows as new.
-            self.transport = BrowserTransport(self.transport.executable, self._event)
+            self.transport = self._new_transport()
         if source_context_id:
             browser = await self.ensure(source_context_id)
             await self._save(context_id, browser)
@@ -249,21 +337,57 @@ class ContextBrowsers:
             # Query durable references, including Contexts not loaded this boot.
             async with self.sessions() as session:
                 users = await session.scalar(select(DesktopThread.task_id).where(
-                    DesktopThread.ui_state[BINDING_KEY]["browser_id"].astext == old.browser_id).limit(1))
-            if not users and old.host_id == self.transport.host_id and old.state not in {"closed", "disconnected"}:
-                await self.transport.call("close", browser_id=old.browser_id)
+                    DesktopThread.ui_state[BINDING_KEY]["browser_id"].astext == old.browser_id,
+                    DesktopThread.ui_state[BINDING_KEY]["host_id"].astext == old.host_id).limit(1))
+            if not users and old.state not in {"closed", "disconnected"}:
+                await self.transport_for(old).call("close", browser_id=old.browser_id)
         return await self.snapshot(context_id)
 
     def resource(self, context_id, run_id, routing=None):
         return BrowserRun(self, context_id, run_id, routing)
 
-    def _event(self, event):
+    async def _refresh_interrupted(self, browser, source):
+        try:
+            snapshot = await source.call('snapshot')
+            if source.failure or self.transports.get(browser.host_id) is not source: return
+            item = next((item for item in snapshot['browsers'] if item['browser_id'] == browser.browser_id), None)
+            if item:
+                # Only refresh the old operation's outcome. Reapplying page or
+                # control state here would overwrite newer events/observations.
+                browser.interrupted_operation = item.get('interrupted_operation', {})
+                self.changes.publish()
+        except BrowserError:
+            pass
+        finally:
+            self._metadata_tasks.pop(browser.browser_id, None)
+
+    def _event(self, event, source=None):
+        source = source or self.transport
+        self.transports[source.host_id] = source
+        if event['event'] == 'host_snapshot':
+            self._restore_attempted.add(source.host_id)
+            for item in event['detail']['browsers']:
+                browser = self.browsers.get(item['browser_id'])
+                if browser is None:
+                    browser = self.browsers[item['browser_id']] = BrowserSession(item['browser_id'], item['state'], source.host_id)
+                if browser.host_id != source.host_id: continue
+                browser.state = item['state']
+                browser.detail = {'reason': 'host_reconnected'} if event.get('restored') else {}
+                browser.recovered, browser.can_reconnect = event.get('restored', False), True
+                browser.selected_page_id = item['selected_page_id']
+                browser.hwnd = next((page['hwnd'] for page in item['pages'] if page['page_id'] == item['selected_page_id']), '')
+                browser.interrupted_operation = item.get('interrupted_operation', {})
+                sites = item.get('site_interactions', {})
+                browser.downloads = {record['download_id']: record for record in sites.get('downloads', [])}
+                browser.permissions = {record['request_id']: record for record in sites.get('permissions', [])}
+                browser.epoch += 1; browser.pages_revision += 1; browser.interactions_revision += 1
+            self.changes.publish(); return
         browser_id = event.get("browser_id")
-        affected = list(self.browsers.values()) if event["event"] == "disconnected" else [self.browsers.get(browser_id)]
+        affected = [browser for browser in self.browsers.values() if browser.host_id == source.host_id] if event["event"] == "disconnected" else [self.browsers.get(browser_id)]
         if event["event"] == "created" and browser_id not in self.browsers:
-            self.browsers[browser_id] = BrowserSession(browser_id, event.get("state", "available"), self.transport.host_id)
+            self.browsers[browser_id] = BrowserSession(browser_id, event.get("state", "available"), source.host_id)
         for browser in affected:
-            if browser is None:
+            if browser is None or browser.host_id != source.host_id:
                 continue
             if event["event"] == "disconnected" and browser.state == "closed":
                 continue
@@ -272,6 +396,9 @@ class ContextBrowsers:
             browser.detail = event.get("detail", {})
             kind, page_id = event["event"], browser.detail.get("page_id")
             browser.site_event(kind, browser.detail)
+            if (source.recovery and browser.interrupted_operation and not browser.interrupted_operation.get('settled')
+                    and browser.state in {'manual', 'faulted'} and browser.browser_id not in self._metadata_tasks):
+                self._metadata_tasks[browser.browser_id] = asyncio.create_task(self._refresh_interrupted(browser, source))
             if kind == "page_selected":
                 browser.selected_page_id = page_id
                 browser.selection_revision += 1
@@ -291,10 +418,12 @@ class ContextBrowsers:
         self.changes.publish()
 
     async def close(self):
+        for task in tuple(self._metadata_tasks.values()): task.cancel()
+        await asyncio.gather(*tuple(self._metadata_tasks.values()), return_exceptions=True)
         if self._creating:
             await asyncio.gather(*self._creating.values(), return_exceptions=True)
         # EOF preserves native windows for the user; never terminate the process.
-        await self.transport.disconnect()
+        await asyncio.gather(*(source.disconnect() for source in set(self.transports.values()) | {self.transport}))
 
 
 class BrowserRun:
@@ -315,6 +444,7 @@ class BrowserRun:
         self._task = asyncio.current_task()
         self.owner.runs.add(self)
         self.browser = await self.owner.ensure(self.context_id)
+        self.handoff = self.browser.recovered or self.browser.state in {'manual', 'taking_over', 'paused'}
         self.check()
         self.publish({"event": "bound", "state": self.browser.state})
 
@@ -325,6 +455,10 @@ class BrowserRun:
             raise BrowserError("run_finished", "Run 已结束")
         if self.browser:
             self.owner._check(self.browser)
+
+    @property
+    def transport(self):
+        return self.owner.transport_for(self.browser)
 
     def publish(self, event):
         routing = self.routing
@@ -355,7 +489,7 @@ class BrowserRun:
             while self.token:
                 await asyncio.sleep(RENEW_INTERVAL_SECONDS)
                 token = self.token
-                await self.owner.transport.call("renew", browser_id=self.browser.browser_id, token=token, ttl_ms=LEASE_TTL_MS)
+                await self.transport.call("renew", browser_id=self.browser.browser_id, token=token, ttl_ms=LEASE_TTL_MS)
         except BrowserError as error:
             self.token, self.observation = None, None
             self.publish({"event": "lease_lost", "state": self.browser.state, "detail": error.payload()})
@@ -375,7 +509,7 @@ class BrowserRun:
                     raise BrowserError("control_unavailable", "等待期间用户已接管或暂停，请重新观察")
             self.owner.lease_owners[self.browser.browser_id] = self
             epoch = self.browser.epoch
-            self._acquisition = asyncio.create_task(self.owner.transport.call(
+            self._acquisition = asyncio.create_task(self.transport.call(
                 "acquire", browser_id=self.browser.browser_id, client_id=self.run_id, ttl_ms=LEASE_TTL_MS))
             lease = await asyncio.shield(self._acquisition)
             self._acquisition = None
@@ -398,7 +532,7 @@ class BrowserRun:
             params = {"browser_id": self.browser.browser_id, "token": token}
             if page_id is not None:
                 params["page_id"] = page_id
-            result = await self.owner.transport.call("observe", **params)
+            result = await self.transport.call("observe", **params)
             # The native capture validates navigation/viewport revisions. A
             # navigation_completed event from the preceding act may arrive while
             # this fresh capture is pending; it does not invalidate its result.
@@ -434,7 +568,7 @@ class BrowserRun:
                 action[axis] *= observed["viewport"][size] / observed["image"][size]
         self._inflight = True
         try:
-            result = await self.owner.transport.call("act", browser_id=self.browser.browser_id, token=self.token,
+            result = await self.transport.call("act", browser_id=self.browser.browser_id, token=self.token,
                 page_id=observed["page_id"], action=action)
             if action["type"] == "navigate" or result.get("control_still_valid") is False:
                 self.observation = None
@@ -448,7 +582,7 @@ class BrowserRun:
 
     async def list_pages(self):
         self.check()
-        return await self.owner.transport.call("list_pages", browser_id=self.browser.browser_id)
+        return await self.transport.call("list_pages", browser_id=self.browser.browser_id)
 
     async def list_downloads(self):
         self.check()
@@ -466,7 +600,7 @@ class BrowserRun:
             # Page management never grants an observation. Even an uncertain
             # result requires a fresh list/observe, never an automatic replay.
             self.observation = None
-            return await self.owner.transport.call(method, browser_id=self.browser.browser_id,
+            return await self.transport.call(method, browser_id=self.browser.browser_id,
                                                    token=self.token, page_id=page_id)
         except BrowserError as error:
             if error.code in {"invalid_token", "control_unavailable", "window_paused"}:
@@ -486,7 +620,7 @@ class BrowserRun:
             await asyncio.gather(self._renewal, return_exceptions=True)
             self._renewal = None
         if token:
-            await self.owner.transport.call("release", browser_id=self.browser.browser_id, token=token)
+            await self.transport.call("release", browser_id=self.browser.browser_id, token=token)
         if self.browser and self.owner.lease_owners.get(self.browser.browser_id) is self:
             self.owner.lease_owners.pop(self.browser.browser_id, None)
             self.owner.changes.publish()

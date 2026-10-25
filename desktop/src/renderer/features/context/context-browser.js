@@ -21,12 +21,24 @@
     disconnected: "浏览器连接断开", browser_faulted: "浏览器故障", timeout: "等待超时", page_navigated: "来源页面已导航",
     prompt_closed: "用户关闭权限提示", host_setup_failed: "无法创建下载", cancel_failed: "无法确认取消结果" };
   function statusLabel(value) {
+    if (value.state === 'disconnected' && value.detail?.reason === 'legacy_session') return '旧版会话不可恢复，请显式更换绑定';
+    if (value.state === 'disconnected' && value.detail?.message) return value.detail.message;
+    const restored = value.recovered && !['closed', 'disconnected', 'faulted'].includes(value.state);
+    const suffix = restored && value.interrupted_operation?.result_unknown ? ' · 上次操作结果未知，请先检查页面' : '';
+    const prefix = restored ? '原会话已恢复 · ' : '';
     const sites = value.site_interactions || {};
     if (["manual", "taking_over", "paused"].includes(value.state)) {
-      if (sites.permissions?.some(item => item.state === "pending")) return "网站权限待决定，请在原生浏览器处理";
-      if (sites.downloads?.some(item => item.state === "in_progress")) return "下载进行中，Agent 已暂停";
+      if (sites.permissions?.some(item => item.state === "pending")) return prefix + "网站权限待决定，请在原生浏览器处理" + suffix;
+      if (sites.downloads?.some(item => item.state === "in_progress")) return prefix + "下载进行中，Agent 已暂停" + suffix;
     }
-    return labels[value.state] || value.state;
+    return prefix + (labels[value.state] || value.state) + suffix;
+  }
+  function recoverySummary(value = {}) {
+    if (!value.recovered) return '';
+    const operation = value.interrupted_operation;
+    if (!operation?.kind) return '已连接原宿主并保留原页面。旧 Run 和控制令牌不会恢复；交还后需要新观察。';
+    const kinds = { navigate: '导航', observe: '观察', act: '输入操作' };
+    return `上次中断：${kinds[operation.kind] || operation.kind}；来源页面：${operation.page_id}；已派发 ${operation.dispatched_steps} 步，已完成 ${operation.completed_steps} 步；${operation.settled ? '回调已收尾' : '仍在收尾'}。${operation.result_unknown ? '网页业务结果未知，请先检查页面，禁止自动补发。' : '未报告已派发副作用。'}`;
   }
   function renderInteractions(value = {}) {
     const downloads = (value.downloads || []).map(item => {
@@ -53,6 +65,9 @@
       for (const node of document.querySelectorAll("[data-browser-status]")) {
         const value = snapshots.get(node.dataset.browserStatus);
         if (value) node.textContent = `${statusLabel(value)}${value.shared_context_ids?.length > 1 ? ` · ${value.shared_context_ids.length} 个 Context 共享` : ""}`;
+      }
+      for (const node of document.querySelectorAll('[data-browser-recovery]')) {
+        node.textContent = recoverySummary(snapshots.get(node.dataset.browserRecovery));
       }
     }
     function update(snapshot) {
@@ -88,7 +103,7 @@
       pageDialog?.dialog.close();
       const dialog = document.createElement("dialog");
       dialog.className = "patrol-dialog glass-surface context-browser-dialog context-browser-pages";
-      dialog.innerHTML = `<form method="dialog"><h2>浏览器页面</h2><p>这些页面共享登录状态与控制权。展示另一页后，Agent 必须重新观察。</p><p role="alert"></p><div class="context-browser-page-list" aria-live="polite"></div><div><button type="button" data-refresh>刷新列表</button><button type="submit">关闭</button></div></form>`;
+      dialog.innerHTML = `<form method="dialog"><h2>浏览器页面</h2><p>这些页面共享登录状态与控制权。展示另一页后，Agent 必须重新观察。</p><p data-browser-recovery="${escape(contextId)}"></p><p role="alert"></p><div class="context-browser-page-list" aria-live="polite"></div><div><button type="button" data-refresh>刷新列表</button><button type="submit">关闭</button></div></form>`;
       const list = dialog.querySelector(".context-browser-page-list");
       const alert = dialog.querySelector('[role="alert"]');
       let loading = false, dirty = false;
@@ -120,6 +135,7 @@
       dialog.addEventListener("close", () => { if (pageDialog === panel) pageDialog = null; dialog.remove(); }, { once: true });
       document.body.append(dialog);
       dialog.showModal();
+      patch();
       void refresh();
     }
     function downloads(contextId) {
@@ -155,6 +171,24 @@
       const dialog = document.createElement("dialog");
       dialog.className = "patrol-dialog glass-surface context-browser-dialog";
       dialog.innerHTML = `<form><h2>浏览器绑定</h2><p>结束当前 Context 的 Run 后可更换。共享会使用同一浏览器会话及其全部页面；Run 结束保留页面。更换绑定后，无其他 Context 使用的原窗口将关闭。</p><label>绑定方式<select name="source"><option value="">创建新的独立浏览器</option>${contexts.filter(item => item.task_id !== contextId).map(item => `<option value="${escape(item.task_id)}">共享：${escape(item.title)}</option>`).join("")}</select></label><p role="alert"></p><button type="submit">应用绑定</button><button type="button" data-dismiss>取消</button></form>`;
+      const details = document.createElement('p');
+      details.dataset.browserRecovery = contextId;
+      dialog.querySelector('form').append(details);
+      if (snapshots.get(contextId)?.can_reconnect && snapshots.get(contextId)?.state === 'disconnected') {
+        const reconnect = document.createElement('button');
+        reconnect.type = 'button'; reconnect.textContent = '重新连接原宿主';
+        reconnect.onclick = async () => {
+          reconnect.disabled = true;
+          try {
+            const result = await api(`${path(contextId)}/recover`, { method: 'POST' });
+            update(result);
+            if (result.state === 'disconnected') dialog.querySelector('[role="alert"]').textContent = result.detail?.message || '原宿主暂不可连接';
+            else { dialog.close(); onStatus('已重新连接原会话，请在原生浏览器检查页面并交还后继续'); }
+          } catch (error) { dialog.querySelector('[role="alert"]').textContent = error.message; }
+          finally { reconnect.disabled = false; }
+        };
+        dialog.querySelector('form').append(reconnect);
+      }
       dialog.querySelector("[data-dismiss]").onclick = () => dialog.close();
       dialog.addEventListener("close", () => dialog.remove(), { once: true });
       dialog.querySelector("form").onsubmit = async event => {
@@ -170,6 +204,7 @@
       };
       document.body.append(dialog);
       dialog.showModal();
+      patch();
     }
     document.addEventListener("click", event => {
       const button = event.target.closest('[data-action^="context-browser-"]');
@@ -185,5 +220,5 @@
       watch(id) { if (selected !== id) void select(id, { present: false }); else patch(); },
       close() { pageDialog?.dialog.close(); interactionDialog?.dialog.close(); source?.close(); source = null; selected = null; } };
   }
-  return { create, render, labels, statusLabel, renderInteractions };
+  return { create, render, labels, statusLabel, renderInteractions, recoverySummary };
 });

@@ -17,7 +17,8 @@ class BrowserControlMiddleware(AgentMiddleware):
         if run.handoff:
             run.handoff = False
             interactions = run.browser.site_interactions()
-            summary = {**interactions, "downloads": interactions["downloads"][-8:], "permissions": interactions["permissions"][-8:]}
+            summary = {**interactions, "downloads": interactions["downloads"][-8:], "permissions": interactions["permissions"][-8:],
+                       'interrupted_operation': run.browser.interrupted_operation}
             request = request.override(messages=[*request.messages, HumanMessage(content=(
                 "[Focus 浏览器交接] 用户已交还控制。原页面和用户输入已保留；旧观察和旧动作均已失效。"
                 "下一次浏览器操作必须先调用 browser_observe 重新取得租约并观察当前页面，再决定动作；"

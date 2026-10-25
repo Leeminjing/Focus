@@ -18,14 +18,17 @@ input.addEventListener('input',report);document.querySelector('button').onclick=
 
 
 class BrowserFixture:
-    def __init__(self):
+    def __init__(self, slow_release=None):
         self.records = []
+        self.slow_started = threading.Event()
         self.lock = threading.Lock()
         owner = self
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 if self.path.startswith("/slow"):
-                    time.sleep(1)
+                    owner.slow_started.set()
+                    if slow_release is None: time.sleep(1)
+                    else: slow_release.wait(18)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
