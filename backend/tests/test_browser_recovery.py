@@ -17,6 +17,39 @@ def executable():
     return path
 
 
+@pytest.mark.parametrize('enabled', [False, True])
+def test_bundled_browser_keeps_recovery_opt_in_without_external_executable(tmp_path, monkeypatch, enabled):
+    monkeypatch.delenv('FOCUS_DISTINCT_BROWSER_EXE', raising=False)
+    monkeypatch.delenv('FOCUS_DISTINCT_BROWSER_RECOVERY', raising=False)
+    if enabled: monkeypatch.setenv('FOCUS_DISTINCT_BROWSER_RECOVERY', '1')
+
+    async def scenario():
+        first = BrowserTransport(cache_root=tmp_path / 'cache')
+        replacement = None
+        try:
+            created = await first.call('create', label='Bundled browser recovery switch')
+            assert first.recovery is enabled
+            if enabled:
+                assert Path(first.endpoint).is_file()
+                options = dict(endpoint=first.endpoint, expected_host_id=first.host_id,
+                               artifact_sha256=first.artifact_sha256, cache_root=tmp_path / 'cache')
+                await first.disconnect()
+                replacement = BrowserTransport(**options)
+                snapshot = await replacement.call('snapshot')
+                browser = snapshot['browsers'][0]
+                assert browser['browser_id'] == created['browser_id'] and browser['state'] == 'manual'
+                assert browser['selected_page_id'] == created['page_id']
+                await replacement.call('close', browser_id=created['browser_id'])
+            else:
+                assert first.endpoint is None
+                await first.call('close', browser_id=created['browser_id'])
+        finally:
+            for owner in (replacement, first):
+                if owner: await owner.disconnect()
+            if first.process: await asyncio.to_thread(first.process.wait, 10)
+    asyncio.run(scenario())
+
+
 def test_cancelled_reconnect_does_not_keep_the_next_connection_busy(tmp_path):
     async def scenario():
         first = BrowserTransport(executable(), recovery=True, cache_root=tmp_path / 'cache')
