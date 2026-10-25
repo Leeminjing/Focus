@@ -100,3 +100,23 @@ test("task Patrol details save task state and use the task workspace", async () 
   `);
   assert.deepEqual(JSON.parse(run("JSON.stringify(navigation)")), ["saved", {workspaceId: "task-workspace"}]);
 });
+
+test("a delayed task Patrol lookup cannot overwrite newer page navigation", async () => {
+  const run = harness();
+  run(`
+    state.view = "focus"; state.activeTaskId = "target";
+    state.tasks = [{task_id: "target", workspace_id: "task-workspace"}];
+    persistFocusState = () => {};
+    render = () => {};
+    hydrateContextTrees = async () => {};
+    renderWorkspacePatrol = async () => {};
+    var releaseWorkspace;
+    workspacePatrolIntake = {workspace: () => new Promise(resolve => { releaseWorkspace = resolve; })};
+    var pendingPatrol = handleDocumentClick({target: {closest: selector => selector === "[data-action]" ? {dataset: {action: "show-task-patrol"}} : null}});
+  `);
+  await run(`handleDocumentClick({target: {closest: selector => selector === "[data-action]" ? {dataset: {action: "show-map"}} : null}})`);
+  assert.equal(run("state.view"), "map");
+  await run(`releaseWorkspace({workspace_id:"task-workspace"}); pendingPatrol`);
+  assert.equal(run("state.view"), "map");
+  assert.equal(run("state.patrolWorkspace"), null);
+});

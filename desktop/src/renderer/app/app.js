@@ -673,6 +673,7 @@ function loadPluginScript(src) {
 }
 
 function cancelPendingViewRequests() {
+  workspacePatrolNavigation += 1;
   contextRequestSequence += 1;
   compressionRequestSequence += 1;
   draftOpenRequestSequence += 1;
@@ -8980,7 +8981,7 @@ restoreZoomLevel();
 async function openPatrolWorkbench(target) {
   if (target.setupModels) return ensureModelSetup({ onboarding: true });
   cancelPendingViewRequests();
-  const navigation = ++workspacePatrolNavigation;
+  const navigation = workspacePatrolNavigation;
   const workspace = target.workspaceId ? await workspacePatrolIntake.workspace(target.workspaceId) : state.patrolWorkspace;
   if (navigation !== workspacePatrolNavigation) return;
   state.patrolWorkspace = workspace;
