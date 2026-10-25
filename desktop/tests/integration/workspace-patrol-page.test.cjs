@@ -521,7 +521,7 @@ if (!process.versions.electron) {
     assertHistoryBounds(desktopBounds);
     assert.ok(Math.abs(desktopBounds.panel.width / desktopBounds.composer.width - .344) < .005, JSON.stringify(desktopBounds));
     const availableHistoryHeight = desktopBounds.clear.bottom - 16;
-    assert.ok(Math.abs(desktopBounds.panel.height - Math.min(desktopBounds.composer.width * .315, availableHistoryHeight)) < 2, JSON.stringify(desktopBounds));
+    assert.ok(Math.abs(desktopBounds.panel.height - Math.min(360, desktopBounds.viewport.height * .5, availableHistoryHeight)) < 2, JSON.stringify(desktopBounds));
     assert.ok(Math.abs(desktopBounds.composer.top - hiddenComposer.top) < 1);
     await snapshot("history-desktop-open");
     if (process.env.FOCUS_FRONTEND_QA_DIR) fs.writeFileSync(path.join(process.env.FOCUS_FRONTEND_QA_DIR, "history-bounds.json"), JSON.stringify(desktopBounds, null, 2));

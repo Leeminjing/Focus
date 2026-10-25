@@ -463,24 +463,17 @@ test("console controller reloads authoritative facts for type and abnormal statu
 });
 
 
-test("console controller binds and disconnects native pagination and resize observers", () => {
+test("console controller binds and disconnects native pagination observers", () => {
   const originals = {
     frame: global.requestAnimationFrame,
     cancel: global.cancelAnimationFrame,
     intersection: global.IntersectionObserver,
-    resize: global.ResizeObserver,
   };
   global.requestAnimationFrame = callback => { callback(); return 1; };
   global.cancelAnimationFrame = () => {};
   const intersections = [];
-  const resizes = [];
   global.IntersectionObserver = class {
     constructor(callback, options) { this.callback = callback; this.options = options; this.disconnected = false; intersections.push(this); }
-    observe(target) { this.target = target; }
-    disconnect() { this.disconnected = true; }
-  };
-  global.ResizeObserver = class {
-    constructor(callback) { this.callback = callback; this.disconnected = false; resizes.push(this); }
     observe(target) { this.target = target; }
     disconnect() { this.disconnected = true; }
   };
@@ -496,7 +489,7 @@ test("console controller binds and disconnects native pagination and resize obse
     })[selector] || null,
   };
   const factList = { querySelector: selector => selector === "[data-loop-fact-sentinel]" ? factSentinel : null };
-  const layout = { style: { gridTemplateColumns: "", removeProperty() {} }, getBoundingClientRect: () => ({ left: 0, width: 1000 }) };
+  const layout = { style: { setProperty(name, value) { this[name] = value; } }, getBoundingClientRect: () => ({ left: 0, width: 1000 }) };
   const listeners = new Map();
   const handle = {
     addEventListener(type, callback) { listeners.set(type, callback); },
@@ -522,16 +515,12 @@ test("console controller binds and disconnects native pagination and resize obse
     assert.equal(intersections[0].options.root, transcript);
     assert.equal(intersections[1].options.root, transcript);
     assert.equal(intersections[2].options.root, factList);
-    assert.equal(resizes.length, 1);
-    assert.equal(resizes[0].target, layout);
   } finally {
     controller.destroy();
     assert.ok(intersections.every(observer => observer.disconnected));
-    assert.ok(resizes.every(observer => observer.disconnected));
     global.requestAnimationFrame = originals.frame;
     global.cancelAnimationFrame = originals.cancel;
     global.IntersectionObserver = originals.intersection;
-    global.ResizeObserver = originals.resize;
   }
 });
 

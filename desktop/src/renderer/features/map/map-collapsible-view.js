@@ -21,6 +21,8 @@
     return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   }
 
+  const MAX_VISUAL_CONTEXT_LEVEL = 4;
+
   function lifecycle(item) {
     return item?.lifecycle || "active";
   }
@@ -196,6 +198,10 @@
     const sourceDetails = sourceNames.length ? localize`<details class="map-collapsible-sources"><summary aria-label="${escapeHtml(localize`${task.title} 还有 ${sourceNames.length} 个来源`)}">+${sourceNames.length} 来源</summary><span>${escapeHtml(sourceNames.join("、"))}</span></details>` : "";
     const selectedMark = options.selectionMode ? `<span class="map-collapsible-check" aria-hidden="true">${selected ? "✓" : ""}</span>` : "";
     const currentMark = current ? localize('<span class="map-collapsible-current">当前</span>') : "";
+    const contextLevel = level - 1;
+    const parentTitle = group.nodes.get(node.parentId)?.task.title || node.parentId || "";
+    const depthMark = contextLevel > MAX_VISUAL_CONTEXT_LEVEL
+      ? `<span class="map-collapsible-depth" title="${escapeHtml(localize`第 ${contextLevel} 层 · 直接父级：${parentTitle}`)}">${escapeHtml(localize`第 ${contextLevel} 层`)}</span>` : "";
     const projection = node.node?.projection_status;
     const projectionMark = projection && !["root", "valid", "repaired", "approved"].includes(projection)
       ? `<span class="map-collapsible-projection">${escapeHtml(projection)}</span>` : "";
@@ -212,12 +218,12 @@
     const row = `<div class="map-collapsible-row map-collapsible-context-row${current ? " is-current" : ""}${selected ? " is-selected" : ""}" role="none">
       ${hasChildren ? renderToggle("context", nodeId, expanded, task.title) : '<span class="map-collapsible-toggle-spacer" aria-hidden="true"></span>'}
       <button type="button" class="map-collapsible-item map-collapsible-context-item status-${escapeHtml(status.tone)}" role="treeitem" aria-level="${level}"${hasChildren ? ` aria-expanded="${expanded}"` : ""}${current ? ' aria-current="page"' : ""}${options.selectionMode ? ` aria-pressed="${selected}"` : ""} tabindex="${key === focusKey ? "0" : "-1"}" data-tree-key="${escapeHtml(key)}" data-tree-kind="context" data-tree-parent-key="${escapeHtml(parentKey)}" data-tree-has-children="${hasChildren}" data-action="${action}" data-task-id="${escapeHtml(nodeId)}">
-        ${selectedMark}<span class="map-collapsible-title">${escapeHtml(task.title)}</span>${currentMark}${projectionMark}<span class="map-collapsible-status"><span class="map-collapsible-status-dot" aria-hidden="true"></span>${escapeHtml(status.label)}</span>
+        ${selectedMark}${depthMark}<span class="map-collapsible-title">${escapeHtml(task.title)}</span>${currentMark}${projectionMark}<span class="map-collapsible-status"><span class="map-collapsible-status-dot" aria-hidden="true"></span>${escapeHtml(status.label)}</span>
       </button>${sourceDetails}${actions}
     </div>`;
     if (!expanded) return row;
     const groupHtml = children.map(childId => renderNode(group, childId, level + 1, key, options, focusKey, seen)).join("");
-    return `${row}<div class="map-collapsible-children" role="group">${groupHtml}</div>`;
+    return `${row}<div class="map-collapsible-children${contextLevel >= MAX_VISUAL_CONTEXT_LEVEL ? " is-depth-capped" : ""}" role="group">${groupHtml}</div>`;
   }
 
   function renderRoot(group, parentKey, options, focusKey) {

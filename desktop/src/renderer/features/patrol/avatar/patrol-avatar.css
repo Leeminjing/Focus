@@ -110,6 +110,19 @@
   transform: rotate(45deg);
 }
 
+.patrol-avatar[data-bubble-placement="below"] .patrol-avatar__bubble {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
+.patrol-avatar[data-bubble-placement="below"] .patrol-avatar__bubble::after {
+  top: -7px;
+  bottom: auto;
+  transform: rotate(225deg);
+}
+
+.patrol-avatar[data-bubble-constrained="true"] .patrol-avatar__bubble { overflow-y: auto; }
+
 .patrol-avatar[data-bubble-align="start"] .patrol-avatar__bubble {
   right: auto;
   left: 0;

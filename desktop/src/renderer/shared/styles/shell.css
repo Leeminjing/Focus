@@ -192,13 +192,25 @@
 
 .inspector-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) 28px;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  min-width: 0;
   gap: 2px;
   margin: var(--space-2);
   padding: 3px;
   border-radius: var(--radius-card);
   border: 1px solid var(--material-rim);
 }
+
+.inspector-tab-list {
+  display: flex;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.inspector-tab-list [role="tab"] { flex: 1 0 auto; }
 
 .inspector-tabs button {
   min-width: 0;
@@ -209,6 +221,7 @@
   border-radius: 7px;
   background: transparent;
   font-size: 12px;
+  white-space: nowrap;
   transition: color var(--motion-fast) var(--ease-standard),
     background-color var(--motion-fast) var(--ease-standard);
 }
@@ -244,16 +257,7 @@
   .app-shell { --shell-nav-width: var(--shell-nav-collapsed); }
   .app-header { width: calc(var(--shell-nav-collapsed) - 32px); }
   .shell-brand { display: none; }
-}
-
-@media (max-width: 900px) {
-  .app-header {
-    padding-left: max(var(--space-3), env(titlebar-area-x, 0px));
-    padding-right: max(var(--space-3), calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
-  }
-  #app { padding: var(--space-2); }
-  .app-navigation { padding-inline: var(--space-2); }
-  .app-nav-item { justify-content: flex-start; padding-inline: var(--space-3); }
+  /* 导航收窄时同步浮起检查器，避免继续挤占中等窗口的工作区。 */
   .app-inspector {
     position: absolute;
     flex: none;
@@ -267,12 +271,24 @@
   .shell-resizer.shell-resizer-inspector { display: none; }
 }
 
+@media (max-width: 900px) {
+  .app-header {
+    padding-left: max(var(--space-3), env(titlebar-area-x, 0px));
+    padding-right: max(var(--space-3), calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
+  }
+  #app { padding: var(--space-2); }
+  .app-navigation { padding-inline: var(--space-2); }
+  .app-nav-item { justify-content: flex-start; padding-inline: var(--space-3); }
+}
+
 @media (max-width: 640px) {
   .app-frame { padding-inline: 0; padding-bottom: 0; }
   .app-workspace { min-width: 0; }
-  .app-navigation { flex-basis: 56px; padding-inline: 6px; }
-  .app-nav-item { padding-inline: 10px; justify-content: center; }
-  .app-nav-item .app-nav-label, .shell-workspace-button, .shell-brand { display: none; }
+  .app-navigation { flex-basis: 80px; padding-inline: 6px; }
+  .app-nav-item { padding-inline: 4px; justify-content: center; font-size: 11px; line-height: 1.35; text-align: center; }
+  .app-nav-item .app-nav-label { min-width: 0; overflow-wrap: anywhere; text-wrap: balance; }
+  .app-nav-settings .ui-icon { display: none; }
+  .shell-workspace-button, .shell-brand { display: none; }
   .app-header { width: 44px; left: 6px; padding: 0; }
   .shell-task-context { display: none; }
   .global-status { display: none; }

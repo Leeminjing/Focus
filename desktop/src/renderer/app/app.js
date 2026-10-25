@@ -1865,6 +1865,7 @@ function openInspector(tab, trigger) {
   requestAnimationFrame(() => {
     if (wasOpen && trigger?.matches?.('[role="tab"]')) trigger.focus();
     else appInspector?.focus();
+    appInspector?.querySelector?.('[role="tab"][aria-selected="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   });
 }
 

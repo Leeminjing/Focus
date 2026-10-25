@@ -1,6 +1,6 @@
 /*
  * 本文件以 Electron 加载真实桌面页面并验证 Context 与壳层交互。输入为 preload 提供的固定
- * 工作区，输出为显式任务/Context 次级入口、六导航、树排序、Pointer/键盘拖拽、滚动、reduced-motion、窄屏 Inspector 和焦点归还断言。
+ * 工作区，输出为显式任务/Context 次级入口、六导航、树排序、Pointer/键盘拖拽、滚动、reduced-motion、按可用宽度响应的编辑器、窄屏 Inspector 和焦点归还断言。
  */
 const path = require("node:path");
 const fs = require("node:fs");
@@ -19,7 +19,9 @@ async function run() {
   const captureQa = process.argv.includes("--qa-screenshot");
   const window = new BrowserWindow({
     show: false,
-    width: captureQa ? 1600 : 1200,
+    // Keep drag/reorder checks in the two-column layout; narrow layouts are
+    // exercised separately below with the navigation and Inspector present.
+    width: 1600,
     height: captureQa ? 1000 : 800,
     webPreferences: {
       preload: path.join(__dirname, "../fixtures/context-ui-test-preload.cjs"),
@@ -235,6 +237,53 @@ async function run() {
     return { failures, before, after };
   })()`);
   if (result.failures.length) throw new Error(`${result.failures.join("\n")}\nscrollTop: ${result.before} -> ${result.after}`);
+  // Resize the real shell while the editor remains mounted: sidebars consume
+  // space independently of the viewport, and can cross the layout breakpoint.
+  const checkEditorLayout = async ({ inspector, collapsed, available }) => {
+    document.querySelector('#appInspector').hidden = !inspector;
+    const shell = document.querySelector('.app-shell');
+    shell.classList.toggle('is-nav-collapsed', collapsed);
+    if (collapsed) shell.style.setProperty('--shell-nav-width', '0px');
+    else shell.style.removeProperty('--shell-nav-width');
+    const workspace = document.querySelector('.app-workspace');
+    workspace.style.flex = available ? '0 0 auto' : '';
+    workspace.style.width = available ? (available + 24) + 'px' : '';
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const editor = document.querySelector('.context-editor-view');
+    const source = editor.querySelector('.context-source-panel');
+    const definition = editor.querySelector('.context-definition-panel');
+    const sourceRect = source.getBoundingClientRect();
+    const definitionRect = definition.getBoundingClientRect();
+    const stacked = definitionRect.top >= sourceRect.bottom;
+    const failures = [];
+    if (stacked !== (editor.clientWidth <= 720)) failures.push('单/双栏未跟随编辑器实际宽度：' + editor.clientWidth);
+    if (editor.scrollWidth > editor.clientWidth + 1) failures.push('编辑器发生横向溢出');
+    for (const panel of [source, definition]) {
+      if (panel.scrollWidth > panel.clientWidth + 1) failures.push('面板内容被横向裁切');
+    }
+    if (stacked) {
+      const host = document.querySelector('#app');
+      host.scrollTop = host.scrollHeight;
+      const footer = definition.querySelector('footer').getBoundingClientRect();
+      if (footer.bottom > host.getBoundingClientRect().bottom + 1) failures.push('单栏底部操作无法滚动到达');
+      host.scrollTop = 0;
+    }
+    return failures;
+  };
+  for (const layout of [
+    { width: 1000, inspector: true, collapsed: false },
+    { width: 1000, inspector: false, collapsed: false },
+    { width: 1200, inspector: true, collapsed: false },
+    { width: 1200, inspector: true, collapsed: true },
+    { width: 1600, inspector: true, collapsed: false },
+    { width: 1600, inspector: true, collapsed: false, available: 720 },
+    { width: 1600, inspector: true, collapsed: false, available: 721 },
+    { width: 700, inspector: false, collapsed: false },
+  ]) {
+    window.setContentSize(layout.width, 800);
+    const failures = await window.webContents.executeJavaScript(`(${checkEditorLayout})(${JSON.stringify(layout)})`);
+    if (failures.length) throw new Error(`${JSON.stringify(layout)}: ${failures.join("\n")}`);
+  }
   window.setSize(900, 680);
   const responsive = await window.webContents.executeJavaScript(`(async () => {
     await goFocusHome();
@@ -258,6 +307,46 @@ async function run() {
     return failures;
   })()`);
   if (responsive.length) throw new Error(responsive.join("\n"));
+  const checkTaskWorkspaceLayout = async ({ available, inspector }) => {
+    const workspace = document.querySelector('.app-workspace');
+    workspace.style.maxWidth = available + 'px';
+    const inspectorNode = document.querySelector('#appInspector');
+    inspectorNode.hidden = !inspector;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const layout = document.querySelector('.task-workspace-layout');
+    const list = layout.querySelector('.task-workspace-list');
+    const chat = layout.querySelector('.focus-shell');
+    const listRect = list.getBoundingClientRect();
+    const chatRect = chat.getBoundingClientRect();
+    const failures = [];
+    const stacked = workspace.clientWidth <= 700;
+    if ((chatRect.top >= listRect.bottom) !== stacked) failures.push('任务列表堆叠未跟随工作区宽度：' + workspace.clientWidth);
+    if (!stacked && Math.abs(listRect.width - (workspace.clientWidth <= 1050 ? 160 : 240)) > 1) failures.push('任务列表栏宽未跟随工作区宽度');
+    if (stacked) {
+      const nav = list.querySelector('nav');
+      if (getComputedStyle(nav).display !== 'flex' || listRect.height > 126) failures.push('窄工作区未形成紧凑的任务切换条');
+      nav.scrollLeft = nav.scrollWidth;
+      if (nav.scrollWidth > nav.clientWidth && nav.scrollLeft === 0) failures.push('任务切换条无法横向滚动');
+      nav.scrollLeft = 0;
+      if (chatRect.width < layout.clientWidth - 1) failures.push('堆叠后聊天区未占满可用宽度');
+    }
+    if (inspector && (getComputedStyle(inspectorNode).position === 'absolute') !== (workspace.clientWidth <= 1050)) failures.push('检查器未按工作区宽度切为浮层');
+    if (layout.scrollWidth > layout.clientWidth + 1) failures.push('任务工作区横向溢出');
+    const composer = chat.querySelector('#mainInput');
+    composer.value = '响应式切换保留草稿';
+    workspace.style.maxWidth = (available + 1) + 'px';
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    if (chat.querySelector('#mainInput') !== composer || composer.value !== '响应式切换保留草稿') failures.push('宽度切换丢失输入节点或草稿');
+    return failures;
+  };
+  window.setContentSize(1680, 900);
+  for (const available of [600, 680, 700, 701, 1050, 1051, 1200]) {
+    for (const inspector of [false, true]) {
+      const failures = await window.webContents.executeJavaScript(`(${checkTaskWorkspaceLayout})(${JSON.stringify({ available, inspector })})`);
+      if (failures.length) throw new Error(failures.join("\n"));
+    }
+  }
+  await window.webContents.executeJavaScript(`document.querySelector('.app-workspace').style.maxWidth = ''; document.querySelector('#appInspector').hidden = true`);
   if (captureQa) {
     await window.webContents.executeJavaScript(`(async () => {
       state.view = 'context';
