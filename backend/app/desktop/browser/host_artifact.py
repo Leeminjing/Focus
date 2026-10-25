@@ -7,13 +7,19 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 
 from .errors import BrowserError
 
 
 def recovery_enabled():
-    return os.environ.get('FOCUS_DISTINCT_BROWSER_RECOVERY') == '1'
+    override = os.environ.get('FOCUS_DISTINCT_BROWSER_RECOVERY')
+    if override is not None:
+        return override == '1'
+    # Match the native host's Windows 11 minimum build; other platforms keep
+    # their existing default. Explicit values retain the prior opt-in contract.
+    return os.name == 'nt' and sys.getwindowsversion().build >= 22000
 
 
 def stage(executable, cache_root=None, artifact_sha256=None):

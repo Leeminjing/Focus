@@ -4,7 +4,7 @@ Windows 上的每个 Context 在 Run 执行前默认创建并绑定一个真实�
 Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、Run 或 Patrol。
 固定浏览器版本为 v0.6.0，源码 `146a4bb85d4aafeefbac388855941cd82f1c9036`，对应
 [协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/146a4bb85d4aafeefbac388855941cd82f1c9036/docs/protocol.md)。
-会话恢复仍需显式开启，默认保留匿名管道行为。
+Windows 11 默认开启会话恢复；`FOCUS_DISTINCT_BROWSER_RECOVERY=0` 可回退匿名管道。其他平台保留原有默认路径。
 
 ## 用户操作
 
@@ -24,7 +24,8 @@ Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、R
    Focus 的下一次模型决策等待交还，并要求 Agent 重新观察，不恢复旧动作队列。
 5. Run 成功、失败或取消都只释放本 Run 的控制权，浏览器页面保留，后续 Run 复用。
    原生窗口关闭、故障或连接失效使绑定失效，相关活跃 Run 及时报告错误。
-   默认的匿名管道会话在后端重启后不能恢复；旧窗口可能仍可人工使用。可选的会话恢复见下文。
+   Windows 11 上关闭 Focus 会保留浏览器窗口和原页面，重新启动后恢复原绑定；用户在原生窗口交还后，新的 Run 才能取得新租约并重新观察。
+   回退模式或旧版匿名管道会话在后端重启后不可恢复；旧窗口仍可人工使用，需要显式更换绑定。
 6. 需要共享时，先结束目标 Context 的 Run，在**浏览器绑定**中选同一工作区的来源 Context。
    两者会共享同一浏览器会话及其全部页面。也可明确创建新独立浏览器来解除共享或替换失效绑定。
    更换后只有没有任何 Context 引用的旧浏览器才调用 `close`；共享者不会被误关。
@@ -99,18 +100,21 @@ Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中
 也可向 `desktop/scripts/build-browser.ps1` 传 `-MsvcRoot`、`-WindowsSdkRoot`。
 开发时可用 `FOCUS_DISTINCT_BROWSER_EXE` 指定兼容协议 v1 的本地 EXE。
 
-## v0.6 可选恢复：连接原宿主
+## v0.6 会话恢复与回退
 
-Windows 随包提供 v0.6.0 EXE，不需要额外下载或设置外部产物路径。显式开启恢复：
+Windows 随包提供 v0.6.0 EXE，不需要额外下载、设置外部产物路径或配置开关。
+Windows 11 正常启动就使用 Named Pipe 恢复模式：
 
 ```powershell
-$env:FOCUS_DISTINCT_BROWSER_RECOVERY = '1'
 npm --prefix desktop start
 ```
 
+如需回退原有 stdin/stdout 模式，在启动前设置 `$env:FOCUS_DISTINCT_BROWSER_RECOVERY = '0'`。
+回退后仍兼容 JSONL v1，但原 Named Pipe 绑定显示恢复已关闭，不能静默新建；移除覆盖或设为 `1` 后可重新连接原宿主。
+显式值仍仅将 `1` 解释为开启，`0`、空值及其他值关闭恢复；未设置时才使用平台默认值。
 此前设置过 `FOCUS_DISTINCT_BROWSER_EXE` 的开发环境可先移除该覆盖，确保使用内置版本。
-不开启恢复时仍兼容原有 JSONL v1；已有 v0.5 匿名管道绑定显示不可恢复，需要用户显式更换，
-不会因安装了新版而创建替代页面或继续旧 Run。跨 Windows 用户与物理设备验收完成前，恢复不默认启用。
+已有 v0.5 匿名管道绑定显示不可恢复，需要用户显式更换，不会因安装新版而创建替代页面或继续旧 Run。
+浏览器绑定和页面面板说明关闭 Focus 会保留页面；明确关闭原生浏览器的页面窗口才结束对应页面。
 
 启动器把所选 EXE 按 SHA-256 缓存在 `%LOCALAPPDATA%\Focus\BrowserRuntime`，
 然后由一个短暂的独立父进程启动 `--reconnect` 宿主。原安装路径可以更换，
@@ -147,6 +151,7 @@ Context 保存 `browser_id`、`host_id`、受信任的本机 endpoint 路径和�
 2026-10-25 已完成实际 Electron、外部模型、正常/异常退出、真实托管更新和双客户端竞争验收，
 恢复后保留原页面身份，旧 Run 不自动继续。强制宿主退出后的端点清理也通过真实 Windows 回归。
 这些结果包含 Computer Use 与进程退出注入，不代表物理键鼠/IME、触摸/笔、跨屏 DPI 或跨 Windows
-用户 ACL 已验收；这些边界仍待真实设备/第二登录会话验证，恢复继续保持显式启用，尚不默认开启。
+用户 ACL 已验收；这些边界仍待真实设备/第二登录会话验证。默认启用的草稿变更须在物理键鼠/中文 IME
+与第二用户 ACL 验收通过后再合并；无触摸/笔或多 DPI 显示器时按实际设备记录未测。
 
 复跑命令及旧版接入基线见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)；该历史记录使用 8eea976，不作为新版的物理设备验收证明。
