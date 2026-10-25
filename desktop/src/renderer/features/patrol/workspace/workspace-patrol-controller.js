@@ -212,7 +212,7 @@
     }
     async function inspectContext(contextId, trigger, revisionId) {
       const node = manifest().nodes.find(node => node.context_id === contextId) || projection?.contexts?.[contextId]?.state || {};
-      if (root.innerWidth < 1200) showPanel("context");
+      showPanel("context");
       await inspector.select(loopId, contextId, node, trigger, revisionId || node.current_revision_id);
     }
     async function locateProgress(ids, trigger) {
