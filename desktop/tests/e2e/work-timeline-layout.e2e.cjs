@@ -19,7 +19,7 @@ if (!process.versions.electron) {
     const source = file => fs.readFileSync(path.join(__dirname, "../../src/renderer", file), "utf8");
     const styles = ["shared/styles/tokens.css", "shared/styles/base.css", "shared/styles/components.css", "shared/styles/workspace-patrol.css", "features/patrol/workspace/workspace-patrol-feedback.css"].map(source).join("\n");
     const rows = Array.from({ length: 30 }, (_, i) => Timeline.entryHtml({ entry_id: `entry-${i}`, category: "fact", title: `验证结果 ${i}`, summary: "已提交工作证据，可查看来源与版本。", recorded_at: "2026-10-25T04:00:00Z", context_ids: ["ctx"], references: {} })).join("");
-    await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><meta charset="utf-8"><style>${styles}body{margin:0;padding-top:60px}</style>${View.skeleton({ workspace_id: "layout", display_name: "测试工作区" })}`));
+    await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><meta charset="utf-8"><style>${styles}body{margin:0;padding-top:60px}</style><main id="app">${View.skeleton({ workspace_id: "layout", display_name: "测试工作区" })}</main>`));
     const run = code => win.webContents.executeJavaScript(code);
     await run(`
       window.workspace=document.querySelector('.workspace-patrol');workspace.classList.remove('is-quiet');

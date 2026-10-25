@@ -80,11 +80,13 @@
       </section>
       <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度" data-i18n-aria-label="inspector.resize" data-i18n-title="inspector.resize_help"></div>
       <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden data-i18n-aria-label="inspector.title">
-        <div class="inspector-tabs glass-surface" role="tablist" aria-label="检查器内容" data-i18n-aria-label="inspector.tabs">
-          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
-          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
-          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
-          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
+        <div class="inspector-tabs glass-surface">
+          <div class="inspector-tab-list" role="tablist" aria-label="检查器内容" data-i18n-aria-label="inspector.tabs">
+            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
+            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
+            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
+            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
+          </div>
           <button data-action="close-inspector" aria-label="关闭任务检查器" data-i18n-aria-label="inspector.close">×</button>
         </div>
         <div id="inspectorContent" class="inspector-content"></div>

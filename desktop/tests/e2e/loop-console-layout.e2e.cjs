@@ -14,18 +14,18 @@ if (!process.versions.electron) {
   const { app, BrowserWindow } = require("electron");
   app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "focus-loop-layout-")));
   app.whenReady().then(async () => {
-    const win = new BrowserWindow({ show: false, width: 1440, height: 960, webPreferences: { offscreen: true, backgroundThrottling: false } });
+    const win = new BrowserWindow({ show: false, width: 1440, height: 1400, webPreferences: { offscreen: true, backgroundThrottling: false } });
     const source = file => fs.readFileSync(path.join(__dirname, "../../src/renderer", file), "utf8");
     require("../../src/renderer/features/loop/loop-console-view.js");
     const view = require("../../src/renderer/features/loop/loop-view.js");
     const html = view.render({ snapshot: { loop_id: "layout", status: "paused", usage: {}, grant: { budgets: {} } } }, {}, { manifest: { nodes: [], edges: [] } });
     const styles = ["shared/styles/tokens.css", "shared/styles/base.css", "features/loop/loop-console.css"].map(source).join("\n");
-    await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><meta charset="utf-8"><style>${styles}body{margin:0;overflow:auto}#host{width:900px;margin-left:240px}</style><main id="host">${html}</main><script>${source("features/loop/loop-console-store.js")}</script><script>${source("features/loop/loop-console-controller.js")}</script>`));
+    await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><meta charset="utf-8"><style>${styles}body{margin:0;overflow:auto}#app{width:900px;height:100vh;margin-left:240px}</style><main id="app">${html}</main><script>${source("features/loop/loop-console-store.js")}</script><script>${source("features/loop/loop-console-controller.js")}</script>`));
     const run = code => win.webContents.executeJavaScript(code);
-    await run(`window.controller = FocusLoopConsoleController.create({api:{},store:FocusLoopConsoleStore.create()});controller.bind(document.querySelector('#host'));`);
+    await run(`window.controller = FocusLoopConsoleController.create({api:{},store:FocusLoopConsoleStore.create()});controller.bind(document.querySelector('#app'));`);
     async function measure(width) {
       return run(`(async () => {
-        document.querySelector('#host').style.width = '${width}px';
+        document.querySelector('#app').style.width = '${width}px';
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const main = document.querySelector('.loop-console-main');
         const shell = document.querySelector('.console-shell');
@@ -33,7 +33,7 @@ if (!process.versions.electron) {
         const right = document.querySelector('.loop-console-conversation').getBoundingClientRect();
         return { viewport: innerWidth, divider: getComputedStyle(document.querySelector('.loop-console-divider')).display,
           width: main.clientWidth, scrollWidth: main.scrollWidth, leftWidth: left.width, rightWidth: right.width,
-          stacked: right.top >= left.bottom, shellHeight: shell.clientHeight, mainHeight: main.clientHeight };
+          stacked: right.top >= left.bottom, consoleScrollHeight: document.querySelector(".loop-console").scrollHeight, mainHeight: main.clientHeight };
       })()`);
     }
     for (const width of [900, 954, 955, 956, 1200]) {
@@ -42,12 +42,17 @@ if (!process.versions.electron) {
       assert.equal(result.scrollWidth, result.width, JSON.stringify(result));
       assert.equal(result.stacked, width < 955, JSON.stringify(result));
       assert.equal(result.divider === "none", width < 955, JSON.stringify(result));
-      if (width < 955) assert.ok(result.shellHeight >= result.mainHeight, "单栏内容必须可滚动访问");
+      if (width < 955) assert.ok(result.consoleScrollHeight >= result.mainHeight, "单栏内容必须可滚动访问");
       else assert.ok(result.leftWidth >= 520 && result.rightWidth >= 430, JSON.stringify(result));
     }
+    // 合并主线的矮工作台布局：宽度足够时也可按高度纵向滚动。
+    await run("document.querySelector('#app').style.height='600px'");
+    const compact = await measure(1200);
+    assert.ok(compact.stacked && compact.consoleScrollHeight >= compact.mainHeight);
+    await run("document.querySelector('#app').style.height='100vh'");
     // 键盘与指针共用比例更新；在窄容器重绑及调整比例也不能覆盖单栏查询。
     await measure(900);
-    await run(`controller.bind(document.querySelector('#host'));for(let i=0;i<8;i++)document.querySelector('.loop-console-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));`);
+    await run(`controller.bind(document.querySelector('#app'));for(let i=0;i<8;i++)document.querySelector('.loop-console-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));`);
     assert.equal((await measure(900)).stacked, true);
     for (const width of [955, 1000, 1400]) {
       const result = await measure(width);

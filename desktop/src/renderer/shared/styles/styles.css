@@ -677,12 +677,6 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
   margin-top: .5rem;
 }
 
-@media (max-width: 800px) {
-  .context-editor-view { grid-template-columns: 1fr; height: auto; }
-  .context-source-panel { min-height: 55vh; }
-  .context-diff { grid-template-columns: 1fr; }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .context-source-message,
   .context-message-editor,

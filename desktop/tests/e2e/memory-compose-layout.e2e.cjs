@@ -14,7 +14,7 @@ if (!process.versions.electron) {
     const run = code => win.webContents.executeJavaScript(code);
     await win.loadFile(path.join(__dirname, "../../src/renderer/index.html"));
     await run(`state.view='memory';state.memory={...state.memory,composing:true,collectedSources:Array.from({length:12},(_,i)=>({kind:'text',title:'来源 '+i,rawText:'原始材料内容。'.repeat(100)})),draft:{title:'整理后的记忆',content:'压缩总结。'.repeat(100),contentMode:'complete'},editorRatio:.5,sourceRatio:.5};render()`);
-    for (const [width,height] of [[850,480],[700,480],[390,600],[1200,720]]) {
+    for (const [width,height] of [[850,480],[700,480],[390,600],[1200,720],[1800,900]]) {
       win.setContentSize(width,height);
       for (const mode of ["complete","segmented"]) {
         for (const ratio of [.2,.8]) {
@@ -25,7 +25,7 @@ if (!process.versions.electron) {
             const sources=document.querySelector('.memory-editor-sources'),target=document.querySelector('.memory-editor-target'),list=sources.querySelector('.memory-source-edit-list');
             const sourceRect=sources.getBoundingClientRect(),targetRect=target.getBoundingClientRect();
             const body=target.querySelector('textarea');
-            const result={width:innerWidth,height:innerHeight,mode:'${mode}',ratio:${ratio},stacked:targetRect.top>=sourceRect.bottom,
+            const result={width:innerWidth,height:innerHeight,composeWidth:document.querySelector(".memory-compose").clientWidth,mode:'${mode}',ratio:${ratio},stacked:targetRect.top>=sourceRect.bottom,
               sourceHeight:sourceRect.height,targetHeight:targetRect.height,listHeight:list.clientHeight,textHeight:body.getBoundingClientRect().height};
             list.scrollTop=200;result.sourceScrolls=list.scrollTop>0;
             const sourceText=list.querySelector('textarea');sourceText.value='继续编辑来源';sourceText.dispatchEvent(new Event('input',{bubbles:true}));
@@ -37,7 +37,7 @@ if (!process.versions.electron) {
             return result;
           })()`);
           const label=JSON.stringify(result);
-          if(width<=900) {
+          if(result.composeWidth<=900) {
             assert.ok(result.stacked&&result.sourceHeight>=280&&result.targetHeight>=280,label);
             assert.ok(result.listHeight>=160&&result.textHeight>=160,label);
           } else assert.equal(result.stacked,false,label);
@@ -54,7 +54,7 @@ if (!process.versions.electron) {
         }
       }
     }
-    console.log("Memory compose layout: PASS (16 layouts, complete/segmented, editing and save visibility)");
+    console.log("Memory compose layout: PASS (20 layouts, complete/segmented, editing and save visibility)");
     win.destroy(); app.quit();
   }).catch(error => { console.error(error); app.exit(1); });
 }
