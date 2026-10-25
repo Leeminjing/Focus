@@ -24,6 +24,13 @@ async def browser_pages(context_id: str, request: Request):
     except BrowserError as error:
         raise HTTPException(409, error.payload()) from error
 
+@browser_router.get("/contexts/{context_id}/browser/downloads")
+async def browser_downloads(context_id: str, request: Request):
+    try:
+        return await request.app.state.desktop_service.browsers.downloads(context_id)
+    except BrowserError as error:
+        raise HTTPException(409, error.payload()) from error
+
 @browser_router.get("/contexts/{context_id}/browser")
 async def browser_status(context_id: str, request: Request):
     return await request.app.state.desktop_service.browsers.snapshot(context_id)

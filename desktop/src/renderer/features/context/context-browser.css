@@ -15,3 +15,11 @@
 .context-browser-page p { font-size: 12px; color: var(--text-secondary); }
 .context-browser-current { margin-left: 8px; font-size: 11px; color: var(--text-secondary); }
 .context-browser-page button { flex-shrink: 0; }
+.context-browser-downloads { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+.context-browser-interaction-list { max-height: 55vh; overflow: auto; display: grid; gap: 20px; }
+.context-browser-interaction-list section { display: grid; gap: 12px; }
+.context-browser-interaction-list h3 { margin: 0; font-size: 15px; }
+.context-browser-interaction { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--border-subtle, #8884); border-radius: 8px; min-width: 0; }
+.context-browser-interaction p, .context-browser-interaction code, .context-browser-interaction small { overflow-wrap: anywhere; font-size: 12px; }
+.context-browser-interaction small, .context-browser-interaction-guidance { color: var(--text-secondary); }
+.context-browser-interaction progress { width: 100%; }
