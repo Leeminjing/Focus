@@ -3,7 +3,7 @@
  * 具体工作流为安静态以窗口比例决定大标题、横向 composer 和圆形发送控件，显式详情通过三列网格承接图/进度/观察/事实，临时导航由语义 class 控制；dialog 处理模态，Context 保持非模态，长请求身份在输入区换行可读。
  * 示例：.workspace-patrol.is-quiet；阅读与状态颜色沿用宿主 token，玻璃亮边在当前模块定义，共用节点与边材质由 loop-console.css 提供，图工具栏独立于平移画布。
  * data-patrol-dialog-kind 的 requests/progress/grant/observation/facts 与独立 picker 使用连续玻璃正文和局部分组，外壳负责模糊，内层消费可降级 material token；fact/relationship 等未选详情仍保留原阅读底。
- * 文件事实固定 60px 高，文件详情保留底部输入空间，窄屏继续使用同一草稿节点。
+ * 文件事实固定 60px 高，文件详情锚定实际输入区上沿并留出间距，窄屏继续使用同一草稿节点。
  * 输入记录为固定非模态滚动区域：安静态锚定清空按钮左侧与底边，宽高按 composer 的 34.4%/31.5% 校准并受视口限制；详情锚定 composer 上方。
  * 安静态采用 safe center 与正常输入框定位，短视口通过页面滚动维持标题、清空按钮和输入框的间距。
  * 原生工作台显示机器人唤起按钮；浏览器材料卡保持有界图片与引用文字预览，不改变发送目标。
@@ -136,13 +136,18 @@
   }
 }
 .workspace-patrol pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.patrol-context-drawer { position: fixed; z-index: 35; right: 0; top: 0; bottom: 0; width: min(510px, 42vw); background: var(--surface-base); border-left: 1px solid var(--border-subtle); box-shadow: -10px 0 35px #23365812; overflow: auto; }
+.patrol-context-drawer { container: patrol-context / inline-size; position: fixed; z-index: 35; right: 0; top: 0; bottom: 0; width: min(510px, 42vw); background: var(--surface-base); border-left: 1px solid var(--border-subtle); box-shadow: -10px 0 35px #23365812; overflow: auto; }
 .patrol-context-body { min-height: 160px; padding: 24px 28px; }
 .patrol-context-drawer [data-patrol-context-content] > header { position: sticky; z-index: 1; top: 0; background: var(--surface-panel); backdrop-filter: var(--material-backdrop); box-shadow: inset 0 1px var(--material-light), 0 1px 4px var(--material-shade); }
 .patrol-context-drawer footer { padding: 18px 28px; border-top: 1px solid var(--border-subtle); background: var(--surface-subtle); }
 .patrol-tabs { display: flex; gap: 14px; padding: 16px 28px; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; }
 .patrol-tabs [aria-pressed=true] { color: var(--text-accent); border-bottom: 2px solid var(--border-accent); }
 .observation-identities { margin: 24px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.patrol-context-drawer .observation-identities { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* Context 抽屉按自身可用宽度堆叠身份卡片。 */
+@container patrol-context (width < 450px) {
+  .patrol-context-drawer .observation-identities { grid-template-columns: minmax(0, 1fr); }
+}
 .observation-identities section { padding: 20px; border: 1px solid var(--border-subtle); background: var(--surface-subtle); border-radius: 14px; }
 .observation-identities strong { font-size: 20px; overflow-wrap: anywhere; }
 .observation-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--text-secondary); font-size: 12px; }
@@ -356,7 +361,7 @@ html:not([data-native-material]) body.has-patrol-workbench { background: #e9eded
 .workbench-fact-stream .file-fact button { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
 .workbench-fact-stream .file-fact > small { grid-column: 2; border: 0; padding: 0; }
 .workbench-fact-stream .file-fact.is-important { border-left-color: #916420; background: #c3902410; }
-.patrol-file-detail { position: fixed; z-index: 45; right: 20px; top: 32px; bottom: 270px; width: min(720px, calc(100vw - 40px)); overflow: auto; padding: 20px; border-radius: 16px; background: var(--surface-base, #fafafa); box-shadow: 0 8px 36px #22334424; }
+.patrol-file-detail { position: fixed; z-index: 45; right: 20px; top: 32px; bottom: max(20px, calc(anchor(--patrol-composer top, 8px) + 12px)); width: min(720px, calc(100vw - 40px)); overflow: auto; padding: 20px; border-radius: 16px; background: var(--surface-base, #fafafa); box-shadow: 0 8px 36px #22334424; }
 .patrol-file-detail > header { display: flex; justify-content: space-between; align-items: center; }
 .patrol-file-detail h2 { margin: 0; font-size: 16px; }
 .file-version h3 { overflow-wrap: anywhere; }
@@ -370,4 +375,4 @@ html:not([data-native-material]) body.has-patrol-workbench { background: #e9eded
 [data-patrol-file-picker] button { display: block; width: 100%; text-align: left; overflow-wrap: anywhere; }
 [data-patrol-recovery] { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
 [data-patrol-recovery-message] { margin: 0 0 6px; font-size: 13px; }
-@media (max-width: 600px) { .patrol-file-detail { top: 12px; right: 8px; bottom: 300px; width: calc(100vw - 16px); padding: 12px; } }
+@media (max-width: 600px) { .patrol-file-detail { top: 12px; right: 8px; width: calc(100vw - 16px); padding: 12px; } }
