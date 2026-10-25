@@ -160,7 +160,7 @@
 .app-nav-item:hover { color: var(--text-primary); background: var(--surface-subtle); }
 .app-nav-item[aria-current="page"] { color: var(--accent-primary); background: linear-gradient(115deg, #ddecff66, #b7d4ff50); box-shadow: inset 0 0 0 1px white, inset 0 2px 5px #ffffffcc, inset -3px -3px 6px #ffffffd9, 0 0 0 3px #ffffff32, 0 2px 12px #436da018; font-weight: 650; }
 .app-nav-item[aria-current="page"]:hover { background: var(--surface-selected-hover); }
-.app-nav-item.app-nav-settings { margin-top: auto; border-top: 1px solid var(--material-rim); border-radius: 0; padding-top: 12px; gap: var(--space-2); color: var(--text-secondary); }
+.app-nav-item.app-nav-settings { margin-top: auto; border-top: 1px solid var(--material-rim); padding-top: 12px; gap: var(--space-2); color: var(--text-secondary); }
 .app-nav-item.app-nav-settings .app-nav-label { flex: 1; }
 
 .app-workspace {
