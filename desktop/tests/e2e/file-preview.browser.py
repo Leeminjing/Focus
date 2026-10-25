@@ -31,6 +31,7 @@ with sync_playwright() as p:
     page.route("http://localhost/**", serve)
     page.goto("http://localhost/")
     page.wait_for_load_state("networkidle")
+    page.add_style_tag(path=str(DESKTOP / "shared/styles/components.css"))
     page.add_style_tag(path=str(DESKTOP / "features/files/file-preview.css"))
     page.add_style_tag(path=str(PLUGIN / "docx-editor.css"))
     for source in [DESKTOP / "vendor" / "markdown-it.min.js", DESKTOP / "features/files/file-preview.js", PLUGIN / "docx-editor.js", PLUGIN / "viewer.js"]:
@@ -44,6 +45,21 @@ with sync_playwright() as p:
     expect(page.locator(".file-source-line")).to_have_count(2)
     expect(page.locator(".file-source-line").first).to_have_text('const html = "<img src=x onerror=alert(1)>";')
     expect(page.locator("#host img")).to_have_count(0)
+    # Inline line-number buttons must fit their source rows under shared button styles.
+    def assert_line_number_alignment():
+        rows = page.locator(".file-source-line").evaluate_all("""lines => lines.map(line => {
+          const row = line.getBoundingClientRect();
+          const number = line.querySelector('.file-line-number').getBoundingClientRect();
+          return {line: line.dataset.line, rowTop: row.top, rowBottom: row.bottom,
+            numberTop: number.top, numberBottom: number.bottom};
+        })""")
+        assert rows
+        for row in rows:
+            assert abs(row["numberTop"] - row["rowTop"]) < 0.1, row
+            assert abs(row["numberBottom"] - row["rowBottom"]) < 0.1, row
+
+    assert_line_number_alignment()
+    assert page.get_by_text("复制全文", exact=True).evaluate("el => el.getBoundingClientRect().height >= 34")
     page.get_by_role("searchbox").fill("return")
     expect(page.locator(".is-match")).to_have_count(1)
     page.get_by_text("下一个", exact=True).click()
@@ -90,6 +106,7 @@ with sync_playwright() as p:
     expect(page.locator("[data-search-count]")).to_be_empty()
     page.locator(".file-text-body").evaluate("el=>el.scrollTop=el.scrollHeight")
     expect(page.locator('[data-line="10000"]')).to_be_attached()
+    assert_line_number_alignment()
     page.locator(".file-text-body").evaluate("el=>el.scrollTop=0")
     expect(page.locator('[data-line="3"]')).to_have_class("file-source-line is-referenced")
     page.get_by_text("复制全文", exact=True).click()
