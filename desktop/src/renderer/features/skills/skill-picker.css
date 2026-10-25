@@ -14,7 +14,7 @@
   padding: 4px 8px 4px 10px;
   font-size: 12px;
 }
-.skill-tag button { border: 0; background: transparent; color: inherit; padding: 0 1px; line-height: 1; }
+.skill-tag button { min-height: 0; border: 0; background: transparent; color: inherit; padding: 0 1px; line-height: 1; }
 .skill-menu {
   position: absolute;
   z-index: 20;
