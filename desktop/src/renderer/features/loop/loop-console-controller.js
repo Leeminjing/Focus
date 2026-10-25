@@ -4,6 +4,7 @@
  * 具体工作流为切换前保存当前 Context 视口，通常优先恢复 revision 缓存，来源恢复后可强制读取新 revision；事实验证状态和业务结果分开过滤，查询、通知与拖拽分别按游标和动画帧协调。
  * 示例：`controller.load(loopId)` 后由 Store 驱动纯视图渲染。
  * 直接提交复用在途 Promise；失败重试同一目标原文保留 request identity，成功刷新后释放，避免重复交付。
+ * 所有控制台读取按 Loop 身份和加载代次隔离；切换或销毁立即失效旧请求，迟到结果、错误和完成回调均不得写入当前状态。
  */
 (function (root, factory) {
   const api = factory();
@@ -16,16 +17,26 @@
     let loopId = null;
     let conversationAbort = null;
     let factsAbort = null;
-    let loadRevision = 0;
+    let loopGeneration = 0;
     let frame = null;
     let mapRatio = 0.52;
     let resizeCleanup = null;
-    let olderLoading = false;
+    let paginationRequest = null;
     let factsLoading = false;
     let factsRevision = 0;
     let boundContainer = null;
     let directRequest = null;
     let submission = null;
+    const requestIdentity = () => ({ loopId, generation: loopGeneration });
+    const isCurrent = request => request.loopId === loopId && request.generation === loopGeneration;
+    function invalidateRequests() {
+      loopGeneration += 1;
+      conversationAbort?.abort();
+      factsAbort?.abort();
+      factsRevision += 1;
+      paginationRequest = null;
+      factsLoading = false;
+    }
     const schedule = () => {
       if (frame !== null) return;
       frame = requestAnimationFrame(() => { frame = null; onChange(store.get()); });
@@ -33,24 +44,29 @@
     const unsubscribe = store.subscribe(schedule);
 
     async function load(nextLoopId) {
+      const switched = loopId !== nextLoopId;
+      invalidateRequests();
       loopId = nextLoopId;
-      const revision = ++loadRevision;
+      const request = requestIdentity();
+      if (switched) store.reset();
       store.begin("console");
       try {
-        const manifest = await api.console(loopId);
-        if (revision !== loadRevision) return;
+        const manifest = await api.console(request.loopId);
+        if (!isCurrent(request)) return;
         store.loadManifest(manifest);
         await selectContext(store.get().selectedContextId);
-        store.complete();
+        if (isCurrent(request)) store.complete();
       } catch (error) {
-        if (error?.name !== "AbortError") store.fail(error);
+        if (isCurrent(request) && error?.name !== "AbortError") store.fail(error);
       }
     }
 
     async function refresh() {
       if (!loopId) return;
+      const request = requestIdentity();
       try {
-        const manifest = await api.console(loopId);
+        const manifest = await api.console(request.loopId);
+        if (!isCurrent(request)) return;
         store.loadManifest(manifest);
         const selected = store.get().selectedContextId;
         await Promise.all([
@@ -58,17 +74,21 @@
           store.get().factScope === "all" ? loadFacts() : Promise.resolve(),
         ]);
       } catch (error) {
-        store.fail(error);
+        if (isCurrent(request) && error?.name !== "AbortError") store.fail(error);
       }
     }
 
     async function selectContext(contextId, options = {}) {
       if (!loopId || !contextId) return;
+      const request = requestIdentity();
       if (!options.preserveSelection) void globalThis.focusContextBrowser?.select(contextId);
       captureViewport();
       conversationAbort?.abort();
       factsAbort?.abort();
       conversationAbort = new AbortController();
+      const signal = conversationAbort.signal;
+      const isSelected = () => isCurrent(request) && !signal.aborted && store.get().selectedContextId === contextId;
+      paginationRequest = null;
       if (!options.preserveSelection) store.selectContext(contextId);
       const cached = store.get().conversation;
       if (cached?.context_id === contextId && !options.force) {
@@ -76,99 +96,114 @@
         return;
       }
       try {
-        const page = await api.conversation(loopId, contextId, { signal: conversationAbort.signal });
-        if (store.get().selectedContextId === contextId) {
+        const page = await api.conversation(request.loopId, contextId, { signal });
+        if (isSelected()) {
           store.loadConversation(page);
           if (store.get().factScope === "current") await loadFacts();
         }
       } catch (error) {
-        if (error?.name !== "AbortError") store.fail(error);
+        if (isSelected() && error?.name !== "AbortError") store.fail(error);
       }
     }
 
     async function loadOlder() {
       const conversation = store.get().conversation;
-      if (!loopId || olderLoading || !conversation?.has_more || conversation.next_before == null) return;
-      olderLoading = true;
+      if (!loopId || paginationRequest || !conversation?.has_more || conversation.next_before == null) return;
+      const request = requestIdentity();
+      const signal = conversationAbort?.signal;
+      const isActive = () => isCurrent(request) && !signal?.aborted;
+      paginationRequest = request;
       store.begin("older-messages");
       try {
-        const page = await api.conversation(loopId, conversation.context_id, {
+        const page = await api.conversation(request.loopId, conversation.context_id, {
           before: conversation.next_before,
-          signal: conversationAbort?.signal,
+          signal,
         });
+        if (!isActive()) return;
         const current = store.get();
         if (current.selectedContextId === conversation.context_id && current.conversation?.revision?.revision_id === conversation.revision?.revision_id) {
           store.mergeConversation(page, "older");
         }
         store.complete();
       } catch (error) {
-        if (error?.name !== "AbortError") store.fail(error);
+        if (isActive() && error?.name !== "AbortError") store.fail(error);
       } finally {
-        olderLoading = false;
+        if (paginationRequest === request) paginationRequest = null;
       }
     }
 
     async function loadNewer() {
       const conversation = store.get().conversation;
-      if (!loopId || olderLoading || !conversation?.has_newer || conversation.next_after == null) return;
-      olderLoading = true;
+      if (!loopId || paginationRequest || !conversation?.has_newer || conversation.next_after == null) return;
+      const request = requestIdentity();
+      const signal = conversationAbort?.signal;
+      const isActive = () => isCurrent(request) && !signal?.aborted;
+      paginationRequest = request;
       store.begin("newer-messages");
       try {
         const pageSize = Math.max(24, conversation.range.end - conversation.range.start);
-        const page = await api.conversation(loopId, conversation.context_id, {
+        const page = await api.conversation(request.loopId, conversation.context_id, {
           before: Math.min(conversation.total, conversation.next_after + pageSize),
           limit: pageSize,
-          signal: conversationAbort?.signal,
+          signal,
         });
+        if (!isActive()) return;
         const current = store.get();
         if (current.selectedContextId === conversation.context_id && current.conversation?.revision?.revision_id === conversation.revision?.revision_id) {
           store.mergeConversation(page, "newer");
         }
         store.complete();
       } catch (error) {
-        if (error?.name !== "AbortError") store.fail(error);
+        if (isActive() && error?.name !== "AbortError") store.fail(error);
       } finally {
-        olderLoading = false;
+        if (paginationRequest === request) paginationRequest = null;
       }
     }
 
     async function loadFacts(options = {}) {
       if (!loopId || (options.prepend && factsLoading)) return;
+      const request = requestIdentity();
       const requestRevision = ++factsRevision;
       factsLoading = true;
       factsAbort?.abort();
       factsAbort = new AbortController();
+      const signal = factsAbort.signal;
+      const isActive = () => isCurrent(request) && requestRevision === factsRevision && !signal.aborted;
       const state = store.get();
       const contextId = state.factScope === "all" ? null : state.selectedContextId;
       try {
-        const facts = await api.facts(loopId, {
+        const facts = await api.facts(request.loopId, {
           contextId,
           kind: state.factFilter === "all" ? null : state.factFilter,
           status: ["all", "failed", "unknown", "success"].includes(state.factStatus) ? null : state.factStatus,
           outcomeStatus: ["failed", "unknown", "success"].includes(state.factStatus) ? state.factStatus : null,
           before: options.before,
           limit: options.limit || 20,
-          signal: factsAbort.signal,
+          signal,
         });
         const current = store.get();
         const currentContextId = current.factScope === "all" ? null : current.selectedContextId;
-        if (currentContextId !== contextId || requestRevision !== factsRevision || current.authorityRevision !== state.authorityRevision) return;
+        if (!isActive() || currentContextId !== contextId || current.authorityRevision !== state.authorityRevision) return;
         if (options.prepend) store.prependFacts(facts);
         else store.loadFacts(facts);
+        return true;
+      } catch (error) {
+        if (isActive()) throw error;
       } finally {
-        if (requestRevision === factsRevision) factsLoading = false;
+        if (isCurrent(request) && requestRevision === factsRevision) factsLoading = false;
       }
     }
 
     async function loadOlderFacts() {
       const facts = store.get().facts;
       if (!facts?.has_more || facts.next_before == null) return;
+      const request = requestIdentity();
       store.begin("older-facts");
       try {
-        await loadFacts({ before: facts.next_before, prepend: true });
-        store.complete();
+        const loaded = await loadFacts({ before: facts.next_before, prepend: true });
+        if (isCurrent(request) && loaded) store.complete();
       } catch (error) {
-        if (error?.name !== "AbortError") store.fail(error);
+        if (isCurrent(request) && error?.name !== "AbortError") store.fail(error);
       }
     }
 
@@ -188,13 +223,14 @@
     }
 
     async function reloadFacts() {
+      const request = requestIdentity();
       factsAbort?.abort();
       store.begin("facts");
       try {
-        await loadFacts();
-        store.complete();
+        const loaded = await loadFacts();
+        if (isCurrent(request) && loaded) store.complete();
       } catch (error) {
-        if (error?.name !== "AbortError") store.fail(error);
+        if (isCurrent(request) && error?.name !== "AbortError") store.fail(error);
       }
     }
 
@@ -339,9 +375,8 @@
     }
 
     function destroy() {
-      loadRevision += 1;
-      conversationAbort?.abort();
-      factsAbort?.abort();
+      invalidateRequests();
+      loopId = null;
       if (frame !== null) cancelAnimationFrame(frame);
       resizeCleanup?.();
       boundContainer = null;
