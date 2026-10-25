@@ -36,6 +36,35 @@ class BrowserSession:
     selected_page_id: str | None = None
     pages_revision: int = 0
     selection_revision: int = 0
+    interactions_revision: int = 0
+    downloads: dict = field(default_factory=dict)
+    permissions: dict = field(default_factory=dict)
+    rejected_downloads: list = field(default_factory=list)
+
+    def site_interactions(self):
+        downloads, permissions = list(self.downloads.values()), list(self.permissions.values())
+        return {"downloads": downloads, "permissions": permissions, "rejected": list(self.rejected_downloads),
+                "interaction_pending": any(item.get("state") == "in_progress" for item in downloads) or
+                    any(item.get("state") == "pending" for item in permissions)}
+
+    def site_event(self, kind, detail):
+        if kind == "download_rejected":
+            self.rejected_downloads = [*self.rejected_downloads[-7:], dict(detail)]
+        elif kind in {"download_changed", "permission_requested", "permission_resolved"}:
+            download = kind == "download_changed"
+            key = detail.get("download_id" if download else "request_id")
+            if not key:
+                return
+            records, limit, pending = (self.downloads, 32, "in_progress") if download else (self.permissions, 16, "pending")
+            records[key] = {**records.get(key, {}), **detail}
+            for previous, record in list(records.items()):
+                if len(records) <= limit:
+                    break
+                if record.get("state") != pending:
+                    records.pop(previous)
+        else:
+            return
+        self.interactions_revision += 1
 
 
 class ContextBrowsers:
@@ -133,6 +162,7 @@ class ContextBrowsers:
         return {"context_id": context_id, "browser_id": browser.browser_id,
                 "state": browser.state, "detail": browser.detail,
                 "selected_page_id": browser.selected_page_id, "pages_revision": browser.pages_revision,
+                "interactions_revision": browser.interactions_revision, "site_interactions": browser.site_interactions(),
                 "shared_context_ids": sorted(users)}
 
     async def pages(self, context_id):
@@ -141,6 +171,20 @@ class ContextBrowsers:
             return {"selected_page_id": None, "pages": []}
         self._check(browser)
         return await self.transport.call("list_pages", browser_id=browser.browser_id)
+
+    async def downloads(self, context_id):
+        return await self._downloads(await self.binding(context_id))
+
+    async def _downloads(self, browser):
+        if browser is None:
+            return {"downloads": [], "permissions": [], "rejected": [], "interaction_pending": False}
+        self._check(browser)
+        result = await self.transport.call("list_downloads", browser_id=browser.browser_id)
+        # Permission decisions arrive through events. A late RPC cannot clear
+        # a newer wait; report pending conservatively until the next query.
+        interactions = browser.site_interactions()
+        return {**interactions, **result,
+                "interaction_pending": bool(result["interaction_pending"] or interactions["interaction_pending"])}
 
     async def present(self, context_id, selection=None):
         if selection:
@@ -227,6 +271,7 @@ class ContextBrowsers:
                 browser.state = event["state"]
             browser.detail = event.get("detail", {})
             kind, page_id = event["event"], browser.detail.get("page_id")
+            browser.site_event(kind, browser.detail)
             if kind == "page_selected":
                 browser.selected_page_id = page_id
                 browser.selection_revision += 1
@@ -404,6 +449,10 @@ class BrowserRun:
     async def list_pages(self):
         self.check()
         return await self.owner.transport.call("list_pages", browser_id=self.browser.browser_id)
+
+    async def list_downloads(self):
+        self.check()
+        return await self.owner._downloads(self.browser)
 
     async def page_command(self, method, page_id):
         self.check()

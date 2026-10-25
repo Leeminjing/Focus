@@ -15,6 +15,223 @@ from backend.tests.http_asgi_bridge import ASGIHTTPBridge
 pytestmark = pytest.mark.skipif(os.name != "nt" or os.environ.get("FOCUS_BROWSER_REAL") != "1", reason="opt-in Windows browser UI")
 
 
+def test_real_download_api_and_live_permission_panel_are_context_bound(client, tmp_path):
+    from backend.app.gateway.app import app
+    from backend.app.desktop.browser.transport import BrowserError
+    from backend.tests.browser_site_fixture import SiteFixture, FILE_CONTENT
+    from playwright.sync_api import sync_playwright
+    http, first, _, _ = client
+    service = app.state.desktop_service
+    http.portal.call(app.state.agent_loop_runtime.close)
+    fixture = SiteFixture()
+    resources = []
+    output = Path(os.environ.get("FOCUS_BROWSER_ARTIFACTS", tmp_path))
+    output.mkdir(parents=True, exist_ok=True)
+    def endpoint(context):
+        return f"/desktop/api/contexts/{context}/browser"
+    aid = first["task_id"]
+    second = http.post(f"/desktop/api/workspaces/{first['workspace_id']}/threads", headers=SESSION,
+                       json={"thread_id": uuid.uuid4().hex, "title": "Permission Context"}).json()
+    bid = second["task_id"]
+    assert http.get(endpoint(aid) + "/downloads").status_code == 401
+    assert http.get(endpoint(aid) + "/downloads", headers=SESSION).json()["downloads"] == []
+    async def prepare(context):
+        resource = service.browsers.resource(context, "ui-" + context)
+        resources.append(resource)
+        await resource.start()
+        view = await resource.observe()
+        await resource.act(view["observation_id"], {"type": "navigate", "url": fixture.url()})
+        await resource.observe()
+        return resource
+    async def download(resource):
+        try:
+            return await resource.act(resource.observation["observation_id"], {"type": "navigate", "url": fixture.url("/file")})
+        except BrowserError as error:
+            assert error.code == "navigation_failed" and error.detail["web_error_status"] == 9, error
+    async def permission(resource):
+        try:
+            await resource.act(resource.observation["observation_id"], {"type": "click", "x": 80, "y": 160}, "css_viewport")
+        except BrowserError as error:
+            assert error.code in {"invalid_token", "page_changed"}, error
+    def wait_status(context, predicate):
+        deadline = time.monotonic() + 10
+        while True:
+            response = http.get(endpoint(context) + "/downloads", headers=SESSION)
+            assert response.status_code == 200, response.text
+            value = response.json()
+            if predicate(value):
+                return value
+            assert time.monotonic() < deadline, value
+            time.sleep(.025)
+    policy = asyncio.get_event_loop_policy()
+    try:
+        ra = http.portal.call(prepare, aid)
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        with ASGIHTTPBridge(http, headers=SESSION) as bridge, sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000}, bypass_csp=True)
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.goto(bridge.url + "/desktop/", wait_until="domcontentloaded")
+            page.wait_for_function("typeof switchTask === 'function' && state.tasks.length >= 2")
+            page.evaluate("id => switchTask(id)", aid)
+            page.get_by_role("button", name="下载与权限", exact=True).click()
+            page.get_by_text("尚无下载记录。", exact=True).wait_for()
+            http.portal.call(download, ra)
+            result = wait_status(aid, lambda value: value["downloads"] and value["downloads"][0]["state"] == "completed")
+            record = result["downloads"][0]
+            assert Path(record["path"]).read_bytes() == FILE_CONTENT
+            assert ra.token is None and ra.observation is None
+            assert http.get(endpoint(aid), headers=SESSION).json()["state"] == "manual"
+            panel = page.locator("dialog[open]")
+            panel.get_by_text(record["path"], exact=True).wait_for()
+            panel.get_by_text("已完成", exact=True).wait_for()
+            page.screenshot(path=str(output / "focus-v05-download-panel.png"), full_page=True)
+            panel.get_by_role("button", name="关闭", exact=True).click()
+
+            rb = http.portal.call(prepare, bid)  # A's manual state does not prevent B from operating.
+            http.portal.call(permission, rb)
+            pending = wait_status(bid, lambda value: value["permissions"] and value["permissions"][0]["state"] == "pending")
+            assert pending["interaction_pending"] and pending["permissions"][0]["url"].startswith(fixture.url())
+            assert wait_status(aid, lambda value: bool(value["downloads"]))["permissions"] == []
+            page.evaluate("id => switchTask(id)", bid)
+            page.get_by_role("button", name="下载与权限", exact=True).click()
+            panel = page.locator("dialog[open]")
+            panel.get_by_text("位置 · 等待用户决定", exact=True).wait_for()
+            panel.get_by_text(pending["permissions"][0]["url"], exact=True).wait_for()
+            assert panel.get_by_role("button", name="允许一次", exact=True).count() == 0
+            assert panel.get_by_role("button", name="拒绝", exact=True).count() == 0
+            assert panel.locator("[data-cancel-download]").count() == 0
+            page.screenshot(path=str(output / "focus-v05-permission-panel.png"), full_page=True)
+            assert not errors, errors
+            browser.close()
+        print("PASS authenticated context-bound download API, real exact file, live SSE panel, permission origin/page, independent Context and native-only decisions")
+    finally:
+        asyncio.set_event_loop_policy(policy)
+        async def cleanup():
+            for resource in resources:
+                await resource.finish()
+            for item in tuple(service.browsers.browsers.values()):
+                if item.state not in {"closed", "disconnected"}:
+                    await service.browsers.transport.call("close", browser_id=item.browser_id)
+        http.portal.call(cleanup)
+        fixture.close()
+
+
+def test_production_v05_run_waits_for_native_handback_and_does_not_repeat_downloads(client, monkeypatch):
+    """Production worker/policy/ledger with scripted provider and owned native buttons.
+
+    Button messages simulate cancellation/handback, never physical input or a
+    device permission decision. The permission phase is read-only then closed.
+    """
+    from backend.app.gateway.app import app
+    from backend.tests.browser_site_fixture import SiteFixture, FILE_CONTENT
+    from langchain_core.messages import ToolMessage, AIMessageChunk
+    from langchain_core.outputs import ChatGenerationChunk
+    from focus.models.responses import FocusResponsesChatModel
+    http, task, _, _ = client
+    service = app.state.desktop_service
+    http.portal.call(app.state.agent_loop_runtime.close)
+    service.app_config.get_model("deepseek-v4-flash").supports_image_input = True
+    fixture, calls, phase = SiteFixture(), [], {"permission": False}
+    async def stream(model, messages, stop=None, run_manager=None, **kwargs):
+        prefix = "permission-tool-" if phase["permission"] else "site-tool-"
+        outputs = [message for message in messages if isinstance(message, ToolMessage) and str(message.tool_call_id).startswith(prefix)]
+        views = [json.loads(message.content[0]["text"]) for message in outputs if message.name == "browser_observe" and message.status != "error"]
+        view = views[-1] if views else None
+        fields = {"observation_id": view["observation_id"], "coordinate_space": "css_viewport"} if view else {}
+        steps = [("browser_list_downloads", {}), ("browser_observe", {}),
+                 ("browser_navigate", {"url": fixture.url(), "observation_id": view["observation_id"] if view else "pending"}),
+                 ("browser_observe", {}), ("browser_click", {**fields, "x": 80, "y": 40}),
+                 ("browser_list_downloads", {}), ("browser_observe", {}), ("browser_click", {**fields, "x": 80, "y": 100}),
+                 ("browser_list_downloads", {}), ("browser_observe", {}), ("browser_release", {})]
+        if phase["permission"]:
+            steps = [("browser_observe", {}), ("browser_click", {**fields, "x": 80, "y": 160})]
+        if len(outputs) < len(steps):
+            name, args = steps[len(outputs)]
+            calls.append(name)
+            yield ChatGenerationChunk(message=AIMessageChunk(content="", id=f"site-{len(calls)}", tool_call_chunks=[
+                {"name": name, "args": json.dumps(args), "id": f"{prefix}{len(calls)}", "index": 0}]))
+        else:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="Downloads inspected without replay.", id="site-final"))
+    monkeypatch.setattr(FocusResponsesChatModel, "_astream", stream)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetDlgItem.argtypes, user32.GetDlgItem.restype = [ctypes.c_void_p, ctypes.c_int], ctypes.c_void_p
+    user32.SendMessageW.argtypes, user32.SendMessageW.restype = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t], ctypes.c_ssize_t
+    user32.FindWindowW.argtypes, user32.FindWindowW.restype = [ctypes.c_wchar_p, ctypes.c_wchar_p], ctypes.c_void_p
+    context = task["task_id"]
+    endpoint = f"/desktop/api/contexts/{context}/browser"
+    def wait_value(work, predicate, seconds=35):
+        deadline = time.monotonic() + seconds
+        while True:
+            value = work()
+            if predicate(value):
+                return value
+            assert time.monotonic() < deadline, value
+            time.sleep(.03)
+    def status():
+        return http.get(endpoint + "/downloads", headers=SESSION).json()
+    def click(window, control):
+        button = user32.GetDlgItem(window, control)
+        assert button
+        user32.SendMessageW(button, 0x00F5, 0, 0)
+    def start(message):
+        response = http.post(f"/desktop/api/tasks/{context}/main/runs", headers=SESSION,
+            json={"message": message, "model_name": "deepseek-v4-flash", "access_mode": "danger-full-access"})
+        assert response.status_code == 200, response.text
+        return response.json()["run_id"]
+    try:
+        response = http.put(f"/desktop/api/tasks/{context}/access-mode", headers=SESSION, json={"access_mode": "danger-full-access"})
+        assert response.status_code == 200, response.text
+        run_id = start("Download a file, inspect it, cancel a slow file and never repeat it")
+        complete = wait_value(status, lambda value: value.get("downloads") and value["downloads"][0]["state"] == "completed")
+        assert Path(complete["downloads"][0]["path"]).read_bytes() == FILE_CONTENT
+        time.sleep(.15)
+        assert len(calls) == 5, calls
+        browser = http.portal.call(service.browsers.binding, context)
+        click(int(browser.hwnd), 101)
+        active = wait_value(status, lambda value: len(value.get("downloads", [])) == 2 and value["downloads"][-1]["state"] == "in_progress")
+        assert calls[-1] == "browser_click" and len(calls) == 8, calls
+        panel = wait_value(lambda: user32.FindWindowW("DistinctBrowserDownloads", "下载 · Focus · " + context), bool)
+        click(panel, 303)
+        cancelled = wait_value(status, lambda value: value["downloads"][-1]["state"] == "cancelled")
+        assert cancelled["downloads"][-1]["reason"] == "human_cancel" and not cancelled["interaction_pending"]
+        time.sleep(.15)
+        assert len(calls) == 8, "cancellation must not resume the model"
+        click(int(browser.hwnd), 101)
+        settled = wait_value(lambda: http.get(f"/desktop/api/runs/{run_id}", headers=SESSION).json(),
+                             lambda value: value["status"] in {"success", "error", "interrupted"})
+        assert settled["status"] == "success", settled
+        assert calls == ["browser_list_downloads", "browser_observe", "browser_navigate", "browser_observe", "browser_click",
+                         "browser_list_downloads", "browser_observe", "browser_click", "browser_list_downloads", "browser_observe", "browser_release"]
+        assert fixture.requests.count("/file") == fixture.requests.count("/slow-file") == 1
+        print("PASS production Context Run, actual download bytes, read-only tool, native cancel, explicit handback, new observations, no replay")
+
+        phase["permission"] = True
+        permission_run = start("Observe the current page and request location; wait for the user")
+        pending = wait_value(status, lambda value: value.get("permissions") and value["permissions"][-1]["state"] == "pending")
+        assert pending["interaction_pending"] and pending["permissions"][-1]["page_id"]
+        time.sleep(.15)
+        assert http.get(f"/desktop/api/runs/{permission_run}", headers=SESSION).json()["status"] == "running"
+        before = len(calls)
+        time.sleep(.15)
+        assert len(calls) == before
+        async def close_permission_browser():
+            await service.browsers.transport.call("close", browser_id=browser.browser_id)
+        http.portal.call(close_permission_browser)
+        failed = wait_value(lambda: http.get(f"/desktop/api/runs/{permission_run}", headers=SESSION).json(),
+                            lambda value: value["status"] in {"error", "interrupted"})
+        assert failed["status"] == "error" and "closed" in failed["error"]
+        print("PASS real permission request suspends the production Run and closure settles it; no permission decision was automated")
+    finally:
+        async def cleanup():
+            for item in tuple(service.browsers.browsers.values()):
+                if item.state not in {"closed", "disconnected"}:
+                    await service.browsers.transport.call("close", browser_id=item.browser_id)
+        http.portal.call(cleanup)
+        fixture.close()
+
+
 def test_creation_failure_keeps_durable_run_pending_until_failed(client, monkeypatch):
     from backend.app.gateway.app import app
     from backend.app.desktop.browser.transport import BrowserError
