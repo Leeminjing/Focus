@@ -3,6 +3,7 @@
  * 输入为 Loop API、Console Store 与重绘回调；输出为加载拓扑、切换或强制刷新 Context、双向分页、视口恢复、事实筛选、可调布局和三类介入命令。
  * 具体工作流为切换前保存当前 Context 视口，通常优先恢复 revision 缓存，来源恢复后可强制读取新 revision；事实验证状态和业务结果分开过滤，查询、通知与拖拽分别按游标和动画帧协调。
  * 示例：`controller.load(loopId)` 后由 Store 驱动纯视图渲染。
+ * 宿主可向 load 传入 isCurrent 导航守卫；拓扑、会话、事实及完成/错误写入共同遵守该身份。
  * 直接提交复用在途 Promise；失败重试同一目标原文保留 request identity，成功刷新后释放，避免重复交付。
  */
 (function (root, factory) {
@@ -32,18 +33,20 @@
     };
     const unsubscribe = store.subscribe(schedule);
 
-    async function load(nextLoopId) {
+    async function load(nextLoopId, { isCurrent: isActive = () => true } = {}) {
+      if (!isActive()) return;
       loopId = nextLoopId;
       const revision = ++loadRevision;
+      const isCurrent = () => revision === loadRevision && isActive();
       store.begin("console");
       try {
         const manifest = await api.console(loopId);
-        if (revision !== loadRevision) return;
+        if (!isCurrent()) return;
         store.loadManifest(manifest);
-        await selectContext(store.get().selectedContextId);
-        store.complete();
+        await selectContext(store.get().selectedContextId, { isCurrent });
+        if (isCurrent()) store.complete();
       } catch (error) {
-        if (error?.name !== "AbortError") store.fail(error);
+        if (isCurrent() && error?.name !== "AbortError") store.fail(error);
       }
     }
 
@@ -63,7 +66,8 @@
     }
 
     async function selectContext(contextId, options = {}) {
-      if (!loopId || !contextId) return;
+      const isCurrent = options.isCurrent || (() => true);
+      if (!loopId || !contextId || !isCurrent()) return;
       if (!options.preserveSelection) void globalThis.focusContextBrowser?.select(contextId);
       captureViewport();
       conversationAbort?.abort();
@@ -72,17 +76,17 @@
       if (!options.preserveSelection) store.selectContext(contextId);
       const cached = store.get().conversation;
       if (cached?.context_id === contextId && !options.force) {
-        if (store.get().factScope === "current") await loadFacts();
+        if (store.get().factScope === "current") await loadFacts({ isCurrent });
         return;
       }
       try {
         const page = await api.conversation(loopId, contextId, { signal: conversationAbort.signal });
-        if (store.get().selectedContextId === contextId) {
+        if (isCurrent() && store.get().selectedContextId === contextId) {
           store.loadConversation(page);
-          if (store.get().factScope === "current") await loadFacts();
+          if (store.get().factScope === "current") await loadFacts({ isCurrent });
         }
       } catch (error) {
-        if (error?.name !== "AbortError") store.fail(error);
+        if (isCurrent() && error?.name !== "AbortError") store.fail(error);
       }
     }
 
@@ -152,6 +156,7 @@
         });
         const current = store.get();
         const currentContextId = current.factScope === "all" ? null : current.selectedContextId;
+        if (options.isCurrent && !options.isCurrent()) return;
         if (currentContextId !== contextId || requestRevision !== factsRevision || current.authorityRevision !== state.authorityRevision) return;
         if (options.prepend) store.prependFacts(facts);
         else store.loadFacts(facts);

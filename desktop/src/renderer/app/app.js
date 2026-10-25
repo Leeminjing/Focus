@@ -451,6 +451,7 @@ let contextPointerDrag = null;
 let contextUndoTimer = null;
 let agentDetailsRequestSequence = 0;
 let taskSwitchSequence = 0;
+let loopViewRequestSequence = 0;
 // 各资源独立提交；导航复用在途请求，事务刷新仍以最新请求为准。
 const taskResourceLoads = new Map();
 let compressionRequestSequence = 0;
@@ -726,6 +727,8 @@ function loadPluginScript(src) {
 }
 
 function cancelPendingViewRequests() {
+  loopViewRequestSequence += 1;
+  state.loop.loading = false;
   contextRequestSequence += 1;
   compressionRequestSequence += 1;
   draftOpenRequestSequence += 1;
@@ -1167,10 +1170,10 @@ async function renderWorkspacePatrol() {
   performance.mark("focus:patrol-mounted");
 }
 
-function observeLoopConnection(loopId) {
+function observeLoopConnection(loopId, isCurrent = () => state.view === "loop" && state.loop.loopId === loopId) {
   if (!loopConnection) return;
   void loopConnection.start(loopId).catch(error => {
-    if (state.view !== "loop" || state.loop.loopId !== loopId) return;
+    if (!isCurrent()) return;
     if (loopConnection === loopLiveConnection) {
       loopLiveStore.setConnection("unavailable", { error: String(error?.message || error) });
     } else {
@@ -1181,12 +1184,20 @@ function observeLoopConnection(loopId) {
 
 async function openLoopView() {
   if (state.view === "focus") persistFocusState();
+  cancelPendingViewRequests();
+  const requestId = loopViewRequestSequence;
+  const navigationId = taskSwitchSequence;
   state.view = "loop";
   state.loop.revisionSnapshot = null;
   state.inspector.open = false;
   const task = activeTask();
+  const taskId = task?.task_id ?? null;
   const previousLoopId = state.loop.loopId;
-  state.loop.loopId = task ? localStorage.getItem(`focus-agent-loop:${task.task_id}`) : null;
+  let loopId = task ? localStorage.getItem(`focus-agent-loop:${taskId}`) : null;
+  state.loop.loopId = loopId;
+  const isCurrent = () => requestId === loopViewRequestSequence
+    && navigationId === taskSwitchSequence && state.activeTaskId === taskId
+    && state.view === "loop" && state.loop.loopId === loopId;
   if (previousLoopId && previousLoopId !== state.loop.loopId) {
     loopConnection?.stop();
     loopStore?.load(null);
@@ -1196,39 +1207,50 @@ async function openLoopView() {
     loopStore?.load(null);
     loopConsoleStore?.reset();
   }
+  state.loop.loading = Boolean(task && loopApi);
   render();
   if (!task || !loopApi) return;
-  state.loop.loading = true;
   try {
-    if (!state.loop.loopId) {
-      const found = await loopApi.findByContext(task.task_id);
+    if (!loopId) {
+      const found = await loopApi.findByContext(taskId);
+      if (!isCurrent()) return;
       if (found?.loop_id) {
-        state.loop.loopId = found.loop_id;
-        localStorage.setItem(`focus-agent-loop:${task.task_id}`, found.loop_id);
+        loopId = found.loop_id;
+        state.loop.loopId = loopId;
+        localStorage.setItem(`focus-agent-loop:${taskId}`, loopId);
         loopStore.load(found);
       }
     }
-    if (!state.loop.loopId) {
-      const detail = state.details.get(task.task_id) || {};
-      detail.loop_activation = await loopApi.activationEligibility(task.task_id);
-      state.details.set(task.task_id, detail);
+    if (!loopId) {
+      const eligibility = await loopApi.activationEligibility(taskId);
+      if (!isCurrent()) return;
+      const detail = state.details.get(taskId) || {};
+      detail.loop_activation = eligibility;
+      state.details.set(taskId, detail);
       return;
     }
-    const snapshot = await loopApi.get(state.loop.loopId);
+    const snapshot = await loopApi.get(loopId);
+    if (!isCurrent()) return;
     if (snapshot.interaction_mode === "workspace_patrol") {
+      state.loop.loading = false;
       state.patrolWorkspace = { workspace_id: snapshot.workspace_id, display_name: task.workspace_name || localize("工作区") };
       state.view = "patrol";
       return render();
     }
     loopStore.reconcile(snapshot);
-    loopStore.reconcileRelated(await loopApi.related(snapshot));
-    await loopConsoleController?.load(state.loop.loopId);
-    observeLoopConnection(state.loop.loopId);
+    const related = await loopApi.related(snapshot);
+    if (!isCurrent()) return;
+    loopStore.reconcileRelated(related);
+    await loopConsoleController?.load(loopId, { isCurrent });
+    if (!isCurrent()) return;
+    observeLoopConnection(loopId, isCurrent);
   } catch (error) {
-    loopStore.fail(error);
+    if (isCurrent()) loopStore.fail(error);
   } finally {
-    state.loop.loading = false;
-    if (state.view === "loop") renderLoop();
+    if (isCurrent()) {
+      state.loop.loading = false;
+      renderLoop();
+    }
   }
 }
 
@@ -1354,6 +1376,7 @@ async function openLoopRevision(revisionId) {
 }
 
 async function exitAgentLoop(prepareNew = false) {
+  cancelPendingViewRequests();
   const task = activeTask();
   const exitedLoopId = state.loop.loopId;
   loopConnection?.stop();
