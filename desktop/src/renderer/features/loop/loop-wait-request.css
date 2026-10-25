@@ -25,4 +25,3 @@
 .loop-wait-request label { display: inline-flex; align-items: center; gap: 6px; }
 .loop-wait-request button { min-width: 92px; }
 .loop-wait-error { flex-basis: 100%; margin: 0; color: #a52f39; }
-
