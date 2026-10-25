@@ -6,7 +6,7 @@ const crypto = require("node:crypto");
 function verify(directory = path.join(__dirname, "../resources/distinct-browser")) {
   const manifest = JSON.parse(fs.readFileSync(path.join(directory, "manifest.json"), "utf8"));
   const hash = crypto.createHash("sha256").update(fs.readFileSync(path.join(directory, "distinct-browser.exe"))).digest("hex");
-  if (manifest.version !== "0.4.0" || manifest.revision !== "6fe11bbf964c6cbd8a7c3a82c6ca5f6fb9415696" || manifest.protocol_version !== 1 || manifest.sha256 !== hash) {
+  if (manifest.version !== "0.5.0" || manifest.revision !== "fffc2c458c56c0dc173feed45bd0ff1e63fcc0a9" || manifest.protocol_version !== 1 || manifest.sha256 !== hash) {
     throw new Error("Bundled distinct-browser.exe does not match its pinned build manifest.");
   }
   return manifest;

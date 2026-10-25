@@ -2,8 +2,8 @@
 
 Windows 上的每个 Context 在 Run 执行前默认创建并绑定一个真实原生浏览器。
 Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、Run 或 Patrol。
-固定浏览器版本为 v0.4.0，源码 `6fe11bbf964c6cbd8a7c3a82c6ca5f6fb9415696`，对应
-[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/6fe11bbf964c6cbd8a7c3a82c6ca5f6fb9415696/docs/protocol.md)。
+固定浏览器版本为 v0.5.0，源码 `fffc2c458c56c0dc173feed45bd0ff1e63fcc0a9`，对应
+[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/fffc2c458c56c0dc173feed45bd0ff1e63fcc0a9/docs/protocol.md)。
 
 ## 用户操作
 
@@ -28,6 +28,10 @@ Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、R
    两者会共享同一浏览器会话及其全部页面。也可明确创建新独立浏览器来解除共享或替换失效绑定。
    更换后只有没有任何 Context 引用的旧浏览器才调用 `close`；共享者不会被误关。
    断连后的显式替换使用全新的宿主连接，不接续旧窗口或旧令牌。
+7. **下载与权限**面板显示下载进度、保存路径、完成 / 中断原因和来源页面，也显示网站权限的来源与决定状态。
+   面板查询不申请租约，人工控制时仍可查看；取消下载请到原生浏览器按 **Ctrl+J**。
+   网站权限仅由用户在原生提示中允许一次或拒绝，Focus 不提供自动授权或第二套决定入口。
+   下载或权限请求会暂停该浏览器的自动操作；结束后仍需明确交还，Agent 用新观察继续。
 
 ## Agent 调用
 
@@ -38,6 +42,7 @@ Windows 桌面 Agent 工厂装配以下内置工具，全部通过服务端 Cont
 | --- | --- |
 | `browser_observe(page_id=None)` | 申请/持有租约，观察选中页，返回图片、URL、视口、`page_id` 及 `observation_id` |
 | `browser_list_pages()` | 列出本浏览器页面与当前页；不取得租约 |
+| `browser_list_downloads()` | 只读查询所属浏览器的下载、权限事件状态与待处理标记；人工控制期间可查询，不取得租约 |
 | `browser_select_page(page_id)` | 取得浏览器级租约并展示页面，之后必须重新观察 |
 | `browser_close_page(page_id)` | 取得同一租约并关闭页面；最后一页关闭时浏览器失效 |
 | `browser_navigate(url, observation_id)` | 导航；之后重新观察 |
@@ -58,9 +63,14 @@ Windows 桌面 Agent 工厂装配以下内置工具，全部通过服务端 Cont
 
 观察需要声明 `supports_image_input: true` 的模型。工具沿用 Focus 的访问策略和审计：
 浏览器可以访问本地页面并产生副作用，因此观察/动作声明为 opaque 工具，受限文件模式沿用
-既有审批机制，完全访问按既有规则放行；释放租约不需要扩大访问权限。
+既有审批机制，完全访问按既有规则放行；释放租约和只读下载状态查询不需要扩大访问权限。
 `busy`、`foreground:false`、`command_processed` 和 `result_unknown` 都保留原义。
 工具失败返回 `status=error` 的 ToolMessage 及结构化原生错误，结果未知时不重放。
+
+导航成为附件时可能返回 `download_started`，也可能先收到原生 `CONNECTION_ABORTED(9)`。
+这两者都不能用来判断文件下载失败；应调用 `browser_list_downloads` 查询传输结果，禁止重复导航 / 点击。
+四类交互事件会通知共享同一浏览器的活跃 Run，其他 Context 的独立浏览器不受影响。
+模型在人工控制期间等待，交还提示带上最近下载 / 权限结果，明确要求新租约、新观察；用户取消或拒绝不是重试要求。
 
 Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中的旧 Playwright MCP/
 自定义同前缀浏览器工具不会装配进该 Context，防止操作另一个浏览器或产生同名冲突。
@@ -76,9 +86,9 @@ Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中
   Context 装配在 durable dispatch 标记数据库 running 前确认创建成功；统一 `run_agent`
   在内存 running 前再次核对资源，finally 释放；没有新增 Run 执行器。
 - `browser/routes.py`：既有会话认证下的 Context 查询、展示、更换与 SSE 快照。
-  路径为 `/desktop/api/contexts/{context_id}/browser`、其 `/present`、`/pages` 和 `/stream`。展示请求可带 `page_id`，只选择展示，不取得租约。
+  路径为 `/desktop/api/contexts/{context_id}/browser`、其 `/present`、`/pages`、`/downloads` 和 `/stream`。展示请求可带 `page_id`，只选择展示，不取得租约。
   更换使用 PUT `{ "source_context_id": "来源 Context ID" }`；`null` 表示显式新建独立实例。
-- `desktop/src/renderer/features/context/context-browser.*`：Context 按钮、页面列表/展示、共享选择和实时状态；
+- `desktop/src/renderer/features/context/context-browser.*`：Context 按钮、页面列表/展示、下载与权限面板、共享选择和实时状态；
   被任务视图、图检查器和 Loop 控制台复用。被动刷新不反复激活原生窗口。
 - `desktop/resources/distinct-browser/`：固定版本 EXE 与 SHA-256 清单。
   `npm --prefix desktop run prepare:browser` 验证产物；托管安装/更新调用同一命令。

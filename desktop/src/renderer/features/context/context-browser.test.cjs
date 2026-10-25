@@ -108,3 +108,22 @@ test("passive status rendering never presents or repeatedly reloads the browser"
   assert.equal(h.requests[0].url, "/desktop/api/contexts/A/browser");
   h.controller.close();
 });
+
+test("download and permission records render safe readable results with native-only decisions", () => {
+  const { renderInteractions, statusLabel } = require("./context-browser.js");
+  const value = { downloads: [{ download_id: "file", page_id: "child", state: "in_progress", bytes_received: 512,
+    total_bytes: 2048, path: 'C:/Downloads/<file>.txt', url: 'https://site.example/file?x=<script>' }],
+    permissions: [{ request_id: "request", page_id: "parent", kind: "geolocation", state: "pending", url: "https://site.example/" }],
+    rejected: [{ reason: "download_limit" }], interaction_pending: true };
+  const html = renderInteractions(value);
+  assert.match(html, /512 \/ 2048/);
+  assert.match(html, /value="512"/);
+  assert.match(html, /C:\/Downloads\/&lt;file&gt;\.txt/);
+  assert.match(html, /child/);
+  assert.match(html, /位置/);
+  assert.match(html, /https:\/\/site\.example\//);
+  assert.match(html, /原生/);
+  assert.doesNotMatch(html, /<script>|data-(grant|cancel-download)/);
+  assert.match(statusLabel({ state: "manual", site_interactions: value }), /权限待决定/);
+  assert.match(renderInteractions({ downloads: [{ state: "cancelled", reason: "human_cancel", page_id: "child" }] }), /已取消/);
+});

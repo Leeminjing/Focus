@@ -42,13 +42,21 @@ def build_browser_tools():
     async def act(runtime, observation_id, action, coordinate_space="image"):
         try:
             result = await _run(runtime).act(observation_id, action, coordinate_space)
+            if result.get("download_started"):
+                result = {**result, "next_tool": "browser_list_downloads", "retry_automatically": False}
             return json.dumps(result, ensure_ascii=False)
         except BrowserError as error:
+            if action["type"] == "navigate" and error.code in {"navigation_failed", "navigation_cancelled"} and error.detail.get("web_error_status") == 9:
+                error.detail = {**error.detail, "download_check_required": True, "next_tool": "browser_list_downloads"}
             raise ToolException(_error(error)) from error
 
     @tool
     async def browser_navigate(url: str, observation_id: str, runtime: ToolRuntime[dict]) -> str:
-        """导航当前真实浏览器。须提供最近观察编号，完成或失败后重新观察；禁止自动重放结果未知的动作。"""
+        """导航当前真实浏览器。须提供最近观察编号，完成或失败后重新观察；禁止自动重放。
+
+        download_started 或 CONNECTION_ABORTED(9) 不等于下载失败，必须 browser_list_downloads 查询实际结果。
+        下载/权限会撤销租约，等待用户在原生窗口处理并交还；禁止自动重新触发已取消的下载或权限。
+        """
         return await act(runtime, observation_id, {"type": "navigate", "url": url})
 
     @tool
@@ -76,6 +84,19 @@ def build_browser_tools():
         """列出当前 Context 浏览器的真实页面、标题、地址与 selected_page_id；不取得租约，也不产生可操作的观察。"""
         try:
             return json.dumps(await _run(runtime).list_pages(), ensure_ascii=False)
+        except BrowserError as error:
+            raise ToolException(_error(error)) from error
+
+    @tool
+    async def browser_list_downloads(runtime: ToolRuntime[dict]) -> str:
+        """只读查询当前 Context 浏览器的下载进度、保存路径、完成/中断原因与页面归属。
+
+        人工接管期间也能查询，不取得租约、不授予观察资格。取消在原生窗口 Ctrl+J 面板完成。
+        导航成为附件或返回 CONNECTION_ABORTED(9) 时先查询记录，禁止重复导航或点击。
+        网站权限由用户在原生提示决定；处理结束仍需用户交还、browser_observe 后再继续。
+        """
+        try:
+            return json.dumps(await _run(runtime).list_downloads(), ensure_ascii=False)
         except BrowserError as error:
             raise ToolException(_error(error)) from error
 
@@ -108,7 +129,7 @@ def build_browser_tools():
     tools = [*(declare_effect(item, OPAQUE_LOCAL_EFFECT) for item in (
         browser_observe, browser_navigate, browser_click, browser_type, browser_key, browser_scroll,
         browser_list_pages, browser_select_page, browser_close_page)),
-        declare_effect(browser_release, NO_LOCAL_EFFECT)]
+        declare_effect(browser_release, NO_LOCAL_EFFECT), declare_effect(browser_list_downloads, NO_LOCAL_EFFECT)]
     for item in tools:
         item.handle_tool_error = True
     return tools

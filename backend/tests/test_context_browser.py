@@ -235,3 +235,129 @@ def test_page_management_needs_browser_lease_and_never_grants_an_observation():
             await run.page_command("close_page", "child")
         assert len(calls) == 2 and run.token is None
     asyncio.run(scenario())
+
+
+def test_download_tool_is_read_only_during_manual_control_and_has_no_grant_interface():
+    from backend.app.desktop.browser.tools import build_browser_tools
+    async def scenario():
+        owner, run = page_run()
+        owner._event({"event": "control_changed", "browser_id": "browser", "state": "manual",
+                      "detail": {"reason": "download_started"}})
+        calls = []
+        async def call(method, **params):
+            calls.append((method, params))
+            return {"downloads": [{"download_id": "file", "page_id": "parent", "state": "in_progress",
+                                   "bytes_received": 512, "total_bytes": 2048, "path": "C:/Downloads/file.txt"}],
+                    "interaction_pending": True}
+        owner.transport.call = call
+        runtime = tool_runtime(agent_id="main:context", task_id="context")
+        runtime.context["security_context"] = replace(runtime.context["security_context"], extras={"browser_run": run})
+        tools = {item.name: item for item in build_browser_tools()}
+        result = json.loads(await tools["browser_list_downloads"].ainvoke({"runtime": runtime}))
+        assert result["downloads"][0]["bytes_received"] == 512 and result["interaction_pending"]
+        assert calls == [("list_downloads", {"browser_id": "browser"})]
+        assert run.token is None and run.observation is None and run.browser.state == "manual"
+        assert not any("grant" in name or "permission" in name or "cancel_download" in name for name in tools)
+    asyncio.run(scenario())
+
+
+def test_site_events_notify_shared_runs_and_do_not_resume_them_or_affect_other_browsers():
+    from backend.app.desktop.browser.service import BrowserSession
+    async def scenario():
+        owner, run = page_run()
+        shared = owner.resource("shared-context", "shared-run")
+        shared.browser, shared._task = run.browser, None
+        owner.runs.add(shared)
+        other = owner.resource("other-context", "other-run")
+        other.browser = BrowserSession("other", "automatic", owner.transport.host_id)
+        other.token, other.observation, other._task = "independent", {"observation_id": "valid"}, None
+        owner.runs.add(other)
+        run.observation = {"observation_id": "old", "page_id": "parent"}
+        events = [
+            {"event": "download_changed", "detail": {"download_id": "file", "page_id": "child", "state": "cancelled", "reason": "human_cancel"}},
+            {"event": "download_rejected", "detail": {"page_id": "child", "reason": "download_limit"}},
+            {"event": "permission_requested", "detail": {"request_id": "permission", "page_id": "parent", "kind": "geolocation", "url": "https://site.example/", "state": "pending"}},
+            {"event": "permission_resolved", "detail": {"request_id": "permission", "page_id": "parent", "kind": "geolocation", "url": "https://site.example/", "state": "denied", "reason": "human_decision"}},
+        ]
+        for event in events:
+            owner._event({**event, "browser_id": "browser", "state": "manual"})
+        async def call(method, **params):
+            assert method == "list_downloads" and params == {"browser_id": "browser"}
+            return {"downloads": [events[0]["detail"]], "interaction_pending": False}
+        owner.transport.call = call
+        listing = await run.list_downloads()
+        assert listing["permissions"][0]["state"] == "denied"
+        assert listing["rejected"][0]["reason"] == "download_limit"
+        assert not listing["interaction_pending"] and run.browser.state == "manual"
+        assert run.token is None and run.observation is None and shared.handoff
+        assert other.token == "independent" and other.observation == {"observation_id": "valid"}
+        for resource in (run, shared):
+            owner.bridge.publish_end(resource.run_id)
+            frames = [frame async for frame in owner.bridge.subscribe(resource.run_id) if getattr(frame, "event", None) == "browser"]
+            assert [frame.data["data"]["event"] for frame in frames] == [event["event"] for event in events]
+    asyncio.run(scenario())
+
+
+def test_model_waits_for_explicit_handback_then_receives_download_and_permission_results():
+    from backend.app.desktop.browser.middleware import BrowserControlMiddleware
+    from langchain_core.messages import HumanMessage
+    async def scenario():
+        owner, run = page_run()
+        runtime = tool_runtime(agent_id="main:context", task_id="context")
+        runtime.context["security_context"] = replace(runtime.context["security_context"], extras={"browser_run": run})
+        request = SimpleNamespace(runtime=runtime, messages=[HumanMessage(content="download")])
+        request.override = lambda **fields: SimpleNamespace(**fields)
+        owner._event({"event": "permission_requested", "browser_id": "browser", "state": "manual", "detail": {
+            "request_id": "location", "page_id": "parent", "kind": "geolocation", "state": "pending"}})
+        decisions = []
+        async def model(request):
+            decisions.extend(message.content for message in request.messages)
+            return "continued"
+        waiting = asyncio.create_task(BrowserControlMiddleware().awrap_model_call(request, model))
+        await asyncio.sleep(0)
+        owner._event({"event": "permission_resolved", "browser_id": "browser", "state": "manual", "detail": {
+            "request_id": "location", "page_id": "parent", "kind": "geolocation", "state": "denied"}})
+        owner._event({"event": "download_changed", "browser_id": "browser", "state": "manual", "detail": {
+            "download_id": "file", "page_id": "child", "state": "cancelled", "reason": "human_cancel"}})
+        await asyncio.sleep(0)
+        assert not decisions and not waiting.done(), "terminal results must not grant control"
+        owner._event({"event": "control_changed", "browser_id": "browser", "state": "available", "detail": {"reason": "hand_back"}})
+        assert await asyncio.wait_for(waiting, 1) == "continued"
+        assert "browser_observe" in decisions[-1] and "browser_list_downloads" in decisions[-1]
+        assert "cancelled" in decisions[-1] and "denied" in decisions[-1]
+        assert "禁止" in decisions[-1] and run.token is None and run.observation is None
+    asyncio.run(scenario())
+
+
+def test_attachment_navigation_keeps_native_error_and_requires_download_query_without_replay():
+    from backend.app.desktop.browser.tools import build_browser_tools
+    class Run:
+        calls = 0
+        async def act(self, *args):
+            self.calls += 1
+            raise BrowserError("navigation_failed", "CONNECTION_ABORTED", {"web_error_status": 9, "result_unknown": True})
+    run = Run()
+    runtime = tool_runtime(agent_id="main:context", task_id="context")
+    runtime.context["security_context"] = replace(runtime.context["security_context"], extras={"browser_run": run})
+    tools = {item.name: item for item in build_browser_tools()}
+    message = asyncio.run(tools["browser_navigate"].ainvoke({"type": "tool_call", "id": "attachment", "name": "browser_navigate",
+        "args": {"url": "https://site.example/file", "observation_id": "view", "runtime": runtime}}))
+    result = json.loads(message.content)
+    assert message.status == "error" and result["error"]["code"] == "navigation_failed"
+    assert result["error"]["detail"]["web_error_status"] == 9 and result["error"]["detail"]["result_unknown"]
+    assert result["error"]["detail"]["next_tool"] == "browser_list_downloads"
+    assert result["retry_automatically"] is False and run.calls == 1
+
+
+def test_late_download_query_cannot_hide_a_new_permission_wait():
+    async def scenario():
+        owner, run = page_run()
+        async def call(method, **params):
+            owner._event({"event": "permission_requested", "browser_id": "browser", "state": "manual", "detail": {
+                "request_id": "new", "page_id": "parent", "kind": "geolocation", "state": "pending"}})
+            return {"downloads": [], "interaction_pending": False}  # captured before the new request
+        owner.transport.call = call
+        value = await run.list_downloads()
+        assert value["permissions"][0]["state"] == "pending" and value["interaction_pending"]
+        assert run.token is None and run.browser.state == "manual"
+    asyncio.run(scenario())

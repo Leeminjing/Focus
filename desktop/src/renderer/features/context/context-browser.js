@@ -11,13 +11,40 @@
     paused: "已暂停，恢复窗口后仍需点击交还", faulted: "浏览器故障，请显式更换绑定",
     closed: "浏览器已关闭，请显式更换绑定", disconnected: "连接已断开，原窗口可供人工使用" };
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+  const interactionLabels = { in_progress: "下载中", completed: "已完成", cancelled: "已取消", interrupted: "已中断",
+    pending: "等待用户决定", allowed_once: "已允许本次请求", denied: "已拒绝", failed: "决定失败" };
+  const permissionLabels = { geolocation: "位置", camera: "摄像头", microphone: "麦克风", notifications: "通知",
+    clipboard_read: "读取剪贴板", sensors: "传感器", automatic_downloads: "自动下载多个文件", file_read_write: "文件读写",
+    autoplay: "自动播放", local_fonts: "本机字体", midi: "MIDI 设备", window_management: "屏幕与窗口" };
+  const reasonLabels = { human_cancel: "用户取消", human_decision: "用户决定", no_progress_timeout: "长时间没有下载进展",
+    download_limit: "同时下载数量已达上限", same_page_url_already_downloading: "该页面的同一地址已在下载",
+    disconnected: "浏览器连接断开", browser_faulted: "浏览器故障", timeout: "等待超时", page_navigated: "来源页面已导航",
+    prompt_closed: "用户关闭权限提示", host_setup_failed: "无法创建下载", cancel_failed: "无法确认取消结果" };
+  function statusLabel(value) {
+    const sites = value.site_interactions || {};
+    if (["manual", "taking_over", "paused"].includes(value.state)) {
+      if (sites.permissions?.some(item => item.state === "pending")) return "网站权限待决定，请在原生浏览器处理";
+      if (sites.downloads?.some(item => item.state === "in_progress")) return "下载进行中，Agent 已暂停";
+    }
+    return labels[value.state] || value.state;
+  }
+  function renderInteractions(value = {}) {
+    const downloads = (value.downloads || []).map(item => {
+      const received = Math.max(0, Number(item.bytes_received) || 0), total = Number(item.total_bytes);
+      return `<article class="context-browser-interaction"><strong>${escape(interactionLabels[item.state] || item.state)}</strong><p>${received} / ${total > 0 ? total : "大小未知"} 字节</p>${total > 0 ? `<progress aria-label="下载进度" max="${total}" value="${Math.min(received, total)}"></progress>` : ""}<p>${escape(item.url)}</p><code>${escape(item.path || "尚未确定保存路径")}</code><small>来源页面：${escape(item.page_id)}</small>${item.reason ? `<p>原因：${escape(reasonLabels[item.reason] || item.reason)}</p>` : ""}</article>`;
+    }).join("");
+    const permissions = (value.permissions || []).map(item => `<article class="context-browser-interaction"><strong>${escape(permissionLabels[item.kind] || item.kind)} · ${escape(interactionLabels[item.state] || item.state)}</strong><p>${escape(item.url)}</p><small>来源页面：${escape(item.page_id)}</small>${item.reason ? `<p>原因：${escape(reasonLabels[item.reason] || item.reason)}</p>` : ""}</article>`).join("");
+    const rejected = (value.rejected || []).map(item => `<p>下载未接受：${escape(reasonLabels[item.reason] || item.reason)}${item.page_id ? ` · 来源页面：${escape(item.page_id)}` : ""}</p>`).join("");
+    return `<p class="context-browser-interaction-guidance">取消下载请在原生浏览器按 Ctrl+J；网站权限请在原生提示中决定。处理结束后仍需交还，Agent 会重新观察。</p><section><h3>下载</h3>${downloads || "<p>尚无下载记录。</p>"}${rejected}</section><section><h3>网站权限</h3>${permissions || "<p>尚无网站权限请求。</p>"}</section>`;
+  }
   function render(id) {
-    return `<span class="context-browser-controls" data-context-browser="${escape(id)}"><button type="button" data-action="context-browser-present" data-context-id="${escape(id)}">浏览器</button><button type="button" data-action="context-browser-pages" data-context-id="${escape(id)}">页面</button><span role="status" data-browser-status="${escape(id)}"></span><button type="button" data-action="context-browser-binding" data-context-id="${escape(id)}">浏览器绑定</button></span>`;
+    return `<span class="context-browser-controls" data-context-browser="${escape(id)}"><button type="button" data-action="context-browser-present" data-context-id="${escape(id)}">浏览器</button><button type="button" data-action="context-browser-pages" data-context-id="${escape(id)}">页面</button><button type="button" data-action="context-browser-downloads" data-context-id="${escape(id)}">下载与权限</button><span role="status" data-browser-status="${escape(id)}"></span><button type="button" data-action="context-browser-binding" data-context-id="${escape(id)}">浏览器绑定</button></span>`;
   }
   function create({ runtime, api, getContexts = () => [], onStatus = () => {}, EventSourceImpl = globalThis.EventSource }) {
     let selected = null;
     let source = null;
     let pageDialog = null;
+    let interactionDialog = null;
     const clientId = globalThis.crypto.randomUUID();
     let sequence = 0;
     const snapshots = new Map();
@@ -25,7 +52,7 @@
     function patch() {
       for (const node of document.querySelectorAll("[data-browser-status]")) {
         const value = snapshots.get(node.dataset.browserStatus);
-        if (value) node.textContent = `${labels[value.state] || value.state}${value.shared_context_ids?.length > 1 ? ` · ${value.shared_context_ids.length} 个 Context 共享` : ""}`;
+        if (value) node.textContent = `${statusLabel(value)}${value.shared_context_ids?.length > 1 ? ` · ${value.shared_context_ids.length} 个 Context 共享` : ""}`;
       }
     }
     function update(snapshot) {
@@ -33,6 +60,8 @@
       snapshots.set(snapshot.context_id, snapshot); patch();
       if (pageDialog?.contextId === snapshot.context_id &&
           (previous?.pages_revision !== snapshot.pages_revision || previous?.state !== snapshot.state || previous?.browser_id !== snapshot.browser_id)) void pageDialog.refresh();
+      if (interactionDialog?.contextId === snapshot.context_id &&
+          (previous?.interactions_revision !== snapshot.interactions_revision || previous?.state !== snapshot.state || previous?.browser_id !== snapshot.browser_id)) void interactionDialog.refresh();
     }
     async function select(contextId, { present = true, pageId = null } = {}) {
       if (!contextId) return;
@@ -40,6 +69,7 @@
       if (pageId) presentation.page_id = pageId;
       if (selected !== contextId) {
         pageDialog?.dialog.close();
+        interactionDialog?.dialog.close();
         selected = contextId;
         source?.close();
         const url = `${String(runtime.apiBase || "").replace(/\/$/, "")}${path(contextId)}/stream?session=${encodeURIComponent(runtime.session)}`;
@@ -54,6 +84,7 @@
       } catch (error) { if (selected === contextId && presentation.sequence === sequence) onStatus(error.message, true); }
     }
     function pages(contextId) {
+      interactionDialog?.dialog.close();
       pageDialog?.dialog.close();
       const dialog = document.createElement("dialog");
       dialog.className = "patrol-dialog glass-surface context-browser-dialog context-browser-pages";
@@ -91,6 +122,35 @@
       dialog.showModal();
       void refresh();
     }
+    function downloads(contextId) {
+      pageDialog?.dialog.close();
+      interactionDialog?.dialog.close();
+      const dialog = document.createElement("dialog");
+      dialog.className = "patrol-dialog glass-surface context-browser-dialog context-browser-downloads";
+      dialog.innerHTML = `<form method="dialog"><h2>下载与网站权限</h2><p role="alert"></p><div class="context-browser-interaction-list"></div><div><button type="button" data-refresh>刷新状态</button><button type="button" data-present>展示原生浏览器</button><button type="submit">关闭</button></div></form>`;
+      const list = dialog.querySelector(".context-browser-interaction-list"), alert = dialog.querySelector('[role="alert"]');
+      let loading = false, dirty = false;
+      const panel = { contextId, dialog, refresh };
+      async function refresh() {
+        dirty = true;
+        if (loading) return;
+        loading = true;
+        try {
+          while (dirty && interactionDialog === panel) {
+            dirty = false;
+            const value = await api(`${path(contextId)}/downloads`);
+            if (interactionDialog !== panel || dirty) continue;
+            alert.textContent = ""; list.innerHTML = renderInteractions(value);
+          }
+        } catch (error) { if (interactionDialog === panel) alert.textContent = error.message; }
+        finally { loading = false; }
+      }
+      interactionDialog = panel;
+      dialog.querySelector("[data-refresh]").onclick = () => void refresh();
+      dialog.querySelector("[data-present]").onclick = () => void select(contextId);
+      dialog.addEventListener("close", () => { if (interactionDialog === panel) interactionDialog = null; dialog.remove(); }, { once: true });
+      document.body.append(dialog); dialog.showModal(); void refresh();
+    }
     function binding(contextId, contexts) {
       const dialog = document.createElement("dialog");
       dialog.className = "patrol-dialog glass-surface context-browser-dialog";
@@ -118,11 +178,12 @@
       const id = button.dataset.contextId;
       if (button.dataset.action === "context-browser-present") void select(id);
       else if (button.dataset.action === "context-browser-pages") pages(id);
+      else if (button.dataset.action === "context-browser-downloads") downloads(id);
       else if (button.dataset.action === "context-browser-binding") binding(id, getContexts(id));
     }, true);
-    return { select, patch, binding, pages, render,
+    return { select, patch, binding, pages, downloads, render,
       watch(id) { if (selected !== id) void select(id, { present: false }); else patch(); },
-      close() { pageDialog?.dialog.close(); source?.close(); source = null; selected = null; } };
+      close() { pageDialog?.dialog.close(); interactionDialog?.dialog.close(); source?.close(); source = null; selected = null; } };
   }
-  return { create, render, labels };
+  return { create, render, labels, statusLabel, renderInteractions };
 });
