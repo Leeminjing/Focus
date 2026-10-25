@@ -72,6 +72,33 @@ test("late responses and closed event sources cannot overwrite current state", a
   h.controller.close();
 });
 
+test("an older presentation failure cannot overwrite feedback from a newer success for the same Context", async () => {
+  let fail;
+  const h = harness(async (url, options) => {
+    if (JSON.parse(options.body).sequence === 1) {
+      return await new Promise((resolve, reject) => { fail = reject; });
+    }
+    return { context_id: "A", state: "manual", foreground: false };
+  });
+  const old = h.controller.select("A");
+  await h.controller.select("A");
+  const currentStatus = h.status.slice();
+  assert.equal(currentStatus.length, 1);
+  assert.equal(currentStatus[0][1], false);
+  fail(new Error("older presentation failed"));
+  await old;
+  assert.deepEqual(h.status, currentStatus);
+  assert.match(h.node.textContent, /人工控制/);
+  h.controller.close();
+});
+
+test("the latest presentation failure still reports an error", async () => {
+  const h = harness(async () => { throw new Error("current presentation failed"); });
+  await h.controller.select("A");
+  assert.deepEqual(h.status, [["current presentation failed", true]]);
+  h.controller.close();
+});
+
 test("passive status rendering never presents or repeatedly reloads the browser", async () => {
   const h = harness();
   h.controller.watch("A");
