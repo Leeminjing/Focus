@@ -3,7 +3,8 @@
  *
  * 输入为 apiBase、桌面 session、taskId/materialId 和待绑定的 img 节点；输出为按材料缓存的
  * object URL 或已填充 src 的图片节点。具体工作流为使用 X-Focus-Session 请求任务作用域内容
- * API，成功后缓存 URL；材料删除、任务切换或页面卸载时统一 revoke，session 不进入 URL/DOM。
+ * API，成功后按独立缓存项身份保存 URL；释放时中断请求并 revoke，迟到结果不得修改替代项，
+ * session 不进入 URL/DOM。
  *
  * 示例：await loader.bindAll(document); loader.releaseTask(taskId)。
  */
@@ -24,19 +25,20 @@
       const key = this._key(taskId, materialId);
       const current = this.entries.get(key);
       if (current) return current.promise;
-      const promise = this._fetch(taskId, materialId).catch(error => {
-        this.entries.delete(key);
+      const entry = { taskId, materialId, controller: new AbortController(), promise: null, url: null };
+      this.entries.set(key, entry);
+      entry.promise = this._fetch(taskId, materialId, entry.controller.signal).then(url => {
+        if (this.entries.get(key) !== entry) {
+          URL.revokeObjectURL(url);
+          throw new Error("材料内容已释放");
+        }
+        entry.url = url;
+        return url;
+      }).catch(error => {
+        if (this.entries.get(key) === entry) this.entries.delete(key);
         throw error;
       });
-      this.entries.set(key, { taskId, materialId, promise, url: null });
-      const url = await promise;
-      const entry = this.entries.get(key);
-      if (!entry) {
-        URL.revokeObjectURL(url);
-        throw new Error("材料内容已释放");
-      }
-      entry.url = url;
-      return url;
+      return entry.promise;
     }
 
     async bindAll(root) {
@@ -70,9 +72,10 @@
       for (const key of [...this.entries.keys()]) this._release(key);
     }
 
-    async _fetch(taskId, materialId) {
+    async _fetch(taskId, materialId, signal) {
       const path = `/desktop/api/tasks/${encodeURIComponent(taskId)}/materials/${encodeURIComponent(materialId)}/content`;
       const response = await this.fetchImpl(`${this.apiBase}${path}`, {
+        signal,
         headers: { "X-Focus-Session": this.session },
       });
       if (!response.ok) throw new Error(`材料内容加载失败 (${response.status})`);
@@ -83,6 +86,7 @@
       const entry = this.entries.get(key);
       if (!entry) return;
       this.entries.delete(key);
+      entry.controller.abort();
       if (entry.url) URL.revokeObjectURL(entry.url);
     }
 
