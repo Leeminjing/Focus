@@ -131,7 +131,7 @@
   color: var(--text-accent);
 }
 
-.map-collapsible-context-row.is-selected .map-collapsible-item { background: var(--surface-selected); }
+.map-collapsible-context-row.is-selected:not(.is-current) .map-collapsible-item { background: var(--surface-selected); }
 .map-collapsible-context-item.drop-target { background: var(--surface-accent); box-shadow: inset 0 0 0 1px var(--border-accent); }
 
 .map-collapsible-title {
