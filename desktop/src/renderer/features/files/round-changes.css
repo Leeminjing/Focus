@@ -3,7 +3,7 @@
 .round-changes-panel { border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-reading); }
 .round-changes-panel > summary, .round-change-file > summary { display: flex; align-items: center; gap: 10px; padding: 7px 10px; cursor: pointer; list-style: none; min-width: 0; }
 .round-changes-panel > summary::-webkit-details-marker, .round-change-file > summary::-webkit-details-marker { display: none; }
-.round-changes-panel > summary::before, .round-change-file > summary::before { content: "›"; flex: 0 0 auto; }
+.round-changes-panel > summary::before, .round-change-file > summary::before { content: "›"; flex: 0 0 auto; transition: transform var(--motion-fast) var(--ease-standard); }
 .round-changes-panel[open] > summary::before, .round-change-file[open] > summary::before { transform: rotate(90deg); }
 .round-changes strong { color: var(--text-primary); font-size: 12px; }
 .round-changes summary:hover { background: var(--surface-subtle); }
