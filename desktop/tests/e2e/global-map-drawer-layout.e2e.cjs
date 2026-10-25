@@ -18,6 +18,7 @@ if (!process.versions.electron) {
   process.exit(result.status ?? 1);
 } else {
   const {app, BrowserWindow} = require("electron");
+  app.disableHardwareAcceleration();
   app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "focus-map-drawer-")));
   const output = process.env.FOCUS_MAP_EVIDENCE || fs.mkdtempSync(path.join(os.tmpdir(), "focus-map-drawer-evidence-"));
   fs.mkdirSync(output, {recursive: true});

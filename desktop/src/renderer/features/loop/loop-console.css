@@ -2,21 +2,38 @@
  * 本文件对外提供任务 Loop 活动轨、真实因果图、Context 实时卡、会话因果带、事实表与终止态视觉层级；共享紧凑图节点供工作区 Patrol 与全图使用。
  * 输入为 Loop 生命周期、Live 连接状态及专用视图语义 class；输出为连接提示、宽屏左图表/右会话工作台、活动抽屉、窄屏布局、稳定滚动区和 reduced-motion 等价呈现。
  * 具体工作流为连接提示独立于 Loop 状态，命令栏与活动轨固定信息密度，图/事实/会话各自滚动，活动效果仅响应实体状态，默认点阵与 workbench 连续图共用唯一节点/边样式，宿主决定控件定位、缩放控制消费共用材质；长列表使用有界内容与原位更新降低重绘成本。
- * 示例：`.loop-console-main` 在宽屏按可调比例分栏，在 1100px 以下自动切换为单列。
+ * 示例：`.loop-console-main` 按可调比例分栏，Loop 容器不足 955px 时自动切换为单列。
  * `.is-live-card` 承接当前 running Run 的固定 280×164 玻璃卡；正文为固定两行末端对齐窗口，短文本顶部显示，长文本自然裁去开头，换行/缩放无需逐帧测量。
  * `.context-live-preview[data-preview-status]` 只呈现真实角色、正文与连接状态，无循环假输出或逐 token 可访问播报；历史和终态由视图移除该区域。
  */
+#app:has(> .loop-layout-container) {
+  container: loop-workbench / size;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.loop-layout-container {
+  container: loop-layout / inline-size;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
 .loop-dashboard.console-shell {
   display: flex;
   flex-direction: column;
   gap: 0;
-  height: calc(100vh - 65px);
-  min-height: 680px;
+  flex: 1;
+  min-height: 0;
   padding: 0;
   overflow: hidden;
   color: #15223a;
   background: #f5f7fb;
 }
+.loop-dashboard.console-shell > :not(.loop-console, .loop-console-loading) { flex-shrink: 0; }
 .portfolio-context-node.is-search-muted { opacity: .2; }
 
 .loop-command-bar {
@@ -241,14 +258,15 @@
 .loop-compression-status.is-expired { border-color: #e0e5ed; background: #f7f9fc; color: #65758b; }
 
 .loop-console {
+  container: loop-console / size;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .loop-console-main {
   display: grid;
-  grid-template-columns: var(--loop-map-columns, minmax(520px, 1.08fr) 5px minmax(430px, .92fr));
+  grid-template-columns: minmax(520px, var(--loop-map-ratio, 1.08fr)) 5px minmax(430px, var(--loop-conversation-ratio, .92fr));
   height: 100%;
   min-height: 0;
   background: #fff;
@@ -257,7 +275,7 @@
 
 .loop-console-workspace {
   display: grid;
-  grid-template-rows: minmax(320px, 1fr) minmax(205px, 34%);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 34%);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -347,12 +365,13 @@
 .run-dot.is-failed { background: #d74747; }
 
 .context-conversation {
-  display: grid;
-  grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
   background: #fff;
 }
+.context-conversation > :not(.loop-transcript) { flex-shrink: 0; }
 .conversation-head {
   display: flex;
   align-items: center;
@@ -387,7 +406,7 @@
 .conversation-filters button.is-active,
 .fact-filters button.is-active,
 .intervention-modes button.is-active { background: #e9f1ff; color: #125dc9; }
-.loop-transcript { min-height: 0; overflow: auto; padding: 6px 16px 10px; scroll-behavior: smooth; }
+.loop-transcript { flex: 1; min-height: 0; overflow: auto; padding: 6px 16px 10px; scroll-behavior: smooth; }
 .loop-message {
   position: relative;
   display: grid;
@@ -428,14 +447,14 @@
 .loop-intervention.is-readonly { display: flex; gap: 8px; align-items: center; min-height: 52px; color: #697990; font-size: 11px; }
 .loop-intervention.is-readonly strong { color: #263b59; }
 
-.loop-facts-drawer { min-width: 0; min-height: 0; border-top: 1px solid #dfe5ee; background: #fff; overflow: hidden; }
+.loop-facts-drawer { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; border-top: 1px solid #dfe5ee; background: #fff; overflow: hidden; }
 .loop-facts-drawer > header { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 12px; padding: 8px 13px; border-bottom: 1px solid #e8edf3; }
 .loop-facts-drawer h3 { margin: 1px 0 0; font-size: 13px; }
 .fact-totals { color: #5f7188; font-size: 10px; white-space: nowrap; }
 .fact-totals strong { color: #1e334f; }
 .fact-filters { justify-content: flex-end; flex-wrap: nowrap; overflow-x: auto; }
 .fact-filters button { flex: 0 0 auto; white-space: nowrap; }
-.fact-table-scroll { position: relative; height: calc(100% - 49px); overflow: auto; }
+.fact-table-scroll { position: relative; min-height: 0; overflow: auto; }
 .fact-table { width: 100%; min-width: 720px; border-collapse: collapse; table-layout: fixed; font-size: 10px; }
 .fact-table th { position: sticky; z-index: 1; top: 0; padding: 7px 9px; border-bottom: 1px solid #e3e8ef; background: #f7f9fc; color: #77869a; text-align: left; font-weight: 500; }
 .fact-table th:nth-child(1) { width: 58px; }
@@ -456,7 +475,7 @@
 .fact-status.is-unknown { background: #fff1d6; color: #8a5f0a; }
 .fact-sentinel { position: absolute; top: 0; left: 0; width: 1px; height: 1px; }
 .load-facts { position: sticky; z-index: 2; left: 8px; top: 3px; margin: 4px; border: 0; background: #fff; color: #1769d2; cursor: pointer; }
-.loop-console-loading { display: grid; flex: 1; min-height: 480px; place-items: center; color: #66778e; }
+.loop-console-loading { display: grid; flex: 1; min-height: 0; place-items: center; color: #66778e; }
 
 .loop-advanced { flex: 0 0 auto; border-top: 1px solid #dfe5ee; background: #fff; }
 .loop-advanced > summary { padding: 8px 18px; cursor: pointer; color: #64758d; font-size: 11px; }
@@ -476,12 +495,11 @@
   .loop-command-metric { min-width: 94px; padding-inline: 11px; }
 }
 
-@media (max-width: 1100px) {
-  .loop-dashboard.console-shell { height: auto; min-height: calc(100vh - 65px); overflow: visible; }
+/* 520px workspace + 5px divider + 430px conversation. */
+@container loop-layout (width < 955px) {
   .loop-command-bar { grid-template-columns: 1fr; }
   .loop-command-metrics { overflow-x: auto; border-top: 1px solid #e5e9f0; }
   .loop-primary-controls { grid-column: auto; }
-  .loop-console { overflow: visible; }
   .loop-console-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto clamp(280px, 38dvh, 420px) clamp(400px, 58dvh, 640px); height: auto; }
   .loop-console-map-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #e1e6ee; font-size: 12px; }
   .loop-console-map-controls button { min-height: 30px; padding: 4px 10px; }
@@ -495,13 +513,48 @@
   .loop-console-conversation .loop-transcript { flex: 1; min-height: 160px; }
 }
 
+/* 高度不足时采用相同的可折叠单列布局。 */
+@container loop-console (height < 525px) {
+  .loop-console-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto clamp(280px, 38dvh, 420px) clamp(400px, 58dvh, 640px); height: auto; }
+  .loop-console-map-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #e1e6ee; font-size: 12px; }
+  .loop-console-map-controls button { min-height: 30px; padding: 4px 10px; }
+  .loop-console-main.is-map-collapsed { grid-template-rows: auto clamp(400px, 58dvh, 640px); }
+  .loop-console-main.is-map-collapsed .loop-console-workspace { display: none; }
+  .loop-console-divider { display: none; }
+  .loop-console-workspace { grid-template-rows: minmax(160px, 1fr) minmax(100px, 32%); border-right: 0; border-bottom: 1px solid #e1e6ee; }
+  .loop-console-conversation { min-height: 0; overflow-y: auto; }
+  .loop-console-conversation .context-conversation { display: flex; flex-direction: column; min-height: 640px; }
+  .loop-console-conversation .context-conversation > :not(.loop-transcript) { flex-shrink: 0; }
+  .loop-console-conversation .loop-transcript { flex: 1; min-height: 160px; }
+}
+
+/* 按宿主可用高度压紧纵向信息，保留消息阅读区与底部操作。 */
+@container loop-workbench (height < 650px) {
+  .loop-command-bar { min-height: 0; }
+  .loop-command-title { padding: 8px 12px; }
+  .loop-command-title h2 { font-size: 18px; }
+  .loop-command-metric { padding: 6px 10px; }
+  .loop-budget-ring { width: 36px; height: 36px; margin-inline: 10px; }
+  .loop-primary-controls { padding: 6px 10px; }
+  .patrol-activity-rail { min-height: 36px; padding: 4px 12px; }
+  .conversation-head { padding: 4px 12px; }
+  .context-execution-activity { padding: 5px 10px; }
+  .context-metrics { padding: 4px 10px; }
+  .context-metrics > div { padding: 4px 6px; }
+  .context-causality { padding: 4px 10px; }
+  .conversation-tools { padding: 4px 10px; }
+  .loop-intervention { padding: 6px 10px; }
+  .intervention-composer textarea { height: auto; min-height: 40px; max-height: 80px; field-sizing: content; }
+}
+
 @media (max-width: 720px) {
   .loop-command-metrics { display: grid; grid-template-columns: repeat(2, 1fr); }
   .loop-budget-ring { display: none; }
   .context-metrics { grid-template-columns: repeat(2, 1fr); }
   .conversation-tools { align-items: stretch; flex-direction: column; }
   .loop-message { grid-template-columns: 88px minmax(0, 1fr); }
-  .loop-facts-drawer > header { grid-template-columns: 1fr; }
+  .loop-facts-drawer > header { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+  .loop-facts-drawer .fact-filters { grid-column: 1 / -1; }
   .fact-filters { justify-content: flex-start; }
   .loop-start-gate { grid-template-columns: 1fr; }
   .loop-compression-status dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
