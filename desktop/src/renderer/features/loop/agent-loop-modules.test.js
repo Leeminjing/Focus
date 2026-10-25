@@ -489,7 +489,7 @@ test("console controller binds and disconnects native pagination observers", () 
     })[selector] || null,
   };
   const factList = { querySelector: selector => selector === "[data-loop-fact-sentinel]" ? factSentinel : null };
-  const layout = { style: { setProperty() {} }, getBoundingClientRect: () => ({ left: 0, width: 1000 }) };
+  const layout = { style: { setProperty(name, value) { this[name] = value; } }, getBoundingClientRect: () => ({ left: 0, width: 1000 }) };
   const listeners = new Map();
   const handle = {
     addEventListener(type, callback) { listeners.set(type, callback); },

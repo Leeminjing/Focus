@@ -271,6 +271,7 @@
   min-height: 0;
   background: #fff;
 }
+.loop-console-map-controls { display: none; }
 
 .loop-console-workspace {
   display: grid;
@@ -499,16 +500,32 @@
   .loop-command-bar { grid-template-columns: 1fr; }
   .loop-command-metrics { overflow-x: auto; border-top: 1px solid #e5e9f0; }
   .loop-primary-controls { grid-column: auto; }
-  .loop-console-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: max(320px, 75cqh) max(600px, 100cqh); height: auto; }
+  .loop-console-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto clamp(280px, 38dvh, 420px) clamp(400px, 58dvh, 640px); height: auto; }
+  .loop-console-map-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #e1e6ee; font-size: 12px; }
+  .loop-console-map-controls button { min-height: 30px; padding: 4px 10px; }
+  .loop-console-main.is-map-collapsed { grid-template-rows: auto clamp(400px, 58dvh, 640px); }
+  .loop-console-main.is-map-collapsed .loop-console-workspace { display: none; }
   .loop-console-divider { display: none; }
-  .loop-console-workspace { grid-template-rows: minmax(0, 3fr) minmax(0, 2fr); border-right: 0; border-bottom: 1px solid #e1e6ee; }
+  .loop-console-workspace { grid-template-rows: minmax(160px, 1fr) minmax(100px, 32%); border-right: 0; border-bottom: 1px solid #e1e6ee; }
+  .loop-console-conversation { min-height: 0; overflow-y: auto; }
+  .loop-console-conversation .context-conversation { display: flex; flex-direction: column; min-height: 640px; }
+  .loop-console-conversation .context-conversation > :not(.loop-transcript) { flex-shrink: 0; }
+  .loop-console-conversation .loop-transcript { flex: 1; min-height: 160px; }
 }
 
-/* 高度不足时纵向浏览面板，与宽度断点独立生效。 */
+/* 高度不足时采用相同的可折叠单列布局。 */
 @container loop-console (height < 525px) {
-  .loop-console-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: max(320px, 75cqh) max(600px, 100cqh); height: auto; }
+  .loop-console-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto clamp(280px, 38dvh, 420px) clamp(400px, 58dvh, 640px); height: auto; }
+  .loop-console-map-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #e1e6ee; font-size: 12px; }
+  .loop-console-map-controls button { min-height: 30px; padding: 4px 10px; }
+  .loop-console-main.is-map-collapsed { grid-template-rows: auto clamp(400px, 58dvh, 640px); }
+  .loop-console-main.is-map-collapsed .loop-console-workspace { display: none; }
   .loop-console-divider { display: none; }
-  .loop-console-workspace { grid-template-rows: minmax(0, 3fr) minmax(0, 2fr); border-right: 0; border-bottom: 1px solid #e1e6ee; }
+  .loop-console-workspace { grid-template-rows: minmax(160px, 1fr) minmax(100px, 32%); border-right: 0; border-bottom: 1px solid #e1e6ee; }
+  .loop-console-conversation { min-height: 0; overflow-y: auto; }
+  .loop-console-conversation .context-conversation { display: flex; flex-direction: column; min-height: 640px; }
+  .loop-console-conversation .context-conversation > :not(.loop-transcript) { flex-shrink: 0; }
+  .loop-console-conversation .loop-transcript { flex: 1; min-height: 160px; }
 }
 
 /* 按宿主可用高度压紧纵向信息，保留消息阅读区与底部操作。 */
