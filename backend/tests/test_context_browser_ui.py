@@ -77,7 +77,6 @@ def test_context_selection_binding_and_native_status_in_real_focus(client, tmp_p
     from langchain.agents import create_agent
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
     from backend.app.desktop.browser.middleware import BrowserControlMiddleware
-    from backend.tests.test_session_patrol_workbench_api import wait_run
     class Model(FakeListChatModel):
         def bind_tools(self, tools, **kwargs):
             return self
@@ -93,7 +92,16 @@ def test_context_selection_binding_and_native_status_in_real_focus(client, tmp_p
     started = http.post(f"/desktop/api/tasks/{aid}/main/runs", headers=SESSION,
                         json={"message": "Run with an independent browser", "model_name": "deepseek-v4-flash"})
     assert started.status_code == 200, started.text
-    wait_run(http, started.json()["run_id"])
+    # A cold production tool discovery can take longer than the workbench
+    # helper's five-second model-only budget. Keep the real assembly path.
+    deadline = time.monotonic() + 45
+    while True:
+        settled = http.get(f"/desktop/api/runs/{started.json()['run_id']}", headers=SESSION).json()
+        if settled["status"] not in {"pending", "running"}:
+            assert settled["status"] == "success", settled
+            break
+        assert time.monotonic() < deadline, settled
+        time.sleep(.05)
     bound = http.get(endpoint(aid), headers=SESSION).json()
     assert bound["state"] == "available" and bound["browser_id"]
     a_browser = bound["browser_id"]
@@ -147,6 +155,40 @@ def test_context_selection_binding_and_native_status_in_real_focus(client, tmp_p
             page.locator(f'[data-action="context-rail-card"][data-task-id="{aid}"]').click()
             page.locator(f'[data-browser-status="{aid}"]').wait_for()
             page.screenshot(path=str(output / "browser-context-view.png"), full_page=True)
+            from backend.tests.browser_fixture import BrowserFixture
+            fixture = BrowserFixture()
+            resource = service.browsers.resource(aid, "pages-ui")
+            async def open_pages():
+                await resource.start()
+                view = await resource.observe()
+                await resource.act(view["observation_id"], {"type": "navigate", "url": fixture.url("Parent-UI")})
+                view = await resource.observe()
+                await resource.act(view["observation_id"], {"type": "click", "x": 80, "y": 215}, "css_viewport")
+                for _ in range(100):
+                    listing = await resource.list_pages()
+                    if len(listing["pages"]) == 2 and any(item["url"] == fixture.url("Child") for item in listing["pages"]) and all(item["ready"] and not item["loading"] for item in listing["pages"]):
+                        await resource.observe()
+                        return listing
+                    await asyncio.sleep(.05)
+                raise AssertionError("child page not ready")
+            try:
+                listing = http.portal.call(open_pages)
+                page.get_by_role("button", name="页面", exact=True).click()
+                page.locator("dialog[open] article").nth(1).wait_for()
+                assert page.locator("dialog[open] article").count() == 2
+                parent_id = next(item["page_id"] for item in listing["pages"] if item["url"].endswith("/Parent-UI"))
+                page.locator(f'dialog[open] button[data-page-id="{parent_id}"]').click()
+                page.wait_for_function("() => document.querySelector('dialog[open] .context-browser-current')?.closest('article').textContent.includes('Parent-UI')")
+                assert resource.observation is None and resource.token, "human page selection invalidates observation, retains lease"
+                page.screenshot(path=str(output / "browser-pages.png"), full_page=True)
+                page.locator('dialog[open] button[type="submit"]').click()
+                assert http.get(endpoint(aid) + "/pages").status_code == 401
+                invalid = http.post(endpoint(aid) + "/present", headers=SESSION,
+                                    json={"client_id": "test", "sequence": 1, "page_id": "foreign-page"})
+                assert invalid.status_code == 409 and invalid.json()["detail"]["code"] == "page_not_found"
+            finally:
+                http.portal.call(resource.finish)
+                fixture.close()
             assert any(item[0] == "POST" and item[1] == endpoint(aid) + "/present" and item[2] == 200 for item in bridge.traffic)
             assert not errors, errors
             browser.close()
@@ -183,11 +225,24 @@ def test_production_agent_browser_tools_checkpoint_and_lifecycle(client, monkeyp
         fields = {"observation_id": view["observation_id"]} if view else {}
         sx = view["image"]["width"] / view["viewport"]["width"] if view else 1
         sy = view["image"]["height"] / view["viewport"]["height"] if view else 1
+        listings = [json.loads(message.content) for message in outputs if message.name == "browser_list_pages"]
+        listing = listings[-1] if listings else {"pages": []}
+        child = next((item["page_id"] for item in listing["pages"] if item["url"].endswith("/Child")), "pending")
+        parent = next((item["page_id"] for item in listing["pages"] if item["url"].endswith("/Production")), "pending")
         steps = [("browser_observe", {}), ("browser_navigate", {**fields, "url": fixture.url("Production")}),
                  ("browser_observe", {}), ("browser_click", {**fields, "x": 80*sx, "y": 40*sy}),
                  ("browser_type", {**fields, "text": "Production Focus tools"}),
                  ("browser_click", {**fields, "x": 80*sx, "y": 105*sy}),
-                 ("browser_observe", {}), ("browser_release", {})]
+                 ("browser_click", {**fields, "x": 80*sx, "y": 215*sy}),
+                 ("browser_list_pages", {}), ("browser_select_page", {"page_id": child}),
+                 ("browser_observe", {"page_id": child}),
+                 ("browser_click", {**fields, "x": 80*sx, "y": 40*sy}),
+                 ("browser_type", {**fields, "text": "Child Focus tools"}),
+                 ("browser_click", {**fields, "x": 80*sx, "y": 105*sy}),
+                 ("browser_select_page", {"page_id": parent}),
+                 ("browser_observe", {"page_id": parent}),
+                 ("browser_close_page", {"page_id": child}),
+                 ("browser_list_pages", {}), ("browser_release", {})]
         if len(outputs) < len(steps):
             name, args = steps[len(outputs)]
             calls.append(name)
@@ -205,7 +260,7 @@ def test_production_agent_browser_tools_checkpoint_and_lifecycle(client, monkeyp
                             json={"message": "Observe, fill the page and apply", "model_name": "deepseek-v4-flash", "access_mode": "danger-full-access"})
         assert started.status_code == 200, started.text
         run_id = started.json()["run_id"]
-        deadline = time.monotonic() + 35
+        deadline = time.monotonic() + 75
         while True:
             run = http.get(f"/desktop/api/runs/{run_id}", headers=SESSION).json()
             if run["status"] in {"success", "error", "interrupted", "timeout"}:
@@ -213,9 +268,14 @@ def test_production_agent_browser_tools_checkpoint_and_lifecycle(client, monkeyp
             assert time.monotonic() < deadline, run
             time.sleep(.05)
         assert run["status"] == "success", run
-        assert len(calls) == 8 and calls[-1] == "browser_release", calls
+        assert len(calls) == 18 and calls[-1] == "browser_release", calls
         actual = fixture.wait(lambda row: row["name"] == "Production" and row["count"] == 1)
         assert actual["text"] == "Production Focus tools"
+        actual_child = fixture.wait(lambda row: row["name"] == "Child" and row["count"] == 1)
+        assert actual_child["text"] == "Child Focus tools"
+        assert actual_child["cookie"] == actual["cookie"] and actual_child["storage"] == actual["storage"]
+        pages = http.get(f"/desktop/api/contexts/{context_id}/browser/pages", headers=SESSION)
+        assert pages.status_code == 200 and len(pages.json()["pages"]) == 1, pages.text
         status = http.get(f"/desktop/api/contexts/{context_id}/browser", headers=SESSION).json()
         assert status["state"] == "available"
         shown = http.post(f"/desktop/api/contexts/{context_id}/browser/present", headers=SESSION)

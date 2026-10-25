@@ -20,17 +20,18 @@ def _error(error):
 
 def build_browser_tools():
     @tool
-    async def browser_observe(runtime: ToolRuntime[dict]) -> list:
+    async def browser_observe(runtime: ToolRuntime[dict], page_id: str | None = None) -> list:
         """取得当前 Context 浏览器租约并观察真实页面，返回网页截图、CSS 视口、URL 与 observation_id。
 
         同一租约覆盖观察及后续一段动作；完成后 browser_release 允许共享者接替。
-        接管、交还或页面变化后必须重新调用本工具；busy 表示未接受，不能当作排队。
+        page_id 可省略以观察选中页；可先 browser_list_pages，再 browser_select_page。
+        返回的 page_id 与 observation_id 固定后续动作目标。切页、关页、接管后必须重新观察。
         """
         try:
             from focus.agents.image_inputs import MODEL_IMAGE_INPUT_KEY
             if runtime.context.get(MODEL_IMAGE_INPUT_KEY) is False:
                 raise BrowserError("image_model_required", "浏览器观察需要 supports_image_input 的模型；请在模型设置中选择支持图片的模型")
-            observation = await _run(runtime).observe()
+            observation = await _run(runtime).observe(page_id)
             metadata = {key: value for key, value in observation.items() if key != "image"}
             metadata["image"] = {key: value for key, value in observation["image"].items() if key != "base64"}
             return [{"type": "text", "text": json.dumps(metadata, ensure_ascii=False)},
@@ -71,6 +72,30 @@ def build_browser_tools():
         return await act(runtime, observation_id, {"type": "scroll", "x": x, "y": y, "delta_x": delta_x, "delta_y": delta_y}, coordinate_space)
 
     @tool
+    async def browser_list_pages(runtime: ToolRuntime[dict]) -> str:
+        """列出当前 Context 浏览器的真实页面、标题、地址与 selected_page_id；不取得租约，也不产生可操作的观察。"""
+        try:
+            return json.dumps(await _run(runtime).list_pages(), ensure_ascii=False)
+        except BrowserError as error:
+            raise ToolException(_error(error)) from error
+
+    async def page_command(runtime, method, page_id):
+        try:
+            return json.dumps(await _run(runtime).page_command(method, page_id), ensure_ascii=False)
+        except BrowserError as error:
+            raise ToolException(_error(error)) from error
+
+    @tool
+    async def browser_select_page(page_id: str, runtime: ToolRuntime[dict]) -> str:
+        """取得浏览器级租约并展示指定页面；旧观察失效，必须 browser_observe 后再操作。人工接管期间不能切页。"""
+        return await page_command(runtime, "select_page", page_id)
+
+    @tool
+    async def browser_close_page(page_id: str, runtime: ToolRuntime[dict]) -> str:
+        """取得浏览器级租约后关闭指定页面，保留其他页面；关闭最后一页会关闭浏览器。之后重新列页并观察。"""
+        return await page_command(runtime, "close_page", page_id)
+
+    @tool
     async def browser_release(runtime: ToolRuntime[dict]) -> str:
         """结束一段观察/动作后释放租约，保留原页面并允许其他共享 Context 操作。再次操作必须重新观察。"""
         try:
@@ -81,7 +106,8 @@ def build_browser_tools():
     # A user page can navigate local files and cause external effects. Reuse the
     # existing opaque-tool policy rather than pretending these are file reads.
     tools = [*(declare_effect(item, OPAQUE_LOCAL_EFFECT) for item in (
-        browser_observe, browser_navigate, browser_click, browser_type, browser_key, browser_scroll)),
+        browser_observe, browser_navigate, browser_click, browser_type, browser_key, browser_scroll,
+        browser_list_pages, browser_select_page, browser_close_page)),
         declare_effect(browser_release, NO_LOCAL_EFFECT)]
     for item in tools:
         item.handle_tool_error = True

@@ -50,3 +50,7 @@ plugins/*/data/
 
 # OpenSpec 变更工作流：不入库
 openspec/
+
+# Local planning documents must never enter Git history.
+/docs/v*-spec.md
+/docs/v*-design.md

@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const fs = require("node:fs");
 const path = require("node:path");
 
-function harness() {
+function harness(apiImpl) {
   const requests = [], sources = [], status = [];
   const node = { dataset: { browserStatus: "A" }, textContent: "" };
   class Source {
@@ -21,6 +21,7 @@ function harness() {
   const controller = context.module.exports.create({ runtime: { apiBase: "http://localhost:1234", session: "session" },
     EventSourceImpl: Source, onStatus: (...args) => status.push(args), api: async (url, options) => {
       requests.push({ url, options });
+      if (apiImpl) return await apiImpl(url, options);
       return { context_id: url.split("/")[4], state: "available", browser_id: "native", foreground: false };
     } });
   return { controller, requests, sources, node, status };
@@ -44,6 +45,31 @@ test("Context selection only presents the native browser and preserves paused ha
   assert.equal(h.requests.some(item => /create|hide|minimize|acquire/.test(item.url)), false);
   h.controller.close();
   assert.equal(h.sources[1].closed, true);
+});
+
+test("page presentation targets the existing page without requesting control", async () => {
+  const h = harness();
+  await h.controller.select("A", { pageId: "child" });
+  assert.deepEqual(JSON.parse(h.requests[0].options.body), { client_id: "window-id", sequence: 1, page_id: "child" });
+  assert.equal(h.requests.length, 1);
+  h.controller.close();
+});
+
+test("late responses and closed event sources cannot overwrite current state", async () => {
+  let finish;
+  const h = harness(async (url, options) => {
+    const sequence = JSON.parse(options.body).sequence;
+    if (sequence === 1) return await new Promise(resolve => { finish = resolve; });
+    return { context_id: url.split("/")[4], state: "manual" };
+  });
+  const old = h.controller.select("A");
+  await h.controller.select("B");
+  await h.controller.select("A");
+  h.sources[0].emit({ context_id: "A", state: "automatic" });
+  finish({ context_id: "A", state: "available" });
+  await old;
+  assert.match(h.node.textContent, /人工控制/);
+  h.controller.close();
 });
 
 test("passive status rendering never presents or repeatedly reloads the browser", async () => {

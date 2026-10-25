@@ -2,8 +2,8 @@ param([string]$MsvcRoot, [string]$WindowsSdkRoot)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $checkout = Join-Path $root '.browser-build'
-$revision = '8837b4f40a8aac875ebb800fd119a8c9a906c9fa'
-$version = '0.3.2'
+$revision = '6fe11bbf964c6cbd8a7c3a82c6ca5f6fb9415696'
+$version = '0.4.0'
 if (-not (Test-Path -LiteralPath $checkout)) {
     & git clone https://github.com/Leeminjing/focus-distinct-browser.git $checkout
     if ($LASTEXITCODE) { throw 'Browser source checkout failed' }

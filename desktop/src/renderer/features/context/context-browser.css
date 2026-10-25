@@ -7,3 +7,11 @@
 .context-browser-dialog p { line-height: 1.6; }
 .context-browser-dialog label { display: grid; gap: var(--space-2, 8px); }
 .context-browser-dialog select { width: 100%; min-height: 36px; font: inherit; }
+.context-browser-pages { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+.context-browser-page-list { display: grid; gap: 8px; max-height: 50vh; overflow: auto; }
+.context-browser-page { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-subtle, #8884); border-radius: 8px; }
+.context-browser-page > div { flex: 1; min-width: 0; }
+.context-browser-page strong, .context-browser-page p { overflow-wrap: anywhere; }
+.context-browser-page p { font-size: 12px; color: var(--text-secondary); }
+.context-browser-current { margin-left: 8px; font-size: 11px; color: var(--text-secondary); }
+.context-browser-page button { flex-shrink: 0; }
