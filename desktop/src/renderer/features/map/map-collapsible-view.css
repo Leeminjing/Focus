@@ -2,8 +2,21 @@
  * 本文件提供全图折叠视图的独立视觉契约。输入为 map-collapsible 前缀语义类与现有设计令牌，
  * 输出为紧凑树行、层级引导、状态和浮层；工作流不覆盖卡片视图或其它工作台样式。
  */
+.map-toolbar {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.map-toolbar > button { flex-shrink: 0; max-width: 100%; }
+.map-view > .page-search { min-width: 0; flex-wrap: wrap; }
+.map-view > .page-search input { min-width: 0; }
+
 .map-presentation-controls {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: var(--space-2);
   margin-right: auto;
@@ -11,6 +24,9 @@
 
 .map-presentation-switch {
   display: inline-flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
   padding: 2px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
@@ -18,6 +34,8 @@
 }
 
 .map-presentation-switch button {
+  flex-shrink: 0;
+  max-width: 100%;
   min-height: 30px;
   padding: 0 var(--space-3);
   border: 0;
@@ -257,8 +275,6 @@
 .map-collapsible-root-meta strong { min-width: 0; overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 900px) {
-  .map-toolbar { flex-wrap: wrap; }
-  .map-presentation-controls { width: 100%; }
   .map-collapsible-status { font-size: 10px; }
   .map-collapsible-root-meta { align-items: flex-start; flex-direction: column; gap: 0; padding-block: var(--space-1); }
 }

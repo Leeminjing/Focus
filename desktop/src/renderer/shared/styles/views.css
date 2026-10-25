@@ -1079,8 +1079,8 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .plugins-list { border: 0; background: transparent; }
 .plugins-list { display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 0; }
 .plugins-list > header { display: flex; order: 1; justify-content: space-between; padding: 20px 0; color: var(--text-secondary); font-size: 12px; }
-.plugin-list-scroll { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 22px; min-height: 0; padding: 0; }
-.plugin-card { display: grid; width: 100%; min-height: 240px; align-content: start; align-items: start; justify-content: stretch; justify-items: stretch; gap: 18px; padding: 26px; border: 1px solid var(--material-rim); border-radius: 20px; background: var(--surface-reading); box-shadow: var(--shadow-raised); color: var(--text-primary); text-align: left; }
+.plugin-list-scroll { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; align-items: start; gap: 22px; min-height: 0; padding: 0; }
+.plugin-card { display: grid; width: 100%; min-height: 0; align-content: start; align-items: start; justify-content: stretch; justify-items: stretch; gap: var(--space-3); padding: var(--space-5); border: 1px solid var(--material-rim); border-radius: 20px; background: var(--surface-reading); box-shadow: var(--shadow-raised); color: var(--text-primary); text-align: left; }
 .plugin-card:hover { background: var(--surface-subtle); }
 .plugin-card.is-selected { color: var(--text-primary); background: var(--surface-selected); box-shadow: none; }
 .plugin-card.is-selected:hover { background: var(--surface-selected-hover); }
@@ -1394,7 +1394,9 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 }
 
 .loop-mission-editor {
+  container: loop-mission / inline-size;
   display: grid;
+  min-width: 0;
   gap: var(--space-3);
 }
 
@@ -1446,9 +1448,9 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .loop-mission-legacy { padding: var(--space-2) var(--space-3); border-inline-start: 3px solid var(--border-accent); background: var(--surface-muted); }
 .loop-mission-legacy pre { overflow: auto; white-space: pre-wrap; }
 
-@media (max-width: 960px) {
+@container loop-mission (max-width: 640px) {
   .loop-mission-boundaries { grid-template-columns: 1fr; }
-  .loop-mission-check { grid-template-columns: 1fr; align-items: stretch; }
+  .loop-mission-check { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
 }
 
 .loop-start-form .loop-delegation-option {

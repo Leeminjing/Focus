@@ -4,7 +4,7 @@
  * 示例：.workspace-patrol.is-quiet；阅读与状态颜色沿用宿主 token，玻璃亮边在当前模块定义，共用节点与边材质由 loop-console.css 提供，图工具栏独立于平移画布。
  * data-patrol-dialog-kind 的 requests/progress/grant/observation/facts 与独立 picker 使用连续玻璃正文和局部分组，外壳负责模糊，内层消费可降级 material token；fact/relationship 等未选详情仍保留原阅读底。
  * 文件事实固定 60px 高，文件详情保留底部输入空间，窄屏继续使用同一草稿节点。
- * 输入记录为固定非模态滚动区域：安静态锚定清空按钮左侧与底边，宽高按 composer 的 34.4%/31.5% 校准并受视口限制；详情锚定 composer 上方。
+ * 输入记录为固定非模态滚动区域：安静态锚定清空按钮左侧与底边，宽度按 composer 的 34.4% 校准，高度不超过半个视口和 360px，并受锚点上方剩余空间限制；详情锚定 composer 上方。
  * 安静态采用 safe center 与正常输入框定位，短视口通过页面滚动维持标题、清空按钮和输入框的间距。
  * 原生工作台显示机器人唤起按钮；浏览器材料卡保持有界图片与引用文字预览，不改变发送目标。
 */
@@ -35,19 +35,20 @@
 [data-patrol-clear-draft] { anchor-name: --patrol-clear; }
 [data-patrol-input-history] {
   --history-gap: clamp(12px, calc(anchor-size(--patrol-composer width) * .031), 40px);
+  --history-height: min(360px, 50dvh);
   position: fixed; z-index: 30; margin: 0; padding: 18px 22px; border-radius: 22px;
   left: max(16px, calc(anchor(--patrol-composer right) - anchor-size(--patrol-composer width) * .344));
   right: anchor(--patrol-composer right);
-  top: max(16px, calc(anchor(--patrol-composer top) - var(--history-gap) - anchor-size(--patrol-composer width) * .315));
-  bottom: calc(anchor(--patrol-composer top) + var(--history-gap));
+  top: max(16px, calc(anchor(--patrol-composer top) - var(--history-gap) - var(--history-height)));
+  bottom: max(16px, calc(anchor(--patrol-composer top) + var(--history-gap)));
   overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; scrollbar-gutter: stable;
   font-size: 14px; -webkit-app-region: no-drag;
 }
 .is-quiet [data-patrol-input-history] {
   left: max(16px, calc(anchor(--patrol-clear left) - var(--history-gap) - anchor-size(--patrol-composer width) * .344));
   right: calc(anchor(--patrol-clear left) + var(--history-gap));
-  top: max(16px, calc(anchor(--patrol-clear bottom) - anchor-size(--patrol-composer width) * .315));
-  bottom: anchor(--patrol-clear bottom);
+  top: max(16px, calc(anchor(--patrol-clear bottom) - var(--history-height)));
+  bottom: max(16px, anchor(--patrol-clear bottom));
 }
 [data-patrol-history] article { padding: 14px 0; border-bottom: 1px solid var(--border-subtle); }
 [data-patrol-history] article:first-child { padding-top: 0; }
@@ -294,7 +295,7 @@
 .workspace-patrol:not(.is-quiet) .patrol-composer-footer > div { gap: 6px; }
 .workspace-patrol:not(.is-quiet) .patrol-composer-footer button:not([type=submit]) { min-height: 22px; padding: 0 3px; font-size: 10px; color: var(--workbench-muted); }
 .workspace-patrol:not(.is-quiet) [data-patrol-state], .workspace-patrol:not(.is-quiet) [data-patrol-receipt] { font-size: 10px; margin: 0; color: var(--workbench-muted); }
-.workspace-patrol:not(.is-quiet) [data-patrol-state] { position: absolute; top: 100%; left: 12px; margin-top: 3px; }
+.workspace-patrol:not(.is-quiet) [data-patrol-state] { margin-top: 3px; }
 .workspace-patrol:not(.is-quiet) [data-patrol-error] { margin: 2px 0; }
 .workbench-panel-tabs { display: none; }
 .workspace-patrol .is-workbench .portfolio-map-zoom { position: fixed; bottom: 26px; left: 8px; width: var(--workbench-left); justify-content: space-evenly; height: 46px; padding: 3px; border-radius: 18px; font-size: 10px; color: var(--workbench-muted); }

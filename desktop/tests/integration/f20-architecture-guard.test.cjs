@@ -99,10 +99,10 @@ const mediumLayout = shellStyles.match(/@media \(max-width:\s*1100px\)\s*\{([\s\
 assert.match(mediumLayout, /\.app-shell\s*\{[^}]*--shell-nav-width:/);
 assert.doesNotMatch(mediumLayout, /\.app-navigation\s*\{[^}]*flex:\s*0\s+0/);
 assert.doesNotMatch(mediumLayout, /grid-template-columns/);
-const narrowLayout = shellStyles.match(/@media \(max-width:\s*900px\)\s*\{([\s\S]*?)@media \(max-width:\s*640px\)/)?.[1] || "";
-assert.match(narrowLayout, /\.app-inspector\s*\{[^}]*position:\s*absolute/);
-assert.match(narrowLayout, /\.app-inspector\s*\{[^}]*flex:\s*none/);
-assert.doesNotMatch(narrowLayout, /grid-template-columns/);
+// 检查器在中等窗口即改为覆盖层，不再与工作区竞争宽度。
+assert.match(mediumLayout, /\.app-inspector\s*\{[^}]*position:\s*absolute/);
+assert.match(mediumLayout, /\.app-inspector\s*\{[^}]*flex:\s*none/);
+assert.match(mediumLayout, /\.shell-resizer\.shell-resizer-inspector\s*\{[^}]*display:\s*none/);
 
 const spatialStyle = read("plugins/spatial-patrol/desktop/style.css");
 assert.doesNotMatch(spatialStyle, /\n\.(?:rail-wrap|rail-resizer|message-file-cards|file-card|panel-resizer)\b/);
