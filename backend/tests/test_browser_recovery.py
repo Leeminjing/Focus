@@ -17,11 +17,12 @@ def executable():
     return path
 
 
-@pytest.mark.parametrize('enabled', [False, True])
-def test_bundled_browser_keeps_recovery_opt_in_without_external_executable(tmp_path, monkeypatch, enabled):
+@pytest.mark.parametrize('setting', [None, '0', '1'])
+def test_bundled_browser_keeps_recovery_opt_in_without_external_executable(tmp_path, monkeypatch, setting):
+    enabled = setting == '1'
     monkeypatch.delenv('FOCUS_DISTINCT_BROWSER_EXE', raising=False)
     monkeypatch.delenv('FOCUS_DISTINCT_BROWSER_RECOVERY', raising=False)
-    if enabled: monkeypatch.setenv('FOCUS_DISTINCT_BROWSER_RECOVERY', '1')
+    if setting is not None: monkeypatch.setenv('FOCUS_DISTINCT_BROWSER_RECOVERY', setting)
 
     async def scenario():
         first = BrowserTransport(cache_root=tmp_path / 'cache')

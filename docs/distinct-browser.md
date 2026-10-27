@@ -2,8 +2,8 @@
 
 Windows 上的每个 Context 在 Run 执行前默认创建并绑定一个真实原生浏览器。
 Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、Run 或 Patrol。
-固定浏览器版本为 v0.6.0，源码 `146a4bb85d4aafeefbac388855941cd82f1c9036`，对应
-[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/146a4bb85d4aafeefbac388855941cd82f1c9036/docs/protocol.md)。
+固定浏览器版本为 v0.6.1，源码 `e0222b2d1be404a3f496c31e4c9ed25b78a88f7c`，对应
+[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/e0222b2d1be404a3f496c31e4c9ed25b78a88f7c/docs/protocol.md)。
 会话恢复仍需显式开启，默认保留匿名管道行为。
 
 ## 用户操作
@@ -101,7 +101,7 @@ Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中
 
 ## v0.6 可选恢复：连接原宿主
 
-Windows 随包提供 v0.6.0 EXE，不需要额外下载或设置外部产物路径。显式开启恢复：
+Windows 随包提供 v0.6.1 EXE，不需要额外下载或设置外部产物路径。显式开启恢复：
 
 ```powershell
 $env:FOCUS_DISTINCT_BROWSER_RECOVERY = '1'
@@ -110,7 +110,7 @@ npm --prefix desktop start
 
 此前设置过 `FOCUS_DISTINCT_BROWSER_EXE` 的开发环境可先移除该覆盖，确保使用内置版本。
 不开启恢复时仍兼容原有 JSONL v1；已有 v0.5 匿名管道绑定显示不可恢复，需要用户显式更换，
-不会因安装了新版而创建替代页面或继续旧 Run。跨 Windows 用户与物理设备验收完成前，恢复不默认启用。
+不会因安装了新版而创建替代页面或继续旧 Run。恢复继续保持显式启用；物理键鼠与真实 IME 验收尚待完成。
 
 启动器把所选 EXE 按 SHA-256 缓存在 `%LOCALAPPDATA%\Focus\BrowserRuntime`，
 然后由一个短暂的独立父进程启动 `--reconnect` 宿主。原安装路径可以更换，
@@ -118,8 +118,8 @@ npm --prefix desktop start
 测试可通过 `FOCUS_DISTINCT_BROWSER_CACHE` 使用独立目录。不要在宿主仍存活时清理缓存。
 
 Context 保存 `browser_id`、`host_id`、受信任的本机 endpoint 路径和产物摘要。
-连接前核对当前登录会话的受保护 ACL、DPAPI 凭据、进程创建时间、真实映像路径、
-映像摘要及 Named Pipe 服务端 PID。明文凭据不写数据库、日志或前端。
+端点与管道 DACL 只授予账户 SID；连接前核对账户 SID 和登录 SID、受保护 ACL、DPAPI 凭据、进程创建时间、真实映像路径、
+映像摘要及 Named Pipe 服务端 PID，并核对真实宿主进程的账户 SID 和登录 SID。明文凭据不写数据库、日志或前端。
 管道编解码器基于上游同版本演示客户端，使用 Python 标准库与 Windows API。
 
 后端启动时按宿主恢复一次，以 `snapshot.revision` 为基线应用同一 `host_id` / `connection_id`
@@ -129,7 +129,7 @@ Context 保存 `browser_id`、`host_id`、受信任的本机 endpoint 路径和�
 竞争客户端占用时显示连接冲突，可在**浏览器绑定 → 重新连接原宿主**中显式重试。
 
 强制终止宿主可能留下受保护的端点文件。恢复失败时，客户端只在固定宿主标识和产物摘要均匹配、
-操作系统确认 PID 已退出且对应管道不存在的情况下，定向清理当前登录会话的规范端点文件与空目录。
+端点账户/登录身份与当前调用者一致、操作系统确认 PID 已退出且对应管道不存在时，定向清理规范端点文件与空目录。
 权限不足、身份不符、活进程、占用中的管道或路径/ACL 异常均保留文件；清理使用已验证的文件句柄，
 不扫描或递归删除目录。失败绑定仍报告不可恢复，不创建替代页面。EXE 版本缓存与浏览数据保留，
 避免破坏其他仍在运行或尚待恢复的宿主；这里不自动回收旧版本缓存。
@@ -139,14 +139,25 @@ Context 保存 `browser_id`、`host_id`、受信任的本机 endpoint 路径和�
 用户检查页面并在原生工具栏**交还**后，新执行才能取得新租约、重新观察。
 下载/权限的断连收尾仍由基建处理；Focus 不补发下载、不代做网站权限决定。
 
-测试入口为 `backend/tests/test_browser_recovery.py` 和 `backend/tests/test_browser_endpoint_cleanup.py`，显式设置 `FOCUS_BROWSER_RECOVERY_REAL=1`
+测试入口为 `backend/tests/test_browser_recovery.py`、`backend/tests/test_browser_endpoint_cleanup.py`
+和 `backend/tests/test_browser_security.py`，显式设置 `FOCUS_BROWSER_RECOVERY_REAL=1`
 和 `FOCUS_BROWSER_RECOVERY_EXE` 后运行。使用独立数据库与缓存，真实 Gateway 的模型采样被固定，
 其余持久化、策略、Run 调度、浏览器工具和原生宿主均为实际实现。
-系统消息交还、桌面自动化与真实物理设备验收分别记录。
+系统消息交还、桌面自动化与真实物理设备验收分别记录。实际旧宿主拒绝用例可额外设置
+`FOCUS_BROWSER_LEGACY_EXE` 指向固定摘要的 v0.6.0 EXE；只用于创建自有旧宿主，
+不作为新版本的连接实现，也不读取用户原有端点。
 
 2026-10-25 已完成实际 Electron、外部模型、正常/异常退出、真实托管更新和双客户端竞争验收，
 恢复后保留原页面身份，旧 Run 不自动继续。强制宿主退出后的端点清理也通过真实 Windows 回归。
-这些结果包含 Computer Use 与进程退出注入，不代表物理键鼠/IME、触摸/笔、跨屏 DPI 或跨 Windows
-用户 ACL 已验收；这些边界仍待真实设备/第二登录会话验证，恢复继续保持显式启用，尚不默认开启。
+这些结果包含 Computer Use 与进程退出注入，不代表物理键鼠/IME、触摸/笔或跨屏 DPI 验收。
+v0.6.1 上游已用临时普通账户完成真实跨用户测试（无需切换桌面）：不同账户即使共享交互登录 SID，
+端点与管道也均返回拒绝访问，原账户仍能恢复。Focus 随包 EXE 与该实测产物 SHA-256 相同；
+客户端配套验证与端点清理由 Focus 的 Windows 回归覆盖。恢复尚不默认开启。
+
+v0.6.0 恢复端点采用登录 SID 的旧 ACL，不能作为安全恢复来源。新版客户端拒绝这类端点，
+即使对应宿主已退出，也不自动修改 ACL 或清理旧端点。界面保留断连绑定并提示显式更换；
+用户可先在旧窗口保存工作，再通过浏览器绑定显式更换浏览器。旧缓存和原页面不被重建或覆盖。
+移除恢复开关或设置 `FOCUS_DISTINCT_BROWSER_RECOVERY=0` 仅回退到匿名管道，
+不会让不安全端点重新可恢复，也不会自动替换既有绑定。
 
 复跑命令及旧版接入基线见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)；该历史记录使用 8eea976，不作为新版的物理设备验收证明。
