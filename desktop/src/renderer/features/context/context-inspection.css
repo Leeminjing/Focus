@@ -1,0 +1,40 @@
+/*
+ * 本文件对外提供固定 Revision 会话检查的正文与审计样式。
+ * 输入为只读检查视图的语义 class，输出为消息、压缩来源和阅读边界布局。
+ * 具体工作流为消息在检查面内连续排布，保留内容审计和 reduced-motion 阅读行为。
+ * 示例：.context-conversation.is-inspection。
+ */
+.loop-transcript { flex: 1; min-height: 0; overflow: auto; padding: 6px 16px 10px; scroll-behavior: smooth; }
+.loop-message {
+  position: relative;
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid #edf0f4;
+  border-radius: 0;
+  background: #fff;
+  overflow: visible;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
+}
+.loop-message.is-human { background: #fbfdff; }
+.loop-message.is-tool { background: #fffdf8; }
+.loop-message > header { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 12px 8px 11px 0; border: 0; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.loop-message > header > span:last-child { margin: 0; color: #9aa5b4; }
+.loop-message-content { min-width: 0; padding: 12px 4px 11px 10px; font-size: 13px; line-height: 1.6; }
+.context-conversation.is-inspection { display: block; height: auto; background: transparent; }
+.is-inspection .loop-transcript { overflow: visible; padding: 6px 0 10px; }
+.is-inspection .loop-message { display: block; background: transparent; }
+.is-inspection .loop-message > header { flex-direction: row; align-items: center; padding: 10px 0 6px; gap: 8px; }
+.is-inspection .loop-message-content { padding: 0 0 16px; }
+
+.loop-message small { grid-column: 2; display: block; padding: 0 10px 9px; color: #78889d; }
+.message-provenance { max-width: 110px; padding: 3px 5px; border-radius: 999px; background: #fff0cc; color: #845d00; text-transform: none; letter-spacing: 0; }
+.message-provenance.is-direct { background: #e7f4ed; color: #236b49; }
+.compression-audit { grid-column: 2; margin: 0 10px 10px; color: #66778e; font-size: 11px; }
+.compression-audit pre { max-height: 220px; overflow: auto; background: #f5f7fa; }
+.history-boundary { text-align: center; color: #8a98aa; font-size: 11px; }
+@media (prefers-reduced-motion: reduce) {
+  .loop-transcript { scroll-behavior: auto; }
+}

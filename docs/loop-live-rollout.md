@@ -10,7 +10,6 @@ Live Loop 的权威状态始终保存在原有 Loop 领域表、canonical journa
 | `FOCUS_LOOP_SUPERVISOR` | `true` | 启动分层监督运行期 | 不启动自动 Loop 调度；用于回滚演练或人工维护 |
 | `FOCUS_LOOP_MATERIALIZED_FACTS` | `true` | `/facts` 读取物化事实 | 回到隔离的按 Run 查询端口；stable fact detail 不可用 |
 | `FOCUS_LOOP_LIVE_API` | `true` | 开放 snapshot 与 resumable SSE | Live API 返回 404，旧查询接口保持可用 |
-| `FOCUS_LOOP_FRONTEND_PROJECTION` | `true` | 使用统一前端 projection | Electron renderer 使用隔离的 legacy connection adapter |
 
 布尔值接受 `1/0`、`true/false`、`yes/no`、`on/off`；非法值会在启动时失败，避免带着不明确配置运行。
 
@@ -20,9 +19,9 @@ Live Loop 的权威状态始终保存在原有 Loop 领域表、canonical journa
 2. 开启 supervisor，观察多 Loop 公平性、组件失败和 projector lag。
 3. 物化事实 parity 通过后，开启 materialized fact reads。
 4. 对测试环境开启 Live API，验证 snapshot 边界、replay、retention 和 backpressure。
-5. 最后开启 frontend projection；浏览器只建立一条 multiplexed stream。
+5. 验证工作区 Patrol 的统一 Live projection；每个挂载工作区只建立一条 multiplexed stream。旧 Portfolio Map 控制台和 legacy connection adapter 已退役，前端不再提供兼容开关。
 
-每一步都能独立回退。默认路径不会同时运行旧轮询和 Live stream。
+后端开关可以独立回退；工作区 Patrol 依赖 Live API，不再支持切回旧前端或旧轮询。
 
 ## 长任务读取
 
@@ -36,8 +35,8 @@ Live Loop 的权威状态始终保存在原有 Loop 领域表、canonical journa
 
 ## 回滚步骤
 
-1. 先关闭 `FOCUS_LOOP_FRONTEND_PROJECTION`，renderer 切回 legacy adapter；已有 projection 保留但不再作为 UI 权威。
-2. 关闭 `FOCUS_LOOP_LIVE_API`，阻止新 Live 连接；旧 `/console`、`/conversation`、`/facts` 查询仍可使用。
+1. 前端故障时部署已验证的 Patrol 版本；不能通过环境变量恢复已删除的旧控制台。
+2. 需要维护 Live 服务时关闭 `FOCUS_LOOP_LIVE_API`，阻止新 Live 连接。Patrol 会显示连接不可用；`/console`、`/conversation`、`/facts` 查询仍可用于诊断，不构成旧前端回退。
 3. 如物化事实读取异常，关闭 `FOCUS_LOOP_MATERIALIZED_FACTS`。物化表和 revision history 保留，便于事后对比。
 4. 如调度异常，关闭 `FOCUS_LOOP_SUPERVISOR` 并重启。已有 Lease、Run、Directive、Fact 和 Portfolio 数据不删除；恢复前先执行现有 recovery/reconciliation 流程。
 5. 只有在 journal 生产本身造成问题时才关闭 `FOCUS_LOOP_CANONICAL_EVENTS`。关闭后 Live projection 会停在最后一致 sequence，权威 Kernel 状态仍保留。

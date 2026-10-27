@@ -289,6 +289,9 @@ if (!process.versions.electron) {
       if(observer.takeRecords().length || document.activeElement!==factButton) throw new Error('未变事实仍移动行或丢失焦点');
       facts[0]={...facts[0],revision:2,status:'verified'};FocusLoopFactsView.reconcileRows(tbody,facts);
       if(document.activeElement?.dataset.factId!=='stable-fact-0' || !tbody.firstElementChild.textContent.includes('已验证')) throw new Error('真实事实修订未更新或丢失焦点');
+      const typeStyle=getComputedStyle(tbody.querySelector('.fact-kind'));
+      const statusStyle=getComputedStyle(tbody.querySelector('.fact-status'));
+      if(typeStyle.display!=='inline-flex' || typeStyle.backgroundColor!=='rgb(237, 243, 251)' || statusStyle.backgroundColor!=='rgb(228, 245, 236)') throw new Error('共享事实类型与验证状态徽标样式丢失');
       observer.disconnect();table.remove();
     })()`);
     await run('window.savedGraphNode=document.querySelector("[data-patrol-lineage] [data-context-id=root]"); window.patrolFixture.emit("loop-completion_check","context","root",2,{current_revision_id:"r1",title:"首线程更新"})');

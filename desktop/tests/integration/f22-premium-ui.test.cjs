@@ -47,7 +47,7 @@ for (const icon of ["brain-circuit", "wrench", "terminal", "folder", "search", "
 
 assert.deepEqual(
   [...index.matchAll(/class="app-nav-item"[^>]*data-nav-key="([^"]+)"/g)].map(match => match[1]),
-  ["focus", "map", "contexts", "agents", "loop", "plugins", "assembly", "memory"],
+  ["patrol", "focus", "map", "plugins", "assembly", "memory"],
   "主导航必须完整且按产品信息架构排序",
 );
 assert.doesNotMatch(index, /class="brand"|<header class="app-header">[\s\S]*<span>Focus<\/span>/, "应用头部仍包含重复 Focus 字标");

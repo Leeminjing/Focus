@@ -1,0 +1,12 @@
+/*
+ * 本文件对外提供共享 LoopFact 类型与状态徽标样式。
+ * 输入为事实行的语义 class，输出为事实类型、验证状态和结果颜色。
+ * 具体工作流为 Patrol 事实检索复用 LoopFactsView 行渲染，状态来自真实事实记录。
+ * 示例：.fact-kind、.fact-status.is-verified。
+ */
+.fact-kind,
+.fact-status { display: inline-flex; border-radius: 999px; padding: 3px 6px; background: #edf3fb; color: #44678f; font-size: 8px; text-transform: uppercase; }
+.fact-status.is-failed { background: #ffe8e8; color: #ba3139; }
+.fact-status.is-verified,
+.fact-status.is-success { background: #e4f5ec; color: #207247; }
+.fact-status.is-unknown { background: #fff1d6; color: #8a5f0a; }

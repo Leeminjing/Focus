@@ -29,14 +29,14 @@ test_loop_live_scaling test_loop_materialized_facts test_loop_mission_contract t
 test_loop_settlement_and_lineage test_loop_supervisor
 """.split()
 DESKTOP_MODULES = """
-loop-legacy-connection loop-live-connection loop-live-projection.test loop-live-reducer loop-live-schema
-loop-live-selectors loop-live-store loop-mission-editor
+loop-live-connection loop-live-projection.test loop-live-reducer loop-live-schema
+loop-live-selectors loop-live-store loop-grant-view
 """.split()
 SOURCE_FILES = (
     *(f"backend/app/desktop/patrol/agent_loop/{name}.py" for name in AGENT_LOOP_MODULES),
     *(f"backend/tests/{name}.py" for name in LOOP_TEST_MODULES),
     *(f"desktop/src/renderer/features/loop/{name}.js" for name in DESKTOP_MODULES),
-    "desktop/src/renderer/features/loop/loop-console.css",
+    "desktop/src/renderer/features/map/portfolio-map.css",
 )
 
 
@@ -66,4 +66,4 @@ def test_desktop_composition_root_does_not_reclaim_live_domain_logic() -> None:
     source = (ROOT / "desktop/src/renderer/app/app.js").read_text(encoding="utf-8")
     for forbidden in ("function startLoopStream", "function scheduleLoopRefresh", "function scheduleLoopPoll", "loopStore.apply(", "loopApi.events("):
         assert forbidden not in source
-    assert "loopConnection.start(loopId).catch" in source
+    assert "FocusLoopLiveConnection.create({ api: loopApi, store })" in source

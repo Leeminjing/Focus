@@ -12,7 +12,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
 BACKEND_ROOT = ROOT / "backend" / "app" / "desktop"
-DESKTOP_ROOT = ROOT / "desktop/src/renderer/features/loop"
 BACKEND_PACKAGES = {
     "contexts/evolution": set(),
     "workspaces/coordination": set(),
@@ -25,17 +24,14 @@ BACKEND_PACKAGES = {
         "contexts/curation",
     },
 }
+DESKTOP_ROOT = ROOT / "desktop/src/renderer/features"
 DESKTOP_MODULES = (
-    "loop-api.js",
-    "loop-store.js",
-    "loop-view.js",
-    "loop-console-store.js",
-    "loop-console-controller.js",
-    "portfolio-map-view.js",
-    "context-conversation-view.js",
-    "loop-facts-view.js",
-    "loop-console-view.js",
-    "loop-wait-recovery.js",
+    "loop/loop-api.js",
+    "loop/loop-grant-view.js",
+    "map/portfolio-map-view.js",
+    "context/context-inspection-view.js",
+    "loop/loop-facts-view.js",
+    "loop/loop-wait-recovery.js",
 )
 HEADER_MARKERS = ("本文件对外提供", "输入为", "输出为", "具体工作流为", "示例")
 
