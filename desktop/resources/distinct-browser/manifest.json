@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/Leeminjing/focus-distinct-browser",
-  "version": "0.6.0",
-  "revision": "146a4bb85d4aafeefbac388855941cd82f1c9036",
+  "version": "0.6.1",
+  "revision": "e0222b2d1be404a3f496c31e4c9ed25b78a88f7c",
   "protocol_version": 1,
   "platform": "win32-x64",
-  "sha256": "d578f6b1cf66dcb861bbde97bd9b8bab79b9014d557a0bc1ddc0dd888684dd31"
+  "sha256": "ab21006cd8987eeada4d21ba31f7ba9ddd19653007617a214ecc57d8755da63f"
 }
