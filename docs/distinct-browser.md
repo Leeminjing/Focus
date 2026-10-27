@@ -2,8 +2,8 @@
 
 Windows 上的每个 Context 在 Run 执行前默认创建并绑定一个真实原生浏览器。
 Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、Run 或 Patrol。
-固定浏览器版本为 v0.6.1，源码 `e0222b2d1be404a3f496c31e4c9ed25b78a88f7c`，对应
-[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/e0222b2d1be404a3f496c31e4c9ed25b78a88f7c/docs/protocol.md)。
+固定浏览器版本为 v0.6.2，源码 `9051180b8ce81a22a127117cbefe2fb4c56df6b4`，对应
+[协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/9051180b8ce81a22a127117cbefe2fb4c56df6b4/docs/protocol.md)。
 Windows 11 默认开启会话恢复；`FOCUS_DISTINCT_BROWSER_RECOVERY=0` 可回退匿名管道。其他平台保留原有默认路径。
 
 ## 用户操作
@@ -101,7 +101,7 @@ Windows Context 的 `browser_*` 名称由此适配层统一提供；发现池中
 
 ## v0.6 会话恢复与回退
 
-Windows 随包提供 v0.6.1 EXE，不需要额外下载、设置外部产物路径或配置开关。
+Windows 随包提供 v0.6.2 EXE，不需要额外下载、设置外部产物路径或配置开关。
 Windows 11 正常启动就使用 Named Pipe 恢复模式：
 
 ```powershell
@@ -154,8 +154,8 @@ Context 保存 `browser_id`、`host_id`、受信任的本机 endpoint 路径和�
 恢复后保留原页面身份，旧 Run 不自动继续。强制宿主退出后的端点清理也通过真实 Windows 回归。
 这些结果包含 Computer Use 与进程退出注入，不代表物理键鼠/IME、触摸/笔或跨屏 DPI 验收。
 v0.6.1 上游已用临时普通账户完成真实跨用户测试（无需切换桌面）：不同账户即使共享交互登录 SID，
-端点与管道也均返回拒绝访问，原账户仍能恢复。Focus 随包 EXE 与该实测产物 SHA-256 相同；
-客户端配套验证与端点清理由 Focus 的 Windows 回归覆盖。
+端点与管道也均返回拒绝访问，原账户仍能恢复。v0.6.2 保留该账户/登录 SID 实现，
+本轮未重复创建跨用户测试账户；客户端配套验证与端点清理由 Focus 的 Windows 回归覆盖。
 默认启用的草稿变更仍须完成物理键鼠与真实中文 IME 验收后再决定合并；
 Computer Use、系统输入注入或消息模拟不替代物理验收。无触摸/笔或多 DPI 显示器时按实际设备记录未测。
 
@@ -166,3 +166,9 @@ v0.6.0 恢复端点采用登录 SID 的旧 ACL，不能作为安全恢复来源�
 不会让不安全端点重新可恢复，也不会自动替换既有绑定。
 
 复跑命令及旧版接入基线见 [2026-10-24 接入验收](benchmarks/context-browser-2026-10-24/README.md)；该历史记录使用 8eea976，不作为新版的物理设备验收证明。
+
+v0.6.2 修复重新激活窗口后键盘/IME 消息误送顶层宿主的问题。通过普通 Alt+Tab 可复现，
+并非仅由 Computer Use 的拼音注入编码造成；浏览器恢复失活前的原生输入控件或 WebView2 DOM 焦点。
+自动化已核对返回窗口后的首个拼音键接管、空格确认“你”、取消组合和旧令牌拒绝；不作为物理设备通过。
+存活的 v0.6.1 宿主不会因安装新 EXE 而自动修补或重建页面。验证修复请显式新建浏览器；
+旧会话仍按原身份恢复，用户可先查看和保存原页面，再决定关闭或更换。
