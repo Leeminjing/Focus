@@ -17,6 +17,20 @@ test('restored manual browser exposes uncertain prior work without acquiring con
   h.controller.close();
 });
 
+test('live recoverable browser explains that closing Focus preserves its pages', () => {
+  const { recoverySummary, statusLabel } = require('./context-browser.js');
+  const text = recoverySummary({ state: 'automatic', can_reconnect: true });
+  assert.match(text, /关闭 Focus/);
+  assert.match(text, /仍会运行/);
+  assert.match(text, /交还/);
+  assert.match(text, /重新观察/);
+  for (const state of ['closed', 'disconnected', 'faulted']) {
+    assert.equal(recoverySummary({ state, can_reconnect: true }), '');
+  }
+  assert.equal(recoverySummary({ state: 'automatic', can_reconnect: false }), '');
+  assert.match(statusLabel({ state: 'disconnected', detail: { reason: 'recovery_disabled' } }), /恢复已关闭.*原窗口.*重连/);
+});
+
 function harness(apiImpl) {
   const requests = [], sources = [], status = [];
   const node = { dataset: { browserStatus: "A" }, textContent: "" };

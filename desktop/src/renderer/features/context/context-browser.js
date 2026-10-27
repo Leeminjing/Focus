@@ -22,6 +22,7 @@
     prompt_closed: "用户关闭权限提示", host_setup_failed: "无法创建下载", cancel_failed: "无法确认取消结果" };
   function statusLabel(value) {
     if (value.state === 'disconnected' && value.detail?.reason === 'legacy_session') return '旧版会话不可恢复，请显式更换绑定';
+    if (value.state === 'disconnected' && value.detail?.reason === 'recovery_disabled') return '恢复已关闭，原窗口仍可人工使用；启用恢复后可重连';
     if (value.state === 'disconnected' && value.detail?.message) return value.detail.message;
     const restored = value.recovered && !['closed', 'disconnected', 'faulted'].includes(value.state);
     const suffix = restored && value.interrupted_operation?.result_unknown ? ' · 上次操作结果未知，请先检查页面' : '';
@@ -34,7 +35,8 @@
     return prefix + (labels[value.state] || value.state) + suffix;
   }
   function recoverySummary(value = {}) {
-    if (!value.recovered) return '';
+    if (!value.recovered) return value.can_reconnect && !['closed', 'disconnected', 'faulted'].includes(value.state)
+      ? '关闭 Focus 后浏览器仍会运行，原页面会保留。重启恢复后，请先交还，Agent 必须重新观察。' : '';
     const operation = value.interrupted_operation;
     if (!operation?.kind) return '已连接原宿主并保留原页面。旧 Run 和控制令牌不会恢复；交还后需要新观察。';
     const kinds = { navigate: '导航', observe: '观察', act: '输入操作' };

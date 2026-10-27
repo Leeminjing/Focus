@@ -17,12 +17,11 @@ def executable():
     return path
 
 
-@pytest.mark.parametrize('setting', [None, '0', '1'])
-def test_bundled_browser_keeps_recovery_opt_in_without_external_executable(tmp_path, monkeypatch, setting):
-    enabled = setting == '1'
+@pytest.mark.parametrize('override,enabled', [(None, True), ('0', False), ('1', True)])
+def test_bundled_browser_default_and_rollback_without_external_executable(tmp_path, monkeypatch, override, enabled):
     monkeypatch.delenv('FOCUS_DISTINCT_BROWSER_EXE', raising=False)
     monkeypatch.delenv('FOCUS_DISTINCT_BROWSER_RECOVERY', raising=False)
-    if setting is not None: monkeypatch.setenv('FOCUS_DISTINCT_BROWSER_RECOVERY', setting)
+    if override is not None: monkeypatch.setenv('FOCUS_DISTINCT_BROWSER_RECOVERY', override)
 
     async def scenario():
         first = BrowserTransport(cache_root=tmp_path / 'cache')
@@ -212,9 +211,10 @@ def test_real_gateway_restarts_preserve_pages_and_interrupt_old_run(tmp_path):
     source.parent.mkdir(); shutil.copyfile(executable(), source)
     cache, audit = tmp_path / 'cache', tmp_path / 'model.jsonl'
     nonce = uuid.uuid4().hex
-    environment = {**os.environ, 'PYTHONUTF8': '1', 'FOCUS_DISTINCT_BROWSER_RECOVERY': '1',
+    environment = {**os.environ, 'PYTHONUTF8': '1',
         'FOCUS_DISTINCT_BROWSER_EXE': str(source), 'FOCUS_DISTINCT_BROWSER_CACHE': str(cache),
         'FOCUS_DESKTOP_SESSION': nonce, 'FOCUS_RECOVERY_SITE': fixture.url('').rstrip('/'), 'FOCUS_RECOVERY_AUDIT': str(audit)}
+    environment.pop('FOCUS_DISTINCT_BROWSER_RECOVERY', None)  # Real Gateway exercises the Windows default.
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     http = httpx.Client(base_url=f'http://127.0.0.1:{port}', headers={'X-Focus-Session': nonce}, timeout=20, trust_env=False)
@@ -264,7 +264,7 @@ def test_real_gateway_restarts_preserve_pages_and_interrupt_old_run(tmp_path):
     def state(context):
         return request('GET', f'/contexts/{context}/browser')
 
-    def inspect_ui(context, name, reconnect=False):
+    def inspect_ui(context, name, reconnect=False, initial=False):
         from playwright.sync_api import sync_playwright, expect
         policy = asyncio.get_event_loop_policy()
         try:
@@ -290,8 +290,12 @@ def test_real_gateway_restarts_preserve_pages_and_interrupt_old_run(tmp_path):
                     expect(panel).not_to_be_visible()
                     page.get_by_role('button', name='浏览器绑定', exact=True).click()
                     panel = page.locator('dialog[open]')
-                expect(panel.locator('[data-browser-recovery]')).to_contain_text('原宿主' if reconnect else '结果未知')
-                expect(page.locator('[data-browser-status]').first).to_contain_text('原会话已恢复')
+                if initial:
+                    expect(panel.locator('[data-browser-recovery]')).to_contain_text('关闭 Focus 后浏览器仍会运行')
+                    expect(panel.locator('[data-browser-recovery]')).to_contain_text('重新观察')
+                else:
+                    expect(panel.locator('[data-browser-recovery]')).to_contain_text('原宿主' if reconnect else '结果未知')
+                    expect(page.locator('[data-browser-status]').first).to_contain_text('原会话已恢复')
                 expect(panel).to_have_css('opacity', '1')
                 page.screenshot(path=str(tmp_path / name), full_page=True)
                 browser.close()
@@ -335,6 +339,7 @@ def test_real_gateway_restarts_preserve_pages_and_interrupt_old_run(tmp_path):
         assert set(saved) == {'host_id', 'browser_id', 'transport', 'endpoint', 'artifact_sha256'}
         image = cache / saved['artifact_sha256'] / 'distinct-browser.exe'
         assert image.is_file() and image != source
+        inspect_ui(a, 'focus-v06-default-lifecycle.png', initial=True)
         stop()
         assert all(user32.IsWindow(int(page['hwnd'])) for page in original_pages['pages'])
         source.unlink()  # An installation may move/remove the original image; the live cache must suffice.
@@ -407,7 +412,7 @@ def test_real_gateway_restarts_preserve_pages_and_interrupt_old_run(tmp_path):
 
 
 @pytest.mark.usefixtures('isolated_postgres_database')
-def test_service_restart_restores_shared_contexts_pages_and_never_upgrades_legacy_binding(tmp_path):
+def test_service_restart_restores_shared_contexts_pages_and_never_upgrades_legacy_binding(tmp_path, monkeypatch):
     from backend.tests.test_context_browser_real import setup, wait_for, error_code
     from backend.tests.browser_fixture import BrowserFixture
     from backend.app.desktop.browser.service import ContextBrowsers, BINDING_KEY
@@ -419,9 +424,10 @@ def test_service_restart_restores_shared_contexts_pages_and_never_upgrades_legac
     async def scenario():
         engine, seed, (a, b, c) = await setup()
         first = ContextBrowsers(seed.sessions, MemoryStreamBridge(), executable(), recovery=True, cache_root=tmp_path / 'cache')
-        second, resources, fixture = None, [], BrowserFixture()
+        second, disabled, resources, fixture = None, None, [], BrowserFixture()
         user32 = ctypes.WinDLL('user32')
         user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+        user32.IsWindow.argtypes = [ctypes.c_void_p]
         try:
             ra, rb = first.resource(a, 'first-A'), first.resource(b, 'first-B')
             resources.extend((ra, rb))
@@ -450,7 +456,17 @@ def test_service_restart_restores_shared_contexts_pages_and_never_upgrades_legac
                 session.add(DesktopThread(task_id=legacy, workspace_id=context.workspace_id, thread_id=uuid.uuid4().hex,
                     title='Legacy browser', ui_state={BINDING_KEY: {'browser_id': 'legacy', 'host_id': 'old-stdio'}}))
             await first.close()
-            second = ContextBrowsers(seed.sessions, MemoryStreamBridge(), executable(), recovery=True, cache_root=tmp_path / 'cache')
+            monkeypatch.setenv('FOCUS_DISTINCT_BROWSER_RECOVERY', '0')
+            disabled = ContextBrowsers(seed.sessions, MemoryStreamBridge(), executable(), cache_root=tmp_path / 'cache')
+            await disabled.start()
+            inactive = await disabled.snapshot(a)
+            assert not disabled.recovery and inactive['browser_id'] == aid and inactive['detail']['reason'] == 'recovery_disabled'
+            await error_code('disconnected', disabled.ensure(a))
+            assert disabled.transport.pid is None and all(user32.IsWindow(int(page['hwnd'])) for page in pages['pages'])
+            await disabled.close()
+            monkeypatch.delenv('FOCUS_DISTINCT_BROWSER_RECOVERY')
+            second = ContextBrowsers(seed.sessions, MemoryStreamBridge(), executable(), cache_root=tmp_path / 'cache')
+            assert second.recovery
             await second.start()
             sa, sb, sc = await second.snapshot(a), await second.snapshot(b), await second.snapshot(c)
             assert sa['browser_id'] == sc['browser_id'] == aid and sb['browser_id'] == bid
@@ -480,6 +496,7 @@ def test_service_restart_restores_shared_contexts_pages_and_never_upgrades_legac
             assert current['cookie'] == initial['A']['cookie'] and current['storage'] == initial['A']['storage']
             assert (await second.snapshot(b))['state'] == 'manual'
         finally:
+            if disabled: await disabled.close()
             for resource in resources: await resource.finish()
             owner = second or first
             for browser in tuple(owner.browsers.values()):

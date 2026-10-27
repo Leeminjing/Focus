@@ -32,7 +32,7 @@ for line in sys.stdin:
 
     async def scenario():
         events = []
-        transport = BrowserTransport([sys.executable, "-u", str(host)], events.append)
+        transport = BrowserTransport([sys.executable, "-u", str(host)], events.append, recovery=False)
         slow = asyncio.create_task(transport.call("slow"))
         await transport.start()
         fast = await transport.call("fast", label="你好")

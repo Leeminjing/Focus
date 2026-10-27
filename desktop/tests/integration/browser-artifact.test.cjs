@@ -6,8 +6,8 @@ const path = require("node:path");
 const { verify } = require("../../scripts/prepare-browser.cjs");
 test("bundled independent browser is pinned and corrupt distribution is rejected", () => {
   const manifest = verify();
-  assert.equal(manifest.version, "0.6.1");
-  assert.equal(manifest.revision, "e0222b2d1be404a3f496c31e4c9ed25b78a88f7c");
+  assert.equal(manifest.version, "0.6.2");
+  assert.equal(manifest.revision, "9051180b8ce81a22a127117cbefe2fb4c56df6b4");
   assert.equal(manifest.protocol_version, 1);
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "focus-browser-artifact-"));
   try {
@@ -18,6 +18,8 @@ test("bundled independent browser is pinned and corrupt distribution is rejected
     for (const changed of [
       { version: "0.5.0" },
       { version: "0.6.0" },
+      { version: "0.6.1" },
+      { revision: "e0222b2d1be404a3f496c31e4c9ed25b78a88f7c" },
       { revision: "146a4bb85d4aafeefbac388855941cd82f1c9036" },
       { revision: "fffc2c458c56c0dc173feed45bd0ff1e63fcc0a9" },
       { protocol_version: 2 },

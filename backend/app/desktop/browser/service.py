@@ -1,6 +1,6 @@
 """Context ownership is application policy; the native host knows none of it.
 
-Bindings are server-owned entries in Context ui_state. Opt-in recovery restores
+Bindings are server-owned entries in Context ui_state. Session recovery restores
 only authenticated live hosts; legacy/missing sessions remain tombstones.
 """
 from __future__ import annotations
