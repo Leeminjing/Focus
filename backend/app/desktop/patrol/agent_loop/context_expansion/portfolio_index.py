@@ -2,8 +2,8 @@ r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildR
 
 输入为冻结 Observation、Revision reader、监督模型 factories 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
 具体工作流为冻结独立局部／整体合同，精确缓存优先，权威追加继承局部 records，再用完整目录及任意冻结原文做整体解释和联合验证。
-模型工作不持有事务；局部成功即保存不可变赢家，完整 Index 仍在短事务校验依赖与 catalog 后发布。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
-索引采样绑定本次冻结 Round identity 并复用逐次 owner receipt，混合成功和取消分别结算，不把通用预算行当作独立执行权威；批次汇总跳过已托管 attempts 避免重复计费。
+模型工作不持有事务；局部成功即保存不可变赢家，每个完整 Context Index 在短事务校验依赖后独立发布，Portfolio catalog 后续按需组装。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
+索引采样绑定冻结 Observation 及当前 Worker attempt（同步兼容调用绑定 Round），复用逐次 owner receipt，混合成功和取消分别结算，不把通用预算行当作独立执行权威；批次汇总跳过已托管 attempts 避免重复计费。
 新 Index 包含 interpretation proof；必要综合失败不发布局部-only artifact。显式新授权重试记录版本，冻结认知输入不变。
 整体解释窗口合同独立进入 fingerprint，使旧综合缓存不冒充新协议；局部记录继续按独立合同复用，旧 proof 不改写。
 局部投影在调用模型前读取并校验原合同缓存，只有未命中的段调用局部模型；发布前仍采用原子赢家并复核综合依赖。
@@ -23,7 +23,7 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from time import perf_counter_ns
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -112,6 +112,8 @@ class _IndexBuildState:
     budget_authorization: dict = field(default_factory=dict)
     progress: Any = None
     background: bool = False
+    worker_request: Any = None
+    required_context_ids: tuple[str, ...] = ()
 
 
 _BUILD_STATE: ContextVar[_IndexBuildState] = ContextVar("semantic_index_build")
@@ -126,6 +128,13 @@ class PortfolioIndexBuildResult(BaseModel):
     blocker_code: str | None = None
     blocker_summary: str | None = None
     stage_record: DerivationStageRecord | None = None
+
+
+class ContextEvidenceIndexPort(Protocol):
+    """Local and focus-context-index adapters share frozen source requirements."""
+
+    async def build(self, observation: LoopObservationEnvelope, *, required_context_ids: tuple[str, ...] = (),
+                    fencing_token: int | None = None, worker_request: Any = None) -> PortfolioIndexBuildResult: ...
 
 
 @dataclass
@@ -250,9 +259,19 @@ class PortfolioSemanticIndexService:
         *,
         budget_authority_revision: int | None = None,
         fencing_token: int | None = None,
+        required_context_ids: tuple[str, ...] = (),
+        worker_request: Any = None,
     ) -> PortfolioIndexBuildResult:
         started = perf_counter_ns()
         observation = deepcopy(observation)
+        options = {}
+        if required_context_ids:
+            from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import source_revisions
+
+            source_revisions(observation, required_context_ids)
+            options["required_context_ids"] = tuple(sorted(set(required_context_ids)))
+        if worker_request is not None:
+            options["worker_request"] = worker_request
         try:
             model_identities = tuple(
                 self._model_identity(getattr(self, name, None)) for name in (
@@ -265,6 +284,7 @@ class PortfolioSemanticIndexService:
             return await self._build(
                 observation, budget_authority_revision=budget_authority_revision,
                 fencing_token=fencing_token,
+                **options,
             )
         key = stable_expansion_hash(
             "authorized-index-build-v1",
@@ -274,6 +294,8 @@ class PortfolioSemanticIndexService:
             else vars(observation),
             budget_authority_revision,
             fencing_token,
+            tuple(sorted(set(required_context_ids))),
+            getattr(worker_request, "retry_identity", None),
             getattr(getattr(self, "_indexer", None), "segmenter_version", ""),
             getattr(getattr(self, "_indexer", None), "INDEX_SCHEMA_VERSION", ""),
             SegmentProjectionRecord.SCHEMA_VERSION,
@@ -295,6 +317,7 @@ class PortfolioSemanticIndexService:
             shared = _SharedIndexBuild(asyncio.create_task(self._build(
                 observation, budget_authority_revision=budget_authority_revision,
                 fencing_token=fencing_token,
+                **options,
             )))
             self._inflight_builds[key] = shared
         shared.waiters += 1
@@ -327,8 +350,12 @@ class PortfolioSemanticIndexService:
         *,
         budget_authority_revision: int | None = None,
         fencing_token: int | None = None,
+        required_context_ids: tuple[str, ...] = (),
+        worker_request: Any = None,
     ) -> PortfolioIndexBuildResult:
         self._projection_attempts = {}
+        _BUILD_STATE.get().worker_request = worker_request
+        _BUILD_STATE.get().required_context_ids = required_context_ids
         if isinstance(observation, LoopObservationEnvelope):
             _BUILD_STATE.get().progress = IndexProgressReporter(self._sessions, observation, fencing_token=fencing_token)
             await self._progress()
@@ -339,6 +366,7 @@ class PortfolioSemanticIndexService:
         )
         frontier = tuple(
             item for item in observation.portfolio_frontier if item.get("revision")
+            and (not required_context_ids or item.get("context_id") in required_context_ids)
         )
         if not frontier:
             return await self._result(
@@ -354,7 +382,7 @@ class PortfolioSemanticIndexService:
             )
             self._prepare_contract()
             tasks = [
-                asyncio.create_task(self._bounded_index(observation, item, semaphore))
+                asyncio.create_task(self._build_and_publish(observation, item, semaphore))
                 for item in frontier
             ]
             try:
@@ -365,14 +393,8 @@ class PortfolioSemanticIndexService:
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
             self._catalog(observation, indexes)
-            async with self._sessions.begin() as session:
-                indexes = tuple(
-                    [
-                        await self._publish_one(session, index)
-                        for index in sorted(indexes, key=lambda i: i.source.revision_id)
-                    ]
-                )
-                catalog = self._catalog(observation, indexes)
+            indexes = tuple(sorted(indexes, key=lambda i: i.source.revision_id))
+            catalog = self._catalog(observation, indexes)
         except asyncio.CancelledError:
             await self._progress(status="cancelled")
             raise
@@ -441,9 +463,7 @@ class PortfolioSemanticIndexService:
                 resources.grant_revision,
                 limits,
                 usage,
-                owner={"owner_kind": "round", "owner_id": observation.round_id, "round_id": observation.round_id,
-                       "observation_id": observation.decision_inputs_ref,
-                       **({"fencing_token": fencing_token} if fencing_token is not None else {})},
+                owner=self._budget_owner(observation, fencing_token),
             ),
         )
 
@@ -501,8 +521,27 @@ class PortfolioSemanticIndexService:
     def _owned_usage(self, observation, *, fencing_token=None):
         from backend.app.desktop.patrol.agent_loop.resources.model_usage_owner import OwnedModelUsage
 
+        worker = _BUILD_STATE.get().worker_request
+        if worker is not None:
+            return OwnedModelUsage(self._sessions, observation.loop_id, observation.round_id, "worker", worker.worker_request_id,
+                                   retry_identity=worker.retry_identity, observation_id=observation.decision_inputs_ref)
         return OwnedModelUsage(self._sessions, observation.loop_id, observation.round_id, "round", observation.round_id,
                                observation_id=observation.decision_inputs_ref, fencing_token=fencing_token)
+
+    @staticmethod
+    def _budget_owner(observation, fencing_token):
+        worker = _BUILD_STATE.get().worker_request
+        return {"round_id": observation.round_id, "observation_id": observation.decision_inputs_ref,
+                **({"owner_kind": "worker", "owner_id": worker.worker_request_id, "retry_identity": worker.retry_identity}
+                   if worker is not None else {"owner_kind": "round", "owner_id": observation.round_id,
+                       **({"fencing_token": fencing_token} if fencing_token is not None else {})})}
+
+    async def _build_and_publish(self, observation, item, semaphore):
+        index = await self._bounded_index(observation, item, semaphore)
+        # Immutable artifacts are useful as soon as one Context completes, even
+        # if a sibling fails or the requesting Observation is superseded.
+        async with self._sessions.begin() as session:
+            return await self._publish_one(session, index)
 
     def _catalog(self, observation, indexes):
         return PortfolioIndexCatalog.create(
@@ -607,6 +646,7 @@ class PortfolioSemanticIndexService:
         scope_fingerprint = stable_expansion_hash(
             "index-stage-scope",
             observation.decision_inputs_ref,
+            _BUILD_STATE.get().required_context_ids,
             _BUILD_STATE.get().contract,
             getattr(getattr(self, "_indexer", None), "segmenter_version", ""),
             getattr(observation, "authority_revision", 1),

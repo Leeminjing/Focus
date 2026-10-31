@@ -1,9 +1,9 @@
 """Focus publication/authorization adapters for the independent semantic-index engine.
 
-The inherited service owns frozen Revision reads, ancestry, Portfolio admission and
-the final all-index publication transaction. The library owns indexing and scheduling.
-Only local proofs commit during model work; complete artifacts are staged until the
-Portfolio transaction validates and adopts the database winner before Curator dispatch.
+The inherited service owns frozen Revision reads, ancestry, admission and each
+Context's publication transaction. The library owns indexing and scheduling.
+Local proofs commit during model work; each complete artifact validates and adopts
+the database winner independently before its scoped catalog reaches a Curator.
 """
 
 from contextlib import contextmanager
@@ -125,7 +125,7 @@ class FocusIndexStore:
             return artifact if artifact.cache_key == cache_key else None
 
     async def put_artifact(self, artifact):
-        # Complete publication belongs to the existing Portfolio transaction. A
+        # Complete publication belongs to the host's Context transaction. A
         # cache winner may already have committed while this candidate was built.
         winner = await self.get_artifact(artifact.cache_key)
         if winner is not None:
@@ -348,13 +348,7 @@ class IndependentPortfolioSemanticIndexService(PortfolioSemanticIndexService):
         budget = await super()._model_budget(
             observation, authority_revision, fencing_token=fencing_token
         )
-        _BUILD_STATE.get().budget_authorization["owner"] = {
-            "owner_kind": "round",
-            "owner_id": observation.round_id,
-            "round_id": observation.round_id,
-            "observation_id": observation.decision_inputs_ref,
-            **({"fencing_token": fencing_token} if fencing_token is not None else {}),
-        }
+        _BUILD_STATE.get().budget_authorization["owner"] = self._budget_owner(observation, fencing_token)
         return budget
 
     def _request_owner(self, snapshot):

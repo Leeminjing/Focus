@@ -188,6 +188,7 @@ read_view.changes 比较前次输入与本次输入前的局面，before/after �
 baseline_only、complete=false、omitted_changes>0 或缺少 read_view 都不表示没有历史变化。引用事实的 revision/content_hash 及 visible_context 的预览只描述当时版本；客户端预览不是已验证系统事实。
 需要更多历史时使用 reads 的 {"source":"causal","intent_id":目录精确身份,"snapshot_hash":目录hash,"cursor":0,"max_bytes":8192}，按 next_cursor 回读原不可变 JSON；不得用当前状态补写旧事实，不得把部分页当作完整快照。
 不要输出私有思维链。每步只返回四者之一：reads、compression_candidate、needs_evidence，或最终判断。
+context_ids 可与 needs_evidence 同时提供，只请求本次决策需要的冻结 Context；省略时使用全部冻结 Context。
 needs_evidence 为 ["curator"] 或 ["expansion_assessment"]（也可同时请求）；系统会持久排队，证据到达后基于同一不可变 Observation 继续。
 缺少 expansion_assessment 表示尚未评估，不能解释为没有派生要求。仅需推进已有 Context 时不必请求完整派生评估；
 需要派生机会或已有 required 工作规格时必须请求 expansion_assessment。不得因证据未就绪绕过 required 合同。
@@ -250,6 +251,7 @@ class PatrolCognitiveStep(BaseModel):
     reads: tuple[PatrolReadRequest | PatrolWorkerReadRequest | PatrolCausalReadRequest | PatrolStrategyReadRequest, ...] = Field(default=(), max_length=4)
     compression_candidate: CompressionCandidateRequest | None = None
     needs_evidence: tuple[Literal["curator", "expansion_assessment"], ...] = Field(default=(), max_length=2)
+    context_ids: tuple[str, ...] = ()
     decision: PatrolDecisionProposal | None = None
 
     @model_validator(mode="before")
@@ -270,7 +272,9 @@ class PatrolCognitiveStep(BaseModel):
         if branches != 1:
             raise ValueError("Patrol step 必须选择 reads、compression_candidate、needs_evidence 或 decision 之一")
         if self.needs_evidence:
-            PatrolEvidenceNeeds(needs_evidence=self.needs_evidence)
+            PatrolEvidenceNeeds(needs_evidence=self.needs_evidence, context_ids=self.context_ids)
+        elif self.context_ids:
+            raise ValueError("context_ids requires needs_evidence")
         return self
 
 
@@ -382,7 +386,7 @@ class StructuredPatrolDecisionModel:
         strategy_reading = False
         for read_index in range(7 if observation.evolution_strategies else 2):
             if step.needs_evidence:
-                return PatrolEvidenceNeeds(needs_evidence=step.needs_evidence)
+                return PatrolEvidenceNeeds(needs_evidence=step.needs_evidence, context_ids=step.context_ids)
             if step.decision is not None:
                 return step.decision
             strategy_reading = strategy_reading or any(isinstance(item, PatrolStrategyReadRequest) for item in step.reads)
@@ -404,7 +408,7 @@ class StructuredPatrolDecisionModel:
         if step.decision is not None:
             return step.decision
         if step.needs_evidence:
-            return PatrolEvidenceNeeds(needs_evidence=step.needs_evidence)
+            return PatrolEvidenceNeeds(needs_evidence=step.needs_evidence, context_ids=step.context_ids)
         evidence = await self._cognitive_evidence(observation, step)
         messages = [
             *messages,
@@ -414,7 +418,7 @@ class StructuredPatrolDecisionModel:
         if step.decision is not None:
             return step.decision
         if step.needs_evidence:
-            return PatrolEvidenceNeeds(needs_evidence=step.needs_evidence)
+            return PatrolEvidenceNeeds(needs_evidence=step.needs_evidence, context_ids=step.context_ids)
         raise PatrolContractViolation("Patrol selective read 次数已用尽，请决策或请求所需证据")
 
     async def _cognitive_evidence(self, observation, step: PatrolCognitiveStep):
@@ -676,12 +680,14 @@ class LoopRoundOrchestrator:
         if observation is None:
             return None
         observation_id = observation.observation_id or observation.decision_inputs_ref
+        assessment_needs = await self._evidence_queue().assessment_requested(observation)
         async with self._sessions() as session:
-            assessment = await self._supplements.get(session, observation_id, "expansion_assessment")
+            assessment = await self._supplements.assessment(session, observation,
+                assessment_needs.context_ids if assessment_needs is not None else ())
         observation = PatrolDecisionContext(observation, expansion_assessment=assessment).model_observation()
-        if assessment is None and await self._evidence_queue().assessment_requested(observation):
+        if assessment is None and assessment_needs is not None:
             await self._evidence_queue().enqueue(claim, patrol_session.session_id, observation,
-                PatrolEvidenceNeeds(needs_evidence=("expansion_assessment",)))
+                assessment_needs)
             return None
         pending_needs = await self._evidence_queue().recover_request(observation)
         if pending_needs is not None:
@@ -766,54 +772,34 @@ class LoopRoundOrchestrator:
                 observation_id=observation_id,
                 fencing_token=int(claim.fencing_token),
             )
-        scopes = self._curators.scopes(observation)
-        if current is not None and current.phase == PatrolPhase.AWAITING_EVIDENCE:
-            await self._patrol_sessions.transition(session_id, PatrolPhase.PROPOSING,
-                PatrolActivity(summary="所需证据已到达，继续原 Observation 决策"), fencing_token=int(claim.fencing_token))
-            async with self._sessions() as session:
-                saved = await self._supplements.get(session, observation.observation_id or observation.decision_inputs_ref, "curator_results")
-            return PatrolDecisionContext(observation, curator_results=tuple(saved["results"]) if saved else None).model_observation()
-        if round_status == "curated" or (current is not None and current.phase == PatrolPhase.COLLECTING_CURATORS):
-            results = await self._curators.results(session_id)
-            if scopes and len(results) != len(scopes):
-                raise ValueError("curator_preparation_incomplete: 本轮耐久 Curator assignment 不完整")
-            if any(item["status"] not in {"proposed", "consumed"} for item in results):
+        async with self._sessions.begin() as session:
+            from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJobRepository
+
+            await EvidenceJobRepository().adopt_legacy(session, observation)
+            results = await self._supplements.curator_results(session, observation)
+        if current is not None and current.phase in {PatrolPhase.COLLECTING_CURATORS, PatrolPhase.AWAITING_EVIDENCE}:
+            if not results and current.phase == PatrolPhase.COLLECTING_CURATORS:
                 return None
-            if current is not None and current.phase == PatrolPhase.COLLECTING_CURATORS:
-                await self._patrol_sessions.transition(
-                    session_id,
-                    PatrolPhase.COLLECTING_CURATORS,
-                    PatrolActivity(summary=f"已收到 {len(results)} 个 Curator 结果"),
-                    fencing_token=int(claim.fencing_token),
-                )
+            if current.phase == PatrolPhase.COLLECTING_CURATORS:
                 await self._curators.consume(session_id, fencing_token=int(claim.fencing_token))
-                await self._patrol_sessions.transition(
-                    session_id,
-                    PatrolPhase.PROPOSING,
-                    PatrolActivity(summary="正在综合 Curator 证据形成 proposal"),
-                    fencing_token=int(claim.fencing_token),
-                )
-            observation_id = observation.observation_id or observation.decision_inputs_ref
-            async with self._sessions.begin() as session:
-                await self._require_current(session, claim, observation_id)
-                saved = await self._supplements.put(session, observation_id, "curator_results", {"results": list(results)})
-            return PatrolDecisionContext(observation, curator_results=tuple(saved["results"])).model_observation()
-        if current is not None and current.phase == PatrolPhase.DISPATCHING_CURATORS:
-            # Resume an old interrupted dispatch. New requests dispatch on the Worker pool.
-            await self._curators.dispatch(session_id, observation, scopes, fencing_token=int(claim.fencing_token))
+            await self._patrol_sessions.transition(session_id, PatrolPhase.PROPOSING,
+                PatrolActivity(summary="Required evidence is available; resume frozen Observation"),
+                fencing_token=int(claim.fencing_token))
+        elif current is not None and current.phase == PatrolPhase.DISPATCHING_CURATORS:
+            queue = self._evidence_queue()
+            if await queue.preparation_enqueued(observation, session_id):
+                return None
+            # Interrupted legacy dispatch also resumes on the Worker queue.
+            needs = await queue.recover_request(observation)
+            await queue.enqueue(claim, session_id, observation,
+                needs or PatrolEvidenceNeeds(needs_evidence=("curator",)))
             return None
-        if current is None or current.phase not in {PatrolPhase.OBSERVING, PatrolPhase.PROPOSING}:
+        elif current is not None and current.phase == PatrolPhase.OBSERVING:
+            await self._patrol_sessions.transition(session_id, PatrolPhase.PROPOSING,
+                PatrolActivity(summary="Preparing proposal from frozen Observation"), fencing_token=int(claim.fencing_token))
+        elif current is None or current.phase != PatrolPhase.PROPOSING:
             return None
-        if current is not None and current.phase == PatrolPhase.OBSERVING:
-            await self._patrol_sessions.transition(
-                session_id,
-                PatrolPhase.PROPOSING,
-                PatrolActivity(summary="正在根据冻结 observation 形成 proposal"),
-                fencing_token=int(claim.fencing_token),
-            )
-        async with self._sessions() as session:
-            saved = await self._supplements.get(session, observation.observation_id or observation.decision_inputs_ref, "curator_results")
-        return PatrolDecisionContext(observation, curator_results=tuple(saved["results"]) if saved else None).model_observation()
+        return PatrolDecisionContext(observation, curator_results=results).model_observation()
 
     async def _observation_id(self, round_id: str) -> str | None:
         async with self._sessions() as session:

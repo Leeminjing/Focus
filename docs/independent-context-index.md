@@ -6,9 +6,9 @@
 
 冻结 Revision 与 semantic view、已提交祖先选择、delegation／Round／fencing 验证继续属于 Focus。独立库负责分组、局部及整体理解、引文验证、共享名额和取消回收。
 
-`FocusIndexStore` 使用既有局部 proof 和完整索引表。局部成功可以立即保存。完整候选只在原 Portfolio 校验 catalog 容量、重验局部赢家和整体 proof 后统一提交；Curator 只接收提交后的 catalog。内部 Engine 的候选返回值不是完整 Portfolio 的耐久发布承诺。
+`FocusIndexStore` 使用既有局部 proof 和完整索引表。局部成功可以立即保存。每个 Context 的完整候选在重验局部赢家和整体 proof 后独立提交；catalog 按请求范围组装，目录容量失败保留已提交的完整 Context 索引。Curator 只接收所需 Context 已提交索引构成的 catalog，不等待无关 Context。
 
-`FocusIndexAdmission` 将每次调用的 `call_id` 绑定到既有预算预留主键。每次尝试验证当前权限与执行 owner，模型期间不持有事务；已报告用量按原账本结算，未知用量维持原 unknown 恢复规则。重试单独准入。批次汇总跳过这些已托管尝试，避免重复计费。角色模型使用 `max_attempts=1`，由独立库掌管响应解析和校验重试。
+`FocusIndexAdmission` 将每次调用的 `call_id` 绑定到既有预算预留主键。每次尝试验证当前权限与执行 owner，异步证据准备使用 Worker attempt 及 retry identity，同步兼容调用使用 Round owner；模型期间不持有事务。已报告用量按原账本结算，未知用量维持原 unknown 恢复规则。重试单独准入。批次汇总跳过这些已托管尝试，避免重复计费。角色模型使用 `max_attempts=1`，由独立库掌管响应解析和校验重试。
 
 宿主仅执行一次构建编排，不叠加原服务的整次构建重试。否则配置两次响应尝试会变成四次物理调用，并可能在结算失败后重新调用模型。逐次回执仍记录全部实际尝试。
 

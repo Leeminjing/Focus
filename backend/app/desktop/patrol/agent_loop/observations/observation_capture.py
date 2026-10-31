@@ -913,9 +913,9 @@ class LoopObservationService:
             raise ValueError("Patrol Worker 来源缺少冻结 Observation")
         if observation_hash(LoopObservationEnvelope.model_validate(base.envelope)) != base.envelope_hash:
             raise ValueError("Patrol Worker 冻结 Observation hash 不匹配")
-        supplement = await DecisionSupplementRepository().get(session, base.observation_id, "curator_results")
+        supplement = await DecisionSupplementRepository().curator_results(session, observation)
         sources = {(item["request_id"], canonical_hash(item.get("result") or {})): item for item in base.envelope.get("worker_results", ())}
-        for item in (supplement or {}).get("results", ()):
+        for item in supplement:
             sources[(item["request_id"], canonical_hash(item.get("result") or {}))] = item
         identities = tuple({identity for identity, _ in sources})
         rounds = dict((await session.execute(select(LoopWorkerRequest.worker_request_id, LoopWorkerRequest.round_id).where(

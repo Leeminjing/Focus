@@ -13,6 +13,7 @@ import backend.app.desktop.patrol.agent_loop.facts.fact_models
 import backend.app.desktop.patrol.agent_loop.journal.journal_models
 import backend.app.desktop.patrol.agent_loop.missions.mission_models
 import backend.app.desktop.patrol.agent_loop.models
+import backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs
 import backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models
 import backend.app.desktop.patrol.agent_loop.projections.projection_models
 import backend.app.desktop.patrol.agent_loop.task_progress.models

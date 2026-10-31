@@ -263,15 +263,11 @@ def test_explicit_new_authorization_can_retry_without_changing_frozen_source(
             )
 
             async with sessions() as session:
-                assert (
-                    await session.scalar(
-                        select(LoopSemanticIndexArtifact.index_id).where(
-                            LoopSemanticIndexArtifact.revision_id
-                            == target.ref.revision_id
-                        )
-                    )
-                    is None
-                )
+                saved = await session.scalar(select(LoopSemanticIndexArtifact.index_id).where(
+                    LoopSemanticIndexArtifact.revision_id == target.ref.revision_id))
+                # A complete Context index survives a Portfolio catalog failure;
+                # failed/budget-blocked Context builds still publish nothing.
+                assert (saved is not None) == (expected_blocker == "portfolio_catalog_overflow")
         assert vars(frozen) == original
         async with sessions() as session:
             rows = (

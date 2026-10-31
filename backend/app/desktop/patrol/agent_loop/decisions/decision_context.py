@@ -82,15 +82,55 @@ class PatrolDecisionContext:
     expansion_assessment: dict | None = None
 
     def model_observation(self) -> LoopObservationEnvelope:
+        from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import evidence_matches
+
         update = {}
         if self.curator_results is not None:
-            update["worker_results"] = self.curator_results
+            results = { (item.get("request_id"), canonical_hash(item.get("result") or {})): item
+                       for item in self.base.worker_results }
+            for item in self.curator_results:
+                if evidence_matches(self.base, item):
+                    results[(item.get("request_id"), item["result_hash"])] = item
+            update["worker_results"] = tuple(results.values())
         if self.expansion_assessment is not None:
             update["expansion_assessment"] = self.expansion_assessment
         return self.base.model_copy(deep=True, update=update)
 
 
 class DecisionSupplementRepository:
+    async def assessment(self, session, observation, context_ids=()):
+        from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJob, source_revisions
+
+        job = await session.scalar(select(EvidenceJob).where(
+            EvidenceJob.observation_id == (observation.observation_id or observation.decision_inputs_ref),
+            EvidenceJob.observation_generation == observation.generation,
+            EvidenceJob.evidence_kind == "expansion_assessment",
+            EvidenceJob.required_source_revisions == source_revisions(observation, context_ids)))
+        if job is None:
+            # Pre-upgrade supplements were Observation-bound, whole-Portfolio
+            # assessments. They cannot satisfy a different scoped dependency.
+            from backend.app.desktop.patrol.agent_loop.models import LoopObservation
+
+            base = await session.get(LoopObservation, observation.observation_id or observation.decision_inputs_ref)
+            if (base is not None and base.generation == observation.generation
+                    and (base.loop_id, base.round_id) == (observation.loop_id, observation.round_id)
+                    and source_revisions(LoopObservationEnvelope.model_validate(base.envelope)) == source_revisions(observation)
+                    and source_revisions(observation, context_ids) == source_revisions(observation)):
+                return await self.get(session, observation.observation_id or observation.decision_inputs_ref, "expansion_assessment")
+            return None
+        if job.status != "ready":
+            return None
+        if job.result_hash != canonical_hash(job.result):
+            raise ValueError("evidence_result_hash_mismatch")
+        return job.result["assessment"]
+
+    async def curator_results(self, session, observation):
+        from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJobRepository
+
+        # Per-Context jobs are append-only evidence. Never seal a partial batch
+        # into the old single, first-writer-wins supplement.
+        return await EvidenceJobRepository().results(session, observation)
+
     async def get(
         self, session: AsyncSession, observation_id: str, kind: str
     ) -> dict | None:

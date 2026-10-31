@@ -150,7 +150,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
 
         class IndexService:
             @staticmethod
-            async def build(observation, *, fencing_token=None):
+            async def build(observation, *, fencing_token=None, required_context_ids=(), worker_request=None):
                 return SimpleNamespace(
                     catalog=Catalog(),
                     indexes=(),
@@ -203,8 +203,10 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
             await orchestrator._evidence_queue().enqueue(claim, patrol.session_id, frozen,
                 PatrolEvidenceNeeds(needs_evidence=("curator",)))
             runtime.bind_evidence_handler(orchestrator.prepare_evidence)
-            preparation, = await runtime._claim_many(1, snapshot["loop_id"])
-            await runtime._run_one(preparation)
+            preparations = await runtime._claim_many(3, snapshot["loop_id"])
+            assert len(preparations) == 3
+            for preparation in preparations:
+                await runtime._run_one(preparation)
             claimed = await runtime._claim_many(2)
             assert len(claimed) == 2
             await runtime._start_curator_analysis(claimed[0])
@@ -221,6 +223,8 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
                 worker.status = "success"
                 worker.result = {"rationale": "tests reveal one failure", "work_specs": []}
                 worker.completed_at = datetime.now(UTC)
+                from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJobRepository
+                await EvidenceJobRepository().finish(session, worker, "ready", worker.result)
             async with sessions() as session:
                 states = set((await session.scalars(select(LoopCuratorAssignment.state).where(LoopCuratorAssignment.session_id == patrol.session_id))).all())
                 proposed_events = tuple((await session.scalars(select(LoopJournalEvent).where(LoopJournalEvent.loop_id == snapshot["loop_id"], LoopJournalEvent.kind == "curator.assignment.proposed"))).all())
@@ -229,7 +233,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
             assert states == {"queued", "reading", "proposed"}
             assert len(proposed_events) == 1
             assert directive_count == 0
-            assert round_row.status == "waiting_workers"
+            assert round_row.status == "curated"
             results = await coordination.results(patrol.session_id)
             assert {item["status"] for item in results} == {"queued", "reading", "proposed"}
             assert await coordination.consume(patrol.session_id) == 1
@@ -253,9 +257,15 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
                         assignment = await assignments.transition(session, assignment.assignment_id, "analyzing", "Curator 正在分析证据")
                     await assignments.transition(session, assignment.assignment_id, "proposed", "Curator proposal 已提交", result_summary="safe proposal")
                     worker = await session.get(LoopWorkerRequest, assignment.worker_request_id, with_for_update=True)
+                    if not worker.retry_identity:
+                        from backend.app.desktop.patrol.agent_loop.workers.worker_attempts import WorkerAttemptAuthority
+
+                        WorkerAttemptAuthority.claim(await session.get(AgentLoop, worker.loop_id), worker, goal_revision=1)
                     worker.status = "success"
                     worker.result = {"rationale": "safe proposal", "work_specs": []}
                     worker.completed_at = datetime.now(UTC)
+                    await EvidenceJobRepository().claim(session, worker)
+                    await EvidenceJobRepository().finish(session, worker, "ready", worker.result)
                 round_row = await session.get(LoopRound, snapshot["current_round_id"], with_for_update=True)
                 round_row.status = "curated"
             curated = await orchestrator._prepare_observation(claim, patrol.session_id, "curated")
@@ -274,7 +284,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
             collecting = next(event for event in phase_events if event.payload["phase"] == "collecting_curators" and event.payload["wait_reason"] == "curator_results")
             proposing = next(event for event in phase_events if event.payload["phase"] == "proposing")
             assert collecting.payload["wait_reason"] == "curator_results"
-            assert len(collecting.payload["wait_targets"]) == 3
+            assert len(collecting.payload["wait_targets"]) == 1
             assert proposing.payload["wait_reason"] is None
         finally:
             loop = await service.get(snapshot["loop_id"])

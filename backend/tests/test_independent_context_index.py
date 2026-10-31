@@ -179,7 +179,7 @@ def test_missing_cached_local_proofs_are_an_integrity_blocker(tmp_path):
     exercise(tmp_path, run)
 
 
-def test_catalog_rejection_keeps_only_local_checkpoints(tmp_path):
+def test_catalog_rejection_preserves_completed_context_index(tmp_path):
     async def run(sessions, seed):
         probe = ModelProbe()
         service = make_service(sessions, probe, catalog_max_descriptor_chars=1)
@@ -198,10 +198,39 @@ def test_catalog_rejection_keeps_only_local_checkpoints(tmp_path):
                 )
             )
             assert local.all()
-            assert not complete.all()
+            assert len(complete.all()) == 1
             assert (
                 await session.get(LoopBudgetUsage, seed["loop_id"])
             ).model_calls == len(probe.calls)
+
+    exercise(tmp_path, run)
+
+
+def test_scoped_independent_build_uses_current_worker_budget_owner(tmp_path):
+    import uuid
+    from backend.app.desktop.patrol.agent_loop.models import LoopWorkerRequest
+    from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
+
+    async def run(sessions, seed):
+        probe = ModelProbe()
+        service = make_service(sessions, probe)
+        await revision(sessions, seed["context_id"], messages(2))
+        frozen = await LoopObservationService(sessions, Checkpoints()).refresh(seed["loop_id"], seed["round_id"])
+        worker_id = uuid.uuid4().hex
+        async with sessions.begin() as session:
+            session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=seed["loop_id"],
+                round_id=seed["round_id"], observation_id=frozen.observation_id,
+                observation_generation=frozen.generation, kind="patrol_evidence", scope={}))
+        worker, = await LoopWorkerRuntime(sessions, object())._claim_many(1, seed["loop_id"])
+        built = await service.build(frozen, required_context_ids=(seed["context_id"],), worker_request=worker)
+        assert built.blocker_code is None, built.blocker_summary
+        assert len(built.indexes) == 1
+        async with sessions() as session:
+            receipts = tuple(await session.scalars(select(LoopIndexBudgetReservation).where(
+                LoopIndexBudgetReservation.loop_id == seed["loop_id"])))
+            assert receipts
+            assert all(row.actual_usage["owner_kind"] == "worker" and row.actual_usage["owner_id"] == worker_id
+                       and row.actual_usage["retry_identity"] == worker.retry_identity for row in receipts)
 
     exercise(tmp_path, run)
 
