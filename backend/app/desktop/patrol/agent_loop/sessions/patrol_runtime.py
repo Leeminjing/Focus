@@ -19,8 +19,8 @@ from focus.config.app_config import AppConfig
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
-    PortfolioSemanticIndexService,
+from backend.app.desktop.patrol.agent_loop.context_expansion.independent_portfolio_index import (
+    IndependentPortfolioSemanticIndexService as PortfolioSemanticIndexService,
 )
 from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
 from backend.app.desktop.patrol.agent_loop.curation.curator_assignments import (
@@ -120,17 +120,17 @@ class CuratorCoordinationStage:
                 sessions,
                 checkpointer,
                 semantic_projector_factory=(
-                    (lambda: RoleBoundStructuredModel(app_config, "semantic_index_projector"))
+                    (lambda: RoleBoundStructuredModel(app_config, "semantic_index_projector", max_attempts=1))
                     if app_config is not None
                     else None
                 ),
                 semantic_claim_verifier_factory=(
-                    (lambda: RoleBoundStructuredModel(app_config, "claim_verifier"))
+                    (lambda: RoleBoundStructuredModel(app_config, "claim_verifier", max_attempts=1))
                     if app_config is not None
                     else None
                 ),
                 semantic_interpreter_factory=(
-                    (lambda: RoleBoundStructuredModel(app_config, "semantic_index_interpreter"))
+                    (lambda: RoleBoundStructuredModel(app_config, "semantic_index_interpreter", max_attempts=1))
                     if app_config is not None else None
                 ),
             )
