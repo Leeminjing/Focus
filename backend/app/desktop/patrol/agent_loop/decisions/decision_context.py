@@ -109,7 +109,13 @@ class DecisionSupplementRepository:
         if job is None:
             # Pre-upgrade supplements were Observation-bound, whole-Portfolio
             # assessments. They cannot satisfy a different scoped dependency.
-            if source_revisions(observation, context_ids) == source_revisions(observation):
+            from backend.app.desktop.patrol.agent_loop.models import LoopObservation
+
+            base = await session.get(LoopObservation, observation.observation_id or observation.decision_inputs_ref)
+            if (base is not None and base.generation == observation.generation
+                    and (base.loop_id, base.round_id) == (observation.loop_id, observation.round_id)
+                    and source_revisions(LoopObservationEnvelope.model_validate(base.envelope)) == source_revisions(observation)
+                    and source_revisions(observation, context_ids) == source_revisions(observation)):
                 return await self.get(session, observation.observation_id or observation.decision_inputs_ref, "expansion_assessment")
             return None
         if job.status != "ready":

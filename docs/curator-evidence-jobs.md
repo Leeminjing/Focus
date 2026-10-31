@@ -24,6 +24,12 @@ result, an `EvidenceJobReady` Outbox event, and the Round's resumable status in 
 transaction. PostgreSQL's existing `focus_loop_work` channel wakes consumers only
 after commit. Unrelated pending Workers do not block a ready evidence result.
 Recovery reads durable tasks and reuses the existing bounded Worker retries.
+Exact-bound Curators created before this schema are adopted in a short recovery
+transaction. Frozen Worker facts are retained when new evidence is composed.
+Worker recovery/control transitions synchronize unfinished job states in the same
+PostgreSQL transaction; ready results remain immutable. Legacy assessment
+supplements are accepted only when no matching modern task exists and the frozen
+Observation generation and sources still match.
 
 Round execution only queues the requested evidence and releases its coordinator
 lease. Index/model waits belong to Workers and use Worker budget ownership.

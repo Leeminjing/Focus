@@ -333,8 +333,10 @@ def test_preupgrade_curator_is_adopted_and_control_updates_task_state(tmp_path):
                     round_id=claim.round_id, observation_id=frozen.observation_id,
                     observation_generation=frozen.generation, kind="patrol_evidence", scope={}))
                 await session.flush()
-                await EvidenceJobRepository().ensure(session, frozen, "expansion_assessment", (), assessment_worker)
                 await DecisionSupplementRepository().put(session, frozen.observation_id, "expansion_assessment", {"level": "not_applicable"})
+                assert await DecisionSupplementRepository().assessment(session, frozen) == {"level": "not_applicable"}
+                assert await DecisionSupplementRepository().assessment(session, frozen.model_copy(update={"generation": 99})) is None
+                await EvidenceJobRepository().ensure(session, frozen, "expansion_assessment", (), assessment_worker)
             async with sessions() as session:
                 # Compatibility cannot bypass a modern task's incomplete state.
                 assert await DecisionSupplementRepository().assessment(session, frozen) is None
