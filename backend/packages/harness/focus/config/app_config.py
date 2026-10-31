@@ -38,6 +38,7 @@ from focus.config.database_config import DatabaseConfig
 from focus.config.extensions_config import ExtensionsConfig
 from focus.config.langgraph_store_config import LanggraphStoreConfig
 from focus.config.model_config import ModelConfig
+from focus.config.patrol_config import PatrolConfig
 from focus.config.stream_bridge_config import StreamBridgeConfig
 from focus.config.web_config import WebToolsConfig
 
@@ -61,6 +62,7 @@ class AppConfig(BaseModel):
     _response_client_pool: object | None = PrivateAttr(default=None)
 
     models: list[ModelConfig]
+    patrol: PatrolConfig = Field(default_factory=PatrolConfig)
     context_run_admission: bool = True
     removed_models: list[str] = Field(default_factory=list)
     """用户偏好层的显式删除名单：这些条目名在合并后已被剔除，界面据此显示「已删除」。"""
@@ -117,6 +119,11 @@ class AppConfig(BaseModel):
             "尚未配置策展默认模型: 请为某个模型条目设置 curation_default: true；"
             f"可用条目: {available_model_names(self)}。{_MODEL_ENTRY_HINT}"
         )
+
+    def resolve_patrol_model_name(self) -> str:
+        name = self.patrol.model_name or self.resolve_default_model_name()
+        self.get_model(name)
+        return name
 
     def _normalize_name(self, name: str) -> str:
         return name.strip()

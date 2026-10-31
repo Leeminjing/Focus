@@ -30,10 +30,13 @@ def summarize(records):
     sql = defaultdict(lambda: {"queries": 0, "duration_ms": 0, "errors": 0})
     scans = None
     first_tokens = []
+    structured = defaultdict(list)
     for record in records:
         kind = record.get("event")
         if kind == "provider_request":
             categories[(record.get("category", "unclassified"), record.get("provider"), record.get("model"))].append(record)
+        elif kind == "structured_request":
+            structured[(record.get("category"), record.get("model"), record.get("schema"))].append(record)
         elif kind in {"run_dispatch", "index_invocation"}:
             queues[record["category"]].append(record)
         elif kind == "process_sample":
@@ -65,6 +68,14 @@ def summarize(records):
                          "duration_ms": distribution(a.get("duration_ms") for a in attempts)})
     return {
         "provider_requests": requests,
+        "structured_requests": [
+            {"category": category, "model": model, "schema": schema, "requests": len(items),
+             "schema_success_rate": sum(item.get("contract_valid") is True for item in items) / len(items),
+             "usage_reported_requests": sum(item.get("usage_reported") is True for item in items),
+             **{field: distribution(item.get(field) for item in items) for field in
+                ("estimated_input_tokens", "input_tokens", "output_tokens", "ttft_ms", "output_duration_ms", "duration_ms")}}
+            for (category, model, schema), items in sorted(structured.items(), key=lambda item: str(item[0]))
+        ],
         "queues": {category: {name: distribution(r.get(name) for r in items)
                               for name in ("queue_wait_ms", "startup_ms", "admission_ms", "execution_ms")}
                    for category, items in queues.items()},

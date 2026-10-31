@@ -10,6 +10,8 @@ r"""本文件对外提供 RetrievalBackedCognitiveAdvisor 及其分步 worker sc
 
 from __future__ import annotations
 
+import json
+
 from backend.app.desktop.capabilities.evolution_strategies import EVOLUTION_GUIDANCE, strategy_catalog
 from backend.app.desktop.capabilities.strategy_snapshots import PatrolStrategyReadRequest
 
@@ -110,7 +112,7 @@ class StructuredModelPort(Protocol):
 
 
 class RetrievalBackedCognitiveAdvisor:
-    VERSION = "retrieval-backed-cognitive-advisor-v3"
+    VERSION = "retrieval-backed-cognitive-advisor-v4"
 
     def __init__(
         self,
@@ -160,7 +162,12 @@ class RetrievalBackedCognitiveAdvisor:
                     reads=session.reads,
                     manifests=self._manifests(indexes, selected),
                 )
-            if session.schema_version == "retrieval-session-v2":
+            if session.schema_version == "retrieval-session-v2" and session.state == "created":
+                prepared = self._small_evidence_session(payload, session, indexes)
+                if prepared is not None:
+                    session = prepared
+                    await self._save(session)
+            if session.schema_version == "retrieval-session-v2" and session.state in {"created", "queried"}:
                 session = await self._run_v2_queries(payload, session, indexes)
             elif session.state == "created":
                 query_proposal, session = await self._invoke(
@@ -247,6 +254,56 @@ class RetrievalBackedCognitiveAdvisor:
                 raise
             code = "retrieval_budget_exhausted" if "budget" in str(exc).casefold() else "retrieval_planning_failed"
             return self._blocked(session, code, "历史 planning session 无法继续检索")
+
+    def _small_evidence_session(self, payload, session, indexes):
+        """完整小证据直接精读；仅提交可放入一个工作请求的、经原合同验证的准备结果。"""
+        limit = getattr(self._model, "small_evidence_max_bytes", 0)
+        if not limit or session.query_plan or session.queries or session.usage.model_calls:
+            return None
+        derivation = (payload.get("scope") or {}).get("derivation_input") or {}
+        if derivation.get("evolution_strategies"):
+            return None
+        catalog = derivation.get("portfolio_index_catalog") or {}
+        mission = catalog.get("mission_catalog") or {}
+        count = sum(len(index.semantic_units) for index in indexes) + len(mission.get("entries", ()))
+        if not count or count > 64 or exceeds_limit(count, session.budget.max_exact_reads):
+            return None
+        query = SemanticRetrievalQuery.create(text="Complete small frozen evidence corpus",
+            kinds=("semantic_unit", "mission_section"), limit=count)
+        try:
+            queries = QueryPlanAdmission().admit(session, (query,))
+        except QueryPlanAdmissionError:
+            return None
+        prepared = self._controller.record_query_plan(session, queries)
+        candidates, coverage = self._retriever.retrieve_page(prepared, query, indexes)
+        # Never describe a truncated retrieval as the complete small corpus.
+        if len(candidates) != count or coverage.unvisited:
+            return None
+        prepared = self._controller.record_query(prepared, query, candidates, coverage)
+        reads = tuple(self._retriever.read(prepared, candidate, indexes) for candidate in candidates)
+        prepared = self._controller.record_reads(prepared, reads)
+        work_input = self._work_input(payload, prepared)
+        size = len(json.dumps({**work_input, "exact_reads": [read.model_dump(mode="json") for read in reads]},
+            ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        if size > limit:
+            return None
+        try:
+            pages = EvidenceReadPager().pages(prepared, reads, work_input,
+                context_window_tokens=getattr(self._model, "context_window_tokens", None),
+                max_output_tokens=getattr(self._model, "max_output_tokens", 8192))
+            if len(pages) != 1:
+                return None
+            config = getattr(self._model, "request_model_config", None)
+            if config is not None:
+                from backend.app.desktop.patrol.agent_loop.inputs.patrol_request_capacity import PatrolRequestCapacity
+
+                request_payload, _ = self._work_page_input(payload, prepared, pages[0], len(pages))
+                messages = self._model.request_messages(LaneAdviceProposal, self._work_authority() + "\n" + EVOLUTION_GUIDANCE,
+                    request_payload, method=config.curation_output_method)
+                PatrolRequestCapacity(config, {"expansion_resources": prepared.frozen_resources.policy.model_dump(mode="json")}).check(messages, LaneAdviceProposal)
+        except ProviderRequestWindowError:
+            return None
+        return prepared
 
     async def _run_v2_queries(
         self,
@@ -431,20 +488,12 @@ class RetrievalBackedCognitiveAdvisor:
         )
         proposals: list[LaneAdviceProposal] = []
         for page in pages:
-            page_candidates = tuple(item for item in session.candidates if item.candidate_id in {read.candidate_id for read in page.reads})
-            allowed = {item.entry_id for item in page_candidates if item.source_type == "context"}
-            allowed_refs = tuple(item.evidence_identity().model_dump(mode="json") for item in page_candidates)
+            request_payload, page_candidates = self._work_page_input(payload, session, page, len(pages))
             proposal, session = await self._invoke(
                 session,
                 LaneAdviceProposal,
                 self._work_authority(),
-                {
-                    **planning_input,
-                    "evidence_page": {"page_id": page.page_id, "ordinal": page.ordinal, "count": len(pages)},
-                    "exact_reads": tuple(item.model_dump(mode="json") for item in page.reads),
-                    "allowed_candidate_unit_ids": tuple(sorted(allowed)),
-                    "allowed_candidate_refs": allowed_refs,
-                },
+                request_payload,
                 operation_id="work_spec" if len(pages) == 1 else f"work_page:{page.page_id}",
                 validator=partial(self._require_known_citations, selected=page_candidates),
             )
@@ -461,6 +510,17 @@ class RetrievalBackedCognitiveAdvisor:
             rationale=proposals[0].rationale if len(proposals) == 1 else "Evidence pages independently identified work contexts.",
             work_specs=combine_page_work_specs(tuple(distinct.values())),
         ), session
+
+    def _work_page_input(self, payload, session, page, page_count):
+        candidate_ids = {read.candidate_id for read in page.reads}
+        selected = tuple(item for item in session.candidates if item.candidate_id in candidate_ids)
+        return {
+            **self._work_input(payload, session),
+            "evidence_page": {"page_id": page.page_id, "ordinal": page.ordinal, "count": page_count},
+            "exact_reads": tuple(item.model_dump(mode="json") for item in page.reads),
+            "allowed_candidate_unit_ids": tuple(sorted({item.entry_id for item in selected if item.source_type == "context"})),
+            "allowed_candidate_refs": tuple(item.evidence_identity().model_dump(mode="json") for item in selected),
+        }, selected
 
     async def _save(self, session: PlanningRetrievalSession) -> None:
         if self._checkpoint is not None:
@@ -519,7 +579,8 @@ class RetrievalBackedCognitiveAdvisor:
                 policy = session.frozen_resources.policy.model_dump(mode="json") if session.frozen_resources else {}
                 try:
                     PatrolRequestCapacity(config, {"expansion_resources": policy}).check(
-                        self._model.request_messages(schema, authority + "\n" + EVOLUTION_GUIDANCE, request_payload), schema)
+                        self._model.request_messages(schema, authority + "\n" + EVOLUTION_GUIDANCE, request_payload,
+                            method=config.curation_output_method), schema)
                 except ProviderRequestWindowError as exc:
                     raise ProviderRequestWindowError(str(exc), stage=stage) from exc
             try:

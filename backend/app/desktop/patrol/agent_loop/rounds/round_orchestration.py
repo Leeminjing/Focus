@@ -38,6 +38,8 @@ from typing import Any, Literal
 from focus.config.app_config import AppConfig
 from focus.models.factory import create_chat_model
 from focus.models.lifecycle import model_client_scope
+from focus.models.structured_metrics import StructuredRequestMetrics, structured_input_tokens
+from focus.models.response_output import ResponseAttemptError
 from focus.runtime.runs.usage import ModelUsage, callback_usage
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -130,6 +132,8 @@ from backend.app.desktop.capabilities.evolution_strategies import EVOLUTION_GUID
 from backend.app.desktop.capabilities.strategy_snapshots import PatrolStrategyReadRequest
 
 PATROL_SYSTEM_CONTRACT = EVOLUTION_GUIDANCE + "\n" + """你是 Focus Portfolio Patrol，是用户当前 Agent Loop 的唯一可撤销委托权力持有者。
+优先基于本次已提供的 task_delta、Context 证据和 result_complete=true 的 Worker 完整结果直接决策；不要再次读取已提供的相同证据。
+initial_context_evidence 是冻结 Revision 的有界消息选读，不代表整个 Context 历史完整；确实缺少必要证据时批量请求 reads。
 previous_task_progress 是上一轮任务记忆，task_delta 是本轮 Observation 内未吸收的任务增量；结合两者理解当前完整任务状态。
 committed_lineage 是冻结时真实已提交 Context 来源 DAG；候选、选择或授权均不改变它。本轮不改读后台新版本。
 Observation 还包含预算、授权、活跃 Run 等控制状态，它们不等于任务成果；记忆不能代替完成验证或 Kernel 权力检查。
@@ -278,6 +282,13 @@ class PatrolCognitiveStep(BaseModel):
         return self
 
 
+class PatrolFinalStep(PatrolCognitiveStep):
+    """读取额度用尽后的请求合同，从 schema 层禁止再发起读取。"""
+
+    reads: tuple[()] = ()
+    compression_candidate: None = None
+
+
 class StructuredPatrolDecisionModel:
     def __init__(self, app_config: AppConfig, model_name: str | None = None, reader=None, candidate_manifest=None, candidate_preparer=None, *, source_catalog=None, attachment_sessions=None) -> None:
         self._app_config = app_config
@@ -319,13 +330,24 @@ class StructuredPatrolDecisionModel:
             limits.get("max_model_calls", 200), int(usage.get("model_calls", 0)),
         )
         self._remaining_retries = remaining_capacity(limits.get("max_retries"), int(usage.get("retries", 0)))
-        config = self._app_config.get_model(self._model_name or self._app_config.resolve_default_model_name())
-        self._request_capacity = PatrolRequestCapacity(config, limits)
+        config = self._app_config.get_model(self._model_name or self._app_config.resolve_patrol_model_name())
+        patrol = self._app_config.patrol
+        self._request_capacity = PatrolRequestCapacity(config, limits, max_output_tokens=patrol.max_output_tokens)
         # Patrol owns retries so each actual request passes authorization and accounting.
-        model = create_chat_model(name=config.name, app_config=self._app_config, max_tokens=config.curation_max_output_tokens, max_retries=0)
+        model = create_chat_model(name=config.name, app_config=self._app_config, max_tokens=patrol.max_output_tokens, max_retries=0, streaming=patrol.streaming)
         sources = await self._source_catalog(observation) if self._source_catalog is not None else None
-        prompt = json.dumps(PatrolReadView.payload(observation, sources), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         from focus.context.requests import frozen_request_messages
+        base_payload = PatrolReadView.payload(observation, sources)
+        base_messages = frozen_request_messages(PATROL_SYSTEM_CONTRACT,
+            "<loop_observation>" + json.dumps(base_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "</loop_observation>", scope="round")
+        if patrol.output_method == "prompt_json":
+            base_messages.append(HumanMessage(content="只返回符合此 JSON Schema 的 JSON：" + json.dumps(PatrolCognitiveStep.model_json_schema(), ensure_ascii=False, separators=(",", ":"))))
+        available = patrol.initial_evidence_max_bytes
+        if self._request_capacity.input_limit is not None:
+            available = min(available, max(0, self._request_capacity.input_limit - self._request_capacity.estimate(base_messages, PatrolCognitiveStep) - 1024))
+        payload = PatrolReadView.payload(observation, sources, initial_evidence_max_bytes=available)
+        await self._initial_context_evidence(observation, payload, available)
+        prompt = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         messages = frozen_request_messages(PATROL_SYSTEM_CONTRACT, f"<loop_observation>{prompt}</loop_observation>", scope="round",
             source_refs=({"loop_id": observation.loop_id, "round_id": observation.round_id,
                           "observation_hash": observation_hash(observation), "frontier_hash": observation.observed_frontier_hash},))
@@ -337,7 +359,7 @@ class StructuredPatrolDecisionModel:
             from backend.app.desktop.patrol.agent_loop.workspaces.workspace_attachments import WorkspaceAttachments
 
             messages = await WorkspaceAttachments().project(self._attachment_sessions, observation, config, messages)
-        proposal = await self._decide(model, messages, config.curation_output_method, observation)
+        proposal = await self._decide(model, messages, patrol.output_method, observation)
         if isinstance(proposal, PatrolEvidenceNeeds):
             return proposal
         missing = PatrolEvidencePolicy.missing(proposal.actions, observation)
@@ -381,6 +403,40 @@ class StructuredPatrolDecisionModel:
     def _raw_output(self, proposal: PatrolDecisionProposal) -> str:
         return (self._last_raw_text or proposal.model_dump_json())[:_RAW_OUTPUT_LIMIT]
 
+    async def _initial_context_evidence(self, observation, payload, max_bytes):
+        if self._reader is None or not max_bytes:
+            return
+        delta = observation.task_delta or {}
+        related = {item.get("context_id") for item in delta.get("sources", ())}
+        related.update(item.get("context_id") for item in observation.user_intents)
+        requests = tuple(PatrolReadRequest(context_id=item["context_id"], revision_id=item["revision_id"], max_messages=32)
+            for item in observation.portfolio_frontier if item.get("context_id") in related and item.get("revision_id"))[:4]
+        if not requests:
+            return
+        remaining = max_bytes - sum(len(PatrolReadView._encoded(item["result"]))
+            for item in payload["worker_results"] if "result" in item)
+        selected = []
+        for evidence in await self._reader(observation, requests):
+            frontier = next((item for item in observation.portfolio_frontier if item.get("context_id") == evidence.get("context_id")), {})
+            previews = {str(item.get("message_id")): item for item in frontier.get("message_evidence_preview", ())}
+            messages = [item for item in evidence.get("messages", ())
+                if str(item.get("id")) not in previews or item.get("content") != previews[str(item.get("id"))].get("content")]
+            if not messages:
+                continue
+            original_count = len(evidence.get("messages", ()))
+            evidence = {**evidence, "messages": messages, "history_complete": False,
+                "omitted_message_count": original_count - len(messages)}
+            size = len(PatrolReadView._encoded(evidence))
+            while messages and size > remaining:
+                messages.pop(0)
+                evidence["omitted_message_count"] += 1
+                size = len(PatrolReadView._encoded(evidence))
+            if messages:
+                selected.append(evidence)
+                remaining -= size
+        if selected:
+            payload["initial_context_evidence"] = selected
+
     async def _decide(self, model, messages, method: str, observation) -> PatrolDecisionProposal | PatrolEvidenceNeeds:
         step = await self._invoke(model, messages, method, PatrolCognitiveStep)
         strategy_reading = False
@@ -414,7 +470,7 @@ class StructuredPatrolDecisionModel:
             *messages,
             HumanMessage(content="<selected_context_evidence>" + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")) + "</selected_context_evidence>\n必须返回 decision 或 needs_evidence，不得再请求读取。"),
         ]
-        step = await self._invoke(model, messages, method, PatrolCognitiveStep)
+        step = await self._invoke(model, messages, method, PatrolFinalStep)
         if step.decision is not None:
             return step.decision
         if step.needs_evidence:
@@ -453,10 +509,13 @@ class StructuredPatrolDecisionModel:
         for attempt in range(_PATROL_REQUEST_ATTEMPTS):
             try:
                 return await self._invoke_once(model, messages, method, schema, retry=attempt > 0)
-            except (APIConnectionError, APIStatusError) as exc:
-                transient = isinstance(exc, APIConnectionError) or exc.status_code in {408, 429} or 500 <= exc.status_code < 600
-                if not transient or attempt == _PATROL_REQUEST_ATTEMPTS - 1:
+            except (APIConnectionError, APIStatusError, ResponseAttemptError) as exc:
+                provider_error = exc.__cause__ if isinstance(exc, ResponseAttemptError) else exc
+                if not isinstance(provider_error, (APIConnectionError, APIStatusError)):
                     raise
+                transient = isinstance(provider_error, APIConnectionError) or provider_error.status_code in {408, 429} or 500 <= provider_error.status_code < 600
+                if not transient or attempt == _PATROL_REQUEST_ATTEMPTS - 1:
+                    raise provider_error
                 await _patrol_retry_sleep(0.5 * 2 ** attempt)
 
     async def _invoke_once(self, model, messages, method: str, schema, *, retry: bool = False):
@@ -464,23 +523,28 @@ class StructuredPatrolDecisionModel:
             raise RuntimeError("Patrol model-call budget 已耗尽")
         if retry and exceeds_limit(self.retry_count, self._remaining_retries, inclusive=True):
             raise RuntimeError("Patrol retry budget 已耗尽")
-        config = self._app_config.get_model(self._model_name or self._app_config.resolve_default_model_name())
-        capacity = self._request_capacity or PatrolRequestCapacity(config, {})
+        config = self._app_config.get_model(self._model_name or self._app_config.resolve_patrol_model_name())
+        capacity = self._request_capacity or PatrolRequestCapacity(config, {}, max_output_tokens=self._app_config.patrol.max_output_tokens)
         request_messages = list(messages)
         if method == "prompt_json":
             schema_text = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
             request_messages.append(HumanMessage(content=f"只返回符合此 JSON Schema 的 JSON：{schema_text}"))
         estimated = capacity.check(request_messages, schema)
+        full_input = structured_input_tokens(model, request_messages, schema, method) if (
+            hasattr(model, "request_payload") or hasattr(model, "_get_request_payload")
+        ) else estimated
         callback = UsageMetadataCallbackHandler()
         metadata = {}
         receipt = None
         if self._usage_receipts is not None:
             receipt = await self._usage_receipts.reserve(estimated, capacity.output_reserve, retry=retry)
         self.call_count += 1
+        metrics = StructuredRequestMetrics()
+        contract_valid = False
         try:
             if retry:
                 self.retry_count += 1
-            invoke_config = {"callbacks": [callback]}
+            invoke_config = {"callbacks": [callback, metrics]}
             if method == "prompt_json":
                 response = await model.ainvoke(
                     request_messages,
@@ -495,6 +559,7 @@ class StructuredPatrolDecisionModel:
                     candidate = "\n".join(lines[1:-1]).strip()
                 parsed = self._validated(schema, candidate)
                 self._last_raw_text = candidate
+                contract_valid = True
                 return parsed
             runnable = model.with_structured_output(schema, method=method, include_raw=True)
             raw = await runnable.ainvoke(messages, config=invoke_config)
@@ -505,6 +570,7 @@ class StructuredPatrolDecisionModel:
                 raw = raw["parsed"]
             parsed = raw if isinstance(raw, schema) else self._validated(schema, raw)
             self._last_raw_text = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False) if hasattr(parsed, "model_dump") else json.dumps(raw, ensure_ascii=False, default=str)
+            contract_valid = True
             return parsed
         except BaseException as exc:
             audit = getattr(exc, "audit", {})
@@ -513,12 +579,18 @@ class StructuredPatrolDecisionModel:
                         "error_type": type(exc).__name__, "status_code": getattr(exc, "status_code", None)}
             raise
         finally:
-            self.attempt_metadata.append({key: metadata.get(key) for key in
-                ("request_source_manifest", "provider", "protocol", "model_name", "status", "usage", "error_type", "status_code")})
             measured = callback_usage(callback)
+            reports = tuple((getattr(callback, "usage_metadata", None) or {}).values())
+            usage_reported = bool(reports) and all("input_tokens" in item and "output_tokens" in item for item in reports)
+            metadata.update(metrics.finish(category="patrol", model=config.model, schema=schema,
+                estimated_input_tokens=full_input, usage=measured,
+                usage_reported=usage_reported, contract_valid=contract_valid))
+            self.attempt_metadata.append({key: metadata.get(key) for key in
+                ("request_source_manifest", "provider", "protocol", "model_name", "status", "usage", "error_type", "status_code",
+                 "estimated_input_tokens", "input_tokens", "output_tokens", "usage_reported", "ttft_ms", "output_duration_ms", "duration_ms", "contract_valid")})
             self.usage += measured if measured.model_calls else ModelUsage(model_calls=1)
             if receipt is not None:
-                await self._usage_receipts.settle(receipt, measured, bool(getattr(callback, "usage_metadata", None)))
+                await self._usage_receipts.settle(receipt, measured, usage_reported)
 
     @staticmethod
     def _validated(schema, payload: Any):
@@ -616,7 +688,7 @@ class LoopRoundOrchestrator:
                     decided_decision_id = settled
                 else:
                     holder_id = loop.holder_id
-                    model_name = (loop.equipment or {}).get("patrol_model_name") or (loop.equipment or {}).get("model_name")
+                    model_name = (loop.equipment or {}).get("patrol_model_name")
         if decided_decision_id is not None:
             await self._terminate_decided_round(claim, decided_decision_id)
             return None
