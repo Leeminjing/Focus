@@ -86,8 +86,12 @@ class PatrolDecisionContext:
 
         update = {}
         if self.curator_results is not None:
-            update["worker_results"] = tuple(item for item in self.curator_results
-                if evidence_matches(self.base, item))
+            results = { (item.get("request_id"), canonical_hash(item.get("result") or {})): item
+                       for item in self.base.worker_results }
+            for item in self.curator_results:
+                if evidence_matches(self.base, item):
+                    results[(item.get("request_id"), item["result_hash"])] = item
+            update["worker_results"] = tuple(results.values())
         if self.expansion_assessment is not None:
             update["expansion_assessment"] = self.expansion_assessment
         return self.base.model_copy(deep=True, update=update)
@@ -103,6 +107,10 @@ class DecisionSupplementRepository:
             EvidenceJob.evidence_kind == "expansion_assessment", EvidenceJob.status == "ready",
             EvidenceJob.required_source_revisions == source_revisions(observation, context_ids)))
         if job is None:
+            # Pre-upgrade supplements were Observation-bound, whole-Portfolio
+            # assessments. They cannot satisfy a different scoped dependency.
+            if source_revisions(observation, context_ids) == source_revisions(observation):
+                return await self.get(session, observation.observation_id or observation.decision_inputs_ref, "expansion_assessment")
             return None
         if job.result_hash != canonical_hash(job.result):
             raise ValueError("evidence_result_hash_mismatch")

@@ -772,7 +772,10 @@ class LoopRoundOrchestrator:
                 observation_id=observation_id,
                 fencing_token=int(claim.fencing_token),
             )
-        async with self._sessions() as session:
+        async with self._sessions.begin() as session:
+            from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJobRepository
+
+            await EvidenceJobRepository().adopt_legacy(session, observation)
             results = await self._supplements.curator_results(session, observation)
         if current is not None and current.phase in {PatrolPhase.COLLECTING_CURATORS, PatrolPhase.AWAITING_EVIDENCE}:
             if not results and current.phase == PatrolPhase.COLLECTING_CURATORS:

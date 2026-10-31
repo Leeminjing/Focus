@@ -106,10 +106,13 @@ class PatrolEvidenceQueue:
             return PatrolEvidenceNeeds(needs_evidence=("expansion_assessment",), context_ids=contexts)
 
     async def missing(self, observation, needs):
+        try:
+            required = source_revisions(observation, needs.context_ids)
+        except ValueError as exc:
+            raise PatrolContractViolation(str(exc)) from exc
         async with self._sessions() as session:
             results = await self._supplements.curator_results(session, observation)
             available = {key for item in results for key in item["required_source_revisions"]}
-            required = source_revisions(observation, needs.context_ids)
             missing = []
             if "curator" in needs.needs_evidence and required.keys() - available:
                 missing.append("curator")
@@ -127,8 +130,14 @@ class PatrolEvidenceQueue:
                 .order_by(LoopPatrolAttempt.attempt.desc()).limit(1))
             needs = PatrolEvidenceNeeds.model_validate({"needs_evidence": attempt.raw_output["needs_evidence"], "context_ids": attempt.raw_output.get("context_ids", ())}) \
                 if attempt is not None and attempt.status == "waiting_evidence" else None
-        if needs is not None and await self.missing(observation, needs):
-            return needs
+        if needs is not None:
+            try:
+                if await self.missing(observation, needs):
+                    return needs
+            except PatrolContractViolation:
+                # A crash between receipt persistence and scope admission must
+                # not turn invalid model output into an endlessly replayed job.
+                return None
         return None
 
     async def run(self, request):

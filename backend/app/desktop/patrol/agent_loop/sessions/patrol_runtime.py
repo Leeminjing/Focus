@@ -2,7 +2,7 @@ r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 
 
 输入为 coordinator claim、冻结 observation、Kernel result 和持久 Session；输出为原子 phase 事件、单 Context Bootstrap 或
 多 Context Cognitive Planner assignment、可供 Patrol 消费的结构化 work specs 及等待/终态。具体工作流为 Lifecycle 管理 Session
-边界，Curator stage 先为完整冻结 Revisions 建立含独立 claim-support 判定且可恢复的 semantic indexes/catalog，再按 Portfolio 形态有界扇出 retrieval-backed
+边界，Curator stage 仅为请求的 Context Revisions 建立可恢复的 semantic indexes/catalog，各 Context 独立派发 retrieval-backed
 规划、收集和消费；生产 request 携带单一有效 Mission、catalog、index identities、相关任务记忆/增量、真实祖先子图与授权修订冻结的 Expansion 资源策略。
 Curator 候选始终属于 proposal；分派同事务发布 Round 与 Loop 阶段事实，阶段实体版本不改变执行控制版本；Outcome stage 只映射 Kernel 结果。
 派发恢复只信耐久 assignment/Worker 与完整索引输入，Loop→Round→Session 锁下复检授权和调用者 fence，重复协调者不重复创建请求。
@@ -327,7 +327,7 @@ class CuratorCoordinationStage:
 
     @staticmethod
     def _scoped_task_view(derivation: dict, observation: LoopObservationEnvelope, scope: dict) -> dict:
-        return {**derivation, **scoped_memory(observation, {str(scope["context_id"])}) ,
+        return {**derivation, **scoped_memory(observation, {str(scope["context_id"])}),
                 "required_source_revisions": source_revisions(observation, (scope["context_id"],))}
 
     async def results(self, session_id: str, observation=None) -> tuple[dict, ...]:

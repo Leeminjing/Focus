@@ -2,8 +2,8 @@ r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildR
 
 输入为冻结 Observation、Revision reader、监督模型 factories 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
 具体工作流为冻结独立局部／整体合同，精确缓存优先，权威追加继承局部 records，再用完整目录及任意冻结原文做整体解释和联合验证。
-模型工作不持有事务；局部成功即保存不可变赢家，完整 Index 仍在短事务校验依赖与 catalog 后发布。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
-索引采样绑定本次冻结 Round identity 并复用逐次 owner receipt，混合成功和取消分别结算，不把通用预算行当作独立执行权威；批次汇总跳过已托管 attempts 避免重复计费。
+模型工作不持有事务；局部成功即保存不可变赢家，每个完整 Context Index 在短事务校验依赖后独立发布，Portfolio catalog 后续按需组装。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
+索引采样绑定冻结 Observation 及当前 Worker attempt（同步兼容调用绑定 Round），复用逐次 owner receipt，混合成功和取消分别结算，不把通用预算行当作独立执行权威；批次汇总跳过已托管 attempts 避免重复计费。
 新 Index 包含 interpretation proof；必要综合失败不发布局部-only artifact。显式新授权重试记录版本，冻结认知输入不变。
 整体解释窗口合同独立进入 fingerprint，使旧综合缓存不冒充新协议；局部记录继续按独立合同复用，旧 proof 不改写。
 局部投影在调用模型前读取并校验原合同缓存，只有未命中的段调用局部模型；发布前仍采用原子赢家并复核综合依赖。

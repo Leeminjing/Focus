@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import uuid
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
@@ -46,6 +46,24 @@ def test_decision_rejects_late_or_changed_identity(change):
     composed = PatrolDecisionContext(observation, curator_results=(invalid, valid)).model_observation()
     assert composed.worker_results == (valid,)
     assert observation.worker_results == ()
+
+
+def test_composition_retains_frozen_worker_facts_and_deduplicates_exact_results():
+    observation = _observation(observation_id="observation", decision_inputs_ref="observation",
+        worker_results=({"request_id": "verifier", "kind": "completion_verifier", "result": {"passed": True}},))
+    valid = _result(observation)
+    composed = PatrolDecisionContext(observation, curator_results=(valid, valid)).model_observation()
+    assert composed.worker_results == (*observation.worker_results, valid)
+    assert PatrolDecisionContext(observation, curator_results=()).model_observation() == observation
+
+
+def test_unknown_model_context_is_a_retryable_contract_violation():
+    from backend.app.desktop.patrol.agent_loop.decisions.evidence_queue import PatrolEvidenceQueue
+    from backend.app.desktop.patrol.agent_loop.patrol import PatrolContractViolation
+
+    queue = PatrolEvidenceQueue(None, None, None, None)
+    with pytest.raises(PatrolContractViolation, match="evidence_source_unknown"):
+        asyncio.run(queue.missing(_observation(), PatrolEvidenceNeeds(needs_evidence=("curator",), context_ids=("typo",))))
 
 
 def test_evidence_request_preserves_scope_and_does_not_truncate_contexts():
@@ -232,6 +250,78 @@ def test_context_result_is_durable_and_wakes_without_unrelated_workers(tmp_path)
                     await EvidenceJobRepository().finish(session, curator, "ready", {"work_specs": []})
         finally:
             await feed.close()
+            await runtime.close()
+            await service.control(snapshot["loop_id"], "stop")
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.usefixtures("isolated_postgres_database")
+def test_preupgrade_curator_is_adopted_and_control_updates_task_state(tmp_path):
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        service, snapshot = await _create_loop(sessions, tmp_path)
+        runtime = LoopWorkerRuntime(sessions, object())
+        orchestrator = LoopRoundOrchestrator(sessions, object(), None, None)
+
+        class Index:
+            async def build(self, observation, **_):
+                return SimpleNamespace(catalog=SimpleNamespace(model_dump=lambda **_: {"catalog_id": "a" * 64}),
+                                       indexes=(), stage_record=None)
+
+        orchestrator._curators = CuratorCoordinationStage(sessions, index_service=Index())
+        runtime.bind_evidence_handler(orchestrator.prepare_evidence)
+        try:
+            claim = await LoopCoordinator(sessions).claim_for_loop(snapshot["loop_id"], "legacy")
+            frozen = await _persist_observation(sessions, _observation_envelope(claim.loop_id, claim.round_id).model_copy(update={
+                "portfolio_frontier": ({"context_id": "context", "revision_id": "revision"},)}))
+            class Frozen:
+                async def capture(self, *_):
+                    return frozen
+            orchestrator._observations = Frozen()
+            patrol = await orchestrator._patrol_sessions.begin(claim)
+            await orchestrator._prepare_observation(claim, patrol.session_id, "observed")
+            await orchestrator._evidence_queue().enqueue(claim, patrol.session_id, frozen,
+                PatrolEvidenceNeeds(needs_evidence=("curator",), context_ids=("context",)))
+            preparation, = await runtime._claim_many(1, claim.loop_id)
+            await runtime._run_one(preparation)
+            curator, = await runtime._claim_many(1, claim.loop_id)
+            async with sessions.begin() as session:
+                # Simulate pre-upgrade durable rows: bound Worker/assignment,
+                # no EvidenceJob or job metadata, and a successful result.
+                await session.execute(delete(EvidenceJob).where(EvidenceJob.worker_request_id == curator.worker_request_id))
+                worker = await session.get(LoopWorkerRequest, curator.worker_request_id)
+                worker.scope = {key: value for key, value in worker.scope.items() if key not in {"evidence_job_id", "evidence_fencing_token"}}
+                worker.status, worker.result, worker.completed_at = "success", {"work_specs": []}, datetime.now(UTC)
+                (await session.get(LoopRound, claim.round_id)).status = "curated"
+            resumed = await orchestrator._prepare_observation(claim, patrol.session_id, "curated")
+            assert len(resumed.worker_results) == 1
+            assert resumed.worker_results[0]["request_id"] == curator.worker_request_id
+            async with sessions() as session:
+                job = await session.scalar(select(EvidenceJob).where(EvidenceJob.worker_request_id == curator.worker_request_id))
+                assert job.status == "ready" and job.result_hash == canonical_hash({"work_specs": []})
+            # Existing bulk recovery/control transitions synchronize unfinished
+            # jobs transactionally, without reopening completed evidence.
+            worker_id = uuid.uuid4().hex
+            async with sessions.begin() as session:
+                session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=claim.loop_id,
+                    round_id=claim.round_id, observation_id=frozen.observation_id,
+                    observation_generation=frozen.generation, kind="patrol_evidence", scope={}))
+                await session.flush()
+                pending = await EvidenceJobRepository().ensure(session, frozen, "context_index_retry", ("context",), worker_id)
+                job_id = pending.job_id
+            for status, expected in (("running", "running"), ("pending", "pending"), ("error", "failed"), ("pending", "pending"), ("cancelled", "cancelled")):
+                async with sessions.begin() as session:
+                    await session.execute(update(LoopWorkerRequest).where(LoopWorkerRequest.worker_request_id == worker_id).values(status=status))
+                async with sessions() as session:
+                    assert (await session.get(EvidenceJob, job_id)).status == expected
+            async with sessions.begin() as session:
+                await session.execute(update(LoopWorkerRequest).where(LoopWorkerRequest.worker_request_id == curator.worker_request_id).values(status="cancelled"))
+            async with sessions() as session:
+                assert (await session.get(EvidenceJob, job.job_id)).status == "ready"
+        finally:
             await runtime.close()
             await service.control(snapshot["loop_id"], "stop")
             await engine.dispose()

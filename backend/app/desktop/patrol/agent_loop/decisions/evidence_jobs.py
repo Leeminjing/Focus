@@ -1,12 +1,14 @@
-"""Observation-bound evidence tasks on the existing durable Worker queue.
+"""本文件对外提供 EvidenceJob、EvidenceJobRepository 与精确来源匹配。
 
-The Worker owns execution and budget admission. Jobs retain dependency identities,
-attempt fences and immutable results; they never confer decision authority.
+输入为冻结 Observation、Context 范围及 Worker attempt；输出为持久任务、版本化证据和提交后的唤醒事实。
+具体工作流为在既有 Worker 队列记录依赖、预算 owner、逐次 fence 与不可变结果，完成事务同时发布 Outbox 和 Round 状态。
+示例：await EvidenceJobRepository().finish(session, worker, "ready", result)。
+Worker 继续负责执行、预算准入和结算，证据任务本身不授予决策权。
 """
 
 from datetime import UTC, datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func, select
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -58,6 +60,43 @@ class EvidenceJob(Base):
 
 
 class EvidenceJobRepository:
+    async def adopt_legacy(self, session, observation):
+        """Recover exact-bound pre-upgrade Curators in a writable short transaction."""
+        from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound, LoopWorkerRequest
+        from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopCuratorAssignment
+
+        await session.get(AgentLoop, observation.loop_id, with_for_update=True)
+        current = await session.get(LoopRound, observation.round_id, with_for_update=True)
+        if (current.observation_id != (observation.observation_id or observation.decision_inputs_ref)
+                or current.decision_id is not None or current.status in {"settled", "error", "superseded"}):
+            return
+        rows = await session.execute(select(LoopWorkerRequest, LoopCuratorAssignment)
+            .join(LoopCuratorAssignment, LoopCuratorAssignment.worker_request_id == LoopWorkerRequest.worker_request_id)
+            .outerjoin(EvidenceJob, EvidenceJob.worker_request_id == LoopWorkerRequest.worker_request_id)
+            .where(LoopWorkerRequest.observation_id == current.observation_id,
+                LoopWorkerRequest.observation_generation == observation.generation,
+                LoopWorkerRequest.kind == "lane_curator",
+                or_(EvidenceJob.job_id.is_(None),
+                    (LoopWorkerRequest.status == "success") & (EvidenceJob.status != "ready"))))
+        for worker, assignment in rows:
+            context_id = assignment.scope["context_id"]
+            try:
+                required = source_revisions(observation, (context_id,))
+            except ValueError:
+                continue
+            if (required[context_id]["revision_id"] != assignment.scope["revision_id"]
+                    or not worker.retry_identity and worker.status == "success"):
+                continue
+            job = await self.ensure(session, observation, "curator", (context_id,), worker.worker_request_id)
+            if job.worker_request_id != worker.worker_request_id:
+                continue
+            if worker.status in {"running", "success"} and not worker.scope.get("evidence_job_id"):
+                await self.claim(session, worker)
+            if worker.status == "success":
+                await self.finish(session, worker, "ready", worker.result)
+            elif worker.status in {"error", "cancelled", "superseded"}:
+                job.status = "failed" if worker.status == "error" else worker.status
+
     async def ensure(self, session, observation, kind, context_ids, worker_id):
         required = source_revisions(observation, context_ids)
         identity = observation.observation_id or observation.decision_inputs_ref
