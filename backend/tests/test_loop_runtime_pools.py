@@ -23,7 +23,6 @@ from backend.app.desktop.patrol.agent_loop import (
     ContextRunPool,
     LoopCoordinator,
     LoopCreateRequest,
-    LoopKernel,
     PatrolDecisionIntent,
 )
 from backend.app.desktop.patrol.agent_loop.models import (
@@ -50,6 +49,7 @@ from backend.app.desktop.contexts.evolution import (
 from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.contexts.curation.models import CurationLane
 from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import current_frontier_hash
+from backend.tests.loop_run_boundary_support import commit_patrol
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -115,7 +115,7 @@ def test_context_capacity_is_visible_and_pause_converges_work(tmp_path) -> None:
         try:
             round_id = snapshot["current_round_id"]
             intent = PatrolDecisionIntent(decision_id=uuid.uuid4().hex, idempotency_key=f"directive:{round_id}", loop_id=snapshot["loop_id"], loop_revision=snapshot["revision"], round_id=round_id, holder_id=snapshot["holder_id"], grant_id=snapshot["grant"]["grant_id"], grant_revision=1, goal_revision=1, observed_frontier_hash=await _frontier(sessions, round_id), observed_workspace_revision=1, rationale="Queue one Context.", actions=({"action": "continue_context", "context_id": context_id, "context_revision_id": revision_id, "message": "Continue."},))
-            result = await LoopKernel(sessions).commit(intent)
+            result = await commit_patrol(sessions, intent)
             counter = ContextRunPool(sessions, LoopCoordinator(sessions), object())
             baseline_active = await counter._active_run_count()
             active_run_id = uuid.uuid4().hex
@@ -342,7 +342,7 @@ async def _create_wave(sessions, tmp_path, *, count=3, writing=False, git=False,
         actions=tuple({"action": "continue_context", "context_id": context_id,
             "context_revision_id": revision_id, "message": f"Implement module {index}."}
             for index, (context_id, revision_id) in enumerate(contexts[:action_count])))
-    result = await LoopKernel(sessions).commit(intent)
+    result = await commit_patrol(sessions, intent)
     assert result.status == "committed", result
     return service, snapshot, contexts, result.directive_ids
 

@@ -304,7 +304,7 @@ def test_runtime_admits_other_loops_while_one_round_waits() -> None:
                     second_finished.set()
                 return "done"
 
-        runtime = LoopCoordinatorRuntime(Coordinator(), RunEvents(), orchestrator=Orchestrator(), poll_seconds=0.001, max_concurrent_loops=2)
+        runtime = LoopCoordinatorRuntime(Coordinator(), RunEvents(), orchestrator=Orchestrator(), poll_seconds=0.001, max_concurrent_loops=1)
         await runtime.start()
         try:
             await asyncio.wait_for(second_finished.wait(), timeout=1)

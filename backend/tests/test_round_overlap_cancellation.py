@@ -13,14 +13,14 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound
+from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim, LoopCoordinator, LoopCoordinatorRuntime
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound, LoopPatrolAttempt
 from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import RoundConsequenceReader
 from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import terminate_round
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 
 
-def test_preemption_returns_while_finally_retains_the_cognition_barrier():
+def test_preemption_returns_while_old_cognition_cleanup_is_tracked():
     async def run():
         started, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         released = []
@@ -50,6 +50,47 @@ def test_preemption_returns_while_finally_retains_the_cognition_barrier():
         release.set()
         await asyncio.wait_for(task, 1)
         assert released == ["lease"] and not runtime._claims
+
+    asyncio.run(run())
+
+
+@pytest.mark.usefixtures("isolated_postgres_database")
+def test_claim_new_observation_while_old_attempt_and_cancellation_outbox_remain_unsettled(tmp_path):
+    async def run():
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+        from backend.app.desktop.patrol.agent_loop.patrol import PortfolioPatrol
+        from backend.tests.test_round_task_progress import _Checkpointer
+
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        fixture = await _seed_loop(sessions, tmp_path, label="cleanup", started_at=datetime.now(UTC))
+        coordinator = LoopCoordinator(sessions)
+        claims = []
+        try:
+            observations = LoopObservationService(sessions, _Checkpointer())
+            first = await observations.capture(fixture["loop_id"], fixture["round_id"])
+            old = await coordinator.claim_for_loop(fixture["loop_id"], "old-owner")
+            claims.append(old)
+            patrol = PortfolioPatrol(sessions, object())
+            attempt = await patrol._begin(first, fixture["snapshot"]["holder_id"], fencing_token=int(old.fencing_token))
+            async with sessions.begin() as session:
+                loop = await session.get(AgentLoop, fixture["loop_id"], with_for_update=True)
+                row = await session.get(LoopRound, fixture["round_id"], with_for_update=True)
+                second = await observations.freeze_version(session, loop, row, first)
+            current = await coordinator.claim_for_loop(fixture["loop_id"], "new-owner")
+            assert current is not None and current.observation_id == second.observation_id
+            claims.append(current)
+            assert int(current.fencing_token) > int(old.fencing_token)
+            async with sessions() as session:
+                old_attempt = await session.get(LoopPatrolAttempt, attempt.patrol_attempt_id)
+                assert old_attempt.status == "superseded" and old_attempt.completed_at is None
+            assert not await coordinator.release(old)
+            await patrol._finish(attempt, "error", {}, "cancelled")
+        finally:
+            for claim in claims:
+                await coordinator.release(claim)
+            await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
 
     asyncio.run(run())
 

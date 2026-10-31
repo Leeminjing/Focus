@@ -15,7 +15,7 @@ Run 结算先 flush 当前已发生事实，再按 Loop→Round 刷新锁定所�
 执行阶段变化发布独立实体版本，不通过改变控制版本使正在执行的 Run 失效。示例：`runtime = LoopCoordinatorRuntime(...)`。
 新直接消息沿 Directive 统一结算，observed 阶段启动失败保留 delivery_failed；有 Directive 的 Run 不重复发布旧用户 Run 事件。
 派发接受所属 ready/running Round 中成功授权的就绪工作，不依赖 current_round_id；正常推进检查全 Loop 后果汇合。
-用户输入提升原未决轮 Observation/fence，既有 outbox 定向取消认知；通知有界返回，重复取消保留 finally 清理，新认知领取等待旧清理证明，不阻塞输入受理。
+用户输入提升原未决轮 Observation/fence，既有 outbox 定向取消认知；通知有界返回，重复取消保留 finally 清理，新认知仅在实际请求边界排队，不等待旧认知清理。
 同一 Run outbox 消费器将 ArtifactVersion 转为规范文件事件；该分支不推进 Run 结算或 Round。
 事务提交后的 PostgreSQL hint 定向唤醒消费者；重连后扫描全部组件，正常轮询默认降为 5 秒恢复兜底。
 """
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -91,6 +92,10 @@ from backend.app.desktop.persistence.models import ModelAttemptAudit
 from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import RoundConsequenceReader
 from backend.app.desktop.runs.orchestration import RunOutboxConsumer
 from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
+from backend.app.desktop.patrol.agent_loop.resources.request_admission import RequestAdmission
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,12 +227,6 @@ class LoopCoordinator:
             round_row = await session.scalar(statement)
             if round_row is None:
                 return None, None
-            if round_row.decision_id is None:
-                from backend.app.desktop.patrol.agent_loop.decisions.cognition import has_pending_cleanup
-
-                if await has_pending_cleanup(session, round_row.loop_id):
-                    occupied.add(round_row.round_id)
-                    continue
             lease = await session.scalar(select(LoopCoordinatorLease).where(
                 LoopCoordinatorLease.round_id == round_row.round_id,
             ).with_for_update())
@@ -632,6 +631,7 @@ class LoopCoordinatorRuntime:
         run_manager=None,
         workspace_cleanup=None,
         timeline_projector=None,
+        max_background_preparations: int = 8,
     ) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
@@ -662,7 +662,18 @@ class LoopCoordinatorRuntime:
             if bind is not None:
                 # A committed result can arrive before its task releases a slot.
                 bind(lambda name=name: self._registry.wake(None, name))
-        self._round_slots = asyncio.Semaphore(self._max_concurrent_loops)
+        # Keep the constructor's concurrency setting compatible, but apply it
+        # only to actual Patrol requests, never to an entire Round lifecycle.
+        self._decision_requests = RequestAdmission(self._max_concurrent_loops)
+        bind_requests = getattr(orchestrator, "bind_request_admission", None)
+        if bind_requests is not None:
+            bind_requests(self._decision_requests)
+        self._background_preparations = RequestAdmission(max_background_preparations)
+        bind_preparation = getattr(orchestrator, "bind_preparation_admission", None)
+        if bind_preparation is not None:
+            bind_preparation(self._background_preparations)
+        # Curator execution remains bounded by its independent Worker pool.
+        self._round_tasks: dict[asyncio.Task, CoordinatorClaim] = {}
         self._claims: dict[str, tuple[CoordinatorClaim, asyncio.Task]] = {}
         self._notifications = None
         sessions = getattr(coordinator, "_sessions", None)
@@ -736,6 +747,12 @@ class LoopCoordinatorRuntime:
             await self._supervisor.close()
             self._supervisor = None
         await self._registry.close()
+        tasks = tuple(self._round_tasks)
+        for task in tasks:
+            if not task.cancelling():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         for component in (self._workers, self._portfolio_publications, self._context_runs, self._fact_projector):
             close = getattr(component, "close", None)
             if close is not None:
@@ -771,7 +788,7 @@ class LoopCoordinatorRuntime:
         ]
         prewarm = getattr(self._orchestrator, "prewarm_indexes", None)
         if prewarm is not None:
-            components.append(SupervisorComponent("index_prewarm", lambda: prewarm(loop_id), self._poll_seconds))
+            components.append(SupervisorComponent("index_prewarm", lambda: self._prewarm_indexes(loop_id), self._poll_seconds))
         if self._workers is not None:
             components.append(SupervisorComponent("workers", lambda: self._workers.drain(loop_id), self._poll_seconds))
         if self._portfolio_publications is not None:
@@ -782,8 +799,16 @@ class LoopCoordinatorRuntime:
             components.append(SupervisorComponent("fact_projector", lambda: self._fact_projector.project_loop(loop_id), self._poll_seconds))
         return tuple(components)
 
+    async def _prewarm_indexes(self, loop_id: str):
+        async with self._background_preparations.slot():
+            return await self._orchestrator.prewarm_indexes(loop_id)
+
     async def _reconcile_supervisors(self) -> tuple[str, ...]:
-        return await self._registry.reconcile(await self._coordinator.running_loop_ids())
+        running = await self._coordinator.running_loop_ids()
+        for task, claim in tuple(self._round_tasks.items()):
+            if claim.loop_id not in running and not task.cancelling():
+                task.cancel()
+        return await self._registry.reconcile(running)
 
     async def _drain_run_events(self, loop_id: str) -> int:
         return await self._run_events.drain(
@@ -793,10 +818,18 @@ class LoopCoordinatorRuntime:
         )
 
     async def _process_round(self, loop_id: str) -> None:
-        async with self._round_slots:
-            claim = await self._coordinator.claim_for_loop(loop_id, f"agent-loop-coordinator:{loop_id}")
-            if claim is not None:
-                await self._execute_claim(claim)
+        claim = await self._coordinator.claim_for_loop(loop_id, f"agent-loop-coordinator:{loop_id}")
+        if claim is not None:
+            # The lease bounds live work per Round. A superseded lease can be
+            # replaced while its old task independently cleans up and settles.
+            task = asyncio.create_task(self._execute_claim(claim), name=f"loop-round:{claim.round_id}:{claim.fencing_token}")
+            self._round_tasks[task] = claim
+            task.add_done_callback(self._round_done)
+
+    def _round_done(self, task: asyncio.Task) -> None:
+        self._round_tasks.pop(task, None)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            logger.error("Round execution failed", exc_info=(type(exc), exc, exc.__traceback__))
 
     async def _execute_claim(self, claim: CoordinatorClaim) -> None:
         work = asyncio.create_task(self._perform_claim(claim))
