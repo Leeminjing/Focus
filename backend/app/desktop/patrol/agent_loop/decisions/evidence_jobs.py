@@ -153,6 +153,10 @@ class EvidenceJobRepository:
         if status == "ready":
             job.result, job.result_hash = result, canonical_hash(result)
             job.completed_at = datetime.now(UTC)
+            if job.evidence_kind == "expansion_assessment" and job.required_source_revisions == source_revisions(frozen):
+                from backend.app.desktop.patrol.agent_loop.decisions.decision_context import DecisionSupplementRepository
+
+                await DecisionSupplementRepository().put(session, job.observation_id, "expansion_assessment", result["assessment"])
             await session.flush()
             await self._notify(session, job)
 

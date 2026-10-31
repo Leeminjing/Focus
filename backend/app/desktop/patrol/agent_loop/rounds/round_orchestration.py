@@ -786,9 +786,13 @@ class LoopRoundOrchestrator:
                 PatrolActivity(summary="Required evidence is available; resume frozen Observation"),
                 fencing_token=int(claim.fencing_token))
         elif current is not None and current.phase == PatrolPhase.DISPATCHING_CURATORS:
+            queue = self._evidence_queue()
+            if await queue.preparation_enqueued(observation, session_id):
+                return None
             # Interrupted legacy dispatch also resumes on the Worker queue.
-            await self._evidence_queue().enqueue(claim, session_id, observation,
-                PatrolEvidenceNeeds(needs_evidence=("curator",)))
+            needs = await queue.recover_request(observation)
+            await queue.enqueue(claim, session_id, observation,
+                needs or PatrolEvidenceNeeds(needs_evidence=("curator",)))
             return None
         elif current is not None and current.phase == PatrolPhase.OBSERVING:
             await self._patrol_sessions.transition(session_id, PatrolPhase.PROPOSING,

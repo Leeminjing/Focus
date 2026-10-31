@@ -105,6 +105,14 @@ class PatrolEvidenceQueue:
                 context_id for row in requested for context_id in row.scope["requested_context_ids"]}))
             return PatrolEvidenceNeeds(needs_evidence=("expansion_assessment",), context_ids=contexts)
 
+    async def preparation_enqueued(self, observation, session_id):
+        async with self._sessions() as session:
+            return await session.scalar(select(LoopWorkerRequest.worker_request_id).where(
+                LoopWorkerRequest.observation_id == (observation.observation_id or observation.decision_inputs_ref),
+                LoopWorkerRequest.observation_generation == observation.generation,
+                LoopWorkerRequest.kind == "patrol_evidence",
+                LoopWorkerRequest.scope["patrol_session_id"].astext == session_id).limit(1)) is not None
+
     async def missing(self, observation, needs):
         try:
             required = source_revisions(observation, needs.context_ids)
@@ -160,10 +168,6 @@ class PatrolEvidenceQueue:
                 raise ValueError("派生评估缺少本 Observation 的 Curator 证据")
             observation = PatrolDecisionContext(observation, curator_results=curator).model_observation()
             assessment = await self._expansions.assess(observation)
-            async with self._sessions.begin() as session:
-                await WorkerAttemptAuthority().require_current(session, request)
-                if required == source_revisions(observation):
-                    await self._supplements.put(session, request.observation_id, "expansion_assessment", assessment.model_dump(mode="json"))
             return {"stage": "assessment", "observation_id": request.observation_id,
                     "assessment": assessment.model_dump(mode="json")}
         else:

@@ -186,6 +186,12 @@ def test_context_result_is_durable_and_wakes_without_unrelated_workers(tmp_path)
             needs = PatrolEvidenceNeeds(needs_evidence=("curator",), context_ids=("0",))
             first = await queue.enqueue(claim, patrol.session_id, observation, needs)
             assert await queue.enqueue(claim, patrol.session_id, observation, needs) == first
+            # Resuming dispatch must preserve the already persisted scope,
+            # rather than expanding a one-Context request to the Portfolio.
+            assert await orchestrator._prepare_observation(claim, patrol.session_id, "waiting_workers") is None
+            async with sessions() as session:
+                assert await session.scalar(select(func.count()).select_from(LoopWorkerRequest).where(
+                    LoopWorkerRequest.round_id == claim.round_id)) == 1
             await coordinator.release(claim)
             assert await coordinator.claim_for_loop(claim.loop_id, "while-waiting") is None
             preparation, = await runtime._claim_many(1, claim.loop_id)
@@ -321,6 +327,17 @@ def test_preupgrade_curator_is_adopted_and_control_updates_task_state(tmp_path):
                 await session.execute(update(LoopWorkerRequest).where(LoopWorkerRequest.worker_request_id == curator.worker_request_id).values(status="cancelled"))
             async with sessions() as session:
                 assert (await session.get(EvidenceJob, job.job_id)).status == "ready"
+            async with sessions.begin() as session:
+                assessment_worker = uuid.uuid4().hex
+                session.add(LoopWorkerRequest(worker_request_id=assessment_worker, loop_id=claim.loop_id,
+                    round_id=claim.round_id, observation_id=frozen.observation_id,
+                    observation_generation=frozen.generation, kind="patrol_evidence", scope={}))
+                await session.flush()
+                await EvidenceJobRepository().ensure(session, frozen, "expansion_assessment", (), assessment_worker)
+                await DecisionSupplementRepository().put(session, frozen.observation_id, "expansion_assessment", {"level": "not_applicable"})
+            async with sessions() as session:
+                # Compatibility cannot bypass a modern task's incomplete state.
+                assert await DecisionSupplementRepository().assessment(session, frozen) is None
         finally:
             await runtime.close()
             await service.control(snapshot["loop_id"], "stop")

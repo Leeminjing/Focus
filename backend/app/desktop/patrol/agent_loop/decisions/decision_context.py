@@ -104,13 +104,15 @@ class DecisionSupplementRepository:
         job = await session.scalar(select(EvidenceJob).where(
             EvidenceJob.observation_id == (observation.observation_id or observation.decision_inputs_ref),
             EvidenceJob.observation_generation == observation.generation,
-            EvidenceJob.evidence_kind == "expansion_assessment", EvidenceJob.status == "ready",
+            EvidenceJob.evidence_kind == "expansion_assessment",
             EvidenceJob.required_source_revisions == source_revisions(observation, context_ids)))
         if job is None:
             # Pre-upgrade supplements were Observation-bound, whole-Portfolio
             # assessments. They cannot satisfy a different scoped dependency.
             if source_revisions(observation, context_ids) == source_revisions(observation):
                 return await self.get(session, observation.observation_id or observation.decision_inputs_ref, "expansion_assessment")
+            return None
+        if job.status != "ready":
             return None
         if job.result_hash != canonical_hash(job.result):
             raise ValueError("evidence_result_hash_mismatch")
