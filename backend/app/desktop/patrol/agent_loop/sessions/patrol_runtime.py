@@ -160,12 +160,24 @@ class CuratorCoordinationStage:
             for item in eligible[: self._max_assignments]
         )
 
-    async def dispatch(self, session_id: str, observation: LoopObservationEnvelope, scopes: tuple[dict, ...], *, fencing_token: int | None = None) -> int:
+    async def dispatch(self, session_id: str, observation: LoopObservationEnvelope, scopes: tuple[dict, ...], *, fencing_token: int | None = None, worker_request=None) -> int:
+        # Reject a stale owner before spending model/index budget, and recheck
+        # after preparation before publishing any assignments.
+        async with self._sessions.begin() as session:
+            await self._lock_dispatch(session, session_id, observation, fencing_token)
+            if worker_request is not None:
+                from backend.app.desktop.patrol.agent_loop.workers.worker_attempts import WorkerAttemptAuthority
+
+                await WorkerAttemptAuthority().require_current(session, worker_request)
         async with self._sessions() as session:
             prepared = await self._assignments.by_session(session, session_id)
-        derivation_input = None if prepared else await self._derivation_input(observation, fencing_token=fencing_token)
+        derivation_input = None if prepared else (await self._derivation_input(observation, fencing_token=fencing_token) if scopes else {})
         async with self._sessions.begin() as session:
             loop, round_row, patrol = await self._lock_dispatch(session, session_id, observation, fencing_token)
+            if worker_request is not None:
+                from backend.app.desktop.patrol.agent_loop.workers.worker_attempts import WorkerAttemptAuthority
+
+                await WorkerAttemptAuthority().require_current(session, worker_request)
             existing = await self._assignments.by_session(session, session_id)
             if not existing:
                 if derivation_input is None:

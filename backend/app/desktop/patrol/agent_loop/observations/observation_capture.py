@@ -445,6 +445,14 @@ class LoopObservationService:
             ).all()
         )
         frontier = await self._frontier(session, loop, memberships, views)
+        from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextExpansion
+        from backend.app.desktop.patrol.agent_loop.context_expansion.repository import ContextExpansionRepository
+
+        expansions = await session.scalars(select(LoopContextExpansion).where(
+            LoopContextExpansion.loop_id == loop.loop_id, LoopContextExpansion.level == "required"))
+        obligations = tuple({"opportunity_id": item.opportunity_id, "round_id": item.round_id,
+            "source_frontier": item.source_frontier} for item in expansions
+            if not ContextExpansionRepository.is_terminal(item.state))
         runs, pending, workers = await self._recent_activity(session, loop.loop_id)
         usage = await session.get(LoopBudgetUsage, loop.loop_id)
         user_intents = await self._observe_intents(
@@ -469,9 +477,13 @@ class LoopObservationService:
         ).order_by(WorkspaceSlot.created_at, WorkspaceSlot.slot_id))).all()
         from backend.app.desktop.workspaces.coordination.models import WorkspaceAdoption
 
-        adoptions = (await session.scalars(select(WorkspaceAdoption).where(
+        all_adoptions = (await session.scalars(select(WorkspaceAdoption).where(
             WorkspaceAdoption.source_slot_id.in_([item.slot_id for item in isolated_slots])
-        ).order_by(WorkspaceAdoption.created_at.desc()).limit(24))).all()
+        ).order_by(WorkspaceAdoption.created_at.desc()))).all()
+        adoptions = all_adoptions[:24]
+        from backend.app.desktop.patrol.agent_loop.decisions.evidence import workspace_admission_facts
+
+        adoption_facts = await workspace_admission_facts(session, loop.loop_id, isolated_slots, slot, all_adoptions)
         from backend.app.desktop.patrol.agent_loop.workspaces.workspace_repair import WorkspaceConflictRepair
         recovery = await ContextRecoveryOpportunityService(
             _PreparedContextReader(views)
@@ -532,6 +544,7 @@ class LoopObservationService:
                 "isolated_slots": tuple({"slot_id": item.slot_id, "revision": item.revision,
                     "base_revision": item.base_revision, "fingerprint": item.current_fingerprint,
                     "lane_id": item.owner_lane_id, "lifecycle": item.lifecycle,
+                    "adoption_admission": adoption_facts[item.slot_id],
                     "repair": (item.metadata_json or {}).get("repair")} for item in isolated_slots),
                 "adoptions": tuple({"adoption_id": item.adoption_id, "source_slot_id": item.source_slot_id,
                     "source_revision": item.source_revision, "status": item.status,
@@ -588,6 +601,7 @@ class LoopObservationService:
                 for item in frontier
                 if item.get("revision_id")
             ),
+            expansion_obligations=obligations,
             recovery_opportunities=recovery.opportunities,
             recovery_waiting_reason=recovery.waiting_reason,
         )
