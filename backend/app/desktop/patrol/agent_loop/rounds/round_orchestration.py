@@ -31,6 +31,8 @@ Patrol 读取同一冻结策略并按真实诊断进展决策；派生仍选择�
 from __future__ import annotations
 
 from asyncio import sleep as _patrol_retry_sleep
+from contextlib import nullcontext
+import asyncio
 import json
 import uuid
 from typing import Any, Literal
@@ -310,6 +312,12 @@ class StructuredPatrolDecisionModel:
         self._usage_receipts = None
         self._request_capacity = None
         self._strategy_reads = set()
+        self._request_admission = None
+        self._request_priority = False
+
+    def bind_request_admission(self, admission, *, priority: bool = False) -> None:
+        self._request_admission = admission
+        self._request_priority = priority
 
     def bind_usage_receipts(self, receipts) -> None:
         self._usage_receipts = receipts
@@ -536,42 +544,48 @@ class StructuredPatrolDecisionModel:
         callback = UsageMetadataCallbackHandler()
         metadata = {}
         receipt = None
-        if self._usage_receipts is not None:
-            receipt = await self._usage_receipts.reserve(estimated, capacity.output_reserve, retry=retry)
-        self.call_count += 1
-        metrics = StructuredRequestMetrics()
+        metrics = None
         contract_valid = False
         try:
-            if retry:
-                self.retry_count += 1
-            invoke_config = {"callbacks": [callback, metrics]}
-            if method == "prompt_json":
-                response = await model.ainvoke(
-                    request_messages,
-                    config=invoke_config,
-                )
-                metadata = getattr(response, "response_metadata", {}) or {}
-                content = getattr(response, "content", response)
-                text = content if isinstance(content, str) else "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
-                candidate = text.strip()
-                if candidate.startswith("```"):
-                    lines = candidate.splitlines()
-                    candidate = "\n".join(lines[1:-1]).strip()
-                parsed = self._validated(schema, candidate)
-                self._last_raw_text = candidate
+            admission = (self._request_admission.slot(priority=self._request_priority)
+                         if self._request_admission is not None else nullcontext())
+            async with admission:
+                # Queue first, then revalidate the immutable owner and reserve
+                # budget. Superseded queued requests never reach the provider.
+                if self._usage_receipts is not None:
+                    receipt = await self._usage_receipts.reserve(estimated, capacity.output_reserve, retry=retry)
+                self.call_count += 1
+                metrics = StructuredRequestMetrics()
+                if retry:
+                    self.retry_count += 1
+                invoke_config = {"callbacks": [callback, metrics]}
+                if method == "prompt_json":
+                    response = await model.ainvoke(
+                        request_messages,
+                        config=invoke_config,
+                    )
+                    metadata = getattr(response, "response_metadata", {}) or {}
+                    content = getattr(response, "content", response)
+                    text = content if isinstance(content, str) else "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+                    candidate = text.strip()
+                    if candidate.startswith("```"):
+                        lines = candidate.splitlines()
+                        candidate = "\n".join(lines[1:-1]).strip()
+                    parsed = self._validated(schema, candidate)
+                    self._last_raw_text = candidate
+                    contract_valid = True
+                    return parsed
+                runnable = model.with_structured_output(schema, method=method, include_raw=True)
+                raw = await runnable.ainvoke(messages, config=invoke_config)
+                if isinstance(raw, dict) and "raw" in raw:
+                    metadata = getattr(raw["raw"], "response_metadata", {}) or {}
+                    if raw.get("parsing_error") is not None:
+                        raise raw["parsing_error"]
+                    raw = raw["parsed"]
+                parsed = raw if isinstance(raw, schema) else self._validated(schema, raw)
+                self._last_raw_text = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False) if hasattr(parsed, "model_dump") else json.dumps(raw, ensure_ascii=False, default=str)
                 contract_valid = True
                 return parsed
-            runnable = model.with_structured_output(schema, method=method, include_raw=True)
-            raw = await runnable.ainvoke(messages, config=invoke_config)
-            if isinstance(raw, dict) and "raw" in raw:
-                metadata = getattr(raw["raw"], "response_metadata", {}) or {}
-                if raw.get("parsing_error") is not None:
-                    raise raw["parsing_error"]
-                raw = raw["parsed"]
-            parsed = raw if isinstance(raw, schema) else self._validated(schema, raw)
-            self._last_raw_text = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False) if hasattr(parsed, "model_dump") else json.dumps(raw, ensure_ascii=False, default=str)
-            contract_valid = True
-            return parsed
         except BaseException as exc:
             audit = getattr(exc, "audit", {})
             metadata = {**metadata, "request_source_manifest": audit.get("request_source_manifest", metadata.get("request_source_manifest")),
@@ -579,18 +593,24 @@ class StructuredPatrolDecisionModel:
                         "error_type": type(exc).__name__, "status_code": getattr(exc, "status_code", None)}
             raise
         finally:
-            measured = callback_usage(callback)
-            reports = tuple((getattr(callback, "usage_metadata", None) or {}).values())
-            usage_reported = bool(reports) and all("input_tokens" in item and "output_tokens" in item for item in reports)
-            metadata.update(metrics.finish(category="patrol", model=config.model, schema=schema,
-                estimated_input_tokens=full_input, usage=measured,
-                usage_reported=usage_reported, contract_valid=contract_valid))
-            self.attempt_metadata.append({key: metadata.get(key) for key in
-                ("request_source_manifest", "provider", "protocol", "model_name", "status", "usage", "error_type", "status_code",
-                 "estimated_input_tokens", "input_tokens", "output_tokens", "usage_reported", "ttft_ms", "output_duration_ms", "duration_ms", "contract_valid")})
-            self.usage += measured if measured.model_calls else ModelUsage(model_calls=1)
-            if receipt is not None:
-                await self._usage_receipts.settle(receipt, measured, usage_reported)
+            # Request capacity has been returned before receipt settlement and
+            # the enclosing model_client_scope's potentially slow cleanup.
+            if metrics is not None:
+                await self._settle_request(callback, metrics, metadata, config, schema, full_input, contract_valid, receipt)
+
+    async def _settle_request(self, callback, metrics, metadata, config, schema, full_input, contract_valid, receipt):
+        measured = callback_usage(callback)
+        reports = tuple((getattr(callback, "usage_metadata", None) or {}).values())
+        usage_reported = bool(reports) and all("input_tokens" in item and "output_tokens" in item for item in reports)
+        metadata.update(metrics.finish(category="patrol", model=config.model, schema=schema,
+            estimated_input_tokens=full_input, usage=measured,
+            usage_reported=usage_reported, contract_valid=contract_valid))
+        self.attempt_metadata.append({key: metadata.get(key) for key in
+            ("request_source_manifest", "provider", "protocol", "model_name", "status", "usage", "error_type", "status_code",
+             "estimated_input_tokens", "input_tokens", "output_tokens", "usage_reported", "ttft_ms", "output_duration_ms", "duration_ms", "contract_valid")})
+        self.usage += measured if measured.model_calls else ModelUsage(model_calls=1)
+        if receipt is not None:
+            await self._usage_receipts.settle(receipt, measured, usage_reported)
 
     @staticmethod
     def _validated(schema, payload: Any):
@@ -624,12 +644,40 @@ class LoopRoundOrchestrator:
         self._recoveries = ContextRecoveryStage(sessions)
         self._mission_bootstrap = MissionBootstrapStage()
         self._supplements = DecisionSupplementRepository()
+        self._request_admission = None
+        self._preparation_admission = None
+
+    def bind_request_admission(self, admission) -> None:
+        self._request_admission = admission
+
+    def bind_preparation_admission(self, admission) -> None:
+        self._preparation_admission = admission
+
+    async def _prepare(self, operation, *args, **kwargs):
+        admission = getattr(self, "_preparation_admission", None)
+        if admission is None:
+            return await operation(*args, **kwargs)
+        work = None
+        try:
+            async with admission.slot():
+                work = asyncio.create_task(operation(*args, **kwargs))
+                try:
+                    return await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    if not work.done() and not work.cancelling():
+                        work.cancel()
+                    raise
+        finally:
+            # A superseded preparation retains its cleanup task, but no longer
+            # occupies admission for another Observation's preparation.
+            if work is not None and not work.done():
+                await asyncio.gather(work, return_exceptions=True)
 
     def _evidence_queue(self):
         return PatrolEvidenceQueue(self._sessions, self._curators, self._expansions, self._require_current)
 
     async def prepare_evidence(self, request):
-        return await self._evidence_queue().run(request)
+        return await self._prepare(self._evidence_queue().run, request)
 
     async def _wait_for_progress(self, claim, error):
         from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressWork
@@ -661,7 +709,7 @@ class LoopRoundOrchestrator:
 
     async def _process(self, claim: CoordinatorClaim) -> KernelCommitResult | None:
         try:
-            await self._workspace_bootstrap.prepare(claim.loop_id)
+            await self._prepare(self._workspace_bootstrap.prepare, claim.loop_id)
         except Exception as exc:
             await self._fail(claim, exc)
             return None
@@ -693,7 +741,7 @@ class LoopRoundOrchestrator:
             await self._terminate_decided_round(claim, decided_decision_id)
             return None
         if refresh_observation:
-            await self._observations.refresh(claim.loop_id, claim.round_id)
+            await self._prepare(self._observations.refresh, claim.loop_id, claim.round_id)
             return None
         if publishing_intent is not None:
             try:
@@ -724,7 +772,7 @@ class LoopRoundOrchestrator:
                 if slot is not None:
                     round_row.workspace_revision = slot.revision
         try:
-            frozen = await self._observations.capture(claim.loop_id, claim.round_id)
+            frozen = await self._prepare(self._observations.capture, claim.loop_id, claim.round_id)
         except ObservationCaptureSuperseded:
             return None
         except ProgressNotReady as exc:
@@ -743,7 +791,7 @@ class LoopRoundOrchestrator:
             return None
         patrol_session = await self._patrol_sessions.begin(claim)
         try:
-            observation = await self._prepare_observation(claim, patrol_session.session_id, round_status or "observed")
+            observation = await self._prepare(self._prepare_observation, claim, patrol_session.session_id, round_status or "observed")
         except KernelFencingRejected:
             return None
         except Exception as exc:
@@ -781,7 +829,7 @@ class LoopRoundOrchestrator:
         intent = self._bind_fencing(step, claim)
         if bootstrap is not None and bootstrap.intent is not None:
             intent = self._mission_bootstrap.complete_patrol_delivery(intent, bootstrap)
-        recovery_resolution = await self._recoveries.resolve(observation, intent)
+        recovery_resolution = await self._prepare(self._recoveries.resolve, observation, intent)
         if recovery_resolution.waiting_reason is not None:
             intent = intent.model_copy(
                 update={
@@ -802,7 +850,7 @@ class LoopRoundOrchestrator:
             )
         elif recovery_resolution.intent is not None:
             intent = recovery_resolution.intent
-        resolution = await self._expansions.resolve(observation, intent, fencing_token=int(claim.fencing_token))
+        resolution = await self._prepare(self._expansions.resolve, observation, intent, fencing_token=int(claim.fencing_token))
         if resolution.blocker is not None:
             await self._settle_expansion_blocker(claim, patrol_session.session_id, resolution.blocker)
             return None
@@ -916,6 +964,9 @@ class LoopRoundOrchestrator:
         feedback: str | None = None
         for attempt in range(1, _PATROL_CONTRACT_ATTEMPTS + 1):
             decision_model = self._decision_model(model_name)
+            bind = getattr(decision_model, "bind_request_admission", None)
+            if bind is not None:
+                bind(self._request_admission, priority=bool(observation.user_intents))
             if feedback is not None:
                 decision_model.set_rejection_feedback(feedback)
             try:
@@ -953,7 +1004,7 @@ class LoopRoundOrchestrator:
         raise PatrolContractViolation("Patrol 认知步骤重试次数已用尽")
 
     async def _prepare_compression_candidate(self, observation, request):
-        return await self._compression_candidates.prepare(observation.loop_id, request)
+        return await self._prepare(self._compression_candidates.prepare, observation.loop_id, request)
 
     async def _compression_manifest(self, observation, request):
         return await self._compression_candidates.manifest(observation.loop_id, request)

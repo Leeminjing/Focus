@@ -42,21 +42,6 @@ async def require_observation(session, round_id, observation_id, generation=None
     return row
 
 
-async def has_pending_cleanup(session, loop_id):
-    for model in (LoopPatrolAttempt, LoopWorkerRequest):
-        query = select(model.round_id).where(model.loop_id == loop_id,
-            model.status.in_(("superseded", "cancelled", "interrupted")),
-            model.completed_at.is_(None))
-        if model is LoopWorkerRequest:
-            query = query.where(LoopWorkerRequest.scope["patrol_session_id"].astext.is_not(None))
-        if await session.scalar(query.limit(1)):
-            return True
-    return bool(await session.scalar(select(LoopEventOutbox.event_id).where(
-        LoopEventOutbox.loop_id == loop_id, LoopEventOutbox.status == "pending",
-        LoopEventOutbox.event_type == "loop.cognition.preempted",
-        LoopEventOutbox.payload["requires_cleanup"].as_boolean().is_(True)).limit(1)))
-
-
 async def preempt_observation(session, loop, round_row, old_observation_id, new_observation_id, generation):
     if round_row.decision_id is not None:
         raise ValueError("成功授权的 Round 不能替换认知 Observation")

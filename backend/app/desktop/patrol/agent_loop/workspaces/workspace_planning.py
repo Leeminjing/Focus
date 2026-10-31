@@ -5,7 +5,7 @@ directive 绑定的确定 slot。具体工作流为 Reader 共享空闲权威 sl
 并行波次及活动隔离 Writer 的补位均从同一干净 Git baseline 创建 Lane 专属 worktree。
 隔离规划前后核对当前 Round 的工作区版本与活动 Writer 的 baseline；漂移时保留排队任务，
 等待既有观察/授权流程重新确认，不能把权威目录的新 HEAD 当成旧波次输入。
-活动 lease 与已准入 pending Run 都占用 slot，普通资源等待在 queued_reason 说明；未执行且基线、
+活动 lease、已准入 pending Run 与未确认进程清理的旧 Run 都占用 slot，普通资源等待在 queued_reason 说明；未执行且基线、
 fingerprint 完全匹配的 worktree 才能复用，已执行或 retained 成果保留，规划不初始化或提交源仓库。
 配额耗尽时仅在没有活动 Writer/Reader 或已规划任务时允许一个权威 Writer 串行推进，其余排队，
 避免待采用成果占满配额后整轮永久等待；一旦回退到权威 Writer，本次其余 Writer 全部排队。
@@ -20,7 +20,7 @@ from pathlib import Path
 from datetime import UTC, datetime
 import uuid
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.patrol.agent_loop.models import (
@@ -198,12 +198,16 @@ class WorkspaceRunPlanner:
         writing = {slot_id for slot_id, mode in leases if mode == "write"}
         runs = (await session.scalars(select(DesktopRun).join(DesktopThread,
             DesktopThread.task_id == DesktopRun.task_id).where(DesktopThread.workspace_id == workspace_id,
-            DesktopRun.status.in_(("pending", "running"))))).all()
+            or_(DesktopRun.status.in_(("pending", "running")), and_(
+                DesktopRun.settled_at.is_(None),
+                DesktopRun.workspace_result["shell_cleanup"].astext.not_in(("{}", "null")),
+            ))))).all()
         for run in runs:
             slot_id = (run.workspace_anchor or {}).get("slot_id")
             if slot_id:
                 occupied.add(slot_id)
-                if WorkspaceIntentDeriver.derive(run.equipment or {}).mode.value == "write":
+                if ((run.workspace_result or {}).get("shell_cleanup")
+                    or WorkspaceIntentDeriver.derive(run.equipment or {}).mode.value == "write"):
                     writing.add(slot_id)
         return occupied, writing
 
