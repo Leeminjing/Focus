@@ -487,8 +487,8 @@ class ContextExpansionStage:
             blocker = await self._completion_blocker(observation, completion)
             if blocker is not None:
                 return ExpansionResolution(intent=None, blocker=blocker)
-        assessment = ExpansionAssessment.model_validate(observation.expansion_assessment or {})
-        opportunities = {item.opportunity_id: item for item in assessment.opportunities}
+        assessment = ExpansionAssessment.model_validate(observation.expansion_assessment) if observation.expansion_assessment is not None else None
+        opportunities = {item.opportunity_id: item for item in assessment.opportunities} if assessment else {}
         resolved = []
         for action in intent.actions:
             if action.action == "spawn_context":

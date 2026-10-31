@@ -261,7 +261,8 @@ def test_retry_feedback_repairs_malformed_proposal_on_frozen_observation(monkeyp
     ])
     monkeypatch.setattr(module, "create_chat_model", lambda **kwargs: model)
     observation = _required_expansion_observation().model_copy(update={
-        "grant": {"grant_id": "grant-1", "holder_id": "patrol:1"},
+        "grant": {"grant_id": "grant-1", "holder_id": "patrol:1", "capabilities": ["continue_context"], "context_scope": ["context-1"]},
+        "portfolio_frontier": ({"context_id": "context-1", "revision_id": "revision-1"},),
         "expansion_assessment": None,
     })
 

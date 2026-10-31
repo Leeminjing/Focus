@@ -150,6 +150,10 @@ class LoopWorkerRuntime:
         self._concurrency = max(1, concurrency)
         self._tasks: dict[str, asyncio.Task] = {}
         self._wake = lambda: None
+        self._evidence_handler = None
+
+    def bind_evidence_handler(self, handler):
+        self._evidence_handler = handler
 
     def bind_wakeup(self, wake) -> None:
         self._wake = wake
@@ -188,7 +192,15 @@ class LoopWorkerRuntime:
         usage_receipts = WorkerModelUsage(self._sessions, request)
         try:
             await self._require_budget(request)
-            if request.kind == "completion_verifier":
+            if request.kind == "patrol_evidence":
+                if self._evidence_handler is None:
+                    raise RuntimeError("Patrol evidence handler 未绑定")
+                result = await self._evidence_handler(request)
+                async with self._sessions.begin() as session:
+                    _, row = await WorkerAttemptAuthority().require_current(session, request)
+                    row.status, row.result = "success", result
+                    row.completed_at = datetime.now(UTC)
+            elif request.kind == "completion_verifier":
                 await self._verify_completion(request, usage_receipts=usage_receipts)
             elif request.kind == "lane_curator" or request.kind == "retrieval_cognitive_planner":
                 await self._advise_lanes(request, usage_receipts=usage_receipts)
@@ -204,7 +216,13 @@ class LoopWorkerRuntime:
                 raise ValueError(f"未知 Loop Worker: {request.kind}")
             await self._advance(request.loop_id, request.round_id, request=request)
         except asyncio.CancelledError:
-            await self._cancel(request, "component_stopped", usage_receipts=usage_receipts)
+            if request.kind == "patrol_evidence" or request.scope.get("patrol_session_id"):
+                # A stopped process releases preparation work for bounded retry.
+                # Superseded/cancelled owners still fail require_current, so an
+                # observation preemption cannot resurrect its old requests.
+                await self._fail(request, RuntimeError("component_stopped"), usage_receipts=usage_receipts)
+            else:
+                await self._cancel(request, "component_stopped", usage_receipts=usage_receipts)
             raise
         except WorkerAttemptRejected:
             await self._settle_late_usage(request, usage_receipts)
@@ -713,7 +731,7 @@ class LoopWorkerRuntime:
                 )
                 or 0
             )
-            if curator_count and current.decision_id is None:
+            if (curator_count or (request is not None and request.kind == "patrol_evidence")) and current.decision_id is None:
                 current.status = "curated"
                 loop.health = "deciding"
                 from backend.app.desktop.patrol.agent_loop.journal.lifecycle_events import LoopLifecycleEventRecorder

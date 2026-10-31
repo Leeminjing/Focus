@@ -638,6 +638,10 @@ class LoopCoordinatorRuntime:
         self._dispatcher = dispatcher
         self._orchestrator = orchestrator
         self._workers = workers
+        bind_evidence = getattr(workers, "bind_evidence_handler", None)
+        evidence_handler = getattr(orchestrator, "prepare_evidence", None)
+        if bind_evidence is not None and evidence_handler is not None:
+            bind_evidence(evidence_handler)
         self._recovery = recovery
         self._compression_resolutions = compression_resolutions
         self._maintenance = maintenance

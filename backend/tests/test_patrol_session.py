@@ -196,7 +196,15 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
                     return observation
 
             orchestrator._observations = FrozenObservations()
-            assert await orchestrator._prepare_observation(claim, patrol.session_id, "observed") is None
+            from backend.app.desktop.patrol.agent_loop.decisions.evidence import PatrolEvidenceNeeds
+
+            frozen = await orchestrator._prepare_observation(claim, patrol.session_id, "observed")
+            assert frozen is not None
+            await orchestrator._evidence_queue().enqueue(claim, patrol.session_id, frozen,
+                PatrolEvidenceNeeds(needs_evidence=("curator",)))
+            runtime.bind_evidence_handler(orchestrator.prepare_evidence)
+            preparation, = await runtime._claim_many(1, snapshot["loop_id"])
+            await runtime._run_one(preparation)
             claimed = await runtime._claim_many(2)
             assert len(claimed) == 2
             await runtime._start_curator_analysis(claimed[0])
