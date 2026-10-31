@@ -132,6 +132,17 @@ class RetrievalBackedCognitiveAdvisor:
         session: PlanningRetrievalSession,
         indexes: tuple[RevisionSemanticIndex, ...],
     ) -> RetrievalBackedPlanningResult:
+        # Validate dependencies before returning even a completed checkpoint.
+        # A cached model result never authorizes a different source Revision.
+        derivation = (payload.get("scope") or {}).get("derivation_input") or {}
+        required = derivation.get("required_source_revisions")
+        if required is not None:
+            actual = {index.source.context_id: index.source.model_dump(mode="json") for index in indexes}
+            catalog = derivation.get("portfolio_index_catalog") or {}
+            if (actual != required or session.catalog_id != catalog.get("catalog_id")
+                    or session.frontier_hash != payload.get("frontier_hash")
+                    or not {index.index_id for index in indexes}.issubset(session.authorized_index_ids)):
+                raise ValueError("retrieval_evidence_identity_mismatch")
         try:
             if session.state in {"blocked", "stale"}:
                 return RetrievalBackedPlanningResult(

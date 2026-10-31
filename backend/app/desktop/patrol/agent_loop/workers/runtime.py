@@ -14,6 +14,8 @@ Worker 后果收口委托 rounds 唯一推进事务；完成输入的语义身�
 
 from __future__ import annotations
 
+from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJobRepository
+
 import asyncio
 import uuid
 from datetime import UTC, datetime
@@ -198,6 +200,7 @@ class LoopWorkerRuntime:
                 result = await self._evidence_handler(request)
                 async with self._sessions.begin() as session:
                     _, row = await WorkerAttemptAuthority().require_current(session, request)
+                    await EvidenceJobRepository().finish(session, row, "ready", result)
                     row.status, row.result = "success", result
                     row.completed_at = datetime.now(UTC)
             elif request.kind == "completion_verifier":
@@ -306,6 +309,7 @@ class LoopWorkerRuntime:
                 if len(rows) >= limit:
                     break
             for row in rows:
+                await EvidenceJobRepository().claim(session, row)
                 assignment = await self._curator_assignments.by_worker(session, row.worker_request_id, lock=True)
                 if assignment is not None and assignment.state == "queued":
                     await self._curator_assignments.transition(
@@ -391,6 +395,7 @@ class LoopWorkerRuntime:
             await usage_receipts.flush_pending(session)
             row.status = "success"
             row.result = result_payload
+            await EvidenceJobRepository().finish(session, row, "ready", result_payload)
             WorkerAttemptAuthority.archive(row, "success", result_payload)
             row.completed_at = datetime.now(UTC)
             assignment = await self._curator_assignments.by_worker(session, row.worker_request_id, lock=True)
@@ -608,6 +613,7 @@ class LoopWorkerRuntime:
             await usage_receipts.flush_pending(session)
             row.status = "success"
             row.result = result_payload
+            await EvidenceJobRepository().finish(session, row, "ready", result_payload)
             WorkerAttemptAuthority.archive(row, "success", result_payload)
             row.completed_at = datetime.now(UTC)
 
@@ -715,13 +721,18 @@ class LoopWorkerRuntime:
     async def _advance(self, loop_id: str, round_id: str, *, request=None) -> None:
         async with self._sessions.begin() as session:
             if request is not None:
-                await WorkerAttemptAuthority().require_current(session, request, statuses=("success",))
+                _, completed = await WorkerAttemptAuthority().require_current(session, request, statuses=("success",))
+                await EvidenceJobRepository().finish(session, completed, "ready", completed.result)
             pending = await session.scalar(select(func.count()).select_from(LoopWorkerRequest).where(LoopWorkerRequest.round_id == round_id, LoopWorkerRequest.status.in_(["pending", "running"])))
-            if pending:
+            evidence_ready = False
+            if request is not None:
+                job = await EvidenceJobRepository().by_worker(session, request.worker_request_id)
+                evidence_ready = job is not None and job.status == "ready" and job.evidence_kind in {"curator", "expansion_assessment"}
+            if pending and not evidence_ready:
                 return
             loop = await session.get(AgentLoop, loop_id, with_for_update=True, populate_existing=True)
             current = await session.get(LoopRound, round_id, with_for_update=True, populate_existing=True)
-            if loop is None or current is None or loop.status != "running":
+            if loop is None or current is None or loop.status != "running" or current.status in {"settled", "error", "superseded"}:
                 return
             curator_count = int(
                 await session.scalar(
@@ -781,6 +792,7 @@ class LoopWorkerRuntime:
                 return
             if usage_receipts is not None:
                 await usage_receipts.flush_pending(session)
+            await EvidenceJobRepository().finish(session, row, "pending" if row.attempt < row.max_attempts else "failed", {})
             WorkerAttemptAuthority.archive(row, "error", {"error": error[:2000]})
             if loop is not None and loop.status == "running" and row.attempt < row.max_attempts:
                 row.attempt += 1
@@ -814,6 +826,7 @@ class LoopWorkerRuntime:
             if usage_receipts is not None:
                 await usage_receipts.flush_pending(session)
             if row is not None and row.status in {"running", "superseded", "cancelled"} and request.retry_identity and row.retry_identity == request.retry_identity:
+                await EvidenceJobRepository().finish(session, row, "cancelled", {})
                 WorkerAttemptAuthority.archive(row, "cancelled", {"reason": reason})
                 if row.status == "running":
                     row.status = "cancelled"

@@ -82,15 +82,39 @@ class PatrolDecisionContext:
     expansion_assessment: dict | None = None
 
     def model_observation(self) -> LoopObservationEnvelope:
+        from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import evidence_matches
+
         update = {}
         if self.curator_results is not None:
-            update["worker_results"] = self.curator_results
+            update["worker_results"] = tuple(item for item in self.curator_results
+                if evidence_matches(self.base, item))
         if self.expansion_assessment is not None:
             update["expansion_assessment"] = self.expansion_assessment
         return self.base.model_copy(deep=True, update=update)
 
 
 class DecisionSupplementRepository:
+    async def assessment(self, session, observation, context_ids=()):
+        from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJob, source_revisions
+
+        job = await session.scalar(select(EvidenceJob).where(
+            EvidenceJob.observation_id == (observation.observation_id or observation.decision_inputs_ref),
+            EvidenceJob.observation_generation == observation.generation,
+            EvidenceJob.evidence_kind == "expansion_assessment", EvidenceJob.status == "ready",
+            EvidenceJob.required_source_revisions == source_revisions(observation, context_ids)))
+        if job is None:
+            return None
+        if job.result_hash != canonical_hash(job.result):
+            raise ValueError("evidence_result_hash_mismatch")
+        return job.result["assessment"]
+
+    async def curator_results(self, session, observation):
+        from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJobRepository
+
+        # Per-Context jobs are append-only evidence. Never seal a partial batch
+        # into the old single, first-writer-wins supplement.
+        return await EvidenceJobRepository().results(session, observation)
+
     async def get(
         self, session: AsyncSession, observation_id: str, kind: str
     ) -> dict | None:

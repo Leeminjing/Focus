@@ -95,6 +95,14 @@ async def preempt_observation(session, loop, round_row, old_observation_id, new_
         row.result = {**(row.result or {}), "reason": "observation_superseded"}
         if pending:
             row.completed_at = now
+    from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJob
+
+    jobs = await session.scalars(select(EvidenceJob).where(
+        EvidenceJob.observation_id == old_observation_id,
+        EvidenceJob.status.in_(("pending", "running"))).with_for_update()) if old_observation_id else ()
+    for job in jobs:
+        job.status = "superseded"
+        job.fencing_token += 1
     assignments = tuple(await session.scalars(select(LoopCuratorAssignment).where(
         LoopCuratorAssignment.session_id.in_([row.session_id for row in sessions]),
         LoopCuratorAssignment.state.in_(("queued", "reading", "analyzing", "proposed"))).with_for_update())) if sessions else ()

@@ -20,6 +20,14 @@ class PatrolEvidenceNeeds(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     needs_evidence: tuple[EvidenceKind, ...] = Field(min_length=1, max_length=2)
+    context_ids: tuple[str, ...] = ()
+
+    @field_validator("context_ids")
+    @classmethod
+    def unique_contexts(cls, value):
+        if any(not item for item in value) or len(set(value)) != len(value):
+            raise ValueError("context_ids 必须为不重复的 Context identity")
+        return tuple(sorted(value))
 
     @field_validator("needs_evidence")
     @classmethod

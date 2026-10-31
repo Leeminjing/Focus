@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
+    ContextEvidenceIndexPort,
     PortfolioSemanticIndexService,
 )
 from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
@@ -27,6 +28,7 @@ from backend.app.desktop.patrol.agent_loop.curation.curator_assignments import (
     CuratorAssignmentRepository,
 )
 from backend.app.desktop.patrol.agent_loop.decisions.decision_context import scoped_memory
+from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJobRepository, source_revisions
 from backend.app.desktop.capabilities.evolution_strategies import strategy_catalog
 from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import (
@@ -108,11 +110,13 @@ class CuratorCoordinationStage:
         checkpointer=None,
         max_assignments: int = 8,
         *,
-        index_service: PortfolioSemanticIndexService | None = None,
+        index_service: ContextEvidenceIndexPort | None = None,
         app_config: AppConfig | None = None,
     ) -> None:
         self._sessions = sessions
-        self._max_assignments = max(1, max_assignments)
+        # max_assignments remains accepted for callers from the former batch
+        # scheduler. Admission is now bounded by the shared Worker pool; never
+        # truncate the caller's explicitly requested evidence dependencies.
         self._assignments = CuratorAssignmentRepository()
         self._sessions_repository = PatrolSessionRepository()
         self._index_service = index_service or (
@@ -139,16 +143,18 @@ class CuratorCoordinationStage:
         )
         from backend.app.desktop.patrol.agent_loop.context_expansion.index_prewarm import LocalIndexPrewarmer
 
-        self._prewarmer = LocalIndexPrewarmer(sessions, self._index_service)
+        self._prewarmer = (LocalIndexPrewarmer(sessions, self._index_service)
+                           if isinstance(self._index_service, PortfolioSemanticIndexService) else None)
 
     async def prewarm_indexes(self, loop_id):
-        return await self._prewarmer.drain(loop_id)
+        return await self._prewarmer.drain(loop_id) if self._prewarmer is not None else 0
 
-    def scopes(self, observation: LoopObservationEnvelope) -> tuple[dict, ...]:
-        eligible = tuple(item for item in observation.portfolio_frontier if item.get("revision_id"))
+    def scopes(self, observation: LoopObservationEnvelope, context_ids=()) -> tuple[dict, ...]:
+        required = source_revisions(observation, context_ids)
+        eligible = tuple(item for item in observation.portfolio_frontier if item.get("context_id") in required)
         if not eligible:
             return ()
-        mode = "bootstrap" if len(eligible) == 1 else "lane"
+        mode = "bootstrap" if len(source_revisions(observation)) == 1 else "lane"
         return tuple(
             {
                 "mode": mode,
@@ -157,10 +163,15 @@ class CuratorCoordinationStage:
                 "revision_id": item["revision_id"],
                 "role": item.get("role"),
             }
-            for item in eligible[: self._max_assignments]
+            for item in eligible
         )
 
     async def dispatch(self, session_id: str, observation: LoopObservationEnvelope, scopes: tuple[dict, ...], *, fencing_token: int | None = None, worker_request=None) -> int:
+        if len(scopes) > 1:
+            dispatched = 0
+            for scope in scopes:
+                dispatched += await self.dispatch(session_id, observation, (scope,), fencing_token=fencing_token, worker_request=worker_request)
+            return dispatched
         # Reject a stale owner before spending model/index budget, and recheck
         # after preparation before publishing any assignments.
         async with self._sessions.begin() as session:
@@ -171,7 +182,10 @@ class CuratorCoordinationStage:
                 await WorkerAttemptAuthority().require_current(session, worker_request)
         async with self._sessions() as session:
             prepared = await self._assignments.by_session(session, session_id)
-        derivation_input = None if prepared else (await self._derivation_input(observation, fencing_token=fencing_token) if scopes else {})
+        keys = {str(scope.get("lane_id") or scope["context_id"]) for scope in scopes}
+        prepared = tuple(item for item in prepared if item.assignment_key in keys)
+        derivation_input = None if len(prepared) == len(scopes) else (await self._derivation_input(
+            observation, scopes=scopes, fencing_token=fencing_token, worker_request=worker_request) if scopes else {})
         async with self._sessions.begin() as session:
             loop, round_row, patrol = await self._lock_dispatch(session, session_id, observation, fencing_token)
             if worker_request is not None:
@@ -179,10 +193,13 @@ class CuratorCoordinationStage:
 
                 await WorkerAttemptAuthority().require_current(session, worker_request)
             existing = await self._assignments.by_session(session, session_id)
-            if not existing:
+            existing = tuple(item for item in existing if item.assignment_key in keys)
+            if len(existing) != len(scopes):
                 if derivation_input is None:
                     raise ValueError("curator_preparation_incomplete: 已有准备证明丢失")
                 for scope in scopes:
+                    if any(item.assignment_key == str(scope.get("lane_id") or scope["context_id"]) for item in existing):
+                        continue
                     request_id = uuid.uuid4().hex
                     request = LoopWorkerRequest(
                         worker_request_id=request_id,
@@ -200,6 +217,7 @@ class CuratorCoordinationStage:
                     )
                     session.add(request)
                     await session.flush()
+                    await EvidenceJobRepository().ensure(session, observation, "curator", (scope["context_id"],), request_id)
                     await self._assignments.create(
                         session,
                         assignment_key=str(scope.get("lane_id") or scope["context_id"]),
@@ -209,7 +227,7 @@ class CuratorCoordinationStage:
                         worker_request_id=request_id,
                         scope=scope,
                     )
-                if round_row is not None:
+                if round_row is not None and round_row.status != "curated":
                     round_row.status = "waiting_workers"
                 if loop is not None:
                     loop.health = "curating"
@@ -220,6 +238,7 @@ class CuratorCoordinationStage:
                         await RoundStateEventRecorder().record(session, round_row)
                     await LoopLifecycleEventRecorder().record(session, loop)
                 existing = await self._assignments.by_session(session, session_id)
+                existing = tuple(item for item in existing if item.assignment_key in keys)
             await self._verify_assignments(session, existing, scopes, observation)
             if patrol is not None and patrol.current_phase == PatrolPhase.DISPATCHING_CURATORS:
                 await self._sessions_repository.transition(
@@ -244,9 +263,11 @@ class CuratorCoordinationStage:
             raise KernelFencingRejected("curator_preparation_missing_owner")
         if (loop.status != "running" or round_row.observation_id != observation.decision_inputs_ref
             or patrol.observation_id != round_row.observation_id
+            or patrol.observation_generation != observation.generation
+            or round_row.decision_id is not None
             or loop.authority_revision != observation.authority_revision
             or round_row.status in {"error", "superseded", "settled"} or patrol.status != "active"
-            or patrol.current_phase not in {PatrolPhase.DISPATCHING_CURATORS.value, PatrolPhase.COLLECTING_CURATORS.value}
+            or patrol.current_phase not in {PatrolPhase.DISPATCHING_CURATORS.value, PatrolPhase.COLLECTING_CURATORS.value, PatrolPhase.PROPOSING.value}
             or patrol.loop_id != loop.loop_id or patrol.round_id != round_row.round_id):
             raise KernelFencingRejected("curator_preparation_superseded")
         if fencing_token is not None:
@@ -263,13 +284,20 @@ class CuratorCoordinationStage:
         for assignment in assignments:
             worker = await session.get(LoopWorkerRequest, assignment.worker_request_id)
             if (worker is None or worker.loop_id != observation.loop_id or worker.round_id != observation.round_id
+                or worker.observation_id != (observation.observation_id or observation.decision_inputs_ref)
+                or worker.observation_generation != observation.generation
                 or not worker.scope.get("derivation_input", {}).get("portfolio_index_catalog")):
                 raise ValueError("curator_preparation_incomplete: 缺少 Worker 或完整索引输入")
 
-    async def _derivation_input(self, observation: LoopObservationEnvelope, *, fencing_token=None) -> dict:
+    async def _derivation_input(self, observation: LoopObservationEnvelope, *, scopes=(), fencing_token=None, worker_request=None) -> dict:
         if self._index_service is None:
             raise RuntimeError("CuratorCoordinationStage 缺少完整 Revision semantic index service")
-        built = await self._index_service.build(observation, **({"fencing_token": fencing_token} if fencing_token is not None else {}))
+        options = {"fencing_token": fencing_token} if fencing_token is not None else {}
+        if scopes:
+            options["required_context_ids"] = tuple(scope["context_id"] for scope in scopes)
+        if worker_request is not None:
+            options["worker_request"] = worker_request
+        built = await self._index_service.build(observation, **options)
         if built.catalog is None:
             raise ValueError(
                 f"{built.blocker_code or 'portfolio_index_failed'}: "
@@ -299,10 +327,13 @@ class CuratorCoordinationStage:
 
     @staticmethod
     def _scoped_task_view(derivation: dict, observation: LoopObservationEnvelope, scope: dict) -> dict:
-        return {**derivation, **scoped_memory(observation, {str(scope["context_id"])})}
+        return {**derivation, **scoped_memory(observation, {str(scope["context_id"])}) ,
+                "required_source_revisions": source_revisions(observation, (scope["context_id"],))}
 
-    async def results(self, session_id: str) -> tuple[dict, ...]:
+    async def results(self, session_id: str, observation=None) -> tuple[dict, ...]:
         async with self._sessions() as session:
+            if observation is not None:
+                return await EvidenceJobRepository().results(session, observation)
             assignments = await self._assignments.by_session(session, session_id)
             results = []
             for assignment in assignments:
