@@ -107,6 +107,8 @@ _EDITABLE_FIELDS = (
     "reasoning_efforts",
     "curation_output_method",
     "curation_max_output_tokens",
+    "curation_small_evidence_max_bytes",
+    "curation_streaming",
     "derivation_max_output_tokens",
     "curation_default",
     "default",
@@ -287,6 +289,9 @@ def _entries_for_submission(entry: dict) -> dict:
     result = {field: entry.get(field, {} if field == "derivation_max_output_tokens" else None)
               for field in _EDITABLE_FIELDS}
     result["reasoning_efforts"] = entry.get("reasoning_efforts") or []
+    for field in ("curation_small_evidence_max_bytes", "curation_streaming"):
+        if field not in entry:
+            result[field] = ModelConfig.model_fields[field].default
     return result
 
 
