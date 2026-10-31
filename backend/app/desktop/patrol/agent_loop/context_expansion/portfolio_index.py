@@ -483,17 +483,20 @@ class PortfolioSemanticIndexService:
                 "local_cache_hits": 0, "projected_segments": 0,
                 "completed_segments": 0, "total_segments": len(frozen.segments),
             }
-            for segment in frozen.segments:
-                if self._inflight_builds:
-                    return False
-                await self._project_segment(frozen, segment)
-            return True
+            return await self._prewarm_frozen(frozen)
         finally:
             try:
                 attempts = tuple(a for rows in self._projection_attempts.values() for a in rows)
                 await asyncio.shield(self._record_attempt_usage(loop_id, attempts))
             finally:
                 _BUILD_STATE.reset(token)
+
+    async def _prewarm_frozen(self, frozen):
+        for segment in frozen.segments:
+            if self._inflight_builds:
+                return False
+            await self._project_segment(frozen, segment)
+        return True
 
     def _owned_usage(self, observation, *, fencing_token=None):
         from backend.app.desktop.patrol.agent_loop.resources.model_usage_owner import OwnedModelUsage

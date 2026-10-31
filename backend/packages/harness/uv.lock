@@ -503,12 +503,21 @@ wheels = [
 ]
 
 [[package]]
+name = "focus-context-index"
+version = "0.2.0"
+source = { git = "https://github.com/Leeminjing/focus-context-index.git?rev=af8e65658d9c5351ae5ca0d68ec2ac094f5f240c#af8e65658d9c5351ae5ca0d68ec2ac094f5f240c" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[[package]]
 name = "focus-harness"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "bcrypt" },
+    { name = "focus-context-index" },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "langchain" },
@@ -569,6 +578,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=4.0" },
     { name = "docker", marker = "extra == 'aiosandbox'" },
     { name = "fastapi", marker = "extra == 'desktop'", specifier = ">=0.116,<0.134" },
+    { name = "focus-context-index", git = "https://github.com/Leeminjing/focus-context-index.git?rev=af8e65658d9c5351ae5ca0d68ec2ac094f5f240c" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "jsonschema", specifier = ">=4.0,<5" },
     { name = "langchain", specifier = "==1.3.10" },
