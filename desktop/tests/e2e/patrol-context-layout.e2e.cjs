@@ -65,6 +65,7 @@ if (!process.versions.electron) {
       state.patrolWorkspace = {workspace_id:'context-layout',display_name:'Context 布局验收',path:'C:/isolated/context-layout'}; render();`);
     await until('patrolFixture.connected("loop-context-layout") && !document.querySelector("[data-patrol-content]").disabled');
     await run(`patrolFixture.emit('loop-context-layout', 'context', 'root', 1, {title:'Context 布局验收',status:'active',current_revision_id:'r2'})`);
+    await click('[data-patrol-tools-toggle]');
     await click('[data-patrol-composer] [data-patrol-details]');
     await until('document.querySelector("[data-patrol-lineage] [data-context-id=root]")');
     await run(`document.querySelector('[data-patrol-lineage] [data-context-id=root]').click()`);
@@ -126,7 +127,8 @@ if (!process.versions.electron) {
         for (const delivery of [false, true]) {
           await run(`(() => { const delivery = document.querySelector('[data-patrol-delivery]'); delivery.hidden = ${!delivery}; delivery.textContent = '本次交付已完成，可以继续输入。';
             document.querySelector('[data-patrol-content]').value = '展开后继续发送';
-            document.querySelector('[data-patrol-content]').dispatchEvent(new Event('input')); })()`);
+            document.querySelector('[data-patrol-content]').dispatchEvent(new Event('input'));
+            document.querySelector('[data-patrol-composer]').scrollIntoView({block:'nearest'}); })()`);
           await sleep(40);
           const label = `${width}x${height}@${zoom} ${tab} delivery=${delivery}`;
           const geometry = await run(`(() => {
