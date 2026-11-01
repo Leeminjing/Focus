@@ -1,6 +1,7 @@
 /* Durable work history UI. Entries are keyed by event identity, never fact identity.
  * Pagination and incremental reads share sequence cursors; unchanged articles and
  * open evidence remain mounted. Reads and details are isolated by Loop/filter generation.
+ * The default view shows event, work line, time and state; descriptions and audit data expand on demand.
  */
 (function (root, factory) {
   const api = factory(root);
@@ -15,19 +16,29 @@
     return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
   };
   function entryHtml(entry) {
-    const icon = { user_decision: entry.intent_id ? "○" : "◈", fact: "✓", context: "⑂", run: "◇", round: "·", system: "!" }[entry.category] || "·";
-    const states = { observed: text("已观察"), verifying: text("验证中"), verified: text("已验证"), contradicted: text("已被反证"), superseded: text("已替代") };
     const refs = entry.references || {};
+    const icon = entry.category === "fact"
+      ? ({ observed: "○", verifying: "◌", verified: "✓", contradicted: "✕", superseded: "↪" }[refs.state] || "·")
+      : ({ user_decision: entry.intent_id ? "○" : "◈", context: "⑂", run: "◇", round: "·", system: "!" }[entry.category] || "·");
+    const states = {
+      observed: text("已观察"), verifying: text("验证中"), verified: text("已验证"), contradicted: text("已被反证"), superseded: text("已替代"),
+      running: text("执行中"), queued: text("已排队"), pending: text("待执行"), success: text("已完成"), completed: text("已完成"),
+      failed: text("执行失败"), error: text("执行失败"), cancelled: text("已取消"), stopped: text("已停止"), interrupted: text("已中断"), timeout: text("已超时"), paused: text("已暂停"),
+    };
+    const state = refs.state || refs.status;
     const stamp = entry.recorded_at;
     return `<article class="work-timeline-entry is-${escape(entry.category)}${refs.file ? " file-fact" : ""}" data-timeline-entry="${escape(entry.entry_id)}"${entry.fact_revision ? ` data-fact-revision="${escape(entry.fact_revision)}"` : ""}>
       <span class="work-timeline-icon" aria-hidden="true">${icon}</span><div class="work-timeline-heading">${refs.file ? `<button type="button" data-fact-id="${escape(entry.fact_id)}" title="${escape(refs.file.path)}">${escape(refs.file.path)}</button>` : `<strong>${escape(entry.title)}</strong>`}<time datetime="${escape(stamp)}" title="${escape(text("记录时间"))}: ${escape(stamp)}">${escape(time(stamp))}</time></div>
-      ${entry.summary ? `<p>${escape(entry.summary)}</p>` : ""}<div class="work-timeline-meta">
-      ${entry.round_id ? `<button type="button" data-timeline-round="${escape(entry.round_id)}" title="${escape(entry.round_id)}">R${escape(entry.round_number || "?")}</button>` : ""}
+      <div class="work-timeline-meta">
       ${(entry.context_ids || []).map(id => `<button type="button" data-timeline-context="${escape(id)}" title="${escape(id)}">${escape(refs.context_labels?.[id] || `Context ${id.slice(0, 8)}`)}</button>`).join("")}
-      ${refs.state ? `<span>${escape(states[refs.state] || refs.state)} · v${escape(entry.fact_revision)}</span>` : ""}
+      ${state ? `<span class="work-timeline-state">${escape(states[state] || state)}</span>` : ""}</div>
+      <details class="work-timeline-details"><summary>${text("查看详情")}</summary>
+      ${entry.summary && entry.summary !== entry.title && entry.summary !== refs.file?.path ? `<p>${escape(entry.summary)}</p>` : ""}
+      <div class="work-timeline-meta">
+      ${entry.round_id ? `<button type="button" data-timeline-round="${escape(entry.round_id)}" title="${escape(entry.round_id)}">R${escape(entry.round_number || "?")}</button>` : ""}
       ${entry.intent_id ? `<button type="button" data-timeline-intent="${escape(entry.intent_id)}">${text("追踪后续")}</button>` : ""}</div>
       ${entry.fact_id ? `<details data-timeline-evidence="${escape(entry.entry_id)}"><summary>${text("查看证据")} · v${escape(entry.fact_revision)}</summary><div data-timeline-evidence-body></div></details>` : ""}
-      <details class="work-timeline-source"><summary>${text("事件来源")}</summary><dl><dt>${text("记录时间")}</dt><dd>${escape(time(stamp))}</dd>${entry.occurred_at ? `<dt>${text("事实发生时间")}</dt><dd>${escape(time(entry.occurred_at))}</dd>` : ""}${["round_id", "run_id", "intent_id", "decision_id", "source_event_id"].filter(key => entry[key]).map(key => `<dt>${key}</dt><dd>${escape(entry[key])}</dd>`).join("")}</dl></details>
+      <dl class="work-timeline-source"><dt>${text("记录时间")}</dt><dd>${escape(time(stamp))}</dd>${entry.occurred_at ? `<dt>${text("事实发生时间")}</dt><dd>${escape(time(entry.occurred_at))}</dd>` : ""}${["round_id", "run_id", "intent_id", "decision_id", "source_event_id"].filter(key => entry[key]).map(key => `<dt>${key}</dt><dd>${escape(entry[key])}</dd>`).join("")}</dl></details>
     </article>`;
   }
   function reconcile(host, entries) {

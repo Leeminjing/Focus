@@ -192,7 +192,10 @@ window.fetch = async (input, options = {}) => {
     if (window.patrolFixture.observationError) return new Response("冻结读取暂不可用", { status: 503 });
     const section = url.searchParams.get("section");
     const historical = observation[1] === "observation-old";
-    const summary = { observation_id: observation[1], generation: historical ? 1 : 2, round_number: observation[1].endsWith("2") ? 2 : 1, observation_hash: "frozen-hash", frozen_at: "2026-10-09T00:00:00Z", availability: "available", evidence_visible: false, previous_progress: { progress_id: "old-progress", item_count: 1, history_complete: false }, sources: { total: 1, complete: false }, lineage: { node_count: 1, complete: true }, goal_revision: 1, authority_revision: 1 };
+    const roundNumber = observation[1].endsWith("2") ? 2 : 1;
+    const summary = { observation_id: observation[1], round_id: `round-${roundNumber}`, generation: historical ? 1 : 2, round_number: roundNumber, observation_hash: "frozen-hash", frozen_at: "2026-10-09T00:00:00Z", availability: "available", evidence_visible: true, decision_state: "committed",
+      conclusions: { observed: [roundNumber === 2 ? "导入验证已通过，正在检查产物。" : "导入测试失败，缺少测试环境配置。"], decision: "先补齐测试配置，再验证导入流程。" },
+      previous_progress: { progress_id: "old-progress", item_count: 1, history_complete: false }, sources: { total: 1, complete: false }, lineage: { node_count: 1, complete: true }, goal_revision: 1, authority_revision: 1 };
     if (section === "versions") return json({ ...summary, items: [{ observation_id: "observation-old", generation: 1, frozen_at: summary.frozen_at }], total: 1, has_more: false });
     if (section === "patrol_history") {
       const next = url.searchParams.has("cursor");

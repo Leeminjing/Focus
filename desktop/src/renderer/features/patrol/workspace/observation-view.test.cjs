@@ -6,6 +6,46 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const View = require("./observation-view.js");
 
+test("compact observation prioritizes source conclusions, committed plans and current blockers", () => {
+  const summary = { observation_id: "o1", round_id: "r1", round_number: 6, generation: 3,
+    decision_state: "committed", causal_chain_count: 8, sources: { total: 15 }, lineage: { node_count: 12 },
+    conclusions: { observed: ["导入测试失败：缺少配置。"], decision: "先补齐配置，再验证导入。" } };
+  const projection = { round: { state: { observation_id: "o1" } },
+    patrol_session: { state: { observation_id: "o1", wait_reason: "等待提供测试环境。" } },
+    wait_requests: { current: { state: { round_id: "r1", status: "open", prompt: "请确认配置文件位置。" } },
+      old: { state: { round_id: "old", status: "open", prompt: "旧轮次内容" } },
+      answered: { state: { round_id: "r1", status: "answered", prompt: "已解除问题" } } } };
+  const html = View.card(summary, { compact: true, projection });
+  assert.match(html, /看到了.*导入测试失败.*接下来.*先补齐配置.*当前阻塞.*等待提供测试环境.*请确认配置文件位置/s);
+  assert.doesNotMatch(html, /Round|Version|Revision|OBSERVATION|冻结 15|8 条|旧轮次内容|已解除问题/);
+  assert.match(View.render({ ...summary, previous_progress: {} }), /8 条输入因果关系/);
+});
+
+test("compact observation never invents decisions, evidence or a clear blocker state", () => {
+  const summary = { observation_id: "o1", round_id: "r1", decision_state: "current", evidence_visible: false };
+  assert.match(View.card(summary, { compact: true }), /当前权限不包含观察正文.*尚未提交后续安排.*尚未取得当前阻塞状态/s);
+  const projection = { round: { state: { observation_id: "o1" } }, wait_requests: {},
+    patrol_session: { state: { observation_id: "other", wait_reason: "另一个版本的等待" } } };
+  const html = View.card({ ...summary, evidence_visible: true }, { compact: true, projection });
+  assert.match(html, /尚无可展示的结论.*当前未报告阻塞/s);
+  assert.doesNotMatch(html, /另一个版本的等待/);
+  assert.match(View.card({ ...summary, decision_state: "rejected" }, { compact: true }), /候选安排未获通过/);
+  assert.match(View.card({ ...summary, availability: "legacy" }, { compact: true }), /未保留完整观察内容/);
+});
+
+test("compact conclusions and live blockers are escaped and refresh independently", () => {
+  const summary = { observation_id: "o1", round_id: "r1", decision_state: "committed",
+    conclusions: { observed: ["<script>观察</script>"], decision: "<b>安排</b>" } };
+  const projection = { round: { state: { observation_id: "o1" } }, wait_requests: {},
+    patrol_session: { state: { observation_id: "o1", wait_reason: "<img>等待" } } };
+  const html = View.card(summary, { compact: true, projection });
+  assert.match(html, /&lt;script&gt;观察/); assert.match(html, /&lt;b&gt;安排/); assert.match(html, /&lt;img&gt;等待/);
+  assert.doesNotMatch(html, /<script>|<img>|<b>/);
+  projection.patrol_session.state.wait_reason = null;
+  assert.match(View.card(summary, { compact: true, projection }), /当前未报告阻塞/);
+  assert.match(View.card(summary, { compact: true, projection, connection: "unavailable" }), /连接中断，阻塞状态待同步/);
+});
+
 test("Patrol history renders selected-version phases, waiting workers, failure and empty state", () => {
   const summary = { generation: 1, observation_id: "old-observation", previous_progress: {}, sources: {}, lineage: {} };
   assert.match(View.render(summary), /data-patrol-observation-section="patrol_history"/);

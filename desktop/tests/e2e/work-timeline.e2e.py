@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2] / "src/renderer"
 
 HTML = """<!doctype html><html lang="zh-CN"><meta charset="UTF-8">
 <link rel="stylesheet" href="/shared/styles/tokens.css"><link rel="stylesheet" href="/shared/styles/base.css">
-<link rel="stylesheet" href="/shared/styles/components.css"><link rel="stylesheet" href="/features/patrol/workspace/workspace-patrol.css">
+<link rel="stylesheet" href="/shared/styles/components.css"><link rel="stylesheet" href="/shared/styles/workspace-patrol.css">
 <style>body{margin:0;background:#f6f8f9;padding:24px;font-family:system-ui,sans-serif;color:#28343e}
 main{max-width:760px;margin:auto;--workbench-muted:#60717d}main>.patrol-facts-card{height:790px;width:100%;padding:20px;box-sizing:border-box;background:white;border:1px solid #dfe5e9;border-radius:18px;display:flex;flex-direction:column}
 .demo-note{font-size:13px;color:#60717d;margin:0 auto 12px;max-width:760px}#draft{width:100%;box-sizing:border-box;margin-top:12px;min-height:48px}button{cursor:pointer}main>.patrol-facts-card [data-patrol-facts]{padding-top:4px}</style>
@@ -62,6 +62,8 @@ def main():
         if row["category"] == "fact":
             row["references"]["state"] = "verified" if row["fact_revision"] == 2 else "observed"
             row["occurred_at"] = "2026-10-21T02:04:00Z"
+    rows[7]["references"]["status"] = "success"
+    rows[3]["references"]["context_labels"] = {"context-ui": "插件技术验证"}
     reads, evidence_reads, errors = [], [], []
     fail = {"next": False}
 
@@ -122,6 +124,22 @@ def main():
         page.locator("[data-timeline-older]").click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(9)
         assert page.locator("[data-timeline-entry]").evaluate_all("nodes=>nodes.map(n=>n.dataset.timelineEntry)") == [f"e{i}" for i in range(1, 10)]
+        observed = page.locator('[data-timeline-entry="e4"]')
+        expect(observed.locator(".work-timeline-heading")).to_contain_text("测试结果：8 passed")
+        expect(observed.locator(".work-timeline-meta").first).to_contain_text("插件技术验证")
+        expect(observed.locator(".work-timeline-state")).to_have_text("已观察")
+        expect(observed.locator(".work-timeline-details > p")).to_be_hidden()
+        expect(observed.locator("[data-timeline-round]")).to_be_hidden()
+        expect(observed.locator(".work-timeline-source")).to_be_hidden()
+        expect(observed.locator("[data-timeline-evidence] > summary")).to_be_hidden()
+        assert observed.locator("time").evaluate("node=>parseFloat(getComputedStyle(node).fontSize)") >= 12
+        assert not evidence_reads, "collapsed entries must not request evidence"
+        # Native details supports keyboard access and does not fetch evidence until requested.
+        observed.locator(".work-timeline-details > summary").focus()
+        observed.locator(".work-timeline-details > summary").press("Enter")
+        expect(observed.locator(".work-timeline-details > p")).to_be_visible()
+        expect(observed.locator("[data-timeline-round]")).to_be_visible()
+        assert not evidence_reads, "opening event details must not fetch historical evidence"
         page.locator('[data-timeline-evidence="e4"] > summary').click()
         expect(page.locator('[data-timeline-evidence="e4"]')).to_have_attribute("data-loaded", "true")
         expect(page.locator('[data-timeline-evidence="e4"]')).to_contain_text("当时尚未验证")
@@ -134,6 +152,7 @@ def main():
         page.evaluate("timeline.sync('loop-demo',{last_sequence:10})")
         expect(page.locator("[data-timeline-entry]")).to_have_count(10)
         assert page.evaluate("savedEvidence===document.querySelector('[data-timeline-evidence=e4]') && savedEvidence.open && savedNode===document.querySelector('[data-timeline-entry=e4]')")
+        expect(observed.locator(".work-timeline-details")).to_have_attribute("open", "")
         assert page.evaluate("document.querySelector('[data-patrol-facts]').scrollTop===savedTop")
         expect(page.locator("#draft")).to_have_value("下一条中文想法")
         assert page.evaluate("document.activeElement.id") == "draft"
@@ -144,6 +163,7 @@ def main():
         expect(page.locator("[data-timeline-entry]")).to_have_count(4)
         page.locator("[data-timeline-older]").click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(5)
+        page.locator('[data-timeline-entry="e1"] .work-timeline-details > summary').click()
         page.locator('[data-timeline-entry="e1"] [data-timeline-intent]').click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(2)
         expect(page.locator("[data-timeline-scope]")).to_have_text("所选输入及后续决策")
@@ -152,6 +172,12 @@ def main():
         page.locator('[data-timeline-entry="e7"] [data-timeline-context]').click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(4)
         assert reads[-1]["context_id"] == ["context-ui"]
+        page.locator("[data-timeline-clear]").click()
+        expect(page.locator("[data-timeline-entry]")).to_have_count(4)
+        page.locator('[data-timeline-entry="e7"] .work-timeline-details > summary').click()
+        page.locator('[data-timeline-entry="e7"] [data-timeline-round]').click()
+        expect(page.locator("[data-timeline-scope]")).to_have_text("所选 Round")
+        assert reads[-1]["round_id"] == ["r1"]
         page.locator("[data-timeline-clear]").click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(4)
         fail["next"] = True
@@ -169,6 +195,10 @@ def main():
         page.set_viewport_size({"width": 390, "height": 844})
         page.screenshot(path=str(args.output / "work-timeline-mobile.png"), full_page=True)
         assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
+        assert page.locator(".work-timeline-heading").evaluate_all("""headings=>headings.every(node=>{
+            const rect=node.getBoundingClientRect();
+            return [...node.children].every(child=>{const r=child.getBoundingClientRect();return r.left>=rect.left-1&&r.right<=rect.right+1});
+        })""")
         assert not errors, errors
         page.evaluate("timeline.dispose();lifetime.abort()")
         browser.close()

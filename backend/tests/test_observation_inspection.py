@@ -20,14 +20,34 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_round_task_progress import _Checkpointer, _source
 
-from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant, LoopObservation
-from backend.app.desktop.patrol.agent_loop.models import LoopRound
+from backend.app.desktop.patrol.agent_loop.models import LoopDecision, LoopDelegationGrant, LoopObservation
+from backend.app.desktop.patrol.agent_loop.models import LoopRound, LoopUserIntent
 from backend.app.desktop.patrol.agent_loop.observations.observation_query import ObservationInspectionQuery
 from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
 from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
 from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_query_router
 from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopDecisionInputs, LoopProgressHead, LoopTaskProgress
 from backend.app.desktop.runs.evidence.identity import canonical_hash
+
+
+def test_observation_conclusions_use_only_bounded_frozen_source_text_and_committed_decision():
+    payload = {"task_delta": {"sources": [
+        {"payload": {"summary": "导入失败", "private_reasoning": "private"}},
+        {"payload": {"summary": "导入失败"}},
+        {"payload": {"summary": {"secret": "private"}, "title": "配置缺失"}},
+        {"payload": {"summary": "x" * 1000}},
+        {"payload": {"summary": "超出卡片范围"}},
+    ]}}
+    decision = SimpleNamespace(authority_committed_at=datetime.now(UTC), rationale="先补配置，再验证", intent={"private_reasoning": "private"})
+    result = ObservationInspectionQuery._conclusions(payload, decision, frozenset({"view_evidence"}))
+    assert result["observed"][:2] == ["导入失败", "配置缺失"]
+    assert len(result["observed"]) == 3 and len(result["observed"][-1]) <= 301
+    assert result["decision"] == "先补配置，再验证"
+    assert "private" not in json.dumps(result)
+    decision.authority_committed_at = None
+    assert ObservationInspectionQuery._conclusions(payload, decision, frozenset({"view_evidence"}))["decision"] is None
+    hidden = ObservationInspectionQuery._conclusions(payload, None, frozenset({"read"}))
+    assert hidden == {"observed": [], "decision": None}
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
@@ -38,6 +58,7 @@ def test_exact_versions_and_causal_pages_never_fill_old_snapshot_from_current_st
         seed = await _seed_loop(sessions, tmp_path, label="causal", started_at=datetime.now(UTC))
         loop_id = seed["loop_id"]
         ids = [uuid4().hex for _ in range(3)]
+        intent_ids = [uuid4().hex for _ in range(3)]
         chain = []
         try:
             async with sessions.begin() as session:
@@ -46,12 +67,15 @@ def test_exact_versions_and_causal_pages_never_fill_old_snapshot_from_current_st
                         "decision": {"intent": {"private_reasoning": "hidden-intent"}}}],
                         "facts": [{"fact_id": "fact", "revision": index, "presentation": {"title": "evidence-content"}}],
                         "visible_context": {"live_sequence": index * 10 - 2}, "projection": {"cursor": index * 10 - 4, "failures": []}}}
-                    chain.append({"intent_id": f"u{index}", "submission_id": f"s{index}", "observation_id": identity,
+                    chain.append({"intent_id": intent_ids[index - 1], "submission_id": f"s{index}", "observation_id": identity,
                         "generation": index, "snapshot_hash": canonical_hash(before), "accepted_sequence": index * 10,
                         "input": {"content": f"原文 {index}", "input_type": "information"}})
                     envelope = {"pre_input_state": before, "pre_input_hash": canonical_hash(before), "causal_chain": list(chain)}
                     session.add(LoopObservation(observation_id=identity, loop_id=loop_id, round_id=seed["round_id"],
                         generation=index, envelope=envelope, envelope_hash=canonical_hash(envelope)))
+                    session.add(LoopUserIntent(intent_id=intent_ids[index - 1], loop_id=loop_id, scope="portfolio",
+                        content=f"原文 {index}", correlation_id=uuid4().hex, goal_revision=1, authority_revision=1,
+                        introduced_observation_id=identity, introduced_generation=index, snapshot_hash=canonical_hash(before)))
                 round_row = await session.get(LoopRound, seed["round_id"])
                 round_row.observation_id = ids[-1]
             query = ObservationInspectionQuery()
@@ -99,7 +123,7 @@ def test_frozen_http_inspection_paging_privacy_and_read_only(tmp_path):
                 frozen_payload["previous_progress_hash"] = canonical_hash(previous)
                 private_marker = "synthetic-private-metric"
                 metric_payloads = [
-                    {"metrics": {"count_status": "exact", "passed": {"api_key": private_marker}, "failed": 0, "skipped": 0}},
+                    {"summary": "冻结的导入失败", "metrics": {"count_status": "exact", "passed": {"api_key": private_marker}, "failed": 0, "skipped": 0}},
                     {"metrics": {"count_status": "exact", "passed": [{"messages": private_marker}], "failed": 0, "skipped": 0}},
                     {"metrics": {"count_status": {"diagnostic": private_marker}, "passed": 0, "failed": 0, "skipped": 0}},
                     {"metrics": {"count_status": "exact", "passed": 12, "failed": 1, "skipped": 0, "total": 13}},
@@ -114,6 +138,9 @@ def test_frozen_http_inspection_paging_privacy_and_read_only(tmp_path):
                 frozen.content_hash = canonical_hash(frozen_payload)
                 identity = observation.observation_id
                 loop_id = seed["loop_id"]
+                session.add(LoopDecision(decision_id=uuid4().hex, loop_id=loop_id, round_id=seed["round_id"],
+                    observation_id=identity, holder_id="inspection-test", intent={}, rationale="先修复配置，再运行验证。",
+                    status="applied", idempotency_key=uuid4().hex, authority_committed_at=datetime.now(UTC)))
                 baseline_count = await session.scalar(select(func.count()).select_from(LoopTaskProgress))
                 fact_id = uuid4().hex
                 session.add(LoopFact(
@@ -129,6 +156,7 @@ def test_frozen_http_inspection_paging_privacy_and_read_only(tmp_path):
                 assert summary["observation_hash"] == observation.envelope_hash
                 assert summary["previous_progress"]["item_count"] == 135
                 assert summary["evidence_visible"] is False
+                assert summary["conclusions"] == {"observed": [], "decision": "先修复配置，再运行验证。"}
                 assert summary["sources"]["complete"] is False
                 assert summary["previous_progress"]["history_complete"] is False
                 hidden_sources = (await client.get(url, params={"section": "sources"})).json()
@@ -156,6 +184,7 @@ def test_frozen_http_inspection_paging_privacy_and_read_only(tmp_path):
                 assert second["items"][0]["item_id"] == "40"
                 assert second["items"][0]["evidence_keys"] == ["private-evidence"]
                 sources = (await client.get(url, params={"section": "sources"})).json()
+                assert sources["conclusions"] == {"observed": ["冻结的导入失败"], "decision": "先修复配置，再运行验证。"}
                 assert private_marker not in json.dumps(sources)
                 assert [row["evidence"]["metrics"] for row in sources["items"]] == [
                     {"count_status": "unknown"}, {"count_status": "unknown"}, {"count_status": "unknown"},
