@@ -102,7 +102,10 @@ class WorkspacePatrolService:
             views = await self._observations.prepare_views(loop_id) if loop_id else {}
             fingerprint = await asyncio.to_thread(WorkspaceFingerprinter().capture, Path(workspace_path)) if loop_id is None else None
             try:
-                accepted, preemption = await self._submit_once(workspace_id, request, views, fingerprint)
+                accepted, preemption, cancelled = await self._submit_once(workspace_id, request, views, fingerprint)
+                from backend.app.desktop.patrol.agent_loop.governance.file_mode import notify_cancelled_runs
+
+                notify_cancelled_runs(self._desktop, cancelled)
                 if preemption is not None:
                     await notify_preemption(preemption)
                 return accepted
@@ -132,12 +135,17 @@ class WorkspacePatrolService:
             await lock_workspace_submission(session, request.submission_id)
             replay = await self._inputs.replay(session, workspace_id, request)
             if replay is not None:
-                return replay, None
+                return replay, None, ()
             loop = await self._current(session, workspace_id, lock=True)
             if loop is None:
                 if request.request_id:
                     raise HTTPException(409, "工作区尚无可回答的补充请求")
                 loop = await self._create(session, workspace, request, fingerprint)
+            from backend.app.desktop.patrol.agent_loop.governance.file_mode import apply_workspace_file_mode
+
+            cancelled = await apply_workspace_file_mode(session, loop, request.access_mode)
+            blocked_round_id = (loop.current_round_id if loop.status == 'waiting_user'
+                                and loop.waiting_reason != 'awaiting_input' else None)
             round_row = await session.scalar(select(LoopRound).where(
                 LoopRound.loop_id == loop.loop_id, LoopRound.decision_id.is_(None),
                 LoopRound.status.in_(("observed", "curated", "waiting_workers"))
@@ -158,7 +166,7 @@ class WorkspacePatrolService:
                     raise HTTPException(422, f"当前 Patrol 模型 {config.name} 未声明支持图像输入")
             round_row.trigger_kind, round_row.status = "user_input", "observed"
             round_row.authority_revision, round_row.goal_revision = loop.authority_revision, loop.goal_revision
-            loop.current_round_id = round_row.round_id
+            loop.current_round_id = blocked_round_id or round_row.round_id
             observation = await self._observations.freeze_version(session, loop, round_row, envelope, intent=intent)
             if loop.status == "waiting_user" and loop.waiting_reason == "awaiting_input":
                 grant = await session.scalar(select(LoopDelegationGrant).where(
@@ -168,7 +176,7 @@ class WorkspacePatrolService:
             await LoopLifecycleEventRecorder().record(session, loop)
             preemption = await session.scalar(select(LoopEventOutbox.payload).where(
                 LoopEventOutbox.idempotency_key == f"cognition-preempted:{observation.observation_id}"))
-            return self._inputs.view(intent), preemption
+            return self._inputs.view(intent), preemption, cancelled
 
     async def history(self, workspace_id, before=None, limit=50, *, intent_ids=None):
         async with self._sessions() as session:
