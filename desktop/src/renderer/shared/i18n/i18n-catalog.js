@@ -2213,6 +2213,7 @@
   "待发送参考材料": "Reference materials to send",
   "已引用文件版本": "Referenced file versions",
   "＠ 引用文件版本": "＠ Reference file version",
+  "＠ 引用": "＠ Reference",
   "选择文件版本": "Choose file version",
   "输入类型": "Input type",
   "改为主动输入": "Switch to unsolicited input",

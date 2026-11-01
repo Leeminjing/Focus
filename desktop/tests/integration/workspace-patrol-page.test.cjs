@@ -165,7 +165,7 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-files-view]").click()');
     await until('document.querySelector("[data-files-preview]").textContent.includes("工作台中的报告正文")');
     await run('document.querySelector("[data-files-close]").click(); delete window.fileFeedbackFetch');
-    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-files-open")'),true);
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-tools-toggle")'),true);
     assert.equal(await run('window.savedPatrolComposer === document.querySelector("[data-patrol-composer]")'),true);
     const beforeLongInput = await run('window.patrolFixture.submissions.length');
     await run('document.querySelector("[data-patrol-content]").value="字".repeat(12001); document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-composer]").requestSubmit()');
@@ -585,7 +585,7 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-patrol-input-history]").focus()');
     await win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     await until('document.querySelector("[data-patrol-input-history]").hidden');
-    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-history-open")'), true);
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-tools-toggle")'), true);
     win.setContentSize(390, 844);
     await run('document.querySelector("[data-patrol-history-open]").click()');
     await until('!document.querySelector("[data-patrol-input-history]").hidden && !document.querySelector("[data-patrol-input-history]").getAnimations().length');
@@ -594,7 +594,7 @@ if (!process.versions.electron) {
     await snapshot("narrow-history");
     await win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     await until('document.querySelector("[data-patrol-input-history]").hidden');
-    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-history-open")'), true);
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-tools-toggle")'), true);
     await snapshot("narrow-patrol");
     win.setContentSize(1280, 860);
     win.webContents.setZoomFactor(2);
