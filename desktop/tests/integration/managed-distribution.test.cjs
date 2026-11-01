@@ -56,7 +56,7 @@ assert.match(macCli, /node "\$updater" update/);
 assert.match(updater, /refs\/tags\/\$\{tag\}/);
 assert.match(updater, /i\.git\("reset", "--hard", state\.previousCommit\)/);
 assert.match(updater, /i\.backup\(directory\)/);
-assert.match(updater, /i\.migrate\(\);\s*i\.health\(\)/);
+assert.match(updater, /if \(databaseBackup\) i\.migrate\(\);[\s\S]*i\.health\(\)/);
 assert.match(macCli, /lock_is_active "\$locks_dir\/running\.lock"/);
 assert.match(macCli, /kill -0 "\$owner"/);
 assert.match(macCli, /FOCUS_GLOBAL_HOME="\$focus_home"/);

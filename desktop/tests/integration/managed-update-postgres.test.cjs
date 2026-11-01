@@ -37,10 +37,13 @@ test("real PostgreSQL migration, Gateway health and complete Context/Revision/ru
   // to the exact disposable container, never the user's desktop Compose DB.
   i.compose = (args, options = {}) => {
     assert.deepEqual(args.slice(0, 3), ["exec", "-T", "postgres"]);
-    return docker(["exec", "-i", name, ...args.slice(3)], options);
+    return i.run("docker", ["exec", "-i", name, ...args.slice(3)], options);
   };
   const sql = statement => docker(["exec", name, "psql", "-U", "focus", "-d", "focus", "-v", "ON_ERROR_STOP=1", "-Atc", statement]).trim();
+  const target = i.git("rev-parse", "HEAD");
+  assert.equal(i.needsMigration(target), true, "empty database must require a backup and migration");
   i.migrate();
+  assert.equal(i.needsMigration(target), false, "database already at target heads must skip backup");
   sql(`INSERT INTO desktop_workspaces(workspace_id,path,display_name) VALUES ('drill-ws','/drill/workspace','Recovery drill');
     INSERT INTO desktop_threads(task_id,workspace_id,thread_id,title) VALUES ('drill-context','drill-ws','drill-execution','User work');
     INSERT INTO desktop_context_revisions(revision_id,context_id,generation,execution_thread_id,checkpoint_id,payload_mode,content_hash,projection_status,origin_kind,authored_messages)
@@ -57,7 +60,7 @@ test("real PostgreSQL migration, Gateway health and complete Context/Revision/ru
   i.health();
   assert.equal(snapshot(), before, "acceptance must not resume or modify existing work");
   const directory = path.join(home, "backup"); fs.mkdirSync(directory);
-  const backupSha256 = i.backup(directory);
+  const backupSha256 = await i.backup(directory);
   // The title column now has a notification trigger. Remove its dependants in
   // this disposable DB too, so the deliberately broken migration can execute.
   sql("CREATE TABLE failed_migration_residue(id int); UPDATE desktop_context_revisions SET authored_messages='[]'; DELETE FROM desktop_runs; ALTER TABLE desktop_threads DROP COLUMN title CASCADE");

@@ -35,7 +35,7 @@ test("regular backup verifies and restores real PostgreSQL content; corrupt arch
   i.prepareDatabase = () => {};
   i.compose = (args, options = {}) => {
     assert.deepEqual(args.slice(0, 3), ["exec", "-T", "postgres"]);
-    return docker(["exec", "-i", name, ...args.slice(3)], options);
+    return i.run("docker", ["exec", "-i", name, ...args.slice(3)], options);
   };
   const manifest = await withUpdateLock(home, () => backup(i));
   const directory = path.join(home, "backups", manifest.id);

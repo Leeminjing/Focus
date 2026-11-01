@@ -192,7 +192,7 @@ focus update --dev
 focus update --stable
 ```
 
-`focus update` 沿用当前安装通道；`--dev` 跟随 main，`--stable` 跟随最新正式 Release。两者都执行完整备份、迁移、健康检查与失败恢复，验收成功后才切换通道。没有正式 Release 时，stable 会报错。
+`focus update` 沿用当前安装通道；`--dev` 跟随 main，`--stable` 跟随最新正式 Release。更新先对照本机数据库的实际迁移版本与目标版本：一致时跳过数据库全量备份和迁移；有待执行迁移或无法确认版本时，先完整备份再迁移。两种路径均保留代码、依赖和 CLI 的失败恢复，并通过健康检查后才切换通道。终端显示更新阶段，数据库备份期间每 5 秒显示已写入大小和耗时。没有正式 Release 时，stable 会报错。
 
 旧安装需要先关闭 Focus、保持 Docker 运行，重新执行上方开发版安装命令一次。它会迁移仓库外的 `~/.focus/runtime/cli`；仅更新 `~/.focus/app` 无法刷新旧命令逻辑。已有配置、数据库和历史保留。
 
