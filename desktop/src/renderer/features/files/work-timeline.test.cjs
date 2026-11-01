@@ -32,6 +32,54 @@ test("timeline uses event identities and keeps observation and verification dist
   assert.doesNotMatch(Timeline.entryHtml({ ...entry(1), title: '<img src=x onerror="bad()">', summary: "<script>bad()</script>" }), /<img|<script/);
 });
 
+test("timeline keeps core event information visible and puts evidence and audit data in closed details", () => {
+  const host = createElement("div");
+  host.innerHTML = Timeline.entryHtml({ ...entry(2, 2), summary: "补充测试说明", round_id: "round-1", round_number: 1, intent_id: "intent-1", source_event_id: "source-1",
+    references: { state: "verified", context_labels: { ctx: "插件技术验证" } } });
+  const article = host.querySelector("article"), details = article.querySelector(".work-timeline-details");
+  assert.equal(details.hasAttribute("open"), false);
+  assert.equal(article.querySelector(".work-timeline-heading strong").textContent, "验证通过 · 8 passed");
+  assert.equal(article.querySelector("time").getAttribute("datetime"), "2026-10-21T02:00:00Z");
+  const meta = article.querySelector(".work-timeline-meta");
+  assert.equal(meta.querySelector("[data-timeline-context]").textContent, "插件技术验证");
+  assert.equal(meta.querySelector(".work-timeline-state").textContent, "已验证");
+  assert.doesNotMatch(meta.textContent, /v2|R1|追踪后续/);
+  assert.equal(details.querySelector("p").textContent, "补充测试说明");
+  for (const selector of ["[data-timeline-round]", "[data-timeline-intent]", "[data-timeline-evidence]", ".work-timeline-source"]) {
+    assert.ok(details.querySelector(selector), `${selector} must stay available in details`);
+  }
+  assert.match(details.textContent, /source-1/);
+  host.innerHTML = Timeline.entryHtml({ ...entry(1), summary: "8 passed" });
+  assert.equal(host.querySelector(".work-timeline-details > p"), null, "identical title and summary should appear once");
+});
+
+test("Run events keep their status visible without a fact revision", () => {
+  const host = createElement("div");
+  host.innerHTML = Timeline.entryHtml({ entry_id: "run-1", category: "run", title: "Agent 执行结束", recorded_at: "2026-10-21T02:00:00Z", references: { status: "success" } });
+  assert.equal(host.querySelector(".work-timeline-state").textContent, "已完成");
+  assert.doesNotMatch(host.textContent, /undefined|vnull/);
+});
+
+test("fact icons reflect the historical verification state rather than the title or outcome", () => {
+  const cases = [
+    ["observed", "○", "已观察"],
+    ["verifying", "◌", "验证中"],
+    ["verified", "✓", "已验证"],
+    ["contradicted", "✕", "已被反证"],
+    ["superseded", "↪", "已替代"],
+    ["unknown", "·", "unknown"],
+    [undefined, "·", undefined],
+  ];
+  for (const [state, icon, label] of cases) {
+    for (const title of ["Run 已启动", "新版本已提交"]) {
+      const host = createElement("div");
+      host.innerHTML = Timeline.entryHtml({ ...entry(1), title, references: { state, outcome_status: "success" } });
+      assert.equal(host.querySelector(".work-timeline-icon").textContent, icon, `${title}: ${state}`);
+      if (label) assert.equal(host.querySelector(".work-timeline-state").textContent, label);
+    }
+  }
+});
+
 test("incremental events keep existing evidence DOM and scroll position", async () => {
   let reads = 0;
   const f = fixture(async (_id, options) => {
@@ -43,16 +91,21 @@ test("incremental events keep existing evidence DOM and scroll position", async 
   try {
     f.controller.sync("loop", {last_sequence:1}); await tick();
     const first = f.stream.querySelector('[data-timeline-entry="entry-1"]');
+    const details = first.querySelector(".work-timeline-details"); details.open = true;
     const evidence = first.querySelector("[data-timeline-evidence]"); evidence.open = true;
     const body = evidence.querySelector("[data-timeline-evidence-body]"); body.textContent = "已展开的历史证据";
     f.stream.scrollTop = 30;
     f.controller.sync("loop", {last_sequence:2}); await tick();
     assert.equal(f.stream.querySelector('[data-timeline-entry="entry-1"]'), first);
+    assert.equal(first.querySelector(".work-timeline-details"), details);
+    assert.equal(details.open, true);
     assert.equal(first.querySelector("[data-timeline-evidence]"), evidence);
     assert.equal(evidence.open, true);
     assert.equal(body.textContent, "已展开的历史证据");
     assert.equal(f.stream.scrollTop, 30);
     assert.equal(f.stream.querySelectorAll("[data-timeline-entry]").length, 2);
+    assert.equal(first.querySelector(".work-timeline-icon").textContent, "○");
+    assert.equal(f.stream.querySelector('[data-timeline-entry="entry-2"] .work-timeline-icon').textContent, "✓");
     assert.equal(reads, 2);
     assert.equal(f.card.querySelector("[data-patrol-new-facts]").hidden, false);
   } finally { f.controller.dispose(); }

@@ -234,11 +234,10 @@
       const value = action === "fit"
         ? Math.min(scroll.clientWidth / parseFloat(canvas.style.width), scroll.clientHeight / parseFloat(canvas.style.height))
         : old + (action === "in" ? 0.15 : -0.15);
-      // Fit must show the entire canvas even below the manual zoom floor.
-      // After a small Fit, +/- must still move in the requested direction.
-      const manualMinimum = map.classList.contains("is-workbench") ? 0.72 : 0.25;
-      const minimum = action === "fit" ? 0 : old < manualMinimum ? Math.min(old, 0.01) : manualMinimum;
-      const zoom = Math.min(2, Math.max(minimum, value));
+      if (!Number.isFinite(value) || (value <= 0 && action === "fit")) return;
+      const minimum = map.classList.contains("is-workbench") ? 0.72 : 0.25;
+      // Fit may go below the manual range; zoom-out must not enlarge that fitted view.
+      const zoom = Math.min(2, action === "fit" ? value : Math.max(action === "out" ? Math.min(old, minimum) : minimum, value));
       map.dataset.zoom = zoom;
       canvas.style.zoom = zoom;
       map.querySelector("[data-portfolio-scale]").textContent = `${Math.round(zoom * 100)}%`;
