@@ -28,6 +28,7 @@ function fixture(t, failure, channel = "stable") {
     home, appDir,
     assertStopped() {},
     ensurePython() {},
+    needsMigration() { return true; },
     git(...args) {
       if (args[0] === "remote") return repository;
       if (args[0] === "status") return "";
@@ -283,6 +284,10 @@ test("CLI generations publish as a complete bundle and retain modern controller 
   for (const file of ["focus.ps1", "focus.sh", "managed-update.cjs", "cli-launch.cjs", "cli-protocol.json"]) assert.ok(fs.existsSync(path.join(cliDirectory(root), file)));
   i.restoreCli(previous);
   assert.equal(cliDirectory(root), oldDirectory);
+  atomicJson(path.join(target, "cli-protocol.json"), { version: 1 });
+  fs.writeFileSync(path.join(target, "managed-update.cjs"), "throw Error('controller requires database dump');\n");
+  i.publishCli();
+  assert.equal(fs.readFileSync(path.join(cliDirectory(root), "managed-update.cjs"), "utf8"), fs.readFileSync(path.join(source, "managed-update.cjs"), "utf8"));
   i.restoreCli(null);
   assert.equal(cliDirectory(root), root);
 });
@@ -318,4 +323,98 @@ test("pre-generation recovery journals still restore offline without a CLI snaps
   assert.deepEqual(f.metadataNow(), f.metadata);
   assert.deepEqual(f.database(), f.original);
   assert.equal(f.pending(), false);
+});
+
+test("no pending migration skips dump and migration while keeping recovery and health checks", async t => {
+  const f = fixture(t);
+  f.i.needsMigration = target => { assert.equal(target, newCommit); return false; };
+  await update(f.i, async () => "v0.2.0");
+  assert.deepEqual(f.calls, ["fetch", "prepare", "snapshot", "reset-new", "sync-new", "health-new", "publish"]);
+  assert.deepEqual(f.database(), f.original);
+  const journal = JSON.parse(fs.readFileSync(path.join(f.metadataNow().recoveryPoint, "recovery.json")));
+  assert.equal(journal.databaseBackup, false);
+  assert.equal(journal.backupSha256, null);
+  assert.equal(fs.existsSync(path.join(f.metadataNow().recoveryPoint, "database.dump")), false);
+});
+
+for (const failure of ["reset-new", "sync-new", "health-new", "publish"]) {
+  test(`code-only update failure at ${failure} restores installation without touching database`, async t => {
+    const f = fixture(t, failure);
+    f.i.needsMigration = () => false;
+    await assert.rejects(update(f.i, async () => "v0.2.0"), /database unchanged/);
+    assert.equal(f.head(), oldCommit);
+    assert.deepEqual(f.database(), f.original);
+    assert.deepEqual(f.metadataNow(), f.metadata);
+    assert.deepEqual(f.cli(), { generation: "cli-old" });
+    assert.equal(f.calls.includes("backup"), false);
+    assert.equal(f.calls.includes("restore"), false);
+    assert.equal(f.calls.includes("migrate"), false);
+    assert.equal(f.pending(), false);
+  });
+}
+
+test("interrupted code-only recovery needs neither network nor database archive", async t => {
+  const f = fixture(t, "health-new");
+  f.i.needsMigration = () => false;
+  const restore = f.i.restoreDependencies;
+  f.i.restoreDependencies = () => { throw Error("dependencies unavailable"); };
+  await assert.rejects(update(f.i, async () => "v0.2.0"), /Recovery incomplete/);
+  assert.equal(f.pending(), true);
+  f.i.restoreDependencies = restore;
+  f.i.needsMigration = () => assert.fail("offline recovery must not probe target migrations");
+  const git = f.i.git;
+  f.i.git = (...args) => { assert.notEqual(args[0], "fetch"); return git(...args); };
+  await update(f.i, () => assert.fail("offline recovery queried Releases"));
+  assert.equal(f.calls.includes("restore"), false);
+  assert.deepEqual(f.database(), f.original);
+  assert.deepEqual(f.metadataNow(), f.metadata);
+  assert.equal(f.pending(), false);
+});
+
+test("migration detection uses the fetched target graph and conservatively backs up on probe failure", t => {
+  const f = fixture(t), i = new Installation(f.i.home, f.i.appDir, "fixture-python");
+  const commands = [];
+  i.run = (command, args, options) => {
+    commands.push([command, args]);
+    if (command === "git") {
+      assert.ok(args.includes(newCommit));
+      return Buffer.from("target migration archive");
+    }
+    assert.equal(options.input.toString(), "target migration archive");
+    return JSON.stringify({ required: false, current: ["revision"], target: ["revision"] });
+  };
+  assert.equal(i.needsMigration(newCommit), false);
+  assert.equal(commands.length, 2);
+  i.run = () => { throw Error("missing migration dependency"); };
+  assert.equal(i.needsMigration(newCommit), true);
+  i.run = command => command === "git" ? Buffer.from("archive") : "{}";
+  assert.equal(i.needsMigration(newCommit), true);
+});
+
+test("database backup reports live byte counts and elapsed time while the child runs", async t => {
+  const f = fixture(t), i = new Installation(f.i.home, f.i.appDir, "python");
+  const file = path.join(f.i.home, "progress.dump");
+  const fd = fs.openSync(file, "wx");
+  const logs = [];
+  t.mock.method(console, "log", line => logs.push(line));
+  try {
+    await i.run(process.execPath, ["-e", "process.stdout.write('backup bytes'); setTimeout(() => process.stdout.write('more bytes'), 200)"],
+      { progressFile: file, progressInterval: 20, stdio: ["ignore", fd, "pipe"] });
+    assert.ok(logs.length >= 2, "progress must be emitted before completion as well as after it");
+    assert.ok(logs.every(line => /MiB written, \d+s elapsed/.test(line)));
+    assert.equal(fs.readFileSync(file, "utf8"), "backup bytesmore bytes");
+    await assert.rejects(i.run(process.execPath, ["-e", "process.exit(2)"],
+      { progressFile: file, progressInterval: 20, stdio: "ignore" }), /backup command failed \(2\)/);
+    await assert.rejects(i.run(path.join(f.i.home, "missing-command"), [],
+      { progressFile: file, progressInterval: 20, stdio: "ignore" }), { code: "ENOENT" });
+  } finally { fs.closeSync(fd); }
+});
+
+test("failed asynchronous database dump never produces a verified backup", async t => {
+  const f = fixture(t), i = new Installation(f.i.home, f.i.appDir, "python");
+  const directory = path.join(f.i.home, "dump");
+  fs.mkdirSync(directory);
+  i.compose = async () => { throw Error("dump failed"); };
+  await assert.rejects(i.backup(directory), /dump failed/);
+  fs.unlinkSync(path.join(directory, "database.dump")); // file descriptor was closed
 });

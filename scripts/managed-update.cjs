@@ -10,6 +10,40 @@ const releaseApi = "https://api.github.com/repos/Leeminjing/Focus/releases/lates
 const normalize = value => value.trim().toLowerCase().replace(/\/$/, "").replace(/\.git$/, "");
 const canonicalPath = value => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
 const cliFiles = ["focus.ps1", "focus.sh", "managed-update.cjs", "cli-launch.cjs", "cli-protocol.json"];
+const migrationPath = "backend/packages/harness/focus/persistence/migrations";
+// Inspect the fetched revision graph without checking out target code or running
+// env.py. Keep this probe in the controller so old releases need no new helper.
+const migrationProbe = `
+import io, json, os, pathlib, sys, tarfile, tempfile
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from alembic.runtime.migration import MigrationContext
+from sqlalchemy import create_engine
+with tempfile.TemporaryDirectory(prefix="focus-migration-plan-") as temporary:
+    root = pathlib.Path(temporary).resolve()
+    with tarfile.open(fileobj=io.BytesIO(sys.stdin.buffer.read())) as archive:
+        for member in archive.getmembers():
+            destination = (root / member.name).resolve()
+            if not destination.is_relative_to(root):
+                raise RuntimeError("Unsafe migration archive path")
+            if member.isdir():
+                continue
+            if not member.isfile():
+                raise RuntimeError("Migration archive contains a link")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(archive.extractfile(member).read())
+    config = Config(str(root / "${migrationPath}" / "alembic.ini"))
+    expected = set(ScriptDirectory.from_config(config).get_heads())
+    if not expected:
+        raise RuntimeError("Target migration graph has no heads")
+    engine = create_engine(os.environ["FOCUS_DATABASE_URL"].replace("postgresql+asyncpg:", "postgresql+psycopg:"), connect_args={"connect_timeout": 10})
+    try:
+        with engine.connect() as connection:
+            actual = set(MigrationContext.configure(connection).get_current_heads())
+    finally:
+        engine.dispose()
+    print(json.dumps({"required": actual != expected, "current": sorted(actual), "target": sorted(expected)}))
+`;
 
 function installedChannel(metadata) {
   if (["dev", "stable"].includes(metadata.channel)) return metadata.channel;
@@ -116,11 +150,44 @@ class Installation {
     this.composeFile = path.join(this.appDir, "desktop/compose.yaml");
   }
   run(command, args, options = {}) {
+    if (options.progressFile) {
+      const { progressFile, progressInterval = 5000, ...spawnOptions } = options;
+      const started = Date.now();
+      const report = () => console.log(`[Focus update] Database backup: ${(fs.statSync(progressFile).size / 1024 ** 2).toFixed(1)} MiB written, ${Math.floor((Date.now() - started) / 1000)}s elapsed.`);
+      return new Promise((resolve, reject) => {
+        const child = cp.spawn(command, args, { cwd: this.appDir, env: this.env,
+          windowsHide: true, stdio: "inherit", ...spawnOptions });
+        const timer = setInterval(report, progressInterval);
+        let spawnError;
+        child.once("error", error => { spawnError = error; clearInterval(timer); });
+        child.once("close", (code, signal) => {
+          clearInterval(timer);
+          report();
+          if (spawnError) reject(spawnError);
+          else if (code === 0) resolve();
+          else reject(new Error(`Database backup command failed (${signal || code}).`));
+        });
+      });
+    }
     return cp.execFileSync(command, args, { cwd: this.appDir, env: this.env,
       encoding: "utf8", windowsHide: true, stdio: "inherit", ...options });
   }
   git(...args) { return this.run("git", ["-C", this.appDir, ...args], { stdio: "pipe" }).trim(); }
   compose(args, options) { return this.run("docker", ["compose", "-f", this.composeFile, ...args], options); }
+  needsMigration(target) {
+    try {
+      const archive = this.run("git", ["-C", this.appDir, "archive", target, migrationPath],
+        { encoding: null, stdio: "pipe", maxBuffer: 16 * 1024 * 1024 });
+      const plan = JSON.parse(this.run(this.python, ["-c", migrationProbe],
+        { input: archive, stdio: "pipe", timeout: 30000 }));
+      if (typeof plan.required !== "boolean") throw new Error("Invalid migration plan");
+      console.log(`[Focus update] Database revision: ${plan.current.join(", ") || "empty"}; target: ${plan.target.join(", ")}.`);
+      return plan.required;
+    } catch {
+      console.log("[Focus update] Could not confirm database revisions; keeping the full backup and migration for safety.");
+      return true;
+    }
+  }
   ensurePython() {
     if (fs.existsSync(this.python)) return;
     const candidates = process.platform === "win32" ? [["py", "-3"], ["python"]] : [["python3"], ["python"]];
@@ -161,15 +228,16 @@ class Installation {
       throw new Error("Focus is running. Close it before running 'focus update'.");
     }
   }
-  backup(directory) {
+  async backup(directory) {
     const file = path.join(directory, "database.dump");
     const fd = fs.openSync(file, "wx", 0o600);
     try {
-      this.compose(["exec", "-T", "postgres", "pg_dump", "-U", "focus", "-d", "focus", "--format=custom"],
-        { encoding: null, stdio: ["ignore", fd, "inherit"] });
+      await this.compose(["exec", "-T", "postgres", "pg_dump", "-U", "focus", "-d", "focus", "--format=custom"],
+        { encoding: null, stdio: ["ignore", fd, "inherit"], progressFile: file });
       fs.fsyncSync(fd);
     } finally { fs.closeSync(fd); }
     if (!fs.statSync(file).size) throw new Error("Database backup is empty.");
+    console.log("[Focus update] Verifying database archive and checksum...");
     const input = fs.openSync(file, "r");
     try {
       this.compose(["exec", "-T", "postgres", "pg_restore", "--list"], { stdio: [input, "ignore", "inherit"] });
@@ -257,10 +325,12 @@ class Installation {
   publishCli() {
     const directory = path.join(this.home, "runtime/cli");
     let source = path.join(this.appDir, "scripts");
-    // Pre-protocol releases must not replace a modern controller with the old
-    // stable-only updater. Keep the controller that performed this transaction.
+    // Older controllers cannot recover journals without a database dump. Keep
+    // this controller when switching to a release without that capability.
+    // Retain protocol version 1 so existing installers can adopt this upgrade.
     const protocol = path.join(source, "cli-protocol.json");
-    if (!fs.existsSync(protocol) || JSON.parse(fs.readFileSync(protocol, "utf8")).version !== 1) source = this.controllerDir || __dirname;
+    const capabilities = fs.existsSync(protocol) ? JSON.parse(fs.readFileSync(protocol, "utf8")) : {};
+    if (capabilities.version !== 1 || capabilities.optionalDatabaseBackup !== true) source = this.controllerDir || __dirname;
     const generation = `cli-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
     const destination = path.join(directory, "generations", generation);
     fs.mkdirSync(destination, { recursive: true });
@@ -286,9 +356,12 @@ async function update(installation, resolveRelease = stableRelease, requestedCha
   async function recover(state) {
     const directory = path.join(i.home, "backups", state.id);
     if (!/^update-[a-zA-Z0-9-]+$/.test(state.id) || !/^[a-f0-9]{40}$/.test(state.previousCommit)) throw new Error("Invalid recovery journal.");
+    console.log("[Focus update] Restoring the previous installation...");
     i.git("reset", "--hard", state.previousCommit);
     i.prepareDatabase(true);
-    i.restore(directory, state);
+    // Legacy journals always contain a dump. New code-only transactions record
+    // false explicitly and must never restore (or migrate) the live database.
+    if (state.databaseBackup !== false) i.restore(directory, state);
     i.restoreDependencies(directory);
     if (state.previousMetadata.validatedCommit) i.health();
     if (Object.hasOwn(state, "previousCli")) i.restoreCli(state.previousCli);
@@ -296,7 +369,7 @@ async function update(installation, resolveRelease = stableRelease, requestedCha
     if (previousMetadata.branch === "main" && !previousMetadata.validatedCommit) previousMetadata.recoveredCommit = state.previousCommit;
     atomicJson(metadataPath, previousMetadata);
     fs.unlinkSync(statePath);
-    console.log(`Previous code and database restored. Recovery point retained: ${directory}`);
+    console.log(`Previous code${state.databaseBackup === false ? " (database unchanged)" : " and database"} restored. Recovery point retained: ${directory}`);
   }
   if (fs.existsSync(statePath)) {
     await recover(JSON.parse(fs.readFileSync(statePath, "utf8")));
@@ -309,19 +382,27 @@ async function update(installation, resolveRelease = stableRelease, requestedCha
   if (i.git("status", "--porcelain", "--untracked-files=no")) {
     throw new Error("Managed checkout has local changes. Preserve them before updating; Focus will not overwrite them.");
   }
+  console.log("[Focus update] [1/7] Fetching the target version...");
   const tag = channel === "stable" ? await resolveRelease() : undefined;
   i.git("fetch", "--no-tags", "origin", channel === "dev" ? "refs/heads/main" : `refs/tags/${tag}`);
   const target = i.git("rev-parse", "FETCH_HEAD^{commit}");
   const previous = i.git("rev-parse", "HEAD");
+  console.log("[Focus update] [2/7] Preparing database and checking pending migrations...");
   i.prepareDatabase();
   i.ensurePython();
+  const databaseBackup = i.needsMigration(target);
+  console.log(databaseBackup
+    ? "[Focus update] Pending or unconfirmed migrations: a full database backup is required."
+    : "[Focus update] No pending database migrations; skipping full database backup and migration.");
   const id = `update-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
   const directory = path.join(i.home, "backups", id);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  console.log("[Focus update] [3/7] Saving dependencies for recovery...");
   i.snapshotDependencies(directory);
+  console.log(`[Focus update] [4/7] ${databaseBackup ? "Backing up database (size and elapsed time reported every 5s)" : "Database backup skipped"}...`);
   const state = { id, previousCommit: previous, targetCommit: target, tag, channel,
     previousCli: i.snapshotCli(),
-    previousMetadata: metadata, backupSha256: i.backup(directory) };
+    previousMetadata: metadata, databaseBackup, backupSha256: databaseBackup ? await i.backup(directory) : null };
   // Save a standalone recovery entry point before changing the checkout.
   fs.copyFileSync(__filename, path.join(directory, "recover.cjs"));
   // A standalone recovery controller must also retain its compatible CLI bundle.
@@ -331,9 +412,12 @@ async function update(installation, resolveRelease = stableRelease, requestedCha
   atomicJson(statePath, state);
   console.log(`Recovery point: ${directory}`);
   try {
+    console.log("[Focus update] [5/7] Installing target code and dependencies...");
     i.git("reset", "--hard", target);
     i.sync();
-    i.migrate();
+    console.log(`[Focus update] [6/7] ${databaseBackup ? "Applying database migrations" : "Database migration skipped"}...`);
+    if (databaseBackup) i.migrate();
+    console.log("[Focus update] [7/7] Running health checks and publishing CLI...");
     i.health();
     i.publishCli();
     const accepted = { ...metadata, schema: 3, channel,
@@ -350,7 +434,7 @@ async function update(installation, resolveRelease = stableRelease, requestedCha
       throw new Error(`Focus update failed: ${failure.message}. Recovery incomplete: ${recoveryFailure.message}. `
         + `Do not start Focus. Retry 'focus update'. Recovery point: ${directory}`);
     }
-    throw new Error(`Focus update failed: ${failure.message}. Previous code and database restored.`);
+    throw new Error(`Focus update failed: ${failure.message}. ${databaseBackup ? "Previous code and database restored" : "Previous code restored; database unchanged"}.`);
   }
   console.log(`Focus updated successfully: ${channel} ${tag || "main"} (${target.slice(0, 7)}); migrations and health checks passed.`);
   return { channel, commit: target };

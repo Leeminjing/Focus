@@ -57,6 +57,19 @@ test("a newly pending recovery invalidates a previously eligible deletion", t =>
   assert.throws(() => cleanup(home, policy, [old]));
 });
 
+test("complete code-only update recovery points participate in retention without a database dump", t => {
+  const { home, add } = fixture(t);
+  const old = add("update", Date.now() - 10 * 86400000);
+  add("update", Date.now());
+  const directory = path.join(home, "backups", old);
+  fs.unlinkSync(path.join(directory, "database.dump"));
+  atomicJson(path.join(directory, "recovery.json"), { id: old, databaseBackup: false, backupSha256: null });
+  const row = inventory(home, policy).entries.find(row => row.id === old);
+  assert.equal(row.kind, "update");
+  assert.equal(row.protected_reason, null);
+  assert.deepEqual(cleanup(home, policy, [old]).removed, [old]);
+});
+
 test("links in regular backups remain protected and are never followed or deleted", t => {
   const { home, add } = fixture(t);
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "focus-storage-outside-"));
@@ -79,10 +92,10 @@ test("regular backup is published only after verification; failures stay protect
   assert.equal(result.scope, "postgresql");
   assert.equal(inventory(home, policy).entries[0].kind, "regular");
   i.backup = () => { throw Error("verification failed"); };
-  assert.throws(() => backup(i), /verification failed/);
+  await assert.rejects(backup(i), /verification failed/);
   assert.ok(inventory(home, policy).entries.some(row => row.protected_reason === "unrecognised_or_incomplete"));
   atomicJson(path.join(home, "update-state.json"), { id: "pending" });
-  assert.throws(() => backup(i), /Finish Focus recovery/);
+  await assert.rejects(backup(i), /Finish Focus recovery/);
 });
 
 test("update dependency snapshots with links remain eligible and cleanup preserves link targets", t => {

@@ -68,6 +68,7 @@ test("real Git switches and abrupt termination preserve code, external CLI, depe
     };
     i.run = (cmd,args,opts) => cmd === 'fixture-python' ? 'fixture==1\\n' : run(cmd,args,opts);
     i.assertStopped = i.prepareDatabase = i.ensurePython = () => {};
+    i.needsMigration = () => true;
     i.backup = dir => { fs.copyFileSync(path.join(home,'data.json'),path.join(dir,'database.dump')); return 'fixture'; };
     i.restore = dir => fs.copyFileSync(path.join(dir,'database.dump'),path.join(home,'data.json'));
     i.sync = () => {

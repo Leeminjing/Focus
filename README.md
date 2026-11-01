@@ -192,7 +192,7 @@ focus update --dev
 focus update --stable
 ```
 
-`focus update` follows the installed channel; the other commands explicitly switch channels after backup, migration and health checks. Stable fails if there is no eligible Release. Old installations must rerun the development installer above once to upgrade their external CLI; updating only `~/.focus/app` cannot refresh it. Close Focus and keep Docker running during this migration.
+`focus update` follows the installed channel; the other commands explicitly switch channels after health checks. Updates compare the database's actual migration revisions with the target version: matching revisions skip the full database backup and migration; pending or unconfirmed migrations retain both. Code, dependency and CLI recovery remain available in either case. The terminal shows update stages and reports database backup size and elapsed time every 5 seconds. Stable fails if there is no eligible Release. Old installations must rerun the development installer above once to upgrade their external CLI; updating only `~/.focus/app` cannot refresh it. Close Focus and keep Docker running during this migration.
 
 See [update channels, installation, and recovery](docs/managed-releases.md) for details.
 
