@@ -221,14 +221,18 @@
       event.stopPropagation();
       const canvas = map.querySelector(".portfolio-map-canvas");
       const old = Number(map.dataset.zoom || 1);
-      const value = button.dataset.portfolioZoom === "fit"
+      const action = button.dataset.portfolioZoom;
+      const value = action === "fit"
         ? Math.min(scroll.clientWidth / parseFloat(canvas.style.width), scroll.clientHeight / parseFloat(canvas.style.height))
-        : old + (button.dataset.portfolioZoom === "in" ? 0.15 : -0.15);
-      const zoom = Math.min(2, Math.max(map.classList.contains("is-workbench") ? 0.72 : 0.25, value));
+        : old + (action === "in" ? 0.15 : -0.15);
+      if (!Number.isFinite(value) || (value <= 0 && action === "fit")) return;
+      const minimum = map.classList.contains("is-workbench") ? 0.72 : 0.25;
+      // Fit may go below the manual range; zoom-out must not enlarge that fitted view.
+      const zoom = Math.min(2, action === "fit" ? value : Math.max(action === "out" ? Math.min(old, minimum) : minimum, value));
       map.dataset.zoom = zoom;
       canvas.style.zoom = zoom;
       map.querySelector("[data-portfolio-scale]").textContent = `${Math.round(zoom * 100)}%`;
-      if (button.dataset.portfolioZoom === "fit") { scroll.scrollLeft = 0; scroll.scrollTop = 0; }
+      if (action === "fit") { scroll.scrollLeft = 0; scroll.scrollTop = 0; }
     });
     scroll.addEventListener("click", event => {
       if (!map.classList.contains("is-workbench") || event.target.closest("button, [data-edge-hit]")) return;
