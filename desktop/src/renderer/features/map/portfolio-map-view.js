@@ -9,6 +9,7 @@
  * relationship 输出共用精确关系检查内容；来源连线以完整 source/target Context 与 Revision 元组对账，保留可查看身份，避免同一 Context 不同来源版本碰撞。
  * patchPreviews 输入按 Context ID 索引的 {run_id,role,tool_name,text,status,notice}，输出为对应当前 Run 卡的局部正文更新；不读取网络、不影响检查或业务状态。
  * 当前 running 根节点使用固定玻璃卡，正文由原生换行与末端对齐保留最后两行；同 Run 对账保留预览 DOM，历史版本不显示实时正文。
+ * bind(host, {autoFit:true,signal}) 在尺寸/拓扑变化后按帧适配；手动缩放/平移暂停，Fit 恢复；signal 或图替换释放观察器与监听。
  * 示例：FocusPortfolioMapView.patchPreviews(host, {ctx: {run_id:"run-1",role:"Assistant",text:"最新输出",status:"streaming"}})。
  */
 (function (root, factory) {
@@ -36,6 +37,7 @@
   }
 
   const mountedPlans = new WeakMap();
+  const mountedViewports = new WeakMap();
   const edgeIdentity = edge => JSON.stringify([edge.source_context_id, edge.source_revision_id ?? null, edge.target_context_id, edge.target_revision_id ?? null]);
 
   // Compare topology once per update. Ordinary Run changes reuse geometry and all edge indexes.
@@ -210,40 +212,91 @@
     return localize`<p>每一条关系对应精确的来源与目标版本。</p><ul class="workbench-edge-list">${edges.map(edge => `<li>${endpoint(edge.source_context_id, edge.source_revision_id)}<span>→</span>${endpoint(edge.target_context_id, edge.target_revision_id)}</li>`).join("")}</ul>`;
   }
 
-  function bind(host) {
+  function bind(host, { autoFit = false, signal } = {}) {
     const map = host?.querySelector(".portfolio-map");
-    if (!map || map.dataset.interactive) return;
+    const previous = host && mountedViewports.get(host);
+    if (previous?.map === map) return;
+    previous?.dispose();
+    if (!map || map.dataset.interactive || signal?.aborted) return;
     map.dataset.interactive = "true";
     const scroll = map.querySelector(".portfolio-map-scroll");
+    const lifetime = new AbortController(), options = { signal: lifetime.signal };
+    let automatic = autoFit, frame = null, observer = null, drag = null;
+    const cancelFit = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+    };
+    const manual = () => { automatic = false; cancelFit(); };
+    const setZoom = action => {
+      const canvas = map.querySelector(".portfolio-map-canvas");
+      const old = Number(map.dataset.zoom || 1);
+      if (action === "fit" && (!scroll.clientWidth || !scroll.clientHeight)) return;
+      const value = action === "fit"
+        ? Math.min(scroll.clientWidth / parseFloat(canvas.style.width), scroll.clientHeight / parseFloat(canvas.style.height))
+        : old + (action === "in" ? 0.15 : -0.15);
+      // Fit must show the entire canvas even below the manual zoom floor.
+      // After a small Fit, +/- must still move in the requested direction.
+      const manualMinimum = map.classList.contains("is-workbench") ? 0.72 : 0.25;
+      const minimum = action === "fit" ? 0 : old < manualMinimum ? Math.min(old, 0.01) : manualMinimum;
+      const zoom = Math.min(2, Math.max(minimum, value));
+      map.dataset.zoom = zoom;
+      canvas.style.zoom = zoom;
+      map.querySelector("[data-portfolio-scale]").textContent = `${Math.round(zoom * 100)}%`;
+      if (action === "fit") { scroll.scrollLeft = 0; scroll.scrollTop = 0; }
+    };
+    const scheduleFit = () => {
+      if (!automatic || frame !== null || lifetime.signal.aborted) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        if (automatic && !lifetime.signal.aborted && map.isConnected) setZoom("fit");
+      });
+    };
+    const dispose = () => {
+      cancelFit(); observer?.disconnect(); drag?.abort(); lifetime.abort();
+      signal?.removeEventListener("abort", dispose);
+      mountedViewports.delete(host);
+      delete map.dataset.interactive;
+    };
+    mountedViewports.set(host, { map, scheduleFit, dispose });
+    signal?.addEventListener("abort", dispose, { once: true });
     map.addEventListener("click", event => {
       const button = event.target.closest("[data-portfolio-zoom]");
       if (!button) return;
       event.stopPropagation();
-      const canvas = map.querySelector(".portfolio-map-canvas");
-      const old = Number(map.dataset.zoom || 1);
-      const value = button.dataset.portfolioZoom === "fit"
-        ? Math.min(scroll.clientWidth / parseFloat(canvas.style.width), scroll.clientHeight / parseFloat(canvas.style.height))
-        : old + (button.dataset.portfolioZoom === "in" ? 0.15 : -0.15);
-      const zoom = Math.min(2, Math.max(map.classList.contains("is-workbench") ? 0.72 : 0.25, value));
-      map.dataset.zoom = zoom;
-      canvas.style.zoom = zoom;
-      map.querySelector("[data-portfolio-scale]").textContent = `${Math.round(zoom * 100)}%`;
-      if (button.dataset.portfolioZoom === "fit") { scroll.scrollLeft = 0; scroll.scrollTop = 0; }
-    });
+      const action = button.dataset.portfolioZoom;
+      cancelFit();
+      if (action === "fit") automatic = autoFit;
+      else manual();
+      setZoom(action);
+    }, options);
+    scroll.addEventListener("wheel", manual, { ...options, passive: true });
+    scroll.addEventListener("keydown", event => {
+      if (event.target === scroll && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", " "].includes(event.key)) manual();
+    }, options);
     scroll.addEventListener("click", event => {
       if (!map.classList.contains("is-workbench") || event.target.closest("button, [data-edge-hit]")) return;
       if (map.dataset.dragged !== "true") map.dispatchEvent(new CustomEvent("portfolio-clear-selection", { bubbles: true }));
       delete map.dataset.dragged;
-    });
+    }, options);
     scroll.addEventListener("pointerdown", event => {
       if (event.button !== 0 || event.target.closest("button, [data-edge-hit]")) return;
       const x = event.clientX, y = event.clientY, left = scroll.scrollLeft, top = scroll.scrollTop;
-      const drag = new AbortController();
+      drag?.abort();
+      drag = new AbortController();
       let moved = false;
       scroll.setPointerCapture(event.pointerId);
-      scroll.addEventListener("pointermove", e => { moved ||= Math.hypot(x - e.clientX, y - e.clientY) > 5; scroll.scrollLeft = left + x - e.clientX; scroll.scrollTop = top + y - e.clientY; }, { signal: drag.signal });
+      scroll.addEventListener("pointermove", e => {
+        moved ||= Math.hypot(x - e.clientX, y - e.clientY) > 5;
+        if (moved) manual();
+        scroll.scrollLeft = left + x - e.clientX; scroll.scrollTop = top + y - e.clientY;
+      }, { signal: drag.signal });
       for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) scroll.addEventListener(type, () => { drag.abort(); map.dataset.dragged = String(moved); }, { signal: drag.signal, once: true });
-    });
+    }, options);
+    if (autoFit && typeof ResizeObserver === "function") {
+      observer = new ResizeObserver(scheduleFit);
+      observer.observe(scroll);
+    }
+    scheduleFit();
   }
 
   function reconcile(host, manifest, selectedId, graphActivity = [], options = {}) {
@@ -332,6 +385,7 @@
     }
     if (structural) for (const [id, node] of nodes) if (!plan.cards.has(id)) { node.remove(); nodes.delete(id); }
     mountedPlans.set(current, { plan, nodes, shapes });
+    if (structural) mountedViewports.get(host)?.scheduleFit();
     if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
     return true;
   }

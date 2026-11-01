@@ -1,7 +1,7 @@
 /* 本文件对外提供工作区 Patrol 页面控制器。
  * 输入为已绑定工作区、共享 Loop API、Live Store/Connection 及输入 store；输出为逐条耐久回执和图主导工作台更新；选择身份由原 ContextInspector 持有。
  * 当前 Loop 与历史独立读取，Loop 就绪即订阅单路 Live，历史错误仅留在记录面板；依据投影结构共享只更新变化区域，保留 composer、进度和未变等待表单 DOM，异步响应按工作区代际隔离；
- * 图谱 Live 变化在同一动画帧合并，使用最新投影检查拓扑与更新节点；离开时取消待执行帧。
+ * 图谱 Live 变化在同一动画帧合并，使用最新投影检查拓扑与更新节点；尺寸/拓扑变化在自动模式适配，手动视野保留；离开时取消帧与观察器。
  * 主输入走 workspace intake，固定当时可见的 Live 游标、Fact revision 与独立 Run 有界片段；旧请求重试复用原文和证据。Observation 按精确版本检视，迟到分页不得进入另一版本。
  * 显隐复用 SurfaceTransition 保留输入节点，运行预览复用共享 Run 观察器，折叠/离开释放订阅；原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
  * 文件详情/候选响应绑定工作区与请求代际；实时文件事实保留历史滚动位置，详情与输入节点独立。
@@ -251,11 +251,9 @@
       const raw = manifest(), activity = root.FocusLoopLiveSelectors?.selectGraphActivity(projection);
       previews?.sync({ workspaceId: workspace.workspace_id, loopId, nodes: raw.nodes });
       const data = previews?.decorate(raw) || raw;
-      const existing = graph.querySelector(".portfolio-map");
       if (!root.FocusPortfolioMapView.reconcile(graph, data, selected?.contextId, activity, options)) graph.innerHTML = root.FocusPortfolioMapView.render(data, selected?.contextId, activity, options);
-      root.FocusPortfolioMapView.bind(graph);
+      root.FocusPortfolioMapView.bind(graph, { autoFit: true, signal: lifetime.signal });
       if (previews) root.FocusPortfolioMapView.patchPreviews(graph, previews.get());
-      if (!existing) requestAnimationFrame(() => { if (graph.isConnected) graph.querySelector('[data-portfolio-zoom="fit"]')?.click(); });
       const button = host.querySelector("[data-patrol-related]");
       button.disabled = !selected;
       button.setAttribute("aria-pressed", String(relatedOnly));
@@ -301,6 +299,12 @@
     function inspectEdges(identity) {
       showDialog("relationship", localize("已提交来源关系"), root.FocusPortfolioMapView.relationship(manifest(), identity));
     }
+    function patchObservation() {
+      if (!host || !observation) return;
+      const node = host.querySelector("[data-patrol-observation]");
+      const html = root.FocusObservationView.card(observation, { compact: true, projection, connection: liveStore.get().connection.status });
+      if (node.innerHTML !== html) node.innerHTML = html;
+    }
     async function refreshObservation(force = false) {
       const id = projection?.round?.state?.observation_id;
       if (!id || (!force && id === observationIdentity)) return;
@@ -313,7 +317,7 @@
         const value = await api.observation(loopId, id, { signal: lifetime.signal });
         if (token !== owner || version !== observationVersion || observationIdentity !== id) return;
         observation = value;
-        host.querySelector("[data-patrol-observation]").innerHTML = root.FocusObservationView.card(value, { compact: true });
+        patchObservation();
         host.querySelector("[data-patrol-observation-open]").disabled = false;
       } catch (failure) {
         if (owner === token && version === observationVersion && failure.name !== "AbortError") {
@@ -667,6 +671,7 @@
       if (next.loop_id !== loopId) return;
       const previous = projection;
       projection = next;
+      patchObservation();
       timeline?.sync(loopId, next);
       patchRecovery();
       for (const [id] of waitUi) {
