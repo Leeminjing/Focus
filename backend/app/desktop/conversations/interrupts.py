@@ -105,6 +105,19 @@ async def _main_checkpoint(session: Any, task: Any, checkpointer: Any) -> Any | 
             "checkpoint_ns": identity.checkpoint_ns,
         }
     }
+    # A published replacement has its own execution identity. Interrupts from
+    # the abandoned branch must not block a new Directive on that replacement.
+    if getattr(task, 'current_revision_id', None):
+        from backend.app.desktop.contexts.evolution.models import ContextRevision
+
+        current = await session.get(ContextRevision, task.current_revision_id)
+        if (current is not None and current.checkpoint_id
+                and current.projection_status in {'valid', 'repaired', 'approved'}
+                and (current.execution_thread_id, current.checkpoint_ns)
+                != (identity.thread_id, identity.checkpoint_ns)):
+            config = {'configurable': {'thread_id': current.execution_thread_id,
+                                       'checkpoint_ns': current.checkpoint_ns,
+                                       'checkpoint_id': current.checkpoint_id}}
     try:
         return await checkpointer.aget_tuple(config)
     except Exception:

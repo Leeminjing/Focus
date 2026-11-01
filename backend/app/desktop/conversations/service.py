@@ -370,9 +370,14 @@ class ConversationService:
             await session.commit()
 
     async def set_session_access_mode(self, task_id: str, access_mode: str) -> None:
+        from backend.app.desktop.patrol.agent_loop.governance.file_mode import (
+            apply_workspace_file_mode, notify_cancelled_runs, workspace_loop_for_primary,
+        )
+
         ports = self._ports
         mode = AccessMode(access_mode)
         async with ports.session_factory() as session:
+            loop = await workspace_loop_for_primary(session, task_id)
             task = await session.scalar(
                 select(DesktopThread)
                 .where(DesktopThread.task_id == task_id)
@@ -381,7 +386,9 @@ class ConversationService:
             if task is None:
                 raise HTTPException(404, "任务不存在")
             task.ui_state = {**(task.ui_state or {}), "access_mode": str(mode)}
+            cancelled = await apply_workspace_file_mode(session, loop, mode) if loop is not None else ()
             await session.commit()
+        notify_cancelled_runs(ports, cancelled)
 
     async def get_checkpoint_messages(
         self, thread_id: str, checkpoint_ns: str

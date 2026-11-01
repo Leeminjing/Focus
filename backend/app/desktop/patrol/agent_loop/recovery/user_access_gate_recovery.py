@@ -34,6 +34,9 @@ class UserAccessGateRecovery:
             return
         if gate.status!='pending' or wait.round_id!=loop.current_round_id:
             raise ValueError('人工访问审批或当前Round已变化')
+        if (gate.payload.get('recovery') or {}).get('status') == 'orphaned':
+            await self._supersede_orphan(session, loop, gate, response_id, actor_id)
+            return
         original=await self._source(session,loop,wait,gate)
         task=await session.get(DesktopThread,original.task_id,with_for_update=True,populate_existing=True)
         if task is None or task.workspace_id!=loop.workspace_id:
@@ -45,6 +48,71 @@ class UserAccessGateRecovery:
             raise ValueError('人工访问审批主执行在核对期间变化')
         gate.status='resolved'
         await self._record(session,loop,gate,original,resumed,checkpoint,response_id,actor_id)
+
+    async def _supersede_orphan(self, session, loop, gate, response_id, actor_id):
+        from backend.app.desktop.contexts.evolution.repository import ContextRevisionRepository
+
+        source = gate.payload.get('source') or {}
+        original = await session.get(DesktopRun, source.get('run_id'), with_for_update=True)
+        request = (gate.payload.get('recovery') or {}).get('request') or {}
+        if (original is None or original.task_id != source.get('task_id')
+                or original.loop_id != loop.loop_id or original.kind != 'main'
+                or original.agent_id != f'main:{original.task_id}'
+                or original.status != 'error' or original.settled_at is None
+                or original.created_at > gate.created_at
+                or request.get('type') != APPROVAL_TYPE or request.get('agent_role') != 'main'
+                or (original.equipment or {}).get('access_mode') != request.get('access_mode')):
+            raise ValueError('孤立审批缺少已结算失败的原执行来源')
+        task = await session.get(DesktopThread, original.task_id, with_for_update=True, populate_existing=True)
+        member = await session.scalar(select(LoopContextMembership).where(
+            LoopContextMembership.loop_id == loop.loop_id,
+            LoopContextMembership.context_id == original.task_id,
+            LoopContextMembership.status.in_(('active', 'paused'))))
+        latest = await latest_main_run(session, task) if task is not None else None
+        if (task is None or task.workspace_id != loop.workspace_id or member is None
+                or latest is None or latest.run_id != original.run_id):
+            raise ValueError('孤立审批原主体或当前执行已变化')
+        path = await self._execution_path(session, loop, original)
+        if (not path or not request.get('cwd')
+                or canonical_text(Path(path)) != canonical_text(Path(request['cwd']))):
+            raise ValueError('孤立审批执行目录不匹配')
+        revision = await ContextRevisionRepository().current(session, task.task_id)
+        if (revision is None or not revision.ref.is_runnable
+                or revision.projection_status not in {'valid', 'repaired', 'approved'}
+                or revision.ref.revision_id == original.context_revision_id
+                or (revision.ref.execution_thread_id, revision.ref.checkpoint_ns)
+                == (original.execution_thread_id, original.checkpoint_ns)
+                or not any(item.source.revision_id == original.context_revision_id
+                           and item.source.context_id == original.task_id for item in revision.sources)):
+            raise ValueError('孤立审批尚无可信的替代 Context 版本，须先显式重建旧流程')
+        old_config = {'configurable': {'thread_id': original.execution_thread_id,
+                                      'checkpoint_ns': original.checkpoint_ns or ''}}
+        try:
+            old = await self._checkpointer.aget_tuple(old_config)
+            checkpoint = await self._checkpointer.aget_tuple(revision.ref.checkpoint_config())
+        except Exception as exc:
+            raise ValueError('孤立审批检查点不可读取') from exc
+        actual = (getattr(checkpoint, 'config', None) or {}).get('configurable', {})
+        old_actual = (getattr(old, 'config', None) or {}).get('configurable', {})
+        if (old is None or pending_interrupt_payload(old, APPROVAL_TYPE) != request
+                or old_actual.get('thread_id') != original.execution_thread_id
+                or (old_actual.get('checkpoint_ns') or '') != (original.checkpoint_ns or '')
+                or checkpoint is None or checkpoint.checkpoint.get('id') != revision.ref.checkpoint_id
+                or actual.get('thread_id') != revision.ref.execution_thread_id
+                or (actual.get('checkpoint_ns') or '') != revision.ref.checkpoint_ns
+                or pending_interrupt_payload(checkpoint, APPROVAL_TYPE) is not None):
+            raise ValueError('孤立审批来源或替代检查点未通过核对')
+        gate.status = 'superseded'
+        sequence = int(await session.scalar(select(func.coalesce(func.max(LoopEventOutbox.sequence), 0))
+                                           .where(LoopEventOutbox.loop_id == loop.loop_id)) or 0) + 1
+        session.add(LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=sequence,
+            event_type='LoopPendingDecisionSourceResolved',
+            idempotency_key=f'user-gate:{gate.pending_decision_id}:{response_id}',
+            payload={'pending_decision_id': gate.pending_decision_id, 'source_run_id': original.run_id,
+                     'replacement_revision_id': revision.ref.revision_id, 'task_id': original.task_id,
+                     'checkpoint_id': revision.ref.checkpoint_id, 'actor_id': actor_id,
+                     'response_id': response_id, 'resolution': 'source_execution_superseded',
+                     'access_approved_by_recovery': False}))
 
     async def _source(self,session,loop,wait,gate):
         recovery=gate.payload.get('recovery') or {}

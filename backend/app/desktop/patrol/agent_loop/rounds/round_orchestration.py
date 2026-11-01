@@ -170,6 +170,7 @@ clarification_admission.admitted_requests 是同一冻结事实上的合法澄�
 每项为 {"context_id":精确身份,"access_mode":"read-only"|"workspace-write"|"danger-full-access"|null}。
 派生新 Context 还须列出 context_id="action:<从0开始的动作位置>"；位置按本 decision.actions 顺序计算，spawn/recover/create/update/merge 均如此。
 null 表示本轮不授予执行权限，有执行动作的目标必须明确授予一种模式。文件模式不能超出 frozen grant.equipment 和各 portfolio_frontier[].equipment 的上限，派生目标仍受可信 opportunity 的 workspace_mode 限制。
+workspace_patrol 的初始主 Context 执行模式必须等于其 equipment.access_mode（用户界面选择）；不得自行降成 workspace-write 或 read-only。需要只读审查时使用只读角色 Context，或在主 Context 内仅调用只读工具。
 该权限只约束所属 Round 的执行，最长到本轮结束；新轮须重新完整分配，不继承上一轮，也不改变已提交旧轮仍有效的权限。
 新旧工作之间的语义矛盾由你判断。需要停止旧工作时，使用 {"action":"cancel_execution","target_kind":"run"|"directive"|"worker","target_id":冻结证据中的精确身份,"round_id":其所属轮身份,"reason":简洁原因}。
 省略、降权、新 Mission 或新的 Context 权限清单都不会隐式取消旧轮；明确取消与保留旧工作、新执行、输入处置可在同一 decision 中提交。
