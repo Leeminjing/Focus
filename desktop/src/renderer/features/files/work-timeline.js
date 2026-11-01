@@ -15,9 +15,11 @@
     return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
   };
   function entryHtml(entry) {
-    const icon = { user_decision: entry.intent_id ? "○" : "◈", fact: "✓", context: "⑂", run: "◇", round: "·", system: "!" }[entry.category] || "·";
-    const states = { observed: text("已观察"), verifying: text("验证中"), verified: text("已验证"), contradicted: text("已被反证"), superseded: text("已替代") };
     const refs = entry.references || {};
+    const icon = entry.category === "fact"
+      ? ({ observed: "○", verifying: "◌", verified: "✓", contradicted: "✕", superseded: "↪" }[refs.state] || "·")
+      : ({ user_decision: entry.intent_id ? "○" : "◈", context: "⑂", run: "◇", round: "·", system: "!" }[entry.category] || "·");
+    const states = { observed: text("已观察"), verifying: text("验证中"), verified: text("已验证"), contradicted: text("已被反证"), superseded: text("已替代") };
     const stamp = entry.recorded_at;
     return `<article class="work-timeline-entry is-${escape(entry.category)}${refs.file ? " file-fact" : ""}" data-timeline-entry="${escape(entry.entry_id)}"${entry.fact_revision ? ` data-fact-revision="${escape(entry.fact_revision)}"` : ""}>
       <span class="work-timeline-icon" aria-hidden="true">${icon}</span><div class="work-timeline-heading">${refs.file ? `<button type="button" data-fact-id="${escape(entry.fact_id)}" title="${escape(refs.file.path)}">${escape(refs.file.path)}</button>` : `<strong>${escape(entry.title)}</strong>`}<time datetime="${escape(stamp)}" title="${escape(text("记录时间"))}: ${escape(stamp)}">${escape(time(stamp))}</time></div>
