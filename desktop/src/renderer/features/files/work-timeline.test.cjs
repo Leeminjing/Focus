@@ -60,6 +60,26 @@ test("Run events keep their status visible without a fact revision", () => {
   assert.doesNotMatch(host.textContent, /undefined|vnull/);
 });
 
+test("fact icons reflect the historical verification state rather than the title or outcome", () => {
+  const cases = [
+    ["observed", "○", "已观察"],
+    ["verifying", "◌", "验证中"],
+    ["verified", "✓", "已验证"],
+    ["contradicted", "✕", "已被反证"],
+    ["superseded", "↪", "已替代"],
+    ["unknown", "·", "unknown"],
+    [undefined, "·", undefined],
+  ];
+  for (const [state, icon, label] of cases) {
+    for (const title of ["Run 已启动", "新版本已提交"]) {
+      const host = createElement("div");
+      host.innerHTML = Timeline.entryHtml({ ...entry(1), title, references: { state, outcome_status: "success" } });
+      assert.equal(host.querySelector(".work-timeline-icon").textContent, icon, `${title}: ${state}`);
+      if (label) assert.equal(host.querySelector(".work-timeline-state").textContent, label);
+    }
+  }
+});
+
 test("incremental events keep existing evidence DOM and scroll position", async () => {
   let reads = 0;
   const f = fixture(async (_id, options) => {
@@ -84,6 +104,8 @@ test("incremental events keep existing evidence DOM and scroll position", async 
     assert.equal(body.textContent, "已展开的历史证据");
     assert.equal(f.stream.scrollTop, 30);
     assert.equal(f.stream.querySelectorAll("[data-timeline-entry]").length, 2);
+    assert.equal(first.querySelector(".work-timeline-icon").textContent, "○");
+    assert.equal(f.stream.querySelector('[data-timeline-entry="entry-2"] .work-timeline-icon').textContent, "✓");
     assert.equal(reads, 2);
     assert.equal(f.card.querySelector("[data-patrol-new-facts]").hidden, false);
   } finally { f.controller.dispose(); }

@@ -16,13 +16,15 @@
     return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
   };
   function entryHtml(entry) {
-    const icon = { user_decision: entry.intent_id ? "○" : "◈", fact: "✓", context: "⑂", run: "◇", round: "·", system: "!" }[entry.category] || "·";
+    const refs = entry.references || {};
+    const icon = entry.category === "fact"
+      ? ({ observed: "○", verifying: "◌", verified: "✓", contradicted: "✕", superseded: "↪" }[refs.state] || "·")
+      : ({ user_decision: entry.intent_id ? "○" : "◈", context: "⑂", run: "◇", round: "·", system: "!" }[entry.category] || "·");
     const states = {
       observed: text("已观察"), verifying: text("验证中"), verified: text("已验证"), contradicted: text("已被反证"), superseded: text("已替代"),
       running: text("执行中"), queued: text("已排队"), pending: text("待执行"), success: text("已完成"), completed: text("已完成"),
       failed: text("执行失败"), error: text("执行失败"), cancelled: text("已取消"), stopped: text("已停止"), interrupted: text("已中断"), timeout: text("已超时"), paused: text("已暂停"),
     };
-    const refs = entry.references || {};
     const state = refs.state || refs.status;
     const stamp = entry.recorded_at;
     return `<article class="work-timeline-entry is-${escape(entry.category)}${refs.file ? " file-fact" : ""}" data-timeline-entry="${escape(entry.entry_id)}"${entry.fact_revision ? ` data-fact-revision="${escape(entry.fact_revision)}"` : ""}>

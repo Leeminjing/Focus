@@ -519,7 +519,7 @@
       historyOpen = show;
       const panel = host.querySelector("[data-patrol-input-history]"), button = host.querySelector("[data-patrol-history-open]");
       button.setAttribute("aria-expanded", String(show));
-      if (!show && panel.contains(root.document.activeElement)) button.focus({ preventScroll: true });
+      if (!show && panel.contains(root.document.activeElement)) host.querySelector("[data-patrol-tools-toggle]").focus({ preventScroll: true });
       const owner = token;
       void root.FocusSurfaceTransition.visible(panel, show).then(() => {
         if (owner !== token || !show || !historyOpen) return;
@@ -752,9 +752,14 @@
       if (edge) { event.stopPropagation(); inspectEdges(edge.dataset.edgeHit); return; }
       const button = event.target.closest("button");
       if (!button || !host.contains(button)) return;
+      const tools = button.closest("[data-patrol-composer-tools]");
+      if (tools) {
+        tools.hidePopover?.();
+        host.querySelector("[data-patrol-tools-toggle]").focus({ preventScroll: true });
+      }
       if (["show-patrol", "show-map"].includes(button.dataset.action)) return;
       event.stopPropagation();
-      button.focus({ preventScroll: true });
+      if (!tools) button.focus({ preventScroll: true });
       const clickOwner = token;
       try {
         if (onCompose && (button.dataset.patrolAnswer || button.dataset.patrolRetry || button.dataset.patrolEditFailed || button.dataset.patrolFileAdd)) {
@@ -889,7 +894,7 @@
         host: host.querySelector(".patrol-facts-card"), api, signal: lifetime.signal,
       });
       artifacts = root.FocusArtifactDrawer.create({ host: host.querySelector(".workspace-patrol"), api, getLoopId: () => loopId,
-        onSource: async id => { artifacts.close(); if (!detailsOpen) toggleDetails(); await inspectContext(id, host.querySelector("[data-patrol-files-open]")); } });
+        onSource: async id => { artifacts.close(); if (!detailsOpen) toggleDetails(); await inspectContext(id, host.querySelector("[data-patrol-tools-toggle]")); } });
       historyReferences = root.FocusPatrolInputReferences.create({ host, intake, workspaceId: () => bound.workspace_id, onError: error,
         onFile: async (row, file) => {
           const owner = token, version = ++fileVersion;
@@ -932,6 +937,7 @@
       host.addEventListener("portfolio-clear-selection", () => { highlightIds = []; closeInspection(); }, options);
       host.addEventListener("keydown", event => {
         if (event.key !== "Escape" || event.isComposing) return;
+        if (host.querySelector("[data-patrol-composer-tools]").matches(":popover-open")) return;
         const file = host.querySelector("[data-patrol-file-detail]"), picker = host.querySelector("[data-patrol-file-picker]");
         if (!file.hidden || !picker.hidden) {
           fileVersion++; file.hidden = true; picker.hidden = true;
