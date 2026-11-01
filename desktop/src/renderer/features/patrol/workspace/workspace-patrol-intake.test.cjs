@@ -24,6 +24,15 @@ function harness({ fetchImpl, submitWorkspaceInput } = {}) {
   return { intake, calls, posts };
 }
 
+test("Patrol submits without a file sandbox by default in every workspace", async () => {
+  const { intake, posts } = harness();
+  for (const id of ["a", "b"]) {
+    intake.store(id).edit({ content: "检查工作区" });
+    await intake.submit(id);
+  }
+  assert.deepEqual(posts.map(item => item.body.access_mode), ["danger-full-access", "danger-full-access"]);
+});
+
 test("overlong input never uploads or posts and leaves the complete draft editable", async () => {
   const { intake, calls, posts } = harness();
   await intake.add("a", [text("参考材料")]);

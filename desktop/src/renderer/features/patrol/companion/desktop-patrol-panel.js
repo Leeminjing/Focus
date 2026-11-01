@@ -35,8 +35,7 @@
   const answerCards = new Map();
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
     recovery: bridge?.enabled ? bridge.recovery : await FocusPatrolBrowserRecovery.open("panel"),
-    onSaveError: error => fail(new Error(localize`草稿保存失败：${error.message}`)),
-    accessMode: () => FocusAccessMode.readNewSessionDefault(localStorage) });
+    onSaveError: error => fail(new Error(localize`草稿保存失败：${error.message}`)) });
   host.inert = false;
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail, compact:true });
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();

@@ -8,6 +8,20 @@ const { create } = require("./workspace-patrol-inputs.js");
 const { captureVisibleContext } = require("./workspace-patrol-inputs.js");
 const view = require("./workspace-patrol-view.js");
 
+test("Patrol defaults to no file sandbox and preserves explicit modes on retry and restore", () => {
+  for (const accessMode of [undefined, "read-only", "workspace-write"]) {
+    const store = create(() => "submission", accessMode);
+    store.edit({ content: "检查工作区" });
+    const row = store.submit();
+    assert.equal(row.request.access_mode, accessMode || "danger-full-access");
+    store.failed(row.submission_id, new Error("offline"));
+    const restored = create(() => "next", undefined, { saved: store.snapshot() });
+    assert.deepEqual(restored.retry(row.submission_id).request, row.request);
+    restored.edit({ content: "新的要求" });
+    assert.equal(restored.submit().request.access_mode, "danger-full-access");
+  }
+});
+
 test("overlong content is rejected before identity, history or draft changes", () => {
   let identities = 0, changes = 0;
   const store = create(() => String(++identities), "workspace-write", { onChange: () => changes++ });

@@ -370,7 +370,7 @@ async function createWorkspacePatrolIntake() {
   const recovery = window.focusDesktop?.workspacePatrolRecovery || await window.FocusPatrolBrowserRecovery.open("workbench");
   return window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi, recovery,
     onSaveError: error => setStatus(localize`Patrol 草稿保存失败：${error.message}`, true),
-    selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: () => accessMode.readNewSessionDefault(window.localStorage) });
+    selectWorkspace: window.focusDesktop?.selectWorkspace });
 }
 let workspacePatrolController = null;
 let workspacePatrolMount = Promise.resolve();

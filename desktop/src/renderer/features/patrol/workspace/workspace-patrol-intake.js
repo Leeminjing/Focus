@@ -4,7 +4,7 @@
  * 草稿即时更新并按 250ms 固定窗口合并异步保存；flush 等待当前及写入期间的新变化，后台失败保留内存内容并通过 onSaveError 报告。
  * 空附件保持旧请求格式，文件内容与用户要求分开；本模块不启动模型或保存第二份领域状态。示例：intake.store(id).edit({content:"解释图片"}); await intake.submit(id)。
  * 部分上传后明确移除的独占材料使用原提交身份清理；曾投递且受理不确定的材料保留，服务端引用锁始终决定能否删除。
- * accessMode 接受固定模式或取值回调，透传给输入 store，在每次新提交时读取默认值。
+ * 默认采用 Patrol 输入 store 的未应用文件沙箱模式；accessMode 显式覆盖时透传固定模式或取值回调。
  */
 (function (root, factory) {
   const api = factory(root.FocusWorkspacePatrolInputs || (typeof require === "function" ? require("./workspace-patrol-inputs.js") : null),
@@ -21,7 +21,7 @@
     } catch { return null; }
   }
 
-  function create({ runtime, api, fetchImpl = globalThis.fetch, storage = globalThis.localStorage, recovery = null, onSaveError = () => {}, selectWorkspace, accessMode = "workspace-write", limits = null, identity = () => crypto.randomUUID() }) {
+  function create({ runtime, api, fetchImpl = globalThis.fetch, storage = globalThis.localStorage, recovery = null, onSaveError = () => {}, selectWorkspace, accessMode = Inputs.DEFAULT_ACCESS_MODE, limits = null, identity = () => crypto.randomUUID() }) {
     const stores = new Map(), sources = new Map(), uploads = new Map(), pending = new Map();
     const submitted = new Set();
     const payloads = new Map(), restored = new Set(), reconciling = new Map();
