@@ -297,6 +297,7 @@
   "已结算": "Settled",
   "已拒绝": "Denied",
   "执行失败": "Execution failed",
+  "已超时": "Timed out",
   "投递失败": "Delivery failed",
   "用户直接指令": "Direct user instruction",
   "Patrol 委托": "Patrol delegation",

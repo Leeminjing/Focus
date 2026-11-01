@@ -276,17 +276,21 @@
 .workbench-fact-stream .work-timeline-entry { padding: 8px 2px 14px 20px; margin-left: 10px; }
 .workbench-fact-stream .work-timeline-entry.file-fact { display: block; height: auto; }
 .workbench-fact-stream .work-timeline-entry.is-important { border-left-color: #916420; background: #c3902410; }
-.workbench-fact-stream .work-timeline-heading button { font-weight: 600; min-width: 0; white-space: normal; }
+.workbench-fact-stream .work-timeline-heading button { font-size: 13px; font-weight: 600; min-width: 0; white-space: normal; }
 .workbench-fact-stream .work-timeline-entry::before { display: none; }
 .work-timeline-icon { position: absolute; left: -11px; top: 10px; width: 20px; height: 20px; display: grid; place-items: center; border: 1px solid #91a6b250; background: var(--surface, #f7f9fa); border-radius: 50%; color: #57748b; font-size: 12px; }
-.work-timeline-heading { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
-.work-timeline-heading strong { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
-.work-timeline-heading time { flex-shrink: 0; font-size: 9px; letter-spacing: 0; }
-.work-timeline-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--workbench-muted); font-size: 10px; }
-.workbench-fact-stream .work-timeline-meta button { display: inline; font-size: 10px; min-height: 24px; }
-.work-timeline-entry summary { cursor: pointer; font-size: 11px; padding: 5px 0; color: #57748b; }
-.work-timeline-source summary { color: var(--workbench-muted); font-size: 10px; }
-.work-timeline-entry dl { margin: 4px 0; font-size: 10px; }
+.work-timeline-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; justify-content: space-between; }
+.work-timeline-heading > :first-child { flex: 1 1 160px; min-width: 0; }
+.work-timeline-heading strong { font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.workbench-fact-stream .work-timeline-heading time { flex-shrink: 0; font-size: 12px; letter-spacing: 0; }
+.work-timeline-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--workbench-muted); font-size: 12px; }
+.work-timeline-meta:empty { display: none; }
+.workbench-fact-stream .work-timeline-meta button { display: inline; font-size: 12px; min-height: 24px; }
+.work-timeline-entry summary { cursor: pointer; font-size: 12px; padding: 5px 0; color: #57748b; }
+.work-timeline-details > summary { color: var(--workbench-muted); }
+.work-timeline-details[open] { padding-bottom: 6px; }
+.workbench-fact-stream .work-timeline-details > p { font-size: 12px; }
+.work-timeline-entry dl { margin: 8px 0; font-size: 12px; }
 .work-timeline-entry dd { margin: 2px 0 6px; overflow-wrap: anywhere; color: var(--workbench-muted); }
 .work-timeline-entry [data-timeline-evidence-body] { overflow-wrap: anywhere; overflow-x: auto; max-width: 100%; }
 .work-timeline-entry.is-system { border-left-style: dashed; }
