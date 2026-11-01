@@ -120,6 +120,9 @@ if (!process.versions.electron) {
     await click('[data-patrol-progress-locate=\'["ctx-10","ctx-11"]\']');
     await until('document.querySelector("[data-workbench-location]").textContent.includes("2 条关联工作线")');
     await click('[data-patrol-progress-locate=\'["ctx-12"]\']');
+    assert.equal(await run('document.querySelector(".workspace-patrol").dataset.workbenchPanel'), 'graph');
+    await click('[data-patrol-lineage] [data-context-id="ctx-12"]');
+    await until('document.querySelector(".workspace-patrol").dataset.workbenchPanel==="context"');
     await until('document.querySelector(".workbench-node.is-selected").dataset.contextId==="ctx-12"');
     await run(`document.querySelector('[data-patrol-content]').focus();document.querySelector('[data-patrol-content]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
     assert.equal(await run('window.patrolFixture.submissions.length'),2);
