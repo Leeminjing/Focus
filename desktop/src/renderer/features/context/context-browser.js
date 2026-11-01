@@ -212,6 +212,7 @@
       const button = event.target.closest('[data-action^="context-browser-"]');
       if (!button) return;
       event.preventDefault(); event.stopPropagation();
+      button.closest("[data-context-inspector-menu]")?.hidePopover();
       const id = button.dataset.contextId;
       if (button.dataset.action === "context-browser-present") void select(id);
       else if (button.dataset.action === "context-browser-pages") pages(id);

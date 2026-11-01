@@ -5,6 +5,7 @@
  */
 (function (root) {
   "use strict";
+  let inspectorSequence = 0;
   // 源文案在渲染时取当前语言；模板插值始终保留原文。
   function localize(source, ...values) {
     if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
@@ -12,17 +13,25 @@
   }
 
   function create({ api, onOpenTask, view = root.FocusWorkspacePatrolView, presentation = "default", getManifest = () => null, onSelectionChange = () => {} }) {
+    const menuId = `context-inspector-menu-${++inspectorSequence}`;
     let panel = null, active = null, tab = "overview", returnFocus = null;
     let lifetime = null, request = null, generation = 0;
     const selection = () => active ? Object.freeze({ contextId: active.contextId, revisionId: active.page?.revision?.revision_id || active.revisionId }) : null;
+    const hideActions = () => panel?.querySelector("[data-context-inspector-menu]:popover-open")?.hidePopover();
     function render() {
       if (!panel || !active) return;
       const content = panel.querySelector("[data-patrol-context-content]");
       const focused = root.document.activeElement;
       const selector = panel.contains(focused) ? [...focused.attributes].filter(item => item.name.startsWith("data-")).map(item => `[${item.name}="${root.CSS.escape(item.value)}"]`).join("") : "";
       const scroll = panel.scrollTop, bodyScroll = panel.querySelector(".patrol-context-body")?.scrollTop || 0;
+      const menuOpen = !!content.querySelector("[data-context-inspector-menu]:popover-open");
       content.innerHTML = view.context({ ...active.page, context_id: active.contextId }, active.node, tab, { presentation, manifest: getManifest(), revisionId: active.revisionId });
-      content.insertAdjacentHTML("afterbegin", root.FocusContextBrowser?.render(active.contextId) || "");
+      const controls = root.FocusContextBrowser?.render(active.contextId);
+      if (controls) {
+        const closeButton = content.querySelector("header [data-patrol-context-close]");
+        closeButton.insertAdjacentHTML("beforebegin", localize`<div class="context-inspector-actions"><button type="button" data-context-inspector-actions popovertarget="${menuId}" style="anchor-name: --${menuId}" aria-label="工作线操作" title="工作线操作">⋯</button><div id="${menuId}" class="context-inspector-menu" data-context-inspector-menu popover style="position-anchor: --${menuId}" aria-label="浏览器工具">${controls}</div></div>`);
+        if (menuOpen) content.querySelector("[data-context-inspector-menu]").showPopover();
+      }
       root.focusContextBrowser?.patch();
       panel.classList.toggle("is-expanded", presentation === "workbench" && tab !== "overview");
       if (active.readError) content.querySelector(".patrol-context-body")?.insertAdjacentHTML("afterbegin", localize`<p role="alert">完整会话不可用：${view.escape(active.readError)} <button data-context-inspection-retry>重试读取</button></p>`);
@@ -75,6 +84,7 @@
     }
     function close() {
       if (!panel || panel.hidden) return;
+      hideActions();
       generation++; request?.abort(); active = null;
       if (presentation === "workbench") { panel.classList.remove("is-expanded"); panel.querySelector("[data-patrol-context-content]").innerHTML = view.contextEmpty(); }
       else void root.FocusSurfaceTransition.visible(panel, false, { axis: "x", distance: 40 });
@@ -101,9 +111,14 @@
     function mount(node) {
       dispose(); panel = node; lifetime = new AbortController();
       panel.addEventListener("click", click, { signal: lifetime.signal });
-      panel.addEventListener("keydown", event => { if (event.key === "Escape") { event.stopPropagation(); close(); } }, { signal: lifetime.signal });
+      panel.addEventListener("keydown", event => {
+        if (event.key !== "Escape") return;
+        event.stopPropagation();
+        if (!panel.querySelector("[data-context-inspector-menu]:popover-open")) close();
+      }, { signal: lifetime.signal });
     }
     async function select(loopId, contextId, node, trigger, revisionId = null) {
+      hideActions();
       void root.focusContextBrowser?.select(contextId);
       active = { loopId, contextId, revisionId, node: { context_id: contextId, ...node }, page: {} };
       tab = "overview"; returnFocus = trigger; render(); onSelectionChange(selection());
@@ -111,7 +126,7 @@
       panel.querySelector("[data-patrol-context-close]").focus({ preventScroll: true });
       await read(false, revisionId);
     }
-    function dispose() { generation++; lifetime?.abort(); request?.abort(); if (panel) root.FocusSurfaceTransition.finish(panel); panel = null; active = null; returnFocus = null; }
+    function dispose() { generation++; lifetime?.abort(); request?.abort(); hideActions(); if (panel) root.FocusSurfaceTransition.finish(panel); panel = null; active = null; returnFocus = null; }
     return Object.freeze({ mount, select, close, dispose, selection, refresh: render });
   }
   root.FocusContextInspector = Object.freeze({ create });

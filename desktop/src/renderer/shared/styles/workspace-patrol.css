@@ -292,7 +292,11 @@
 .work-timeline-entry.is-system { border-left-style: dashed; }
 .work-timeline-entry :focus-visible, .work-timeline-filters :focus-visible, .work-timeline-scope :focus-visible { outline: 2px solid #57748b; outline-offset: 2px; }
 .patrol-selected-card [data-patrol-context-content] { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.patrol-selected-card [data-patrol-context-content] > header > :first-child { flex: 1; min-width: 0; }
+.patrol-selected-card [data-patrol-context-content] > header h2 { overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .patrol-selected-card .patrol-context-body { min-height: 0; padding: 0; overflow: auto; flex: 1; }
+.patrol-selected-card .workbench-context-meta { display: block; margin-top: 4px; }
+.patrol-selected-card .patrol-context-body > .workbench-context-sources { margin: 4px 0; font-size: 11px; line-height: 1.4; }
 .patrol-selected-card .patrol-context-body > h3 { font-size: 20px; margin: 18px 0 6px; letter-spacing: -.5px; }
 .patrol-selected-card .patrol-context-body > p { color: var(--workbench-muted); margin-top: 18px; }
 .workbench-selection-empty { flex: 1; display: flex; flex-direction: column; justify-content: center; color: var(--workbench-muted); }
@@ -304,7 +308,8 @@
 .patrol-selected-card .patrol-tabs button { font-size: 11px; min-height: 28px; color: var(--workbench-blue); }
 .patrol-selected-card footer p { font-size: 10px; line-height: 1.4; margin: 0 0 7px; }
 .patrol-selected-card footer button { min-height: 24px; color: var(--workbench-blue); font-size: 12px; padding: 0; }
-.patrol-selected-card.is-expanded { height: auto; position: absolute; z-index: 15; right: 16px; top: 46px; bottom: 22px; width: min(510px, 48vw); background: var(--surface-reading); }
+/* 展开阅读可覆盖关系图，底边随输入框上移，保留发送区的点击命中。 */
+.patrol-selected-card.is-expanded { height: auto; position: absolute; z-index: 15; right: 16px; top: 46px; bottom: max(22px, calc(anchor(--patrol-composer top) + 12px)); width: min(510px, 48vw); background: var(--surface-reading); }
 .patrol-selected-card.is-expanded h2 { overflow-wrap: anywhere; }
 .workspace-patrol:not(.is-quiet) [data-patrol-composer] { grid-column: 2; grid-row: 2; position: relative; min-width: 0; padding: 12px 20px 8px; border-radius: 26px; }
 .workspace-patrol:not(.is-quiet) [data-patrol-composer]:focus-within { outline: 1px solid #88a8c373; outline-offset: 1px; border-color: white; }

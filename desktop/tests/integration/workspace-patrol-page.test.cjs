@@ -251,7 +251,9 @@ if (!process.versions.electron) {
       replies[1]({revision:{revision_id:'b-r'},messages:[]});await second;
       replies[0]({revision:{revision_id:'a-r'},messages:[]});await first;
       if (!panel.textContent.includes('b-r') || panel.textContent.includes('a-r')) throw new Error('迟到响应污染检查身份');
+      panel.querySelector('[data-context-inspector-menu]').showPopover();
       inspector.close(); if (!panel.inert || document.activeElement!==input) throw new Error('关闭没有隔离命中/归还焦点');
+      if (panel.querySelector(':popover-open')) throw new Error('检查关闭后操作菜单仍在顶层显示');
       const reopen=inspector.select('loop-a','c',{title:'对象 C'},input); replies[2]({revision:{revision_id:'c-r'},messages:[]});await reopen;
       await new Promise(resolve=>setTimeout(resolve,240));
       if(panel.hidden || panel.inert || !panel.textContent.includes('c-r')) throw new Error('旧退出覆盖重开');
