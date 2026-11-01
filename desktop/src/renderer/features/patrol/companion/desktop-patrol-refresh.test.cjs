@@ -39,7 +39,8 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
   body.querySelector(".panel-header").offsetHeight = 35;
   Object.defineProperty(body.querySelector("#compose"), "offsetHeight", { get:() => parseFloat(input.style.height)+33 });
   Object.defineProperty(body.querySelector(".panel-feedback-content"), "offsetHeight", { get:() => sizing.feedbackHeight });
-  const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
+  let intakeOptions;
+  const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create(undefined, intakeOptions.accessMode)); return stores.get(id); };
   const api = { workspacePatrol: async id => { loopReads.push(id); return { loop_id: `loop-${id}` }; }, workspaceInputs: history,
     conversation: (...args) => { calls.push(args); return read(...args); } };
   const bridge = { enabled: true, onVisibility: callback => { events.visibility = callback; },
@@ -63,9 +64,9 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
     ResizeObserver: class { constructor(callback) { events.resizeObserved = callback; } observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
     FocusLoopLiveConnection: { create: () => ({ start: async id => { starts.push(id); }, stop() {} }) },
-    FocusWorkspacePatrolIntake: { create: () => intake }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
+    FocusWorkspacePatrolIntake: { create: options => { intakeOptions = options; return intake; } }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusWorkspacePatrolBudget: { markup: () => "", create: () => ({ update() {}, syncDraft() {}, dispose() {} }) },
-    FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
+    FocusAccessMode: { readNewSessionDefault: () => "workspace-write" }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "./desktop-patrol-references.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../../files/file-links.js"), "utf8"), context);
@@ -88,6 +89,12 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
 }
+
+test("desktop panel uses the Patrol file mode independently of ordinary session defaults", async () => {
+  const f = await panel();
+  f.store("a").edit({ content: "检查工作区" });
+  assert.equal(f.store("a").submit().request.access_mode, "danger-full-access");
+});
 
 test("panel batches input measurements, deduplicates layout noise and refits on width changes", async () => {
   const f = await panel({manualFrames:true});

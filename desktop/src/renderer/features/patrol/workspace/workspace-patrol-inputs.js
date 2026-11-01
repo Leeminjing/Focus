@@ -5,7 +5,7 @@
  * 正文按 Unicode 码点在冻结或清空前校验 12000 字符上限；file_refs、附件元数据与正文同时深冻结。
  * 附件字节由 intake 持有，空附件字段不进入旧请求；校验拒绝（包括纯文本）只恢复未被后续编辑替换的草稿，重试保留原版本。
  * 显式编辑失败记录时标记本地记录已转为草稿，结束旧记录的重试能力；原发送是否受理仍以服务器历史为准。
- * accessMode 可为固定模式或读取已保存默认值的回调；仅新提交时读取，重试保留原请求模式。
+ * 默认不应用文件沙箱；accessMode 可显式指定固定模式或取值回调，仅新提交时读取，重试保留原请求模式。
  */
 (function (root, factory) {
   const api = factory();
@@ -14,10 +14,11 @@
 })(globalThis, function () {
   "use strict";
   const maxContentLength = 12000;
+  const DEFAULT_ACCESS_MODE = "danger-full-access";
   const types = Object.freeze({ information: "普通信息", outcome: "最终结果", boundary: "执行边界", completion_check: "完成检查" });
   const frozenCopy = value => value && typeof value === "object"
     ? Object.freeze(Array.isArray(value) ? value.map(frozenCopy) : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, frozenCopy(item)]))) : value;
-  function create(identity = () => crypto.randomUUID(), accessMode = "workspace-write", { saved = null, onChange = null } = {}) {
+  function create(identity = () => crypto.randomUUID(), accessMode = DEFAULT_ACCESS_MODE, { saved = null, onChange = null } = {}) {
     let draft = { content: "", input_type: "information", request_id: null, request_revision: null, file_refs: [] };
     let historyInitialized = false;
     let order = 0;
@@ -126,5 +127,5 @@
       })),
     });
   }
-  return Object.freeze({ create, types, captureVisibleContext });
+  return Object.freeze({ create, types, captureVisibleContext, DEFAULT_ACCESS_MODE });
 });

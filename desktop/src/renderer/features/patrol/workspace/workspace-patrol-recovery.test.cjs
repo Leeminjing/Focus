@@ -42,6 +42,7 @@ test("workbench assembly restores drafts, bytes and failed request identity inde
   await first.add("a", [{ kind: "text", text: "failed attachment" }]);
   await assert.rejects(first.submit("a"), /lost receipt/);
   const failed = first.store("a").get().rows[0];
+  assert.equal(failed.request.access_mode, "danger-full-access", "工作台使用 Patrol 默认，不继承普通新会话的工作区可写设置");
   first.store("a").edit({ content: "unsent draft", request_id: "q", request_revision: 2 });
   await first.add("a", [{ kind: "file", name: "draft.bin", bytes: new Uint8Array([0, 255, 128]) }]);
   await first.flush();

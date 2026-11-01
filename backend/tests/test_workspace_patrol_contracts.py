@@ -13,6 +13,17 @@ from pydantic import ValidationError
 import pytest
 
 
+@pytest.mark.parametrize("mode", [None, "read-only", "workspace-write", "danger-full-access"])
+def test_patrol_file_mode_defaults_to_full_access_but_respects_explicit_mode(mode):
+    from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
+
+    request = PatrolInputRequest(
+        submission_id="patrol-default", content="检查工作区",
+        **({"access_mode": mode} if mode is not None else {}),
+    )
+    assert request.access_mode == (mode or "danger-full-access")
+
+
 def test_task_progress_has_one_shared_http_query(monkeypatch):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
