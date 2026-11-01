@@ -287,7 +287,7 @@
       showPanel("context");
       await inspector.select(loopId, contextId, node, trigger, revisionId || node.current_revision_id);
     }
-    async function locateProgress(ids, trigger) {
+    function locateProgress(ids) {
       highlightIds = ids;
       relatedOnly = false;
       const notice = host.querySelector("[data-workbench-location]");
@@ -295,7 +295,6 @@
       const available = ids.filter(id => manifest().nodes.some(node => node.context_id === id));
       notice.textContent = !ids.length ? localize("此条目尚未关联工作线") : !available.length ? localize("关联工作线尚未发布到当前关系图") : localize`${available.length} 条关联工作线已突出显示，请选择查看`;
       showPanel("graph"); patchGraph();
-      if (available.length === 1) await inspectContext(available[0], trigger);
       host.querySelector(`[data-patrol-lineage] [data-context-id="${root.CSS.escape(available[0] || "")}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
     function inspectEdges(identity) {
@@ -675,8 +674,13 @@
       const loop = projection.loop?.state || {};
       const states = { running: localize("推进中"), paused: localize("已暂停"), stopped: localize("已停止"), failed: localize("执行失败"), waiting_user: localize("等待处理"), completed: localize("已完成当前工作") };
       const connections = { live: localize("实时更新"), syncing: localize("同步中"), connecting: localize("连接中"), reconnecting: localize("重连中"), resyncing: localize("重新同步"), unavailable: localize("连接不可用") };
-      const stateText = loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input" ? root.FocusWorkspacePatrolFeedback.status(projection, status, inputs.get()).text : `${states[loop.status] || localize("准备中")} · ${connections[status.status] || localize("同步中")}`;
-      host.querySelector("[data-workbench-status]").textContent = stateText;
+      const awaitingInput = loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input";
+      const stateLabel = states[loop.status] || localize("准备中");
+      const stateText = awaitingInput ? root.FocusWorkspacePatrolFeedback.status(projection, status, inputs.get()).text : `${stateLabel} · ${connections[status.status] || localize("同步中")}`;
+      const headingStatus = host.querySelector("[data-workbench-status]");
+      headingStatus.querySelector("[data-workbench-status-full]").textContent = stateText;
+      headingStatus.querySelector("[data-workbench-status-compact]").textContent = awaitingInput ? stateText : stateLabel;
+      headingStatus.title = stateText;
       if (!timeline) host.querySelector("[data-timeline-scope]").textContent = localize("跨 Round 工作历史");
       host.querySelector("[data-timeline-connection]").textContent = connections[status.status] || localize("同步中");
       if (["rounds", "runs", "patrol_sessions", "loop", "directives"].some(key => previous?.[key] !== projection[key])) {
@@ -779,7 +783,7 @@
         else if (button.hasAttribute("data-patrol-details")) toggleDetails();
         else if (button.dataset.workbenchShow) showPanel(button.dataset.workbenchShow);
         else if (button.hasAttribute("data-patrol-related")) { relatedOnly = !relatedOnly; patchGraph(); }
-        else if (button.hasAttribute("data-patrol-progress-locate")) await locateProgress(JSON.parse(button.dataset.patrolProgressLocate), button);
+        else if (button.hasAttribute("data-patrol-progress-locate")) locateProgress(JSON.parse(button.dataset.patrolProgressLocate));
         else if (button.dataset.patrolEdgeContext) {
           const id = button.dataset.patrolEdgeContext, revisionId = button.dataset.revisionId;
           await closeDialog(); await inspectContext(id, host.querySelector("[data-patrol-related]"), revisionId);
