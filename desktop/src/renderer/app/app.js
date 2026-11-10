@@ -3291,6 +3291,7 @@ function syncStrategyImportField(field, value) {
   strategyImportRequestSequence++;
   state.memory.strategyImport = { ...draft, [field]: field === "workspace_id" ? value || null : value, preview: null, error: "" };
   document.querySelector("[data-strategy-import-preview]")?.remove?.();
+  document.querySelector("[data-strategy-import-actions]")?.remove?.();
   const error = document.querySelector("[data-strategy-import-error]");
   if (error) error.textContent = localize("内容或设置已更改，请预览后安装。");
 }
@@ -7882,6 +7883,12 @@ async function handleDocumentClick(event) {
   if (action === "show-plugins") return openPluginsView();
   if (action === "show-memory") return openMemoryView();
   if (action === "memory-category") { state.memory.category = button.dataset.category; return renderMemory(); }
+  if (action === "clear-memory-search") {
+    state.memory.query = "";
+    renderMemory();
+    app.querySelector('[data-page-search="memory"]')?.focus();
+    return;
+  }
   if (action === "new-strategy") { openMemoryCompose(false); state.memory.draft = { ...state.memory.draft, category: "evolution_strategy", enabled: true }; renderMemory(); return; }
   if (action === "save-strategy") return saveStrategy();
   if (action === "import-strategy") return openStrategyImport();

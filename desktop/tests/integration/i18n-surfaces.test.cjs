@@ -62,6 +62,35 @@ test("English dynamic views contain no built-in Chinese text", () => {
   assert.doesNotMatch(html, /\p{Script=Han}/u);
 });
 
+test("memory category emptiness and search recovery follow the interface language", () => {
+  const c = surface();
+  const memory = { memory_id: "note", title: "Note", content: "Content" };
+  const strategy = { memory_id: "strategy", category: "evolution_strategy", title: "Method", strategy: { applicability: "When needed" } };
+  for (const category of ["memory", "evolution_strategy"]) {
+    const items = category === "memory" ? [strategy] : [memory];
+    const empty = c.FocusMemoryView.render(items, { category });
+    const noMatches = c.FocusMemoryView.render([memory, strategy], { category, query: "missing" });
+    assert.doesNotMatch(empty + noMatches, /\p{Script=Han}/u);
+    assert.match(empty, category === "memory" ? /No memories yet/ : /No work strategies yet/);
+    assert.match(noMatches, /Clear search/);
+  }
+});
+
+test("strategy methods, publishing, capacity and rehearsal copy are translated", () => {
+  const c = surface();
+  const strategy = { applicability: "When needed", evolution: "Proceed", inheritance: "Evidence" };
+  const metadata = { id: "test/method", name: "Method", version: "1.0.0", description: "Description" };
+  const rehearsal_result = { applicable: { adopted: true, reason: "Reason", organization: "Plan", inheritance: "Evidence", missing_evidence: [], stop_when: "Stop" } };
+  const editor = c.FocusMemoryView.render([], { composing: true, draft: { title: "Method", category: "evolution_strategy", strategy, rehearsal_result } });
+  const importing = c.FocusMemoryView.render([], { strategyImport: { markdown: "Source", preview: {
+    metadata, strategy, existing: { strategy, strategy_package: metadata, locally_modified: true },
+    capacity: [{ fits: false, input_bound: 50, previous_input_bound: 60, strategy_input_limit: 40, model_name: "Model" }],
+  } } });
+  assert.doesNotMatch(editor + importing, /\p{Script=Han}/u);
+  assert.match(editor, /When to apply/);
+  assert.match(editor, /Rehearsal results \(simulation\)/);
+});
+
 test("language changes refresh generated labels and preserve user content", () => {
   const c = surface("zh-CN");
   const render = () => c.FocusPluginView.render([{ name: "用户插件", version: "1", status: "active", requires: [] }], {}, [], {});

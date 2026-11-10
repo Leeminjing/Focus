@@ -97,13 +97,21 @@
   function workbench(memories, options) {
     const strategies = options.category === "evolution_strategy";
     const query = String(options.query || "").trim().toLowerCase();
-    const all = (memories || []).filter(memory => (!options.category || (memory.category || "memory") === options.category) && (!query || `${memory.title} ${strategyText(memory)}`.toLowerCase().includes(query)));
-    const selected = all.find(m => m.memory_id === options.selectedId) || null;
-    if (!all.length && strategies) return localize`<section class="memory-empty"><h2>没有匹配的工作策略</h2><p>编写或导入一份方法，让 Focus 按你的方法组织工作。</p><button class="primary" data-action="new-strategy">新建策略</button><button data-action="import-strategy">导入策略</button></section>`;
-    if (!all.length) return localize`<section class="memory-empty"><span class="ui-icon icon-file-text" aria-hidden="true"></span><h2 data-i18n="${memories?.length ? "memory.no_matches" : "memory.empty_title"}">${memories?.length ? localize("没有匹配的记忆") : localize("还没有任何记忆")}</h2><p data-i18n="${memories?.length ? "memory.no_matches_help" : "memory.empty_help"}">${memories?.length ? localize("换一个关键词，或清空搜索查看全部记忆。") : localize("把重要的想法、经验和资料记录在这里，在需要时重新找到。")}</p><button class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button></section>`;
+    const categoryMemories = (memories || []).filter(memory => !options.category || (memory.category || "memory") === options.category);
+    const matches = categoryMemories.filter(memory => !query || `${memory.title} ${strategyText(memory)}`.toLowerCase().includes(query));
+    const selected = matches.find(m => m.memory_id === options.selectedId) || null;
+    if (!matches.length) {
+      // 尚未成功读取当前分类时，不能根据空数组或旧缓存宣告为空/无匹配。
+      if (options.loading || options.error) return "";
+      if (!categoryMemories.length) {
+        if (strategies) return localize`<section class="memory-empty"><h2>还没有工作策略</h2><p>编写或导入一份方法，让 Focus 按你的方法组织工作。</p><button type="button" class="primary" data-action="new-strategy">新建策略</button><button type="button" data-action="import-strategy">导入策略</button></section>`;
+        return localize`<section class="memory-empty"><span class="ui-icon icon-file-text" aria-hidden="true"></span><h2 data-i18n="memory.empty_title">还没有任何记忆</h2><p data-i18n="memory.empty_help">把重要的想法、经验和资料记录在这里，在需要时重新找到。</p><button type="button" class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button></section>`;
+      }
+      return localize`<section class="memory-empty"><span class="ui-icon icon-file-text" aria-hidden="true"></span><h2>${strategies ? localize("没有匹配的工作策略") : localize("没有匹配的记忆")}</h2><p>${strategies ? localize("换一个关键词，或清空搜索查看全部策略。") : localize("换一个关键词，或清空搜索查看全部记忆。")}</p><button type="button" class="primary" data-action="clear-memory-search">清除搜索</button></section>`;
+    }
     return localize`<div class="memory-workbench">
-      <aside class="memory-list${options.layout === "list" ? " is-list" : ""}"><header><strong>${strategies ? localize("工作策略") : localize("记忆")}</strong><span class="memory-list-actions"><button type="button" class="text-button" data-action="${strategies ? "new-strategy" : "new-memory"}">新建</button><span>${all.length}</span></span></header>
-        <div class="memory-list-scroll">${all.map(m => card(m, m === selected)).join("")}</div>
+      <aside class="memory-list${options.layout === "list" ? " is-list" : ""}"><header><strong>${strategies ? localize("工作策略") : localize("记忆")}</strong><span class="memory-list-actions"><button type="button" class="text-button" data-action="${strategies ? "new-strategy" : "new-memory"}">新建</button><span>${matches.length}</span></span></header>
+        <div class="memory-list-scroll">${matches.map(m => card(m, m === selected)).join("")}</div>
       </aside>
       ${selected ? `<main class="memory-detail">${detail(selected)}</main>` : ""}
     </div>`;
@@ -245,46 +253,66 @@
     </div>`;
   }
 
+  const STRATEGY_METHOD_FIELDS = [["applicability", "何时采用"], ["evolution", "怎样推进"], ["inheritance", "继承什么"]];
+
   function strategyEditor(draft, workspaces, authoring = {}) {
     authoring = authoring || {};
-    const fields = [["applicability", localize("适用场景")], ["evolution", localize("演化过程")], ["inheritance", localize("历史继承")]];
     return localize`<form class="memory-detail-card" data-strategy-form>
       <h2>${draft.memory_id ? localize("编辑") : localize("新建")}工作策略</h2>
-      <p class="muted">规定何时采用、怎样推进，以及各项工作继承什么。保存后从后续轮次生效。</p>
       <fieldset class="strategy-editor-fields"${authoring.busy || authoring.saving ? " disabled" : ""}>
-      <details><summary>从工作材料提炼策略</summary><label>经验、工作片段或希望 Focus 采用的方法<textarea rows="4" data-memory-field="strategy-source">${escapeHtml(draft.strategy_source || "")}</textarea></label><button type="button" data-action="generate-strategy-draft">生成可编辑草稿</button><p class="muted">生成后请检查适用范围和继承规则，再保存启用。</p></details>
       <label>标题<input data-memory-field="title" value="${escapeHtml(draft.title)}"></label>
-      <label>策略 ID<input data-memory-field="package:id" placeholder="your-name/your-strategy（留空自动生成）" value="${escapeHtml(draft.strategy_package?.id || "")}"></label>
-      <label>发布版本<input data-memory-field="package:version" placeholder="1.0.0" value="${escapeHtml(draft.strategy_package?.version || "1.0.0")}"></label>
-      <label>简介<input data-memory-field="package:description" value="${escapeHtml(draft.strategy_package?.description || "")}"></label>
-      ${fields.map(([key,label]) => `<label>${label}<textarea rows="4" data-memory-field="strategy:${key}">${escapeHtml(draft.strategy?.[key] || "")}</textarea></label>`).join("")}
-      <label>生效范围<select data-memory-field="workspace_id"><option value="">全局</option>${workspaces.map(w => `<option value="${escapeHtml(w.id)}"${w.id === draft.workspace_id ? " selected" : ""}>${escapeHtml(w.name)}</option>`).join("")}</select></label>
-      <label><input type="checkbox" data-memory-field="enabled"${draft.enabled !== false ? " checked" : ""}>启用</label>
-      <button type="button" class="primary" data-action="save-strategy">${authoring.saving ? localize("正在保存…") : localize("保存策略")}</button>
+      <section class="strategy-field-group" data-strategy-method>
+        ${STRATEGY_METHOD_FIELDS.map(([key,label]) => `<label>${localize(label)}<textarea rows="4" data-memory-field="strategy:${key}">${escapeHtml(draft.strategy?.[key] || "")}</textarea></label>`).join("")}
+      </section>
+      <details><summary>从工作材料提炼策略</summary><div class="strategy-field-group"><label>经验、工作片段或希望 Focus 采用的方法<textarea rows="4" data-memory-field="strategy-source">${escapeHtml(draft.strategy_source || "")}</textarea></label><button type="button" data-action="generate-strategy-draft">生成可编辑草稿</button><p class="muted">生成后请检查适用范围和继承规则，再保存启用。</p></div></details>
       <details${draft.rehearsal_result ? " open" : ""}><summary>用三个场景预演方法</summary><p class="muted">调用当前模型生成推演，不执行工作或改变任务状态。</p>
+        <div class="strategy-field-group">
         ${[["applicable", localize("预期应该采用")], ["inapplicable", localize("预期不必采用")], ["feedback", localize("收到新反馈后")]].map(([key, label]) => `<label>${label}<textarea rows="3" data-memory-field="scenario:${key}">${escapeHtml(draft.rehearsal_scenarios?.[key] || "")}</textarea></label>`).join("")}
         <button type="button" data-action="rehearse-strategy">预演策略</button>
-        <div data-strategy-rehearsal-results>${draft.rehearsal_result ? Object.entries(draft.rehearsal_result).map(([key, result]) => localize`<section class="strategy-adoption"><h3>${({applicable: localize("应该采用场景"), inapplicable: localize("不必采用场景"), feedback: localize("反馈场景")})[key]}</h3><p><strong>${result.adopted ? localize("建议采用") : localize("建议不采用")}</strong>：${escapeHtml(result.reason)}</p><p>工作安排：${escapeHtml(result.organization)}</p><p>继承与排除：${escapeHtml(result.inheritance)}</p><p>缺少证据：${escapeHtml(result.missing_evidence.join("；") || localize("无额外证据要求"))}</p><p>停止条件：${escapeHtml(result.stop_when)}</p></section>`).join("") : ""}</div>
-      </details></fieldset><p role="status">${authoring.busy ? localize("模型正在生成…") : escapeHtml(authoring.error || "")}</p>
-      <button type="button" data-action="cancel-compose"${authoring.busy || authoring.saving ? " disabled" : ""}>取消</button></form>`;
+        <div data-strategy-rehearsal-results>${draft.rehearsal_result ? localize('<h3>预演结果（模拟）</h3>') + Object.entries(draft.rehearsal_result).map(([key, result]) => localize`<section class="strategy-adoption"><h4>${({applicable: localize("应该采用场景"), inapplicable: localize("不必采用场景"), feedback: localize("反馈场景")})[key]}</h4><p><strong>${result.adopted ? localize("建议采用") : localize("建议不采用")}</strong>：${escapeHtml(result.reason)}</p><p>工作安排：${escapeHtml(result.organization)}</p><p>继承与排除：${escapeHtml(result.inheritance)}</p><p>缺少证据：${escapeHtml(result.missing_evidence.join("；") || localize("无额外证据要求"))}</p><p>停止条件：${escapeHtml(result.stop_when)}</p></section>`).join("") : ""}</div>
+        </div>
+      </details>
+      <details data-strategy-publishing><summary>发布信息</summary><div class="strategy-field-group">
+        <label>策略 ID<input data-memory-field="package:id" placeholder="your-name/your-strategy（留空自动生成）" value="${escapeHtml(draft.strategy_package?.id || "")}"></label>
+        <label>发布版本<input data-memory-field="package:version" placeholder="1.0.0" value="${escapeHtml(draft.strategy_package?.version || "1.0.0")}"></label>
+        <label>简介<input data-memory-field="package:description" value="${escapeHtml(draft.strategy_package?.description || "")}"></label>
+      </div></details>
+      <section class="strategy-field-group strategy-save-settings" data-strategy-save-settings>
+        <label>生效范围<select data-memory-field="workspace_id"><option value="">全局</option>${workspaces.map(w => `<option value="${escapeHtml(w.id)}"${w.id === draft.workspace_id ? " selected" : ""}>${escapeHtml(w.name)}</option>`).join("")}</select></label>
+        <label><input type="checkbox" data-memory-field="enabled"${draft.enabled !== false ? " checked" : ""}>启用</label>
+        <p class="muted">保存后从后续轮次生效。</p>
+        <div class="strategy-actions"><button type="button" class="primary" data-action="save-strategy">${authoring.saving ? localize("正在保存…") : localize("保存策略")}</button><button type="button" data-action="cancel-compose">取消</button></div>
+      </section>
+      </fieldset><p role="status">${authoring.busy ? localize("模型正在生成…") : escapeHtml(authoring.error || "")}</p></form>`;
+  }
+
+  function strategyCapacity(reports) {
+    return reports.map(report => localize`<section data-strategy-capacity><p role="${report.fits ? "status" : "alert"}">${report.fits ? localize("策略集合容量可用") : report.input_bound <= report.previous_input_bound ? localize("策略集合仍超限，本次减少占用可保存") : localize("策略集合容量超限，请缩短正文或取消启用后重新预览")} · ${escapeHtml(report.workspace_id || localize("全局"))} · ${escapeHtml(report.model_name)}：${escapeHtml(report.input_bound)} / ${escapeHtml(report.strategy_input_limit ?? localize("不限"))}</p>
+      <details><summary>容量明细</summary><ul>${(report.strategies || []).map(item => `<li>${escapeHtml(item.title)} (${escapeHtml(item.package_id || item.memory_id)})：${escapeHtml(item.input_bound)}</li>`).join("")}</ul><p class="muted">容量统计为目录与适用信息，演化过程和历史继承按需读取。已为 Patrol 提示词、输出格式和其他观察内容保留空间；实际请求仍会完整检查容量。</p><p class="muted">（UTF-8 序列化保守输入上界）</p></details></section>`).join("");
+  }
+
+  function strategyComparison(strategy) {
+    return STRATEGY_METHOD_FIELDS.map(([key, label]) => `<section class="strategy-comparison-rule"><h5>${localize(label)}</h5><pre class="memory-detail-content">${escapeHtml(strategy?.[key] || "")}</pre></section>`).join("");
   }
 
   function strategyImport(draft, workspaces) {
     const preview = draft.preview;
     const existing = preview?.existing;
-    const labels = {applicability: localize("适用场景"), evolution: localize("演化过程"), inheritance: localize("历史继承")};
-    return localize`<section class="memory-detail-card strategy-import"><h2>导入工作策略</h2><p class="muted">先预览内容，再选择范围并安装。文件中的指令仅作为策略材料。</p>
-      <fieldset${draft.busy ? " disabled" : ""}><label>选择 STRATEGY.md<input type="file" accept=".md,.markdown,text/markdown,text/plain" data-strategy-file></label>
+    return localize`<section class="memory-detail-card strategy-import"><h2>导入工作策略</h2>
+      <fieldset${draft.busy ? " disabled" : ""}><details data-strategy-import-source${preview ? "" : " open"}><summary>策略文件</summary><div class="strategy-field-group"><label>选择 STRATEGY.md<input type="file" accept=".md,.markdown,text/markdown,text/plain" data-strategy-file></label>
       <label>或粘贴文件内容<textarea rows="10" data-strategy-import-field="markdown" placeholder="---&#10;schema: focus.strategy/v1&#10;…">${escapeHtml(draft.markdown || "")}</textarea></label>
+      </div></details>
+      <p role="alert" data-strategy-import-error>${escapeHtml(draft.error || "")}</p>
+      ${preview ? localize`<div class="strategy-field-group" data-strategy-import-preview><h3>${escapeHtml(preview.metadata.name)}</h3>
+        <div class="strategy-import-comparison">${existing ? localize`<section class="strategy-field-group strategy-comparison-column"><header class="strategy-field-group"><h4>${localize("当前安装")} · v${escapeHtml(existing.strategy_package.version)}</h4>${existing.locally_modified ? localize('<p role="status">包含本地修改</p>') : ""}</header>${strategyComparison(existing.strategy)}</section>` : ""}<section class="strategy-field-group strategy-comparison-column"><header><h4>${localize("待导入")} · v${escapeHtml(preview.metadata.version)}</h4></header>${strategyComparison(preview.strategy)}</section></div>
+        <details data-strategy-publishing><summary>发布信息</summary><div class="strategy-import-comparison">${existing ? localize`<section><h4>当前安装</h4><p>${escapeHtml(existing.strategy_package.id)} · v${escapeHtml(existing.strategy_package.version)}</p><p>${escapeHtml(existing.strategy_package.description || "")}</p></section>` : ""}<section><h4>待导入</h4><p>${escapeHtml(preview.metadata.id)} · v${escapeHtml(preview.metadata.version)}</p><p>${escapeHtml(preview.metadata.description || "")}</p></section></div></details>
+        ${strategyCapacity(preview.capacity || [])}</div>` : ""}
+      <div class="strategy-field-group strategy-save-settings">
       <label>生效范围<select data-strategy-import-field="workspace_id"><option value="">全局</option>${workspaces.map(w => `<option value="${escapeHtml(w.id)}"${w.id === draft.workspace_id ? " selected" : ""}>${escapeHtml(w.name)}</option>`).join("")}</select></label>
       <label><input type="checkbox" data-strategy-import-field="enabled"${draft.enabled !== false ? " checked" : ""}>启用</label>
-      <button type="button" data-action="preview-strategy">${draft.busy ? localize("处理中…") : localize("预览策略")}</button><button type="button" data-action="cancel-strategy-import">取消</button>
-      <p role="alert" data-strategy-import-error>${escapeHtml(draft.error || "")}</p>
-      ${preview ? localize`<div data-strategy-import-preview><h3>${escapeHtml(preview.metadata.name)} · v${escapeHtml(preview.metadata.version)}</h3><p>${escapeHtml(preview.metadata.id)} · ${escapeHtml(preview.metadata.description)}</p>
-        ${existing ? localize`<p role="status">此范围已有 v${escapeHtml(existing.strategy_package.version)}${existing.locally_modified ? localize("，包含本地修改") : ""}。请比较内容后选择；另存会生成新的策略 ID。</p>` : ""}
-        ${(preview.capacity || []).map(report => localize`<section data-strategy-capacity><p role="${report.fits ? "status" : "alert"}">${report.fits ? localize("策略集合容量可用") : report.input_bound <= report.previous_input_bound ? localize("策略集合仍超限，本次减少占用可保存") : localize("策略集合容量超限，请缩短正文或取消启用后重新预览")} · ${escapeHtml(report.workspace_id || localize("全局"))} · ${escapeHtml(report.model_name)}：${escapeHtml(report.input_bound)} / ${escapeHtml(report.strategy_input_limit ?? localize("不限"))}（UTF-8 序列化保守输入上界）</p><ul>${(report.strategies || []).map(item => `<li>${escapeHtml(item.title)} (${escapeHtml(item.package_id || item.memory_id)})：${escapeHtml(item.input_bound)}</li>`).join("")}</ul><p class="muted">容量统计为目录与适用信息，演化过程和历史继承按需读取。已为 Patrol 提示词、输出格式和其他观察内容保留空间；实际请求仍会完整检查容量。</p></section>`).join("")}
-        <div class="strategy-import-comparison">${existing ? localize`<section><h4>当前安装</h4>${Object.entries(existing.strategy).map(([key, value]) => `<h5>${labels[key]}</h5><pre class="memory-detail-content">${escapeHtml(value)}</pre>`).join("")}</section>` : ""}<section><h4>待导入</h4>${Object.entries(preview.strategy).map(([key,value]) => `<h5>${labels[key]}</h5><pre class="memory-detail-content">${escapeHtml(value)}</pre>`).join("")}</section></div>
-        <button type="button" class="primary" data-action="install-strategy"${(preview.capacity || []).some(report => !report.fits && report.input_bound > report.previous_input_bound) ? " disabled" : ""}>${existing ? localize("使用导入内容替换当前安装") : localize("保存并安装")}</button>${existing ? localize('<button type="button" data-action="fork-imported-strategy">另存为新策略并编辑</button>') : ""}</div>` : ""}</fieldset></section>`;
+      <div class="strategy-actions"><button type="button" data-action="preview-strategy">${draft.busy ? localize("处理中…") : localize("预览策略")}</button><button type="button" data-action="cancel-strategy-import">取消</button></div>
+      ${preview ? localize`<div class="strategy-field-group" data-strategy-import-actions><p class="muted">保存后从后续轮次生效。另存会生成新的策略 ID。</p><div class="strategy-actions">
+        <button type="button" class="primary" data-action="install-strategy"${(preview.capacity || []).some(report => !report.fits && report.input_bound > report.previous_input_bound) ? " disabled" : ""}>${existing ? localize("使用导入内容替换当前安装") : localize("保存并安装")}</button>${existing ? localize('<button type="button" data-action="fork-imported-strategy">另存为新策略并编辑</button>') : ""}</div></div>` : ""}</div></fieldset></section>`;
   }
 
   function render(memories, options = {}) {
@@ -292,11 +320,11 @@
     if (options.strategyImport) return `<section class="memory-view">${strategyImport(options.strategyImport, options.workspaces || [])}</section>`;
     return localize`<section class="memory-view">
       ${options.composing ? "" : localize`<nav aria-label="记忆分类">${[["", localize("全部")], ["memory", localize("普通记忆")], ["evolution_strategy", localize("Strategy · 工作策略")]].map(([category, label]) => `<button data-action="memory-category" data-category="${category}" aria-pressed="${(options.category || "") === category}">${label}</button>`).join("")}</nav>`}
-      <header class="memory-page-heading"><div><h1>${strategies ? localize("Strategy · 工作策略") : localize("记忆库")}</h1><p>${strategies ? localize("你只管目标与反馈，让 Focus 按你的方法组织工作。") : localize("让重要的决定留下来，让重复的解释少一点。")}</p></div><span><button data-action="import-strategy">导入策略</button><button data-action="new-strategy"${strategies ? ' class="primary"' : ""}>新建策略</button>${strategies ? "" : localize('<button class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button>')}</span></header>
+      <header class="memory-page-heading"><div><h1>${strategies ? localize("Strategy · 工作策略") : localize("记忆库")}</h1></div><span><button data-action="import-strategy">导入策略</button><button data-action="new-strategy"${strategies ? ' class="primary"' : ""}>新建策略</button>${strategies ? "" : localize('<button class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button>')}</span></header>
       ${options.composing ? "" : localize`<div class="library-toolbar"><label class="page-search">${strategies ? localize("检索已安装策略") : localize("检索已加载记忆")} <input type="search" data-page-search="memory" value="${escapeHtml(options.query || "")}" placeholder="${strategies ? localize("搜索方法与适用场景…") : localize("搜索决定与约定…")}"></label><div class="library-layout" role="group" aria-label="记忆布局" data-i18n-aria-label="view.layout">${["cards", "list"].map(layout => `<button data-action="set-library-layout" data-library="memory" data-layout="${layout}" aria-pressed="${(options.layout || "cards") === layout}" data-i18n="view.${layout}">${layout === "cards" ? localize("卡片") : localize("列表")}</button>`).join("")}</div></div>`}
       ${options.loading ? localize('<p role="status">正在读取记忆…</p>') : ""}
       ${options.error ? localize`<p role="alert">读取失败：${escapeHtml(options.error)} <button data-action="refresh-memory">重试</button></p>` : ""}
-      ${options.composing ? (options.draft?.category === "evolution_strategy" ? strategyEditor(options.draft, options.workspaces || [], options.authoring) : compose(options)) : ((options.loading || options.error) && !memories?.length ? "" : workbench(memories, options))}
+      ${options.composing ? (options.draft?.category === "evolution_strategy" ? strategyEditor(options.draft, options.workspaces || [], options.authoring) : compose(options)) : workbench(memories, options)}
     </section>`;
   }
 
