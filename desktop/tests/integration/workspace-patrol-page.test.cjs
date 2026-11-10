@@ -493,7 +493,40 @@ if (!process.versions.electron) {
       assert.equal(await run('document.querySelector("[data-nav-key][aria-current=page]").dataset.navKey'), page);
       await run(`document.querySelector('[data-page-search=${page}]').value='无匹配记录'; document.querySelector('[data-page-search=${page}]').dispatchEvent(new Event('input', {bubbles:true}))`);
       assert.equal(await run('document.querySelectorAll("#app .plugin-card, #app .memory-card").length'), 0);
-      if (page === "memory") assert.match(await run('document.querySelector("#app").textContent'), /没有匹配的记忆/);
+      if (page === "memory") {
+        assert.match(await run('document.querySelector("#app").textContent'), /没有匹配的记忆/);
+        const memories = await run('JSON.stringify(state.memory.memories)');
+        const requests = await run('window.patrolFixture.requests.length');
+        await run('document.querySelector("[data-action=clear-memory-search]").click()');
+        assert.equal(await run('state.memory.query'), "");
+        assert.equal(await run('document.activeElement.dataset.pageSearch'), "memory");
+        assert.equal(await run('JSON.stringify(state.memory.memories)'), memories);
+        assert.equal(await run('window.patrolFixture.requests.length'), requests);
+        assert.ok(await run('document.querySelectorAll(".memory-card").length > 0'));
+
+        // 仅缓存策略时，普通分类为空；策略分类搜索无匹配则提供清除入口。
+        await run(`state.memory.memories = [{memory_id:'strategy-empty-state',category:'evolution_strategy',title:'验证方法',enabled:true,strategy:{applicability:'存在假设',evolution:'先验证再实施',inheritance:'保留证据'}}];
+          document.querySelector('[data-action=memory-category][data-category=memory]').click()`);
+        assert.equal(await run('document.querySelector(".memory-empty h2").textContent'), "还没有任何记忆");
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty [data-action=new-memory]"))'), true);
+        assert.equal(await run('Boolean(document.querySelector(".memory-page-heading p"))'), false);
+        await snapshot("memory-category-empty");
+        await run(`document.querySelector('[data-action=memory-category][data-category=evolution_strategy]').click();
+          const search = document.querySelector('[data-page-search=memory]'); search.value='无匹配策略'; search.dispatchEvent(new Event('input',{bubbles:true}))`);
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty [data-action=new-strategy], .memory-empty [data-action=import-strategy]"))'), false);
+        await snapshot("memory-search-empty");
+        await run('document.querySelector("[data-action=clear-memory-search]").click()');
+        assert.equal(await run('state.memory.category'), "evolution_strategy");
+        assert.equal(await run('document.querySelectorAll(".memory-card").length'), 1);
+
+        await run('document.querySelector("[data-action=memory-category][data-category=memory]").click(); window.patrolFixture.pageError="分类读取失败"; hydrateMemory()');
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty"))'), false);
+        assert.match(await run('document.querySelector("#app [role=alert]").textContent'), /分类读取失败/);
+        await snapshot("memory-read-error");
+        await run('window.patrolFixture.pageError=null; document.querySelector("[data-action=refresh-memory]").click()');
+        await until('!state.memory.loading && !state.memory.error');
+        await run(`document.querySelector('[data-action=memory-category][data-category=""]').click()`);
+      }
       await run(`document.querySelector('[data-page-search=${page}]').value=''; document.querySelector('[data-page-search=${page}]').dispatchEvent(new Event('input', {bubbles:true}))`);
     }
     await run('document.querySelector("[data-action=show-plugins]").click()');
