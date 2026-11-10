@@ -40,6 +40,8 @@ const { chromium } = require(process.env.FOCUS_PLAYWRIGHT_MODULE || "playwright"
     await page.waitForLoadState("networkidle");
     await page.locator('[data-action="focus-home"]').click();
     await page.locator("#mainInput").waitFor();
+    await page.locator('[data-action="close-inspector"]').click();
+    await page.locator("#appInspector").waitFor({ state: "hidden" });
     const paste = async name => page.evaluate(name => {
       const bytes = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII="), char => char.charCodeAt(0));
       const clipboard = new DataTransfer();
@@ -49,7 +51,7 @@ const { chromium } = require(process.env.FOCUS_PLAYWRIGHT_MODULE || "playwright"
     const finishUpload = async (index, materialId, failure = false) => page.evaluate(({ index, materialId, failure }) => {
       const upload = attachmentHarness.uploads[index];
       upload.resolve(new Response(JSON.stringify(failure ? { detail: "模拟网络失败" } : {
-        material_id: materialId, relative_path: upload.file.name, is_image: true, size_bytes: upload.file.size,
+        material_id: materialId, relative_path: upload.file.name, is_image: upload.file.type.startsWith("image/"), size_bytes: upload.file.size,
       }), { status: failure ? 500 : 200 }));
     }, { index, materialId, failure });
     const screenshot = async name => {
@@ -57,6 +59,38 @@ const { chromium } = require(process.env.FOCUS_PLAYWRIGHT_MODULE || "playwright"
       fs.mkdirSync(process.env.FOCUS_COMPOSER_QA_DIR, { recursive: true });
       await page.locator(".composer-shell").screenshot({ path: path.join(process.env.FOCUS_COMPOSER_QA_DIR, name) });
     };
+
+    // 原生按钮可通过 Tab 到达，并以 Enter / Space 打开同一个多文件选择器。
+    const addFile = page.getByRole("button", { name: "添加文件", exact: true });
+    await addFile.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    assert.equal(await addFile.evaluate(node => node === document.activeElement), true);
+    const enterChooser = page.waitForEvent("filechooser");
+    await addFile.press("Enter");
+    const cancelledChooser = await enterChooser;
+    assert.equal(cancelledChooser.isMultiple(), true);
+    await cancelledChooser.setFiles([]);
+    assert.equal(await page.locator(".composer-attachment").count(), 0);
+    await addFile.focus();
+    const spaceChooser = page.waitForEvent("filechooser");
+    await addFile.press("Space");
+    await (await spaceChooser).setFiles([
+      { name: "季度报告与附件核对清单-2026.txt", mimeType: "text/plain", buffer: Buffer.from("report") },
+      { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") },
+    ]);
+    await page.waitForFunction(() => attachmentHarness.uploads.length === 1);
+    assert.equal(await page.locator(".composer-attachment").count(), 2);
+    await finishUpload(0, "report");
+    await page.waitForFunction(() => attachmentHarness.uploads.length === 2);
+    await finishUpload(1, "notes");
+    await page.waitForFunction(() => document.querySelectorAll(".composer-attachment.is-ready").length === 2);
+    assert.equal(await page.locator('#composerAttachments [role="status"]').count(), 0);
+    assert.doesNotMatch(await page.locator("#composerAttachments").innerText(), /已就绪/);
+    await screenshot("attachments-keyboard-ready.png");
+    await page.getByRole("button", { name: "移除 季度报告与附件核对清单-2026.txt", exact: true }).click();
+    await page.getByRole("button", { name: "移除 notes.txt", exact: true }).click();
+    await page.evaluate(() => { attachmentHarness.uploads = []; });
 
     await paste("error.png");
     assert.match(await page.locator("#composerAttachments").innerText(), /准备中/);
@@ -89,6 +123,8 @@ const { chromium } = require(process.env.FOCUS_PLAYWRIGHT_MODULE || "playwright"
     await page.locator('[data-action="send-main"]').click();
     await finishUpload(2, "retry", true);
     await page.locator(".composer-attachment.is-failed").waitFor();
+    assert.match(await page.getByRole("article", { name: "retry.png", exact: true }).getByRole("status").innerText(), /失败/);
+    assert.equal(await page.getByRole("button", { name: "重试 retry.png", exact: true }).count(), 1);
     assert.equal(await page.evaluate(() => attachmentHarness.requests.length), 1);
     assert.equal(await page.locator("#mainInput").inputValue(), "重试这张图");
     await screenshot("attachments-failed.png");
@@ -98,7 +134,6 @@ const { chromium } = require(process.env.FOCUS_PLAYWRIGHT_MODULE || "playwright"
     await page.locator(".composer-attachment.is-ready").waitFor();
     await page.setViewportSize({ width: 900, height: 760 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    await page.locator('[data-action="close-inspector"]').click();
     await page.locator("#appInspector").waitFor({ state: "hidden" });
     await screenshot("attachments-narrow.png");
     await page.locator('[data-action="send-main"]').click();

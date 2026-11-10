@@ -46,9 +46,10 @@ if (!process.versions.electron) {
         win.webContents.setZoomFactor(zoom); win.setContentSize(width, 844);
         await run(`document.querySelector('#app').style.width=${JSON.stringify(available ? available + 'px' : '')}`);
         await sleep(100);
-        for (const [state, label] of [['running', '推进中'], ['paused', '已暂停'], ['failed', '执行失败'], ['waiting_user', '等待你的处理'], ['completed', '当前执行已结束 · 交付尚未验证']]) {
+        for (const [state, key] of [['running', 'patrol.work.running'], ['paused', 'patrol.work.paused'], ['failed', 'patrol.work.failed'], ['waiting_user', 'patrol.status.waiting_user'], ['completed', 'patrol.work.unverified']]) {
+          const expected = await run(`FocusI18n.t(${JSON.stringify(key)})`);
           await run(`patrolFixture.emit('loop-status','loop','loop-status',${++loopRevision},{status:${JSON.stringify(state)},interaction_mode:'workspace_patrol'})`);
-          await until(`document.querySelector('[data-workbench-status]').textContent.includes(FocusI18n.text(${JSON.stringify(label)}))`);
+          await until(`document.querySelector('[data-workbench-status]').textContent.includes(${JSON.stringify(expected)})`);
           const status = await run(`(() => {
             const node=document.querySelector('[data-workbench-status]'), r=node.getBoundingClientRect(), heading=node.closest('header').getBoundingClientRect();
             return {visible:getComputedStyle(node).display!=='none' && r.width>0 && r.height>0,
@@ -56,7 +57,6 @@ if (!process.versions.electron) {
               text:node.innerText,title:node.title,width:document.querySelector('#app').clientWidth,
               overflow:document.documentElement.scrollWidth>innerWidth+1};
           })()`);
-          const expected = await run(`FocusI18n.text(${JSON.stringify(label)})`);
           assert.ok(status.visible, `${locale} ${width}px/${zoom}: ${state} must remain visible`);
           assert.ok(status.contained && !status.overflow, JSON.stringify({locale, width, zoom, state, status}));
           assert.ok(status.text.includes(expected));

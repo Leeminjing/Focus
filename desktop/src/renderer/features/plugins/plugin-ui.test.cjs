@@ -21,16 +21,22 @@ const traces = [
   { interface: "tool", plugin: "demo", status: "failed", duration_ms: 4, error: "boom<script>" },
 ];
 
-const all = view.render(plugins, interfaces, traces, { filter: "all", selectedName: "demo" });
+const activation = { registry: "immediate", tools_and_hooks: "next_run", running_runs: "unchanged", http_routes: "process_restart", desktop_assets: "process_restart" };
+const all = view.render(plugins, interfaces, traces, { filter: "all", selectedName: "demo", activation });
 assert.match(all, /按插件状态筛选/);
 assert.match(all, /已注册/);
 assert.doesNotMatch(all, /已生效/);
-assert.match(all, /重新加载注册表/);
+assert.match(all, />刷新状态<\/button>/);
+assert.match(all, />加载插件变更<\/button>/);
+assert.doesNotMatch(all, /重新加载注册表|PLUGIN DETAIL|plugin-detail-heading/);
 assert.match(all, /下次 Run 装配时生效/);
 assert.match(all, /正在运行的 Run 保留原快照/);
-assert.match(all, /插件 UI\/API.*需要重启后端进程/);
+assert.match(all, /data-plugin-activation="desktop_assets"[^]*?重启后端进程后生效/);
+assert.match(all, /data-plugin-activation="http_routes"[^]*?重启后端进程后生效/);
 assert.match(all, /退出并重新启动 Focus/);
-assert.match(all, /“刷新”仅读取当前状态/);
+assert.match(all, /仅读取当前状态/);
+assert.match(all, /注册状态：/);
+assert.doesNotMatch(view.renderPluginDetail(plugins[0], interfaces, traces, activation), /已注册|PLUGIN DETAIL|<h2/);
 assert.match(all, /3\/3/);
 assert.match(all, /aria-pressed="true"/);
 assert.ok(all.indexOf('class="trace-failed"') < all.indexOf('class="trace-success"'), "异常轨迹必须排在成功轨迹之前");
@@ -45,3 +51,17 @@ assert.match(rejected, /接口注入冲突/);
 const empty = view.render([], {}, [], { filter: "all" });
 assert.match(empty, /尚无插件/);
 assert.match(empty, /宿主仍可独立启动/);
+
+// A registration badge cannot supply missing activation evidence.
+const unknown = view.renderActivation({ registry: "immediate", tools_and_hooks: "future-policy" });
+assert.match(unknown, /生效时机未知/);
+assert.match(unknown, /运行中 Run 的生效范围未知/);
+assert.doesNotMatch(unknown, /下次 Run 装配时生效|正在运行的 Run 保留原快照/);
+
+const loadedButUnread = view.render(plugins, interfaces, traces, {
+  activation, reloadSucceeded: true, error: "query failed<script>",
+});
+assert.match(loadedButUnread, /已加载到注册表/);
+assert.match(loadedButUnread, /状态查询未完成/);
+assert.match(loadedButUnread, /刷新状态失败：query failed&lt;script&gt;/);
+assert.doesNotMatch(loadedButUnread, /加载结果未确认/);

@@ -77,7 +77,7 @@ for (const removedIcon of ["house", "map", "layers", "bot", "plug"]) {
 }
 assert.doesNotMatch(app, /context-family|context-root-label|context-derived-(?:list|heading|items)/, "Context rail 仍包含额外根容器或分区结构");
 assert.match(app, /style="--context-depth:\$\{depth\}"/);
-assert.match(app, /context-rail-meta/);
+assert.match(app, /context-rail-diagnostics/);
 assert.doesNotMatch(app, /context-tree-(?:root|children|node)|context-current-marker|context-rail-lineage/, "Context rail 又引入了树线、层级胶囊或重复父来源");
 assert.match(legacyStyles, /\.context-rail-card,\s*\n\.context-rail-add\s*\{[^}]*border:\s*1px solid[^;]*;[^}]*border-radius:[^;]+;[^}]*text-align:\s*left/s);
 assert.match(legacyStyles, /\.context-rail-card\.is-current\s*\{[^}]*border-color:\s*var\(--border-accent[^}]*background:\s*var\(--surface-accent/s);

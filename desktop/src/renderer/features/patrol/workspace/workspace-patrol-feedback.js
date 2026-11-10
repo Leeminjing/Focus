@@ -12,33 +12,33 @@
   root.FocusWorkspacePatrolFeedback = api;
 })(globalThis, function () {
   "use strict";
-  // 源文案在渲染时取当前语言；模板插值始终保留原文。
-  function localize(source, ...values) {
-    if (globalThis.FocusI18n?.text) return globalThis.FocusI18n.text(source, ...values);
-    return typeof source === "string" ? source : source.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
-  }
+  // 文案身份使用稳定键；每次渲染读取当前语言，领域值仅在输出 HTML 时转义。
+  const defaultI18n = !globalThis.FocusI18n && typeof require === "function" ? require("../../../shared/i18n/i18n.js") : null;
+  const t = (key, variables) => (globalThis.FocusI18n || defaultI18n).t(key, variables);
+  const label = (keys, value, fallback = value) => Object.hasOwn(keys, value) ? t(keys[value]) : fallback;
 
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-  const dispositions = { get discussion() { return localize("已用于讨论"); }, get decision() { return localize("已纳入决策"); }, get reference() { return localize("已作为参考"); }, get deferred() { return localize("已延期"); } };
-  const cancellations = { get cancel_requested() { return localize("已请求停止 · 等待清理"); }, get stopped() { return localize("已停止"); }, get already_terminal() { return localize("请求时已结束"); }, get settled() { return localize("已结束"); }, get unknown() { return localize("停止状态待核实"); } };
+  const dispositions = { discussion: "patrol.feedback.discussion", decision: "patrol.feedback.decision", reference: "patrol.feedback.reference", deferred: "patrol.feedback.deferred" };
+  const cancellations = { cancel_requested: "patrol.feedback.cancel_requested", stopped: "patrol.feedback.stopped", already_terminal: "patrol.feedback.already_terminal", settled: "patrol.feedback.settled", unknown: "patrol.feedback.cancel_unknown" };
   function inputResult(row) {
     if (row.status !== "accepted") return "";
     const result = row.processing_result;
     if (!result) {
-      const pending = { pending: localize("等待 Patrol 处理"), observed: localize("正在处理 · 已进入本轮观察"), addressed: localize("已处理 · 暂无处理说明"), superseded: localize("已被替代") };
-      return localize`<p class="patrol-input-result" data-patrol-processing-state="${escape(row.processing_state || "pending")}">处理结果 · ${pending[row.processing_state] || localize("等待 Patrol 处理")}</p>`;
+      const pending = { pending: "patrol.feedback.pending", observed: "patrol.feedback.observed", addressed: "patrol.feedback.addressed", superseded: "patrol.feedback.superseded" };
+      return `<p class="patrol-input-result" data-patrol-processing-state="${escape(row.processing_state || "pending")}">${escape(label(pending, row.processing_state, t(pending.pending)))}</p>`;
     }
     const related = result.related_cancellations || [];
-    const execution = related.map(item => cancellations[item.state] || cancellations.unknown);
+    const execution = related.map(item => label(cancellations, item.state, t(cancellations.unknown)));
     const evidence = result.evidence || [];
-    const sections = { outcome: localize("最终结果"), boundary: localize("执行边界"), completion_check: localize("完成检查") };
-    const operations = { supplement: localize("补充"), revise: localize("修订"), remove: localize("移除") };
-    return localize`<details class="patrol-input-result" data-patrol-input-result><summary><strong>处理结果 · ${escape(dispositions[result.disposition] || localize("已处理"))}</strong><span>${escape(result.explanation)}</span>${execution.length ? localize`<small>同次决策：${escape([...new Set(execution)].join("；"))}</small>` : ""}</summary>
-      <div class="patrol-input-evidence"><h4>决策依据</h4><p>${escape(result.rationale || localize("未记录额外决策说明"))}</p>
-      <dl><dt>Mission 版本</dt><dd>${escape(result.mission_revision ?? localize("未记录"))}</dd><dt>决策</dt><dd>${escape(result.decision_id)}</dd><dt>工作轮次</dt><dd>${escape(result.round_id)}</dd><dt>冻结观察</dt><dd>${escape(result.observation_id || localize("未记录"))}${result.observation_id ? localize` · 版本 ${escape(result.observation_generation ?? localize("未记录"))}` : ""}</dd><dt>处理时间</dt><dd>${escape(result.applied_at)}</dd></dl>
-      ${(result.changes || []).length ? localize`<h4>这条输入对 Mission 的修改</h4><ul>${result.changes.map(item => `<li>${escape(operations[item.operation || "supplement"] || item.operation)}${escape(sections[item.section] || item.section)}：${escape(item.quote)}</li>`).join("")}</ul>` : ""}
-      <h4>事实来源（本次决策）</h4>${evidence.length ? evidence.map(item => `<pre>${escape(JSON.stringify(item, null, 2))}</pre>`).join("") : localize("<p>本次决策未附加事实引用；输入原文见上方。</p>")}
-      ${related.length ? localize`<h4>同次决策的停止操作</h4><ul>${related.map(item => `<li><strong>${escape(cancellations[item.state] || cancellations.unknown)}</strong><p>${escape(item.reason)}</p><small>${escape(({ run: localize("执行"), directive: localize("工作指令"), worker: localize("后台工作") })[item.target_kind] || item.target_kind)} · ${escape(item.target_id)}</small></li>`).join("")}</ul>` : ""}</div></details>`;
+    const sections = { outcome: "patrol.feedback.outcome", boundary: "patrol.feedback.boundary", completion_check: "patrol.feedback.completion_check" };
+    const operations = { supplement: "patrol.feedback.supplement", revise: "patrol.feedback.revise", remove: "patrol.feedback.remove" };
+    const targets = { run: "patrol.feedback.run", directive: "patrol.feedback.directive", worker: "patrol.feedback.worker" };
+    return `<details class="patrol-input-result" data-patrol-input-result data-patrol-disposition="${escape(result.disposition)}"><summary><strong>${escape(label(dispositions, result.disposition, t("patrol.feedback.processed")))}</strong><span>${escape(result.explanation)}</span>${execution.length ? `<small>${escape(t("patrol.feedback.execution_summary", { states: [...new Set(execution)].join(t("patrol.feedback.separator")) }))}</small>` : ""}</summary>
+      <div class="patrol-input-evidence"><h4>${escape(t("patrol.feedback.rationale"))}</h4><p>${escape(result.rationale || t("patrol.feedback.no_rationale"))}</p>
+      <dl><dt>${escape(t("patrol.feedback.mission_revision"))}</dt><dd data-patrol-source="mission_revision">${escape(result.mission_revision ?? t("patrol.feedback.not_recorded"))}</dd><dt>${escape(t("patrol.feedback.decision_id"))}</dt><dd data-patrol-source="decision_id">${escape(result.decision_id)}</dd><dt>${escape(t("patrol.feedback.round_id"))}</dt><dd data-patrol-source="round_id">${escape(result.round_id)}</dd><dt>${escape(t("patrol.feedback.observation"))}</dt><dd><span data-patrol-source="observation_id">${escape(result.observation_id || t("patrol.feedback.not_recorded"))}</span>${result.observation_id ? ` · <span data-patrol-source="observation_generation">${escape(t("patrol.feedback.version", { version: result.observation_generation ?? t("patrol.feedback.not_recorded") }))}</span>` : ""}</dd><dt>${escape(t("patrol.feedback.applied_at"))}</dt><dd data-patrol-source="applied_at">${escape(result.applied_at)}</dd></dl>
+      ${(result.changes || []).length ? `<h4>${escape(t("patrol.feedback.changes"))}</h4><ul>${result.changes.map(item => `<li>${escape(t("patrol.feedback.change", { operation: label(operations, item.operation || "supplement"), section: label(sections, item.section), quote: item.quote }))}</li>`).join("")}</ul>` : ""}
+      <h4>${escape(t("patrol.feedback.evidence"))}</h4>${evidence.length ? evidence.map(item => `<pre>${escape(JSON.stringify(item, null, 2))}</pre>`).join("") : `<p>${escape(t("patrol.feedback.no_evidence"))}</p>`}
+      ${related.length ? `<h4>${escape(t("patrol.feedback.cancellations"))}</h4><ul>${related.map(item => `<li data-patrol-cancellation-state="${escape(item.state)}" data-patrol-target-kind="${escape(item.target_kind)}" data-patrol-target-id="${escape(item.target_id)}"><strong>${escape(label(cancellations, item.state, t(cancellations.unknown)))}</strong><p>${escape(item.reason)}</p><small>${escape(label(targets, item.target_kind))} · ${escape(item.target_id)}</small></li>`).join("")}</ul>` : ""}</div></details>`;
   }
   // 历史刷新只替换内容；保留正在阅读的处理详情及键盘焦点。
   function preserveInputResults(host) {
@@ -134,8 +134,8 @@
     if (!["stopped", "failed"].includes(status)) return null;
     const pending = model?.rows?.some(row => row.status === "accepted" && !row.processing_result
       && [undefined, "pending", "observed"].includes(row.processing_state));
-    return pending ? { text: localize("这条输入已保存，重新启用后处理。"), label: localize("重新启用并处理") }
-      : { text: status === "stopped" ? localize("工作已停止，重新启用后继续。") : localize("工作执行失败，重新启用后继续。"), label: localize("重新启用") };
+    return pending ? { text: t("patrol.recovery.saved"), label: t("patrol.recovery.process") }
+      : { text: status === "stopped" ? t("patrol.recovery.stopped") : t("patrol.recovery.failed"), label: t("panel.restart") };
   }
   // A committed verification identifies a delivery; waiting for input alone never does.
   function deliveryVerification(loop) {
@@ -156,46 +156,47 @@
     const checks = new Map((result.completion_checks || []).map(item => [item.check_id, item.claim]));
     const unresolved = new Set(verification.unresolved || []);
     const passed = criteria.filter(item => item.status === "satisfied" && !unresolved.has(item.check_id));
-    const remaining = criteria.filter(item => item.status !== "satisfied" || unresolved.has(item.check_id));
-    const renderCheck = item => `<li><strong>${escape(checks.get(item.check_id) || item.check_id)}</strong><p>${escape(item.explanation)}</p></li>`;
-    return localize`<header><h2>本次工作交付</h2><span>${isCurrentDelivery(loop) ? localize("已验收") : localize("最近一次已验收交付")}</span></header>
-      <p class="patrol-delivery-summary">${escape(result.summary || passed.map(item => item.explanation).join("；") || localize("已提交验收结果，可查看交付内容。"))}</p>
-      <details><summary>验收通过 ${passed.length} 项 · 仍未解决 ${remaining.length} 项</summary><h3>验收通过</h3><ul>${passed.map(renderCheck).join("") || localize("<li>未记录逐项验收说明</li>")}</ul><h3>仍未解决</h3>${remaining.length ? `<ul>${remaining.map(renderCheck).join("")}</ul>` : localize("<p>本次验收未记录未解决项</p>")}</details>
-      <h3>结果与修改位置</h3>${workspace?.path ? `<p>${escape(workspace.path)}</p>` : ""}
-      <nav aria-label="查看本次交付">${(result.final_path || []).map(item => localize`<button type="button" data-patrol-delivery-context="${escape(item.context_id)}"${item.revision_id ? ` data-revision-id="${escape(item.revision_id)}"` : ""}>查看结果 · ${escape(item.title || localize("已提交结果"))}</button>`).join("")}<button type="button" data-patrol-files-open>查看文件 / 修改</button></nav>
-      <p class="patrol-delivery-next">在输入框继续提出调整，Patrol 会继续处理。</p>`;
+    const byId = new Map(criteria.map(item => [item.check_id, item]));
+    const remaining = [...new Set([...criteria.filter(item => item.status !== "satisfied").map(item => item.check_id), ...unresolved])]
+      .map(id => byId.get(id) || { check_id: id });
+    const renderCheck = item => `<li><strong>${escape(checks.get(item.check_id) || item.check_id)}</strong>${item.explanation ? `<p>${escape(item.explanation)}</p>` : ""}</li>`;
+    return `<header><h2>${escape(t("panel.delivery"))}</h2><span>${escape(t(isCurrentDelivery(loop) ? "patrol.delivery.verified" : "patrol.delivery.previous"))}</span></header>
+      <p class="patrol-delivery-summary">${escape(result.summary || passed.map(item => item.explanation).join(t("patrol.feedback.separator")) || t("patrol.delivery.summary"))}</p>
+      <nav aria-label="${escape(t("patrol.delivery.view"))}">${(result.final_path || []).map(item => `<button type="button" data-patrol-delivery-context="${escape(item.context_id)}"${item.revision_id ? ` data-revision-id="${escape(item.revision_id)}"` : ""} aria-label="${escape(t("patrol.delivery.view_result_action", { title: item.title || t("patrol.delivery.result") }))}">${escape(item.title || t("patrol.delivery.result"))}</button>`).join("")}<button type="button" data-patrol-files-open>${escape(t("patrol.delivery.workspace_files"))}</button></nav>
+      ${remaining.length ? `<section class="patrol-delivery-unresolved" aria-label="${escape(t("patrol.delivery.unresolved"))}"><h3>${escape(t("patrol.delivery.remaining_summary", { count: remaining.length }))}</h3><ul>${remaining.map(renderCheck).join("")}</ul></section>` : ""}
+      <details class="patrol-delivery-evidence"><summary>${escape(t("patrol.delivery.evidence_summary", { count: passed.length }))}</summary><ul>${passed.map(renderCheck).join("") || `<li>${escape(t("patrol.delivery.no_checks"))}</li>`}</ul>${workspace?.path ? `<h3>${escape(t("patrol.delivery.workspace"))}</h3><p>${escape(workspace.path)}</p>` : ""}</details>`;
   }
   // 工作、发送回执与状态更新各有独立语义；两个工作入口共享同一投影。
   function presentation(projection, connection, model) {
     const latest = model?.rows?.[0], loop = projection?.loop?.state;
     const saved = recovery(projection, model);
-    const receipt = latest?.status === "accepted" && saved ? localize("已保存")
-      : ({ accepted: localize("已受理 · 变化以提交进度为准"), sending: localize("发送中"), failed: localize("发送失败 · 可在输入记录重试") }[latest?.status] || "");
+    const receipt = latest?.status === "accepted" && saved ? t("patrol.work.saved")
+      : ({ accepted: t("patrol.work.receipt_accepted"), sending: t("patrol.work.receipt_sending"), failed: t("patrol.work.receipt_failed") }[latest?.status] || "");
     const stale = ["unavailable", "reconnecting", "resyncing"].includes(connection?.status);
-    const sync = stale ? localize("工作状态更新中断 · 显示上次状态") : connection?.status !== "live" ? localize("正在读取工作状态") : "";
+    const sync = stale ? t("patrol.work.stale") : connection?.status !== "live" ? t("patrol.work.loading") : "";
     let work;
     if (latest?.status === "accepted" && (!loop || (latest.accepted_sequence != null && (projection.loop?.updated_sequence || 0) < latest.accepted_sequence))) {
-      work = { state: "accepted", text: localize("已受理 · 等待工作状态更新") };
+      work = { state: "accepted", text: t("patrol.status.accepted") };
     } else if (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input") {
-      work = isCurrentDelivery(loop) ? { state: "delivered", text: localize("已验证交付 · 可以继续提出调整") }
-        : { state: "idle", text: localize("准备接收新输入") };
+      work = isCurrentDelivery(loop) ? { state: "delivered", text: t("patrol.work.delivered") }
+        : { state: "idle", text: t("patrol.status.idle") };
     } else if (loop?.status === "completed" && isCurrentDelivery(loop)) {
-      work = { state: "delivered", text: localize("已验证交付 · 可以继续提出调整") };
+      work = { state: "delivered", text: t("patrol.work.delivered") };
     } else {
-      const labels = { running: localize("推进中"), waiting_user: localize("等待你的处理"), paused: localize("已暂停"), stopped: localize("已停止"), failed: localize("执行失败"), completed: localize("当前执行已结束 · 交付尚未验证") };
+      const labels = { running: t("patrol.work.running"), waiting_user: t("patrol.status.waiting_user"), paused: t("patrol.work.paused"), stopped: t("patrol.work.stopped"), failed: t("patrol.work.failed"), completed: t("patrol.work.unverified") };
       work = labels[loop?.status] ? { state: loop.status, text: labels[loop.status] }
-        : { state: "unknown", text: localize("正在读取工作状态") };
+        : { state: "unknown", text: t("patrol.work.loading") };
     }
-    return { work, receipt, sync: !loop && stale ? localize("工作状态暂不可用 · 输入已保留") : sync };
+    return { work, receipt, sync: !loop && stale ? t("patrol.work.unavailable") : sync };
   }
   function status(projection, connection, model) {
-    if (["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) return { state: "disconnected", text: localize("工作状态连接中断 · 草稿已保留") };
+    if (["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) return { state: "disconnected", text: t("patrol.status.disconnected") };
     const latest = model?.rows?.[0];
-    if (latest?.status === "failed") return { state: "failed", text: localize("发送未确认 · 可按原身份重试") };
-    if (latest?.status === "sending") return { state: "sending", text: localize("正在发送 · 等待受理回执") };
+    if (latest?.status === "failed") return { state: "failed", text: t("patrol.status.send_failed") };
+    if (latest?.status === "sending") return { state: "sending", text: t("patrol.status.sending") };
     const work = presentation(projection, connection, model).work;
     if (work.state !== "unknown") return work;
-    return latest?.status === "accepted" ? { state: "accepted", text: localize("已受理 · 等待工作状态更新") } : { state: "idle", text: localize("准备好了 · 拖入材料或写下问题") };
+    return latest?.status === "accepted" ? { state: "accepted", text: t("patrol.status.accepted") } : { state: "idle", text: t("patrol.status.ready") };
   }
   function answer(conversation) {
     for (const item of [...(conversation.messages || [])].reverse()) {
@@ -214,7 +215,7 @@
   function signature(projection) { return JSON.stringify(revisions(projection).map(item => [item.entity_id, item.state.current_revision_id, item.state.title, item.state.description])); }
   function entries(projection) {
     return revisions(projection).map(entity => ({ context_id: entity.entity_id, revision_id: entity.state.current_revision_id,
-      title: entity.state.title || entity.state.description || localize("已提交回答") }));
+      title: entity.state.title || entity.state.description || t("patrol.answer.committed") }));
   }
   async function read(api, loopId, base, signal, cache) {
     signal?.throwIfAborted();
@@ -234,7 +235,7 @@
         }
       }
       return content ? { ...base, ...content } : null;
-    } catch (error) { signal?.throwIfAborted(); if (error.name === "AbortError") throw error; return { ...base, error: localize("回答读取失败，请重试读取") }; }
+    } catch (error) { signal?.throwIfAborted(); if (error.name === "AbortError") throw error; return { ...base, error: t("patrol.answer.read_failed") }; }
   }
   async function results(api, projection, signal, cache) {
     signal?.throwIfAborted();

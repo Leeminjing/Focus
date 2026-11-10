@@ -1,4 +1,4 @@
-/** 普通会话生产页面的补充/排队/撤回编辑/删除与原请求恢复验收。 */
+/** 普通会话生产页面的补充/排队/撤回编辑/撤回与原请求恢复验收。 */
 const assert = require("node:assert/strict"), path = require("node:path"), fs = require("node:fs"), os = require("node:os");
 if (!process.versions.electron) {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
@@ -65,10 +65,10 @@ if (!process.versions.electron) {
     await until("document.querySelector('#mainInput').value==='结束后补一组测试'");
     assert.equal(await run("inputFixture.rows[1].status"), "withdrawn");
     await run("document.querySelector('#mainInput').value='结束后补两组测试';document.querySelector('[data-action=send-main]').click()");
-    await until("inputFixture.posts.length===3 && document.querySelector('[data-action=delete-queued-main]')");
+    await until("inputFixture.posts.length===3 && document.querySelector('[data-action=withdraw-queued-main]')");
     assert.equal(await run("inputFixture.posts[2].body.run.message"), "结束后补两组测试");
-    await run("document.querySelector('[data-action=delete-queued-main]').click()");
-    await until("!document.querySelector('[data-action=delete-queued-main]')");
+    await run("document.querySelector('[data-action=withdraw-queued-main]').click()");
+    await until("!document.querySelector('[data-action=withdraw-queued-main]')");
     await run("inputFixture.fail=true; document.querySelector('#mainInput').value='幂等重试';document.querySelector('[data-action=send-main]').click()");
     await until("taskRunOperations.recovery('child') && !taskRunOperations.get('child').submission");
     await run("document.querySelector('[data-action=retry-main]').click()");
@@ -77,7 +77,7 @@ if (!process.versions.electron) {
     assert.deepEqual(posts[0], posts[1]);
     assert.equal(await run("taskRunOperations.get('child').active_run"), null);
     assert.deepEqual(errors, []);
-    console.log("PASS ordinary conversation: steer receipt, delivery refresh, queue, withdraw/edit, delete, immutable retry, Run identity");
+    console.log("PASS ordinary conversation: steer receipt, delivery refresh, queue, withdraw/edit, withdraw, immutable retry, Run identity");
     win.destroy(); app.quit();
   }).catch(error => { console.error(error); app.exit(1); });
 }

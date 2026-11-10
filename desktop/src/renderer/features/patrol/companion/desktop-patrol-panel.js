@@ -176,8 +176,8 @@
         const card = element("article", "", items);
         card.dataset.submissionId = row.submission_id;
         element("pre", row.content || localize("仅参考材料"), card);
-        card.insertAdjacentHTML("beforeend", FocusWorkspacePatrolFeedback.inputResult(row));
         card.insertAdjacentHTML("beforeend", FocusPatrolInputReferences.render(row));
+        card.insertAdjacentHTML("beforeend", FocusWorkspacePatrolFeedback.inputResult(row));
         element("small", status[row.status], card);
         if (row.status === "failed") {
           element("small", row.error, card);

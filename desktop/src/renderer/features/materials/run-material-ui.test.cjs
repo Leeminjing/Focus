@@ -28,7 +28,7 @@ const result = harness.vm.runInContext(`(() => {
   state.materialHistory.set("task", [{ binding_id: "b", run_id: "r1", message_id: "msg1", material_id: "t1", relative_path: "notes.md", material_kind: "text", note: "第一行\\n第二行", ordinal: 0, must_view_requested: false, current_available: true }]);
 
   const textRow = renderMaterial(text);
-  const imageRow = renderImageMaterial(image);
+  const imageRow = renderMaterial(image);
   const idleRow = renderMaterial(idle);
   const groups = renderMaterialGroups(state.tasks[0]);
 
@@ -64,7 +64,13 @@ assert.match(result.textRow, /run-material-note"><textarea[^>]*draggable="false"
 assert.match(result.textRow, /第一行\n第二行/);
 assert.match(result.textRow, /toggle-run-material/);
 assert.doesNotMatch(result.textRow, /必须看/);
-assert.match(result.openRow, /material-policy-row[\s\S]*run-material-note[\s\S]*material-editor/, "备注框必须位于本轮选择控件之后、长期策略详情之前");
+assert.match(result.openRow, /material-selection-row[\s\S]*run-material-note[\s\S]*material-editor/, "备注框必须位于本轮选择控件之后、长期策略详情之前");
+assert.doesNotMatch(result.textRow, /完整阅读|参考材料|可移除|data-field="reading_mode"/);
+assert.match(result.openRow, /<legend>长期规则<\/legend>/);
+assert.match(result.openRow, /<label>阅读方式<select data-field="reading_mode"/);
+assert.match(result.openRow, /<label>指令规则<select data-field="instruction_mode"/);
+assert.match(result.openRow, /<label>保留规则<select data-field="retention"/);
+assert.doesNotMatch(result.imageRow, /线程内尚未使用|无备注/);
 
 // 图片材料：备注与「必须看」各自独立。
 assert.match(result.imageRow, /toggle-image-required[^>]*aria-pressed="true"/);

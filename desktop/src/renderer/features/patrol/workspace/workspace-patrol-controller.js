@@ -161,13 +161,11 @@
         const available = Math.max(panels.clientHeight - handle.getBoundingClientRect().height, minimum + observationMinimum);
         return { available, minimum, maximum: available - observationMinimum };
       };
-      const sync = () => {
+      const read = () => {
         const limits = bounds();
-        if (!limits) return;
-        for (const [name, value] of Object.entries({ min: limits.minimum, max: limits.maximum, now: progress.getBoundingClientRect().height })) {
-          handle.setAttribute(`aria-value${name}`, String(Math.round(value / limits.available * 100)));
-        }
+        return limits && { min: limits.minimum, max: limits.maximum, now: progress.getBoundingClientRect().height };
       };
+      const sync = () => root.FocusAccessibleControls.syncSeparator(handle, read());
       const apply = () => {
         panels.style.setProperty("--patrol-progress-weight", `${ratio}fr`);
         panels.style.setProperty("--patrol-observation-weight", `${1 - ratio}fr`);
@@ -198,14 +196,9 @@
         if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
       };
       for (const event of ["pointerup", "pointercancel", "lostpointercapture"]) handle.addEventListener(event, finish, options);
-      handle.addEventListener("keydown", event => {
-        const limits = bounds();
-        if (!limits || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-        event.preventDefault();
-        const delta = (event.key === "ArrowUp" ? -1 : 1) * (event.shiftKey ? 64 : 24);
-        resize(event.key === "Home" ? limits.minimum : event.key === "End" ? limits.maximum : progress.getBoundingClientRect().height + delta);
-        persist();
-      }, options);
+      root.FocusAccessibleControls.bindSeparator(handle, {
+        read, resize, commit: persist, signal: lifetime.signal,
+      });
       handle.addEventListener("dblclick", () => { ratio = .6; apply(); persist(); }, options);
       apply();
       if (root.ResizeObserver) {
@@ -316,7 +309,7 @@
       observationIdentity = id;
       observation = null;
       const owner = token, version = ++observationVersion;
-      host.querySelector("[data-patrol-observation]").textContent = localize("正在读取本轮冻结输入");
+      host.querySelector("[data-patrol-observation]").innerHTML = root.FocusObservationView.card(null, { compact: true, readState: "loading" });
       host.querySelector("[data-patrol-observation-open]").disabled = true;
       try {
         const value = await api.observation(loopId, id, { signal: lifetime.signal });
@@ -327,7 +320,7 @@
       } catch (failure) {
         if (owner === token && version === observationVersion && failure.name !== "AbortError") {
           observationIdentity = null;
-          host.querySelector("[data-patrol-observation]").innerHTML = localize`读取失败：${view.escape(failure.message)} <button data-patrol-observation-retry>重试</button>`;
+          host.querySelector("[data-patrol-observation]").innerHTML = root.FocusObservationView.card(null, { compact: true, readState: "error", failure });
         }
       }
     }
@@ -686,6 +679,7 @@
       if (!host) return;
       patchRetry();
       if (!next) {
+        patchObservation();
         patchRecovery();
         return;
       }
@@ -723,7 +717,8 @@
       const pendingButton = host.querySelector("[data-patrol-pending]");
       pendingButton.hidden = !pending;
       const pendingText = localize`${pending} 项待处理`;
-      if (pendingButton.textContent !== pendingText) pendingButton.textContent = pendingText;
+      root.FocusAccessibleControls.announce(pendingButton, pendingText);
+      root.FocusAccessibleControls.announce(host.querySelector("[data-patrol-pending-status]"), pendingText);
       if (previous?.facts !== projection.facts) {
         patchFileFacts(true);
         artifacts?.update(root.FocusLoopLiveSelectors.selectFacts(projection));
@@ -737,7 +732,8 @@
       if (!projection.round?.state?.observation_id) {
         observation = null; observationIdentity = null; observationVersion++;
         const node = host.querySelector("[data-patrol-observation]");
-        if (node.textContent !== localize("本轮尚未冻结")) node.textContent = localize("本轮尚未冻结");
+        const empty = root.FocusObservationView.card(null, { compact: true });
+        if (node.innerHTML !== empty) node.innerHTML = empty;
         host.querySelector("[data-patrol-observation-open]").disabled = true;
       }
       if (historyRefresh.observe(projection, inputs.get())) {
