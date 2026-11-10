@@ -1,6 +1,7 @@
 /* 本文件对外提供 Patrol 与全图共用的只读 Context 检查器。
  * 输入为 Loop API、精确 Loop/Context 身份、节点摘要和显式任务打开回调；输出为非模态三页签或工作台摘要、只读 selection 和变更通知；manifest 回调仅提供已返回关系。
  * 具体工作流为取消旧读请求并按 owner 隔离迟到响应，保留表面与阅读位置、可逆退出后归还焦点；检查不改变发送身份，只有显式打开任务调用操作回调。
+ * 选择决定详情显隐；工作台关闭立即移除内容，区域名称及描述对应当前对象与固定版本，内部来源跳转保留外部返回入口。
  * 示例：const inspector = FocusContextInspector.create({ api, onOpenTask }); inspector.mount(panel); await inspector.select(loopId, contextId, node, trigger)。
  */
 (function (root) {
@@ -26,6 +27,13 @@
       const scroll = panel.scrollTop, bodyScroll = panel.querySelector(".patrol-context-body")?.scrollTop || 0;
       const menuOpen = !!content.querySelector("[data-context-inspector-menu]:popover-open");
       content.innerHTML = view.context({ ...active.page, context_id: active.contextId }, active.node, tab, { presentation, manifest: getManifest(), revisionId: active.revisionId });
+      const heading = content.querySelector("header h2"), version = content.querySelector("[data-patrol-context-version]");
+      heading.id = `${menuId}-title`;
+      panel.setAttribute("role", "region");
+      panel.setAttribute("aria-labelledby", heading.id);
+      if (version) { version.id = `${menuId}-version`; panel.setAttribute("aria-describedby", version.id); }
+      panel.dataset.contextId = active.contextId;
+      panel.dataset.revisionId = selection().revisionId || "";
       const controls = root.FocusContextBrowser?.render(active.contextId);
       if (controls) {
         const closeButton = content.querySelector("header [data-patrol-context-close]");
@@ -83,13 +91,19 @@
       } catch (error) { if (owner === generation) failure(error); }
     }
     function close() {
-      if (!panel || panel.hidden) return;
+      if (!panel || !active) return;
       hideActions();
       generation++; request?.abort(); active = null;
-      if (presentation === "workbench") { panel.classList.remove("is-expanded"); panel.querySelector("[data-patrol-context-content]").innerHTML = view.contextEmpty(); }
-      else void root.FocusSurfaceTransition.visible(panel, false, { axis: "x", distance: 40 });
+      panel.classList.remove("is-expanded");
+      if (presentation === "workbench") {
+        root.FocusSurfaceTransition.finish(panel);
+        panel.hidden = true; panel.inert = true;
+        panel.querySelector("[data-patrol-context-content]").replaceChildren();
+        panel.removeAttribute("aria-labelledby"); panel.removeAttribute("aria-describedby");
+        delete panel.dataset.contextId; delete panel.dataset.revisionId;
+      } else void root.FocusSurfaceTransition.visible(panel, false, { axis: "x", distance: 40 });
       onSelectionChange(null);
-      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+      if (returnFocus?.isConnected && returnFocus.checkVisibility()) returnFocus.focus({ preventScroll: true });
       else root.document.querySelector("[data-patrol-content], #app")?.focus({ preventScroll: true });
     }
     async function click(event) {
@@ -110,6 +124,7 @@
     }
     function mount(node) {
       dispose(); panel = node; lifetime = new AbortController();
+      panel.hidden = true; panel.inert = true;
       panel.addEventListener("click", click, { signal: lifetime.signal });
       panel.addEventListener("keydown", event => {
         if (event.key !== "Escape") return;
@@ -121,7 +136,10 @@
       hideActions();
       void root.focusContextBrowser?.select(contextId);
       active = { loopId, contextId, revisionId, node: { context_id: contextId, ...node }, page: {} };
-      tab = "overview"; returnFocus = trigger; render(); onSelectionChange(selection());
+      tab = "overview";
+      // 来源跳转和重绘不能把返回焦点绑定到即将被替换的详情按钮。
+      if (trigger && !panel.contains(trigger)) returnFocus = trigger;
+      render(); onSelectionChange(selection());
       if (panel.hidden || panel.inert) void root.FocusSurfaceTransition.visible(panel, true, { axis: "x", distance: 40 });
       panel.querySelector("[data-patrol-context-close]").focus({ preventScroll: true });
       await read(false, revisionId);

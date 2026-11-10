@@ -79,10 +79,15 @@ test("only independently supported completed items count as verified", () => {
     { description: "asserted", state: "completed", support: "asserted", context_ids: [] },
     { description: "running", state: "in_progress", support: "supported", context_ids: ["a", "b"] },
   ] } });
-  assert.match(html, /patrol-progress-number">1<small> \/ 3/);
-  assert.equal((html.match(/class="is-verified"/g) || []).length, 1);
+  assert.match(html, /已验证 1\/3/);
+  assert.equal((html.match(/class="is-completed is-verified"/g) || []).length, 1);
+  assert.match(html, /asserted<\/span><small><span>已完成<\/span> · <span>已报告/);
+  assert.doesNotMatch(html, /patrol-progress-number|workbench-progress-meter|已提交快照|选中条目/);
   assert.match(html, /2 条工作线/);
   assert.match(view.progress({ document: { items: [] } }), /暂无条目/);
+  assert.match(view.progress(null), /任务进度.*尚无已提交进度/);
+  assert.doesNotMatch(view.progress(null), /已验证 0\/0/);
+  assert.match(view.progress({ document: { items: [] } }), /已验证 0\/0/);
 });
 
 test("console latest Run survives shared lineage adaptation without lending it to history", () => {

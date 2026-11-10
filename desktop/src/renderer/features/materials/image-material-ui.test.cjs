@@ -23,11 +23,11 @@ harness.vm.runInContext(readAppSource(), harness.context);
     state.materials.set("task", [material]);
 
     state.materialSelections.set("task", runMaterialPicker.empty());
-    const idle = renderImageMaterial(material);
+    const idle = renderMaterial(material);
     state.materialSelections.set("task", { bindings: [{ materialId: "m1", note: "对照" }], requiredImageIds: [], notes: { m1: "对照" } });
-    const attached = renderImageMaterial(material);
+    const attached = renderMaterial(material);
     state.materialSelections.set("task", { bindings: [{ materialId: "m1", note: "对照" }], requiredImageIds: ["m1"], notes: { m1: "对照" } });
-    const required = renderImageMaterial(material);
+    const required = renderMaterial(material);
 
     const calls = [];
     api = async path => { calls.push(path); return {}; };

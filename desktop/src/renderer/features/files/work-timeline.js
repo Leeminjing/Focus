@@ -1,7 +1,8 @@
 /* Durable work history UI. Entries are keyed by event identity, never fact identity.
  * Pagination and incremental reads share sequence cursors; unchanged articles and
  * open evidence remain mounted. Reads and details are isolated by Loop/filter generation.
- * The default view shows event, work line, time and state; descriptions and audit data expand on demand.
+ * Event title and time are the only disclosure; opening a fact reads its historical evidence.
+ * The filter bar names the applied scope without changing it when graph selection changes.
  */
 (function (root, factory) {
   const api = factory(root);
@@ -27,18 +28,20 @@
     };
     const state = refs.state || refs.status;
     const stamp = entry.recorded_at;
+    const title = entry.title || refs.file?.path || text("工作事件");
     return `<article class="work-timeline-entry is-${escape(entry.category)}${refs.file ? " file-fact" : ""}" data-timeline-entry="${escape(entry.entry_id)}"${entry.fact_revision ? ` data-fact-revision="${escape(entry.fact_revision)}"` : ""}>
-      <span class="work-timeline-icon" aria-hidden="true">${icon}</span><div class="work-timeline-heading">${refs.file ? `<button type="button" data-fact-id="${escape(entry.fact_id)}" title="${escape(refs.file.path)}">${escape(refs.file.path)}</button>` : `<strong>${escape(entry.title)}</strong>`}<time datetime="${escape(stamp)}" title="${escape(text("记录时间"))}: ${escape(stamp)}">${escape(time(stamp))}</time></div>
-      <div class="work-timeline-meta">
-      ${(entry.context_ids || []).map(id => `<button type="button" data-timeline-context="${escape(id)}" title="${escape(id)}">${escape(refs.context_labels?.[id] || `Context ${id.slice(0, 8)}`)}</button>`).join("")}
-      ${state ? `<span class="work-timeline-state">${escape(states[state] || state)}</span>` : ""}</div>
-      <details class="work-timeline-details"><summary>${text("查看详情")}</summary>
+      <span class="work-timeline-icon" aria-hidden="true">${icon}</span>
+      <details class="work-timeline-details"${entry.fact_id ? ` data-timeline-evidence="${escape(entry.entry_id)}"` : ""}><summary class="work-timeline-heading"><strong>${escape(title)}</strong><time datetime="${escape(stamp)}" title="${escape(text("记录时间"))}: ${escape(stamp)}">${escape(time(stamp))}</time><span class="work-timeline-disclosure" aria-hidden="true">›</span></summary>
       ${entry.summary && entry.summary !== entry.title && entry.summary !== refs.file?.path ? `<p>${escape(entry.summary)}</p>` : ""}
       <div class="work-timeline-meta">
       ${entry.round_id ? `<button type="button" data-timeline-round="${escape(entry.round_id)}" title="${escape(entry.round_id)}">R${escape(entry.round_number || "?")}</button>` : ""}
-      ${entry.intent_id ? `<button type="button" data-timeline-intent="${escape(entry.intent_id)}">${text("追踪后续")}</button>` : ""}</div>
-      ${entry.fact_id ? `<details data-timeline-evidence="${escape(entry.entry_id)}"><summary>${text("查看证据")} · v${escape(entry.fact_revision)}</summary><div data-timeline-evidence-body></div></details>` : ""}
-      <dl class="work-timeline-source"><dt>${text("记录时间")}</dt><dd>${escape(time(stamp))}</dd>${entry.occurred_at ? `<dt>${text("事实发生时间")}</dt><dd>${escape(time(entry.occurred_at))}</dd>` : ""}${["round_id", "run_id", "intent_id", "decision_id", "source_event_id"].filter(key => entry[key]).map(key => `<dt>${key}</dt><dd>${escape(entry[key])}</dd>`).join("")}</dl></details>
+      ${entry.intent_id ? `<button type="button" data-timeline-intent="${escape(entry.intent_id)}" aria-label="${escape(text`追踪后续：${title}`)}">${text("追踪后续")}</button>` : ""}</div>
+      ${refs.file ? `<button type="button" data-fact-id="${escape(entry.fact_id)}" title="${escape(refs.file.path)}">${escape(refs.file.path)} · v${escape(entry.fact_revision)}</button>` : ""}
+      ${entry.fact_id ? `<div data-timeline-evidence-body></div>` : ""}
+      <dl class="work-timeline-source">${entry.occurred_at ? `<dt>${text("事实发生时间")}</dt><dd>${escape(time(entry.occurred_at))}</dd>` : ""}${["round_id", "run_id", "intent_id", "decision_id", "source_event_id"].filter(key => entry[key]).map(key => `<dt>${key}</dt><dd>${escape(entry[key])}</dd>`).join("")}</dl></details>
+      <div class="work-timeline-meta">
+      ${(entry.context_ids || []).map(id => `<button type="button" data-timeline-context="${escape(id)}" title="${escape(id)}">${escape(refs.context_labels?.[id] || `Context ${id.slice(0, 8)}`)}</button>`).join("")}
+      ${state ? `<span class="work-timeline-state">${escape(states[state] || state)}</span>` : ""}</div>
     </article>`;
   }
   function reconcile(host, entries) {
@@ -65,6 +68,7 @@
     let loopId = null, authority = null, generation = 0, entries = [], after = null, before = null, loading = false, pending = false, timer = null;
     let category = "", contextId = "", roundId = "", intentId = "", selectedContext = null, source = 0, disposed = false, catchingUp = false;
     const detailsLoading = new Set();
+    const contextLabels = new Map();
     let fileReferences = new Set();
     const fileKey = file => JSON.stringify([file.slot_id, file.path]);
     function markFiles() {
@@ -75,6 +79,25 @@
     }
     const options = () => ({ category, contextId, roundId, intentId, signal });
     const status = value => { const node = host.querySelector("[data-timeline-status]"); node.textContent = value; };
+    const connection = value => {
+      const node = host.querySelector("[data-timeline-connection]");
+      if (node && node.textContent !== value) node.textContent = value;
+    };
+    function scope() {
+      const label = id => contextLabels.get(id) || id;
+      const node = host.querySelector("[data-timeline-scope]");
+      const round = entries.find(entry => entry.round_id === roundId)?.round_number;
+      const current = intentId ? text`输入 ${intentId} 及后续决策` : contextId ? text`工作线：${label(contextId)}` : roundId ? `Round ${round ?? roundId}` : text("整个工作区");
+      if (node.textContent !== current) node.textContent = current;
+      node.title = contextId || roundId || intentId || node.textContent;
+      const selected = host.querySelector("[data-timeline-selected]");
+      selected.hidden = !selectedContext || contextId === selectedContext;
+      selected.disabled = !selectedContext;
+      const target = selectedContext ? text`仅看 ${label(selectedContext)}` : "";
+      if (selected.textContent !== target) selected.textContent = target;
+      selected.title = selectedContext || "";
+      host.querySelector("[data-timeline-clear]").hidden = !contextId && !roundId && !intentId;
+    }
     function render(older = false, reset = false, announce = false) {
       const top = stream.scrollTop, oldHeight = stream.scrollHeight;
       const atEnd = oldHeight - top - stream.clientHeight < 24;
@@ -83,8 +106,7 @@
       stream.scrollTop = reset ? stream.scrollHeight : older ? top + stream.scrollHeight - oldHeight : atEnd ? stream.scrollHeight : top;
       if (announce && !older && !reset && !atEnd) host.querySelector("[data-patrol-new-facts]").hidden = false;
       host.querySelector("[data-timeline-older]").hidden = before === null;
-      host.querySelector("[data-timeline-clear]").hidden = !contextId && !roundId && !intentId;
-      host.querySelector("[data-timeline-scope]").textContent = intentId ? text("所选输入及后续决策") : contextId ? text("所选 Context") : roundId ? text("所选 Round") : text("跨 Round 工作历史");
+      scope();
     }
     function schedule() {
       if (disposed || !loopId || timer !== null) return;
@@ -99,22 +121,26 @@
       const start = older ? { before } : initial ? {} : { after };
       host.querySelector("[data-timeline-older]").disabled = true;
       if (initial) status(text("正在读取工作历史…"));
+      connection(text("读取中"));
       try {
         const page = await api.timeline(target, { ...options(), ...start });
         if (owner !== generation || disposed) return;
         const newest = entries.at(-1)?.sequence || 0;
         const merged = initial ? page.entries || [] : [...entries, ...(page.entries || [])];
         entries = [...new Map(merged.map(entry => [entry.entry_id, entry])).values()].sort((a, b) => a.sequence - b.sequence);
+        for (const entry of entries) for (const [id, label] of Object.entries(entry.references?.context_labels || {})) if (!contextLabels.has(id)) contextLabels.set(id, label);
         if (initial || older) before = page.next_before ?? null;
         if (!older) after = page.next_after;
         render(older, initial, (entries.at(-1)?.sequence || 0) > newest);
         catchingUp = page.projected_through < page.source_sequence;
         status(catchingUp ? text("正在同步新事件…") : "");
+        connection(catchingUp ? text("同步中") : text("已同步"));
         host.querySelector("[data-timeline-retry]").hidden = true;
         if (!older && !initial && page.has_more) pending = true;
       } catch (failure) {
         if (owner === generation && !disposed && failure.name !== "AbortError") {
           status(text("工作历史读取失败，可重试。"));
+          connection(text("读取失败"));
           const retry = host.querySelector("[data-timeline-retry]"); retry.hidden = false; retry.dataset.older = String(older);
         }
       } finally {
@@ -127,6 +153,7 @@
     }
     function reset() {
       generation++; loading = false; pending = false; after = null; before = null; entries = []; detailsLoading.clear();
+      host.querySelector("[data-patrol-new-facts]").hidden = true;
       if (timer !== null) clearTimeout(timer); timer = null;
       for (const item of host.querySelectorAll("[data-timeline-category]")) item.setAttribute("aria-pressed", String(item.dataset.timelineCategory === category));
       render(false, true); void refresh();
@@ -134,6 +161,9 @@
     host.addEventListener("click", event => {
       const button = event.target.closest("button");
       if (!button) return;
+      if (button.hasAttribute("data-patrol-new-facts")) {
+        event.stopPropagation(); stream.scrollTop = stream.scrollHeight; button.hidden = true; return;
+      }
       if (![...button.attributes].some(attr => attr.name.startsWith("data-timeline-"))) return;
       event.stopPropagation();
       if (button.hasAttribute("data-timeline-category")) {
@@ -167,18 +197,18 @@
           + (detail.file ? root.FocusLoopFactsView.renderFile({ ...detail.file, fact_id: entry.fact_id, revision: entry.fact_revision }) : "");
         node.dataset.loaded = "true";
       } catch (failure) {
-        if (owner === generation && !disposed && failure.name !== "AbortError") body.innerHTML = `<p>${text("历史证据读取失败。")}</p><button type="button" data-timeline-evidence-retry="${escape(entry.entry_id)}">${text("重试读取")}</button>`;
+        if (owner === generation && !disposed && failure.name !== "AbortError") body.innerHTML = `<p>${text("历史证据读取失败。")}</p><button type="button" data-timeline-evidence-retry="${escape(entry.entry_id)}" aria-label="${escape(text`重试历史证据：${entry.title || entry.entry_id}`)}">${text("重试读取")}</button>`;
       } finally { if (owner === generation) detailsLoading.delete(entry.entry_id); }
     }
     host.addEventListener("toggle", event => { if (event.target.matches("[data-timeline-evidence]") && event.target.open) void evidence(event.target); }, { capture: true, signal });
     return Object.freeze({
       sync(id, projection) {
         const nextAuthority = projection?.loop?.state?.authority_revision;
-        if (id !== loopId) { loopId = id; authority = nextAuthority ?? null; source = projection?.last_sequence || 0; category = contextId = roundId = intentId = ""; reset(); }
+        if (id !== loopId) { loopId = id; authority = nextAuthority ?? null; source = projection?.last_sequence || 0; category = contextId = roundId = intentId = ""; contextLabels.clear(); selectedContext = null; reset(); }
         else if (nextAuthority !== undefined && nextAuthority !== authority) { authority = nextAuthority; source = projection.last_sequence || 0; reset(); }
         else if ((projection?.last_sequence || 0) > source) { source = projection.last_sequence; void refresh(); }
       },
-      selectContext(id) { selectedContext = id; host.querySelector("[data-timeline-selected]").disabled = !id; },
+      selectContext(id, label) { selectedContext = id; if (id && label) contextLabels.set(id, label); scope(); },
       followIntent(id) { intentId = id; category = contextId = roundId = ""; reset(); },
       setFileReferences(refs) { fileReferences = new Set(refs.map(fileKey)); markFiles(); },
       visibleFacts() {

@@ -13,7 +13,7 @@ from playwright.sync_api import expect, sync_playwright
 ROOT = Path(__file__).resolve().parents[2] / "src/renderer"
 STYLES = ["shared/styles/tokens.css", "shared/styles/base.css", "shared/styles/icons.css", "shared/styles/components.css",
           "shared/styles/workspace-patrol.css", "features/files/artifact-drawer.css"]
-SCRIPTS = ["features/patrol/workspace/workspace-patrol-feedback.js",
+SCRIPTS = ["shared/i18n/i18n.js", "shared/ui/accessible-controls.js", "features/patrol/workspace/workspace-patrol-feedback.js",
            "features/patrol/workspace/patrol-input-references.js",
            "features/patrol/workspace/workspace-patrol-view.js",
            "features/patrol/workspace/workspace-patrol-inputs.js",

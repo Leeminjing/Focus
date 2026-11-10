@@ -1,4 +1,4 @@
-/* 验证生产 Patrol 页定位进度只展示图谱，由用户点击节点打开详情。
+/* 验证生产 Patrol 页的验证计数、可读任务列表及工作线定位；定位只展示图谱，由用户点击节点打开详情。
  * 运行：node desktop/tests/e2e/patrol-progress-location.e2e.cjs。
  * 复用离线 API fixture，覆盖宽屏、窄屏及手机宽度；截图写入 FOCUS_WORKBENCH_EVIDENCE 或临时目录。
  */
@@ -42,13 +42,43 @@ if (!process.versions.electron) {
       { ids: [], notice: '尚未关联' },
       { ids: ['unpublished'], notice: '尚未发布' },
     ];
+    const items = [
+      { description: '核对输入材料', state: 'completed', support: 'supported' },
+      { description: '整理需求清单', state: 'completed', support: 'asserted' },
+      { description: '确认缺失的验收条件', state: 'blocked', support: 'unknown' },
+      { description: '检查关联工作线', state: 'in_progress', support: 'supported' },
+      { description: '校验已生成的交付文件', state: 'completed', support: 'supported' },
+      { description: '验证文件引用版本', state: 'completed', support: 'supported' },
+      { description: '补充窄窗口下较长任务名称的阅读与键盘操作检查，确保完整展示业务状态和证据状态', state: 'not_started', support: 'unknown' },
+      { description: '复核最终结果', state: 'completed', support: 'unknown' },
+    ].map((item, i) => ({ ...item, item_id: `item-${i}`, context_ids: cases[i]?.ids || ['ctx-b'] }));
     await run(`patrolFixture.graphConversations=true;
       patrolFixture.lineage={complete:true,roots:{'ctx-a':'rev-a','ctx-b':'rev-b'},nodes:[{context_id:'ctx-a',revision_id:'rev-a',generation:1},{context_id:'ctx-b',revision_id:'rev-b',generation:1}],edges:[]};
       document.querySelector('[data-patrol-composer] [data-patrol-details]').click();
-      patrolFixture.emit('loop-location','task_progress','progress',1,{progress_id:'p1',generation:1,document:{items:${JSON.stringify(cases.map((item, i) => ({ item_id: `item-${i}`, description: `定位条目 ${i}`, state: 'in_progress', support: 'unknown', context_ids: item.ids })))}}});`);
-    await until('document.querySelectorAll(".workbench-node").length===2 && document.querySelectorAll("[data-patrol-progress-locate]").length===4');
+      patrolFixture.emit('loop-location','task_progress','progress',1,{progress_id:'p1',generation:1,document:{items:${JSON.stringify(items)}}});`);
+    await until('document.querySelectorAll(".workbench-node").length===2 && document.querySelectorAll("[data-patrol-progress-locate]").length===8');
+    assert.equal(await run('document.querySelector("[data-patrol-progress] h2").textContent'), '任务进度 · 已验证 3/8');
+    assert.equal(await run('document.querySelectorAll("[data-patrol-progress] .is-verified").length'), 3);
+    assert.match(await run('document.querySelectorAll("[data-patrol-progress-locate]")[1].textContent'), /已完成 · 已报告 · 2 条工作线/);
+    assert.equal(await run('Boolean(document.querySelector(".patrol-progress-card .patrol-progress-number, .patrol-progress-card .workbench-kicker, .patrol-progress-card footer"))'), false);
     for (const width of [1748, 900, 390]) {
       win.setContentSize(width, 904); await sleep(200);
+      await click('[data-workbench-show="progress"]');
+      const layout = await run(`(() => {
+        const content = document.querySelector('[data-patrol-progress]'), list = content.querySelector('ul'), status = list.querySelector('small');
+        return { fontSize: parseFloat(getComputedStyle(status).fontSize), contentOverflow: getComputedStyle(content).overflowY,
+          listOverflow: getComputedStyle(list).overflowY, listHeight: list.clientHeight, listScrollHeight: list.scrollHeight,
+          pageWidth: document.documentElement.scrollWidth, viewport: innerWidth };
+      })()`);
+      assert.ok(layout.fontSize >= 13, JSON.stringify({width, ...layout}));
+      assert.equal(layout.contentOverflow, 'hidden');
+      assert.equal(layout.listOverflow, 'auto');
+      assert.ok(layout.listHeight > 100, JSON.stringify({width, ...layout}));
+      assert.ok(layout.pageWidth <= layout.viewport + 1, JSON.stringify({width, ...layout}));
+      await run(`document.querySelectorAll('[data-patrol-progress-locate]')[7].focus()`);
+      assert.equal(await run(`(() => { const button = document.activeElement.getBoundingClientRect(), list = document.querySelector('[data-patrol-progress] ul').getBoundingClientRect(); return button.top >= list.top - 1 && button.bottom <= list.bottom + 1; })()`), true, `${width}px: keyboard focus scrolls the final task into view`);
+      await run(`document.activeElement.blur(); document.querySelector('[data-patrol-progress] ul').scrollTo({top:0,behavior:'instant'}); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      fs.writeFileSync(path.join(output, `progress-${width}.png`), (await win.webContents.capturePage()).toPNG());
       for (const { ids, notice } of cases) {
         if (width < 1200) await click('[data-workbench-show="progress"]');
         await click(`[data-patrol-progress-locate='${JSON.stringify(ids)}']`);
@@ -66,6 +96,15 @@ if (!process.versions.electron) {
       await click('[data-patrol-context-close]');
       await until('document.querySelectorAll(".workbench-node.is-selected").length===0');
     }
+    items[1].support = 'supported';
+    await run(`patrolFixture.emit('loop-location','task_progress','progress',2,{progress_id:'p2',generation:2,document:{items:${JSON.stringify(items)}}})`);
+    await until('document.querySelector("[data-patrol-progress] h2").textContent.includes("已验证 4/8")');
+    assert.equal(await run('document.querySelectorAll("[data-patrol-progress] .is-verified").length'), 4);
+    await run(`FocusI18n.setLocale('en-US')`);
+    await until('patrolFixture.connected("loop-location") && document.querySelector("[data-patrol-progress] h2").textContent.includes("Verified 0/0")');
+    await run(`patrolFixture.emit('loop-location','task_progress','progress',3,{progress_id:'p2',generation:2,document:{items:${JSON.stringify(items)}}})`);
+    await until('document.querySelector("[data-patrol-progress] h2").textContent.includes("Verified 4/8")');
+    assert.equal(await run('document.querySelector("[data-patrol-progress] h2").textContent'), 'Task progress · Verified 4/8');
     assert.equal(await run('document.querySelector("[data-patrol-error]").textContent'), '');
     console.log("PROGRESS_LOCATION_PASS", output); win.destroy(); app.quit();
   }).catch(error => { console.error(error); app.exit(1); });

@@ -62,6 +62,63 @@ test("English dynamic views contain no built-in Chinese text", () => {
   assert.doesNotMatch(html, /\p{Script=Han}/u);
 });
 
+test("Patrol graph controls and exact identity details follow the interface language", () => {
+  const c = surface();
+  for (const file of ["portfolio-map-layout.js", "portfolio-map-view.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "../../src/renderer/features/map", file), "utf8"), c);
+  }
+  const manifest = { nodes: [
+    { context_id: "source", current_revision_id: "source-r", counts: { artifacts: 2, workspace_changes: 3 } },
+    { context_id: "target", title: "Target", current_revision_id: "target-r" },
+  ], edges: [{ source_context_id: "source", source_revision_id: "source-r", target_context_id: "target", target_revision_id: "target-r" }] };
+  const graph = c.FocusPortfolioMapView.render(manifest, "source", [], { presentation: "workbench" });
+  const details = c.FocusWorkspacePatrolView.context({ context_id: "source", revision: { revision_id: "source-r" } }, manifest.nodes[0], "overview", { presentation: "workbench", manifest });
+  assert.doesNotMatch(graph + details, /\p{Script=Han}/u);
+  assert.match(graph, /Source relationships/);
+  assert.match(details, /Exact identity/);
+});
+
+test("memory category emptiness and search recovery follow the interface language", () => {
+  const c = surface();
+  const memory = { memory_id: "note", title: "Note", content: "Content" };
+  const strategy = { memory_id: "strategy", category: "evolution_strategy", title: "Method", strategy: { applicability: "When needed" } };
+  for (const category of ["memory", "evolution_strategy"]) {
+    const items = category === "memory" ? [strategy] : [memory];
+    const empty = c.FocusMemoryView.render(items, { category });
+    const noMatches = c.FocusMemoryView.render([memory, strategy], { category, query: "missing" });
+    assert.doesNotMatch(empty + noMatches, /\p{Script=Han}/u);
+    assert.match(empty, category === "memory" ? /No memories yet/ : /No work strategies yet/);
+    assert.match(noMatches, /Clear search/);
+  }
+});
+
+test("strategy methods, publishing, capacity and rehearsal copy are translated", () => {
+  const c = surface();
+  const strategy = { applicability: "When needed", evolution: "Proceed", inheritance: "Evidence" };
+  const metadata = { id: "test/method", name: "Method", version: "1.0.0", description: "Description" };
+  const rehearsal_result = { applicable: { adopted: true, reason: "Reason", organization: "Plan", inheritance: "Evidence", missing_evidence: [], stop_when: "Stop" } };
+  const editor = c.FocusMemoryView.render([], { composing: true, draft: { title: "Method", category: "evolution_strategy", strategy, rehearsal_result } });
+  const importing = c.FocusMemoryView.render([], { strategyImport: { markdown: "Source", preview: {
+    metadata, strategy, existing: { strategy, strategy_package: metadata, locally_modified: true },
+    capacity: [{ fits: false, input_bound: 50, previous_input_bound: 60, strategy_input_limit: 40, model_name: "Model" }],
+  } } });
+  assert.doesNotMatch(editor + importing, /\p{Script=Han}/u);
+  assert.match(editor, /When to apply/);
+  assert.match(editor, /Rehearsal results \(simulation\)/);
+});
+
+test("context body and JSON editors translate labels while preserving message fields", () => {
+  const c = surface();
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../../src/renderer/features/context/context-editor.js"), "utf8"), c);
+  const messages = [{ role: "assistant", content: [{ type: "text", text: "用户正文" }], tool_call_id: "call-1" }];
+  for (const mode of ["body", "json"]) {
+    const html = c.FocusContextEditor.renderMessages(messages, ["a"], "a", false, mode);
+    assert.doesNotMatch(html.replaceAll("用户正文", ""), /\p{Script=Han}/u);
+    assert.match(html, /Create duplicate/);
+    assert.match(html, /用户正文/);
+  }
+});
+
 test("language changes refresh generated labels and preserve user content", () => {
   const c = surface("zh-CN");
   const render = () => c.FocusPluginView.render([{ name: "用户插件", version: "1", status: "active", requires: [] }], {}, [], {});
@@ -98,4 +155,74 @@ test("native chrome follows the saved language and leaves unknown content intact
   locale = "en-US";
   assert.equal(text("退出 Focus"), "Quit Focus");
   assert.equal(text("我的项目"), "我的项目");
+});
+
+test("Patrol feedback uses stable bilingual keys without the source catalog", async () => {
+  const c = surface("zh-CN");
+  c.FocusI18nCatalog = {};
+  const feedback = c.FocusWorkspacePatrolFeedback;
+  const reader = feedback.createReader({ conversation: async () => { throw new Error("offline"); } });
+  const cancellationStates = ["cancel_requested", "stopped", "already_terminal", "settled", "unknown", "future_state"];
+  const result = {
+    disposition: "decision", explanation: "User explanation", mission_revision: 3,
+    decision_id: "decision-1", round_id: "round-2", observation_id: "observation-3", observation_generation: 4,
+    applied_at: "2026-11-10T04:00:00Z",
+    changes: ["supplement", "revise", "remove"].map((operation, i) => ({ operation, section: ["outcome", "boundary", "completion_check"][i], quote: "User quote" })),
+    related_cancellations: cancellationStates.map((state, i) => ({ state, target_kind: ["run", "directive", "worker"][i % 3], target_id: `target-${i}`, reason: "User reason" })),
+  };
+  const loop = { interaction_mode: "workspace_patrol", status: "waiting_user", waiting_reason: "awaiting_input",
+    current_round_id: "round-2", goal_revision: 3,
+    final_result: { round_id: "round-2", goal_revision: 3,
+      verification: { verification_id: "verified", conclusion: "satisfied", criteria: [{ check_id: "check", status: "unknown", explanation: "Unverified" }] },
+      final_path: [{ context_id: "context-1", revision_id: "revision-2" }] } };
+  const before = JSON.stringify({ result, loop });
+  for (const locale of ["zh-CN", "en-US", "zh-CN", "en-US"]) {
+    c.FocusI18n.setLocale(locale);
+    const html = [
+      ...["discussion", "decision", "reference", "deferred", "future_disposition"].map(disposition => feedback.inputResult({ status: "accepted", processing_result: { ...result, disposition } })),
+      ...[undefined, "pending", "observed", "addressed", "superseded"].map(processing_state => feedback.inputResult({ status: "accepted", processing_state })),
+      feedback.delivery({ loop: { state: loop } }),
+      feedback.delivery({ loop: { state: { ...loop, current_round_id: "next-round", final_result: { ...loop.final_result,
+        verification: { verification_id: "verified", conclusion: "satisfied", criteria: [{ check_id: "check", status: "satisfied", explanation: "Passed" }] } } } } }),
+      ...["running", "waiting_user", "paused", "stopped", "failed", "completed"].map(status => feedback.status({ loop: { state: { status } } }, { status: "live" }, { rows: [] }).text),
+      ...["failed", "sending", "accepted"].map(status => feedback.status(null, { status: "live" }, { rows: [{ status }] }).text),
+      feedback.status(null, { status: "reconnecting" }, { rows: [] }).text,
+      feedback.status(null, { status: "live" }, { rows: [] }).text,
+      feedback.status({ loop: { state: loop } }, { status: "live" }, { rows: [] }).text,
+      ...["stopped", "failed"].flatMap(status => [[], [{ status: "accepted", processing_state: "pending" }]].map(rows => JSON.stringify(feedback.recovery({ loop: { state: { status } } }, { rows })))),
+      reader.entries({ contexts: { c: { entity_id: "c", state: { current_revision_id: "r" } } } })[0].title,
+      (await reader.read("loop", { context_id: "c", revision_id: "r" })).error,
+    ].join("\n");
+    assert.doesNotMatch(html, /patrol\.(?:feedback|delivery|status|recovery|answer)\./, "no missing-key fallback");
+    if (locale === "en-US") assert.doesNotMatch(html, /\p{Script=Han}/u, "all generated feedback and accessible names must be English");
+    else assert.match(html, /已纳入决策/);
+    const host = createElement("div");
+    host.innerHTML = feedback.delivery({ loop: { state: loop } });
+    const action = host.querySelector('[data-patrol-delivery-context="context-1"]');
+    assert.equal(action.dataset.revisionId, "revision-2");
+    assert.equal(host.querySelector("nav").getAttribute("aria-label"), c.FocusI18n.t("patrol.delivery.view"));
+    assert.ok(host.querySelector("[data-patrol-files-open]"));
+  }
+  assert.equal(JSON.stringify({ result, loop }), before, "language changes preserve domain data");
+});
+
+test("translated Patrol templates preserve and escape user text and action identities", () => {
+  const c = surface();
+  c.FocusI18nCatalog = {};
+  const userText = '用户原文 <img src=x onerror="bad()">';
+  const escaped = '用户原文 &lt;img src=x onerror=&quot;bad()&quot;&gt;';
+  const feedback = c.FocusWorkspacePatrolFeedback;
+  const html = feedback.inputResult({ status: "accepted", processing_result: {
+    disposition: "decision", explanation: userText, rationale: userText,
+    changes: [{ operation: "revise", section: "boundary", quote: userText }],
+    related_cancellations: [{ state: "cancel_requested", target_kind: "run", target_id: userText, reason: userText }],
+  } }) + feedback.delivery({ loop: { state: { interaction_mode: "workspace_patrol", final_result: {
+    summary: userText, verification: { verification_id: "v", conclusion: "satisfied" },
+    final_path: [{ context_id: userText, revision_id: userText, title: userText }],
+  } } } });
+  assert.ok(html.includes(escaped));
+  assert.ok(html.includes(`data-patrol-delivery-context="${escaped}" data-revision-id="${escaped}"`));
+  assert.ok(html.includes(`Revise Execution boundary: ${escaped}`), "translated interpolation preserves the whole user quote");
+  assert.doesNotMatch(html, /<img|<script|<svg|<iframe/);
+  assert.doesNotMatch(html.replaceAll(escaped, ""), /\p{Script=Han}/u);
 });

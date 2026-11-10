@@ -337,13 +337,19 @@ if (!process.versions.electron) {
     await run('window.patrolFixture.controlError=false');
     await run('window.patrolFixture.observationError=true; window.patrolFixture.emit("loop-completion_check", "round", "round-1", 1, {number:1,observation_id:"observation-1"})');
     await until('document.querySelector("[data-patrol-observation-retry]")');
+    assert.equal(await run('document.querySelector("[data-patrol-observation] [data-observation-state]").dataset.observationState'), "error");
+    assert.equal(await run('document.querySelector("[data-patrol-observation] h3")'), null);
     await run('window.patrolFixture.observationError=false; document.querySelector("[data-patrol-observation-retry]").click()');
     await until('!document.querySelector("[data-patrol-observation-open]").disabled');
-    assert.match(await run('document.querySelector("[data-patrol-observation]").textContent'), /看到了.*导入测试失败.*接下来.*先补齐测试配置.*当前阻塞/s);
+    assert.match(await run('document.querySelector("[data-patrol-observation]").textContent'), /结论.*导入测试失败.*下一步.*先补齐测试配置.*当前未报告阻塞/s);
     assert.doesNotMatch(await run('document.querySelector("[data-patrol-observation]").textContent'), /Round|Revision|OBSERVATION|因果关系/);
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-observation] .observation-blockers"))'), false);
     await run('window.patrolFixture.emit("loop-completion_check", "loop_wait_request", "observation-blocker", 1, {round_id:"round-1",status:"open",response_mode:"text",prompt:"请提供测试环境配置。",scope:{}})');
     await until('document.querySelector("[data-patrol-observation]").textContent.includes("请提供测试环境配置。")');
+    assert.equal(await run('document.querySelector("[data-patrol-observation]").firstElementChild.className'), "observation-blockers");
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-observation] [data-observation-state=unreported]"))'), false);
     if (process.env.FOCUS_OBSERVATION_QA_PATH) {
+      await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       const rect = await run('(() => { const r=document.querySelector(".patrol-observation-card").getBoundingClientRect(); return {x:Math.floor(r.x),y:Math.floor(r.y),width:Math.ceil(r.width),height:Math.ceil(r.height)}; })()');
       fs.writeFileSync(process.env.FOCUS_OBSERVATION_QA_PATH, (await win.webContents.capturePage(rect)).toPNG());
     }
@@ -501,7 +507,40 @@ if (!process.versions.electron) {
       assert.equal(await run('document.querySelector("[data-nav-key][aria-current=page]").dataset.navKey'), page);
       await run(`document.querySelector('[data-page-search=${page}]').value='无匹配记录'; document.querySelector('[data-page-search=${page}]').dispatchEvent(new Event('input', {bubbles:true}))`);
       assert.equal(await run('document.querySelectorAll("#app .plugin-card, #app .memory-card").length'), 0);
-      if (page === "memory") assert.match(await run('document.querySelector("#app").textContent'), /没有匹配的记忆/);
+      if (page === "memory") {
+        assert.match(await run('document.querySelector("#app").textContent'), /没有匹配的记忆/);
+        const memories = await run('JSON.stringify(state.memory.memories)');
+        const requests = await run('window.patrolFixture.requests.length');
+        await run('document.querySelector("[data-action=clear-memory-search]").click()');
+        assert.equal(await run('state.memory.query'), "");
+        assert.equal(await run('document.activeElement.dataset.pageSearch'), "memory");
+        assert.equal(await run('JSON.stringify(state.memory.memories)'), memories);
+        assert.equal(await run('window.patrolFixture.requests.length'), requests);
+        assert.ok(await run('document.querySelectorAll(".memory-card").length > 0'));
+
+        // 仅缓存策略时，普通分类为空；策略分类搜索无匹配则提供清除入口。
+        await run(`state.memory.memories = [{memory_id:'strategy-empty-state',category:'evolution_strategy',title:'验证方法',enabled:true,strategy:{applicability:'存在假设',evolution:'先验证再实施',inheritance:'保留证据'}}];
+          document.querySelector('[data-action=memory-category][data-category=memory]').click()`);
+        assert.equal(await run('document.querySelector(".memory-empty h2").textContent'), "还没有任何记忆");
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty [data-action=new-memory]"))'), true);
+        assert.equal(await run('Boolean(document.querySelector(".memory-page-heading p"))'), false);
+        await snapshot("memory-category-empty");
+        await run(`document.querySelector('[data-action=memory-category][data-category=evolution_strategy]').click();
+          const search = document.querySelector('[data-page-search=memory]'); search.value='无匹配策略'; search.dispatchEvent(new Event('input',{bubbles:true}))`);
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty [data-action=new-strategy], .memory-empty [data-action=import-strategy]"))'), false);
+        await snapshot("memory-search-empty");
+        await run('document.querySelector("[data-action=clear-memory-search]").click()');
+        assert.equal(await run('state.memory.category'), "evolution_strategy");
+        assert.equal(await run('document.querySelectorAll(".memory-card").length'), 1);
+
+        await run('document.querySelector("[data-action=memory-category][data-category=memory]").click(); window.patrolFixture.pageError="分类读取失败"; hydrateMemory()');
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty"))'), false);
+        assert.match(await run('document.querySelector("#app [role=alert]").textContent'), /分类读取失败/);
+        await snapshot("memory-read-error");
+        await run('window.patrolFixture.pageError=null; document.querySelector("[data-action=refresh-memory]").click()');
+        await until('!state.memory.loading && !state.memory.error');
+        await run(`document.querySelector('[data-action=memory-category][data-category=""]').click()`);
+      }
       await run(`document.querySelector('[data-page-search=${page}]').value=''; document.querySelector('[data-page-search=${page}]').dispatchEvent(new Event('input', {bubbles:true}))`);
     }
     await run('document.querySelector("[data-action=show-plugins]").click()');

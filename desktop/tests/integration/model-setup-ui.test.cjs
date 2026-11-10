@@ -32,7 +32,10 @@ const run = source => harness.vm.runInContext(source, harness.context);
   assert.match(simple, /data-model-field="model"/);
   assert.doesNotMatch(simple, /data-model-field="(?:use|provider|protocol|api_key|context_window)"/);
   assert.match(initial, /aria-expanded="false"/);
-  assert.match(initial, /验证并开始/);
+  assert.match(initial, /保存并验证/);
+  assert.match(initial, /<li aria-current="step"><strong>1\. 模型配置/);
+  assert.match(initial, /2\. 选择项目/);
+  assert.doesNotMatch(initial, /验证并开始|开始第一个项目/);
   assert.doesNotMatch(initial, /data-action="model-start"/);
   assert.match(initial, /能否为后续工作检索上下文/);
   assert.equal(run('modelSettings.snapshot.models.filter(entry => entry.default && entry.curation_default).length'), 1);
@@ -91,8 +94,13 @@ const run = source => harness.vm.runInContext(source, harness.context);
   assert.equal(run('retried.path'), "/desktop/api/settings/models/verify");
   assert.deepEqual([...run('Object.keys(retried.body)')], ["verification_id"]);
   assert.match(host.innerHTML, /data-action="model-start"/);
+  assert.match(host.innerHTML, /<li aria-current="step"><strong>2\. 选择项目/);
+  assert.match(host.innerHTML, /data-action="model-start">选择项目文件夹/);
   run('updateModelField({ dataset: { modelField: "model" }, value: "changed" }); renderModelSettings();');
   assert.doesNotMatch(host.innerHTML, /data-action="model-start"/);
+  assert.equal(run('modelSettings.snapshot.verification'), null);
+  assert.doesNotMatch(host.innerHTML, /data-check-status="passed"/);
+  assert.match(host.innerHTML, /配置已修改，请保存并重新验证/);
 
   // 网络中断后不能继续展示「验证中」或沿用此前的成功结论。
   await run('modelSettings.dirty = false; api = async () => { throw new Error("offline"); }; reverifyModelSettings();');
@@ -122,5 +130,30 @@ const run = source => harness.vm.runInContext(source, harness.context);
     handleDocumentClick({ target: { closest: selector => selector === "[data-action]" ? startButton : null } });
   `);
   assert.deepEqual(JSON.parse(run('JSON.stringify(transitions)')), [{ task: false, visible: false }, { task: true, visible: true }]);
+
+  // 每一种配置编辑都必须清除旧验证；不能仅禁用继续按钮却保留成功结果。
+  for (const edit of [
+    'updateModelCredential("new-secret")',
+    'updateModelService("openai")',
+    'updateModelField({ dataset: { modelField: "model" }, value: "new-model" })',
+    'updateModelField({ dataset: { modelField: "curation_default" }, checked: true })',
+    'addModelEntry()',
+    'removeModelEntry(1)',
+    'restoreShippedModels()',
+  ]) {
+    run(`modelSettings.snapshot = JSON.parse(JSON.stringify(snapshot));
+      modelSettings.snapshot.setup_required = false;
+      modelSettings.snapshot.verification = { ok: true, checks: [{ capability: "chat", ok: true }] };
+      modelSettings.setupMode = true;
+      modelSettings.dirty = false;
+      modelSettings.saving = false;
+      startModelDraft(0);
+      confirm = () => true;
+      ${edit};
+      renderModelSettings();`);
+    assert.equal(run('canContinueModelSetup()'), false, edit);
+    assert.equal(run('modelSettings.snapshot.verification'), null, edit);
+    assert.doesNotMatch(host.innerHTML, /data-action="model-start"|data-check-status="passed"/, edit);
+  }
   console.log("model-setup-ui: all assertions passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });
