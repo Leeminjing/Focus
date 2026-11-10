@@ -1059,7 +1059,7 @@ function renderNoActiveTask() {
   if (appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
   appInspector.hidden = true;
   const english = interfaceI18n.locale() === "en-US";
-  app.innerHTML = `<section class="empty-state"><h1>${english ? "No active Context" : localize("暂无活动 Context")}</h1><p>${english ? "There is no active Context. Create a task or restore an archived Context from Settings." : localize("当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。")}</p><div class="ui-toolbar"><button class="primary" data-action="new-task">${uiText("header.new_task", "新增任务")}</button><button class="text-button" data-action="open-settings">${english ? "View Archived Contexts" : localize("查看已归档 Context")}</button></div></section>`;
+  app.innerHTML = `<section class="empty-state"><h1>${english ? "No active conversations" : localize("暂无活动会话")}</h1><p>${english ? "Create a task or restore an archived conversation." : localize("新建任务，或恢复已归档的会话。")}</p><div class="ui-toolbar"><button class="primary" data-action="new-task">${uiText("header.new_task", "新增任务")}</button><button class="text-button" data-action="open-settings" data-settings-tab="data" data-settings-section="archived">${english ? "View archived conversations" : localize("查看已归档会话")}</button></div></section>`;
 }
 
 async function renderWorkspacePatrol() {
@@ -1522,7 +1522,7 @@ function renderRunMaterialNote(materialId) {
   // 取消勾选只隐藏输入框，备注草稿仍由 run-material-picker 按材料 ID 保留。
   const binding = materialSelection().bindings.find(item => item.materialId === materialId);
   if (!binding) return "";
-  return localize`<label class="run-material-note"><textarea data-field="run-material-note" rows="2" draggable="false" placeholder="给这份材料添加本轮备注，可留空">${escapeHtml(binding.note)}</textarea></label>`;
+  return localize`<label class="run-material-note"><textarea data-field="run-material-note" rows="2" draggable="false" aria-label="本轮备注" placeholder="给这份材料添加本轮备注，可留空">${escapeHtml(binding.note)}</textarea></label>`;
 }
 
 function renderMustViewRecovery(detail) {
@@ -2186,7 +2186,7 @@ function stripRunMaterialProtocol(text, message) {
 function renderRunMaterialCards(message) {
   const rows = messageMaterialHistory(message);
   if (!rows.length) return "";
-  return localize`<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : localize('<small class="muted">无备注</small>')}${item.must_view_requested ? localize('<small class="ui-badge is-warning">必须看</small>') : ""}${item.current_available === false ? localize('<small class="muted">当前内容不可用</small>') : ""}</span></article>`).join("")}</section>`;
+  return localize`<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}${item.must_view_requested ? localize('<small class="ui-badge is-warning">必须看</small>') : ""}${item.current_available === false ? localize('<small class="muted">当前内容不可用</small>') : ""}</span></article>`).join("")}</section>`;
 }
 
 function renderContentBlock(block, message = null) {
@@ -2599,58 +2599,52 @@ function _snapshotCarriesStreamedText(messages, buffer) {
   });
 }
 
-function renderImageMaterial(material) {
-  const open = state.openMaterial === material.material_id;
+// 本次绑定只读写 materialSelections；长期规则只通过独立设置区保存到材料本身。
+function renderMaterialSelection(material) {
   const selection = materialSelection();
-  const attached = selection.bindings.some(item => item.materialId === material.material_id);
+  const selected = selection.bindings.some(item => item.materialId === material.material_id);
   const required = selection.requiredImageIds.includes(material.material_id);
-  const reason = material.size_bytes ? "" : localize("该材料内容为空，无法用于本轮");
-  return localize`<article class="material-row is-image" draggable="true" data-material-id="${material.material_id}">
-    <header class="material-summary">
-      <button class="material-title-button" data-action="preview-image-material" title="放大查看">${materialImageMarkup(material.material_id, "material-thumb", "", null)}<span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>图片材料 · ${formatBytes(material.size_bytes)}</small></span></button>
-      <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? localize("收起") : localize("管理")}</button>
-    </header>
-    <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${attached}"${reason ? " disabled" : ""}>${attached ? "☑" : "☐"} 本轮使用</button><button class="text-button must-view-toggle" data-action="toggle-image-required" aria-pressed="${required}"${!attached || reason ? " disabled" : ""}>${required ? "☑" : "☐"} 必须看</button>${reason ? `<span class="muted tiny">${escapeHtml(reason)}</span>` : ""}</div>
+  const unavailable = !material.size_bytes;
+  return localize`<div class="material-selection" role="group" aria-label="本次选择：${escapeHtml(material.relative_path)}">
+    <div class="material-selection-row"><button type="button" class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${selected}"${unavailable ? " disabled" : ""}>${selected ? "☑" : "☐"} 本轮使用</button>${material.is_image ? localize`<button type="button" class="text-button must-view-toggle${required ? " is-required" : ""}" data-action="toggle-image-required" aria-pressed="${required}"${!selected || unavailable ? " disabled" : ""}>${required ? "☑" : "☐"} 必须看</button>` : ""}${material.retention === "irreplaceable" ? localize('<span class="ui-badge is-success">版本保护</span>') : ""}${unavailable ? localize('<span class="muted tiny">内容不可用</span>') : ""}</div>
     ${renderRunMaterialNote(material.material_id)}
-    ${open ? localize`<div class="material-editor">
-      <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
-      <span class="material-actions"><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? localize('<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>') : ""}<button class="text-button danger" data-action="delete-material">删除</button></span>${renderMaterialUsageHistory(material.material_id)}</div>` : ""}
-  </article>`;
+  </div>`;
+}
+
+function renderMaterialSettings(material) {
+  if (state.openMaterial !== material.material_id) return `<section id="material-settings-${escapeHtml(material.material_id)}" hidden></section>`;
+  return localize`<section class="material-editor" id="material-settings-${escapeHtml(material.material_id)}" aria-label="材料设置：${escapeHtml(material.relative_path)}">
+    ${!material.is_image ? localize`<fieldset class="material-rules"><legend>长期规则</legend>
+      <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
+      <label>指令规则<select data-field="instruction_mode"><option value="reference" ${material.instruction_mode === "reference" ? "selected" : ""}>仅供参考</option><option value="strict" ${material.instruction_mode === "strict" ? "selected" : ""}>严格遵守</option></select></label>
+      <label>保留规则<select data-field="retention"><option value="removable" ${material.retention === "removable" ? "selected" : ""}>可移除</option><option value="irreplaceable" ${material.retention === "irreplaceable" ? "selected" : ""}>不可遗失</option></select></label>
+      <button class="primary" data-action="save-material">保存规则</button>
+    </fieldset>` : ""}
+    <div class="material-file-actions"><strong>文件与版本</strong><span class="material-actions"><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? localize('<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>') : ""}
+    ${material.retention === "irreplaceable" ? localize`<button class="text-button" data-action="clear-material">置空</button><button class="text-button" data-action="load-versions">版本</button>` : localize`<button class="text-button danger" data-action="delete-material">删除</button>`}</span>
+    <ul class="version-list" data-versions></ul></div>${renderMaterialUsageHistory(material.material_id)}
+  </section>`;
 }
 
 function renderMaterial(material) {
-  if (material.is_image) return renderImageMaterial(material);
   const open = state.openMaterial === material.material_id;
-  const viewable = !!pluginViewForMaterial(material);
-  const reading = material.reading_mode === "full" ? localize("完整阅读") : localize("粗略阅读");
-  const instruction = material.instruction_mode === "strict" ? localize("严格约束") : localize("参考材料");
-  const retention = material.retention === "irreplaceable" ? localize("版本保护") : localize("可移除");
-  const selected = materialSelection().bindings.some(item => item.materialId === material.material_id);
-  const unavailable = !material.size_bytes;
-  return localize`<article class="material-row" draggable="true" data-material-id="${material.material_id}">
+  const viewable = !material.is_image && !!pluginViewForMaterial(material);
+  const previewAction = material.is_image ? "preview-image-material" : viewable ? "open-material" : "toggle-material";
+  return localize`<article class="material-row${material.is_image ? " is-image" : ""}" draggable="true" data-material-id="${escapeHtml(material.material_id)}">
     <header class="material-summary">
-      <button class="material-title-button" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? localize("在文件工作台打开") : localize("查看材料规则")}"><span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${viewable ? localize("可在文件工作台查看") : localize("未启用匹配的查看器")}</small></span></button>
-      <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? localize("收起") : localize("管理")}</button>
+      <button class="material-title-button" data-action="${previewAction}" title="${material.is_image ? localize("放大查看") : viewable ? localize("在文件工作台打开") : localize("查看材料规则")}">${material.is_image ? materialImageMarkup(material.material_id, "material-thumb", "", null) : '<span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span>'}<span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${formatBytes(material.size_bytes)}</small></span></button>
+      <button class="text-button" data-action="toggle-material" aria-expanded="${open}" aria-controls="material-settings-${escapeHtml(material.material_id)}">${open ? localize("收起设置") : localize("材料设置")}</button>
     </header>
-    <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${selected}"${unavailable ? " disabled" : ""}>${selected ? "☑" : "☐"} 本轮使用</button><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span>${unavailable ? localize('<span class="muted tiny">内容不可用</span>') : ""}</div>
-    ${renderRunMaterialNote(material.material_id)}
+    ${renderMaterialSelection(material)}
     ${material.needs_confirmation ? localize`<div class="ui-notice is-warning"><strong>检测到外部删除</strong><span>Focus 已恢复文件，请从版本记录确认内容。</span></div>` : ""}
-    ${open ? localize`<div class="material-editor">
-      <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
-      <label>约束<select data-field="instruction_mode"><option value="reference" ${material.instruction_mode === "reference" ? "selected" : ""}>仅供参考</option><option value="strict" ${material.instruction_mode === "strict" ? "selected" : ""}>严格遵守</option></select></label>
-      <label>文件规则<select data-field="retention"><option value="removable" ${material.retention === "removable" ? "selected" : ""}>可移除</option><option value="irreplaceable" ${material.retention === "irreplaceable" ? "selected" : ""}>不可遗失</option></select></label>
-      <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
-      <span class="material-actions"><button class="primary" data-action="save-material">保存规则</button><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? localize('<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>') : ""}
-      ${material.retention === "irreplaceable" ? localize`<button class="text-button" data-action="clear-material">置空</button><button class="text-button" data-action="load-versions">版本</button>` : localize`<button class="text-button danger" data-action="delete-material">删除</button>`}</span>
-      <ul class="version-list" data-versions></ul>${renderMaterialUsageHistory(material.material_id)}
-    </div>` : ""}
+    ${renderMaterialSettings(material)}
   </article>`;
 }
 
 function renderMaterialUsageHistory(materialId) {
   const rows = (state.materialHistory.get(state.activeTaskId) || []).filter(item => item.material_id === materialId);
-  if (!rows.length) return localize('<p class="muted tiny">线程内尚未使用</p>');
-  return localize`<details class="material-usage-history"><summary>线程内使用记录 · ${rows.length}</summary><ol>${rows.map(item => `<li><span>Run ${escapeHtml(String(item.run_id).slice(0, 8))}${item.must_view_requested ? localize(" · 必须看") : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : localize('<small class="muted">无备注</small>')}</li>`).join("")}</ol></details>`;
+  if (!rows.length) return "";
+  return localize`<details class="material-usage-history"><summary>线程内使用记录 · ${rows.length}</summary><ol>${rows.map(item => `<li><span>Run ${escapeHtml(String(item.run_id).slice(0, 8))}${item.must_view_requested ? localize(" · 必须看") : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}</li>`).join("")}</ol></details>`;
 }
 
 function renderAgentStrip(taskId) {
@@ -6703,6 +6697,20 @@ function refreshMaterialView(taskId, changed = false) {
   if (state.activeTaskId === taskId) render();
 }
 
+function refreshMaterialSelection(row, material, taskId, action) {
+  if (state.activeTaskId !== taskId || !row.isConnected) return;
+  // 只替换本次绑定，保留长期规则的未保存值、版本列表及已展开的历史。
+  row.querySelector(".material-selection").outerHTML = renderMaterialSelection(material);
+  row.querySelector(`[data-action="${action}"]`)?.focus({ preventScroll: true });
+  const groups = materialGroupingProjection(activeTask()).groups;
+  document.querySelectorAll("[data-material-group-key]").forEach(node => {
+    const group = groups.find(item => item.key === node.dataset.materialGroupKey);
+    const count = node.querySelector(".material-group-header > .ui-badge");
+    if (group && count) count.textContent = `${group.materials.length}${group.selectedCount ? localize` · 已选 ${group.selectedCount}` : ""}`;
+  });
+  refreshComposerAttachments(taskId);
+}
+
 async function handleMaterialAction(button) {
   const taskId = state.activeTaskId;
   const row = button.closest("[data-material-id]");
@@ -6710,8 +6718,8 @@ async function handleMaterialAction(button) {
   const material = (state.materials.get(taskId) || []).find(item => item.material_id === materialId);
   try {
   if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return refreshMaterialView(taskId); }
-  if (button.dataset.action === "toggle-run-material") { toggleRunMaterial(materialId); return refreshMaterialView(taskId); }
-  if (button.dataset.action === "toggle-image-required") { await toggleImageRequired(materialId); return refreshMaterialView(taskId); }
+  if (button.dataset.action === "toggle-run-material") { toggleRunMaterial(materialId); return refreshMaterialSelection(row, material, taskId, button.dataset.action); }
+  if (button.dataset.action === "toggle-image-required") { await toggleImageRequired(materialId); return refreshMaterialSelection(row, material, taskId, button.dataset.action); }
   if (button.dataset.action === "move-material-group") {
     const groups = state.materialGroups.get(state.activeTaskId) || [];
     if (!groups.length) return setStatus(localize("请先新建自定义分组"), true);
@@ -7579,9 +7587,9 @@ function loadStorageSettings() {
   return storageSettingsController.load();
 }
 
-function selectSettingsTab(tab) {
+function selectSettingsTab(tab, { load = true } = {}) {
   const selected = ["general", "models", "data"].includes(tab) ? tab : "general";
-  document.querySelectorAll("[data-settings-tab]").forEach(button => {
+  settingsDialog.querySelectorAll("[role='tab'][data-settings-tab]").forEach(button => {
     const active = button.dataset.settingsTab === selected;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-selected", String(active));
@@ -7590,6 +7598,7 @@ function selectSettingsTab(tab) {
   document.querySelectorAll("[data-settings-pane]").forEach(pane => {
     pane.hidden = pane.dataset.settingsPane !== selected;
   });
+  if (!load) return undefined;
   if (selected === "data") return runUiAction(loadStorageSettings);
   if (selected === "models") {
     return runUiAction(async () => {
@@ -7609,8 +7618,13 @@ function syncLanguageControls() {
   });
 }
 
-async function openSettings() {
+async function openSettings({ tab, section } = {}) {
+  if (tab) selectSettingsTab(tab, { load: false });
   if (!settingsDialog?.open || settingsDialog.inert) void window.FocusSurfaceTransition.visible(settingsDialog, true, { modal: true, source: document.activeElement });
+  const target = section ? [...settingsDialog.querySelectorAll("[data-settings-section]")]
+    .find(node => node.dataset.settingsSection === section && !node.closest("[hidden]")) : null;
+  target?.focus({ preventScroll: true });
+  target?.scrollIntoView({ block: "start" });
   try {
     const sessions = await api("/desktop/api/sessions/archived");
     const list = document.querySelector("#archivedSessions");
@@ -7660,6 +7674,8 @@ async function openSettings() {
   }
   await loadShellRecovery();
   if (document.querySelector('[data-settings-pane="data"]')?.hidden === false) await loadStorageSettings();
+  // 存储区异步加载会改变归档区位置；仅在用户仍停留于落点时校正滚动，不夺走后续操作的焦点。
+  if (target && document.activeElement === target && settingsDialog.open && !settingsDialog.inert) target.scrollIntoView({ block: "start" });
 }
 
 async function loadShellRecovery() {
@@ -7985,7 +8001,8 @@ async function handleDocumentClick(event) {
   if (action === "focus-home") return state.activeTaskId ? goFocusHome() : (state.view = "focus", render());
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
   if (action === "organize-context") return openCompressionView(activeTask(), null, null, true);
-  if (action === "open-settings") return openSettings();
+  if (action === "open-settings") return openSettings({ tab: button.dataset.settingsTab, section: button.dataset.settingsSection });
+  if (action === "focus-main-input") return document.querySelector("#mainInput")?.focus();
   if (action === "view-history") return openHistory(button.dataset.contextId);
   if (action === "open-history-result") {
     const hit = state.historySearch.results[Number(button.dataset.resultIndex)];

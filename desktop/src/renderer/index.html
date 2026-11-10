@@ -152,8 +152,8 @@
     <section class="settings-pane" data-settings-pane="data" hidden>
       <h3 data-i18n="settings.data">数据</h3>
       <section id="storageSettingsHost" class="settings-data-section" aria-label="长期存储维护" data-i18n-aria-label="settings.storage_maintenance"></section>
-      <section class="settings-data-section">
-        <header><strong data-i18n="settings.archived">已归档的会话</strong><span class="muted tiny" data-i18n="settings.archived_help">归档可恢复；删除需确认</span></header>
+      <section class="settings-data-section" data-settings-section="archived" tabindex="-1" aria-labelledby="archivedSessionsHeading">
+        <header><strong id="archivedSessionsHeading" data-i18n="settings.archived">已归档的会话</strong><span class="muted tiny" data-i18n="settings.archived_help">归档可恢复；删除需确认</span></header>
         <div id="archivedSessions" class="archived-session-list"></div>
       </section>
     </section>

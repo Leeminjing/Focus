@@ -9,8 +9,8 @@
 .round-changes summary:hover { background: var(--surface-subtle); }
 .round-changes :is(summary, button):focus-visible { outline: 2px solid var(--text-accent); outline-offset: -2px; }
 .round-changes-content { max-height: 38vh; overflow: auto; border-top: 1px solid var(--border-default); }
-.round-changes-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; }
-.round-changes-toolbar > span { min-width: 0; }
+.round-changes-toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 6px 10px; }
+.round-change-run { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; }
 .round-changes button { flex-shrink: 0; }
 .round-change-file { margin: 0; border-top: 1px solid var(--border-default); }
 .round-change-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; }

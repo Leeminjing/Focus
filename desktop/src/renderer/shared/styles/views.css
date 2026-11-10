@@ -1055,7 +1055,7 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .compression-mapping-details summary { cursor: pointer; }
 .compression-mapping { display: grid; gap: var(--space-1); margin-bottom: 0; padding-left: var(--space-5); }
 
-/* 材料检查器：策略在列表层可扫描，危险与版本动作只在展开管理区出现。 */
+/* 材料检查器：主行承载本次选择，长期规则和版本动作位于独立设置区。 */
 .materials-inspector .inspector-description { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
 .material-group-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .material-group { display: grid; gap: var(--space-1); }
@@ -1072,12 +1072,16 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .material-file-icon { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-control); color: var(--text-accent); background: var(--surface-accent); }
 .material-name { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .material-title-button small { color: var(--text-secondary); font-size: 10px; }
-.material-policy-row { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.material-selection { display: grid; min-width: 0; gap: var(--space-2); }
+.material-selection-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+.material-selection-row .is-required { color: var(--text-warning); background: var(--surface-warning); }
 .material-editor { display: grid; gap: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border-subtle); }
-.material-editor > label { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: var(--space-2); color: var(--text-secondary); font-size: 11px; }
+.material-rules { display: grid; min-width: 0; gap: var(--space-2); margin: 0; padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
+.material-rules legend, .material-file-actions > strong { color: var(--text-primary); font-size: 11px; font-weight: 600; }
+.material-rules > label { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: var(--space-2); color: var(--text-secondary); font-size: 11px; }
+.material-rules > button { justify-self: end; }
 .material-editor select { width: 100%; min-width: 0; }
-.material-source-meta { display: grid; gap: var(--space-1); color: var(--text-secondary); font-size: 10px; }
-.material-source-meta code { overflow-wrap: anywhere; padding: var(--space-2); border-radius: var(--radius-control); background: var(--surface-code); }
+.material-file-actions { display: grid; gap: var(--space-2); }
 .material-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 .version-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .version-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-control); background: var(--surface-subtle); font-size: 10px; }
@@ -1203,9 +1207,9 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .focus-view--assembly { grid-template-rows: minmax(0, 1fr) auto; }
 .focus-view--assembly .conversation { grid-row: 1; }
 .focus-view--assembly .focus-bottom { grid-row: 2; }
-.assembly-empty { margin: auto; align-self: center; text-align: center; color: var(--muted, #737986); font-size: 13px; line-height: 1.9; }
-.assembly-empty-title { margin: 16px 0; font-weight: 600; color: var(--text-primary, #15171c); font-size: 15px; }
-.assembly-empty p { margin: 0; }
+.assembly-empty, .conversation-empty { margin: auto; align-self: center; text-align: center; color: var(--muted, #737986); font-size: 13px; line-height: 1.9; }
+.assembly-empty-title, .conversation-empty-title { margin: 16px 0; font-weight: 600; color: var(--text-primary, #15171c); font-size: 15px; }
+.assembly-empty p, .conversation-empty p { margin: 0; }
 .task-workspace-tools:has(.assembly-target) { flex-wrap: wrap; }
 .assembly-target { order: 3; flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0 0; border-top: 1px solid var(--border-subtle); font-size: 12px; }
 .assembly-target label { display: flex; align-items: center; gap: 8px; }
