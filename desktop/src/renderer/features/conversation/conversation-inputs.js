@@ -9,12 +9,17 @@
   const labels = Object.freeze({ get accepted() { return localize("已受理，等待当前轮继续"); }, get delivered() { return localize("已进入当前轮上下文"); },
     get queued() { return localize("待发送 · 当前轮结束后执行"); }, get started() { return localize("已启动下一轮"); }, get not_delivered() { return localize("本轮结束前未送达"); },
     get blocked() { return localize("队列已暂停"); }, get withdrawn() { return localize("已撤回"); } });
-  function render(rows, escape) {
-    return rows.filter(row => row.status !== "withdrawn").map(row => {
+  function render(rows, escape, historyOpen = false) {
+    const historyStatuses = new Set(["delivered", "started", "withdrawn"]);
+    const pending = rows.filter(row => !historyStatuses.has(row.status));
+    const history = rows.filter(row => historyStatuses.has(row.status));
+    const cards = items => items.map(row => {
       const editable = row.mode === "queue" && ["queued", "blocked"].includes(row.status);
       const text = typeof row.run.message === "string" ? row.run.message : JSON.stringify(row.run.message);
-      return `<article class="conversation-input"><strong>${escape(labels[row.status] || row.status)}</strong><p>${escape(text)}</p>${row.error ? `<p>${escape(row.error)}</p>` : ""}${editable ? localize`<div><button type="button" data-action="edit-queued-main" data-input-id="${escape(row.input_id)}">撤回到输入框编辑</button><button type="button" data-action="delete-queued-main" data-input-id="${escape(row.input_id)}">删除</button></div>` : ""}</article>`;
+      return `<article class="conversation-input" data-input-status="${escape(row.status)}"><strong>${escape(labels[row.status] || row.status)}</strong><p>${escape(text)}</p>${row.error ? `<p>${escape(row.error)}</p>` : ""}${editable ? localize`<div><button type="button" data-action="edit-queued-main" data-input-id="${escape(row.input_id)}">撤回到输入框编辑</button><button type="button" data-action="withdraw-queued-main" data-input-id="${escape(row.input_id)}">撤回</button></div>` : ""}</article>`;
     }).join("");
+    return (pending.length ? localize`<section class="conversation-input-pending" aria-label="待处理输入"><h3>待处理输入 · ${pending.length}</h3>${cards(pending)}</section>` : "")
+      + (history.length ? localize`<details class="conversation-input-history"${historyOpen ? " open" : ""}><summary>投递历史 · ${history.length}</summary><div class="conversation-input-history-list">${cards(history)}</div></details>` : "");
   }
   global.FocusConversationInputs = Object.freeze({ labels, render });
 })(window);

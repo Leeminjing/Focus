@@ -1579,7 +1579,9 @@ function mainDeliveryRun(taskId = state.activeTaskId) {
 }
 
 function renderConversationInputs(taskId) {
-  return window.FocusConversationInputs.render(state.details.get(taskId)?.conversation_inputs || [], escapeHtml);
+  const historyOpen = app.dataset.taskId === taskId
+    && document.querySelector("#conversationInputs .conversation-input-history")?.open;
+  return window.FocusConversationInputs.render(state.details.get(taskId)?.conversation_inputs || [], escapeHtml, historyOpen);
 }
 
 let conversationInputPolling = false;
@@ -1862,7 +1864,7 @@ function renderFocus(task = activeTask()) {
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，输入 @ 引用文件，或 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
               <div id="composerFileMenu" class="composer-file-menu" role="listbox" aria-label="工作区文件" hidden></div>
               ${renderSessionControls(task.task_id)}
-              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? localize`<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><button type="button" class="attach-button" data-action="add-composer-attachment">${uiText("focus.add_file", "添加文件")}</button><input id="fileInput" type="file" multiple hidden>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? localize`<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
             <div id="mainSubmissionRecovery" class="main-submission-recovery">${renderMainRecovery(task.task_id)}</div>
@@ -4734,12 +4736,12 @@ function renderComposerAttachments(taskId) {
   return localize`<span class="composer-attachments-label">本次附件 · ${cards.length}</span><div class="composer-attachment-list">${cards.map(({ entry, material, materialId }) => {
     const name = material?.relative_path || entry?.file?.name || localize("附件");
     const status = material ? "ready" : entry?.status || "preparing";
-    const label = status === "ready" ? localize("已就绪") : status === "failed" ? localize("失败") : localize("准备中");
+    const label = status === "failed" ? localize("失败") : localize("准备中");
     const image = entry?.previewUrl ? `<img src="${escapeHtml(entry.previewUrl)}" alt="">` : material?.is_image ? materialImageMarkup(material.material_id, "", "", null) : '<span class="ui-icon icon-file-text" aria-hidden="true"></span>';
-    return localize`<article class="composer-attachment is-${status}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${materialId ? ` data-composer-material="${escapeHtml(materialId)}"` : ""}>
+    return localize`<article class="composer-attachment is-${status}" aria-label="${escapeHtml(name)}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${materialId ? ` data-composer-material="${escapeHtml(materialId)}"` : ""}>
       <button type="button" class="composer-attachment-preview" data-action="composer-preview-attachment" aria-label="预览 ${escapeHtml(name)}"${!material && !entry?.previewUrl ? " disabled" : ""}>${image}</button>
-      <span class="composer-attachment-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small role="status">${label}${entry?.error ? `：${escapeHtml(entry.error)}` : ""}</small></span>
-      ${status === "failed" ? localize('<button type="button" class="text-button" data-action="composer-retry-attachment">重试</button>') : ""}
+      <span class="composer-attachment-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong>${status === "ready" ? "" : `<small role="status">${label}${entry?.error ? `：${escapeHtml(entry.error)}` : ""}</small>`}</span>
+      ${status === "failed" ? localize`<button type="button" class="text-button" data-action="composer-retry-attachment" aria-label="重试 ${escapeHtml(name)}">重试</button>` : ""}
       <button type="button" class="text-button" data-action="composer-remove-attachment" aria-label="移除 ${escapeHtml(name)}">移除</button></article>`;
   }).join("")}</div>`;
 }
@@ -8108,6 +8110,7 @@ async function handleDocumentClick(event) {
   if (action === "retry-must-view") return resumeMustView("retry");
   if (action === "cancel-must-view") return resumeMustView("cancel");
   if (action === "send-main") return sendMain();
+  if (action === "add-composer-attachment") return document.querySelector("#fileInput")?.click();
   if (action === "open-composer-file" || action === "remove-composer-file") {
     const refs = fileReferences(state.activeTaskId), index = Number(button.dataset.referenceIndex);
     if (!refs[index]) return;
@@ -8116,7 +8119,7 @@ async function handleDocumentClick(event) {
   }
   if (action === "queue-main") return sendMain(false, "queue");
   if (action === "edit-queued-main") return withdrawQueuedMain(button.dataset.inputId, true);
-  if (action === "delete-queued-main") return withdrawQueuedMain(button.dataset.inputId, false);
+  if (action === "withdraw-queued-main") return withdrawQueuedMain(button.dataset.inputId, false);
   if (action === "retry-main") return sendMain(true);
   if (action === "edit-main") return editMainRequest();
   if (action.startsWith("composer-") && action.endsWith("-attachment")) return handleComposerAttachmentAction(button);

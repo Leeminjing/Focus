@@ -487,8 +487,13 @@
   font-weight: 650;
 }
 .send-button:hover { background: var(--accent-hover); }
-.conversation-inputs { display: grid; gap: 8px; max-height: 220px; overflow: auto; }
+.conversation-inputs { display: grid; gap: 8px; }
 .conversation-inputs:empty { display: none; }
+.conversation-input-pending, .conversation-input-history[open] { display: grid; gap: 8px; }
+.conversation-input-pending { max-height: 220px; overflow: auto; }
+.conversation-input-history-list { display: grid; gap: 8px; max-height: 160px; overflow: auto; }
+.conversation-input-pending h3 { margin: 0; font-size: 13px; }
+.conversation-input-history summary { color: var(--text-secondary); cursor: pointer; }
 .conversation-input { padding: 10px 12px; border: 1px solid var(--border-default); border-radius: 10px; }
 .conversation-input p { margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .conversation-input div { display: flex; flex-wrap: wrap; gap: 8px; }
