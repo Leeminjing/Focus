@@ -26,7 +26,9 @@ test("desktop setup preserves an unsaved key when the robot reopens settings", a
   await f.run("openPatrolWorkbench({setupModels:true})");
   assert.equal(f.run("modelCredentialValue()"), "unsaved");
   assert.match(f.host.innerHTML, /data-model-credential value="unsaved"/);
-  assert.match(f.host.innerHTML, /选择项目文件夹/);
+  assert.match(f.host.innerHTML, /1\. 模型配置/);
+  assert.match(f.host.innerHTML, /2\. 选择项目/);
+  assert.doesNotMatch(f.host.innerHTML, /data-action="model-start"/);
 });
 
 test("saving stays in setup until full verification and an explicit start", async () => {
@@ -55,5 +57,5 @@ test("setup status failure shows a retry and a saved but unverified config still
   await f.run("ensureModelSetup({onboarding:true})");
   await f.run("finishDesktopModelSetup()");
   assert.equal(f.completed.length, 0);
-  assert.match(f.host.innerHTML, /保存并验证通过/);
+  assert.match(f.host.innerHTML, /保存并通过全部验证后继续/);
 });

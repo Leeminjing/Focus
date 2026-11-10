@@ -1,5 +1,5 @@
 /* 使用生产工作台、preload、机器人面板与真实 IPC，验证干净用户从模型设置走到第一次发送。
- * HTTP 模型验证与目录选择为隔离 fixture，不替代安装包和真实 Provider 的发布验收。
+ * 同时验证常规模型卡与字段错误的可访问性。HTTP 模型验证与目录选择为隔离 fixture。
  */
 "use strict";
 const assert = require("node:assert/strict");
@@ -41,7 +41,7 @@ if (!process.versions.electron) {
   app.on("window-all-closed", () => {});
   const session = "first-run-fixture", errors = [], requests = [], modelSaves = [];
   const limits = { general_file_bytes: 1024 * 1024, run_material_count: 8 };
-  let host, server, workbench, apiBase, picked = 0, allowVerification = false;
+  let host, server, workbench, apiBase, picked = 0, allowVerification = false, rejectModelEdit = false;
   let snapshot = { setup_required: true, setup_issues: { api_key: "请输入真实 API Key" },
     models: [{ name: "first", model: "first", use: "langchain_openai:ChatOpenAI", api_key: "$FIRST_API_KEY", api_key_set: false,
       default: true, curation_default: true, base_url: "https://fixture.invalid/v1", context_window: 8192,
@@ -64,10 +64,19 @@ if (!process.versions.electron) {
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : null;
     if (url.pathname.endsWith("/settings/models")) {
       if (req.method === "PUT") {
+        if (rejectModelEdit) {
+          res.writeHead(422, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ detail: { code: "model_settings_invalid", errors: {
+            "models[1].base_url": "必须是 http 或 https 的绝对地址", default: "必须恰好指定一个默认模型",
+          } } })); return;
+        }
         modelSaves.push(body);
         snapshot = { ...snapshot, setup_required: false, setup_issues: {},
           models: snapshot.models.map(model => ({ ...model, api_key_set: true })),
-          verification: { ok: allowVerification, reason: allowVerification ? "普通调用和策展验证通过" : "策展验证失败，请修改输出方式" } };
+          verification: { ok: allowVerification, reason: allowVerification ? "全部验证通过" : "策展验证失败，请修改输出方式",
+            checks: ["chat", "curation", "semantic_index"].map(capability => ({ capability,
+              ok: capability !== "curation" || allowVerification,
+              status: capability !== "curation" || allowVerification ? "passed" : "failed" })) } };
       }
       return json(res, snapshot);
     }
@@ -137,12 +146,35 @@ if (!process.versions.electron) {
     await waitFor(workbench, "document.querySelector('#settingsDialog').open && !!document.querySelector('[data-model-credential]')");
     await capture(workbench, "first-run-model-settings");
     assert.equal(host.panel.isVisible(), false);
+    assert.equal(await run(workbench, `document.querySelector('[data-action="model-save"]').textContent`), "保存并验证");
+    assert.equal(await run(workbench, `document.querySelector('[data-i18n="settings.models_help"]').hidden`), true);
+    assert.equal(await run(workbench, `document.querySelector('#modelSetupSteps [aria-current="step"]').textContent.includes('1. 模型配置')`), true);
     await run(workbench, `(() => {const key=document.querySelector('[data-model-credential]');key.value='fixture-key';key.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('[data-action="model-save"]').click();})()`);
     await waitFor(workbench, "document.querySelector('#modelSettingsHost').textContent.includes('策展验证失败')");
     assert.equal(host.panel.isVisible(), false);
     assert.equal(modelSaves[0].credentials.FIRST_API_KEY, "fixture-key");
     allowVerification = true;
     await run(workbench, "document.querySelector('[data-action=\"model-save\"]').click()");
+    await waitFor(workbench, "!!document.querySelector('[data-action=\"model-start\"]')");
+    await capture(workbench, "first-run-model-verified");
+    assert.equal(await run(workbench, `document.querySelectorAll('[data-check-status="passed"]').length`), 3);
+    await run(workbench, `document.querySelector('#modelVerificationHost').scrollIntoView({block:'end'})`);
+    await capture(workbench, "first-run-verification-results");
+    await run(workbench, `document.querySelector('#modelSetupSteps').scrollIntoView({block:'start'})`);
+    assert.equal(await run(workbench, `document.querySelector('[data-action="model-start"]').textContent`), "选择项目文件夹");
+    assert.equal(picked, 0, "验证通过后仍需显式选择项目");
+    await run(workbench, `(() => {
+      const key = document.querySelector('[data-model-credential]');
+      key.focus(); key.value = 'updated-fixture-key'; key.setSelectionRange(4, 4);
+      key.dispatchEvent(new Event('input', { bubbles: true }));
+      if (document.activeElement !== key || key.selectionStart !== 4) throw new Error('编辑配置打断了输入焦点');
+    })()`);
+    assert.equal(await run(workbench, `!!document.querySelector('[data-action="model-start"]')`), false);
+    assert.equal(await run(workbench, `!!document.querySelector('#modelVerificationHost .is-ok')`), false);
+    assert.equal(await run(workbench, `document.body.innerText.includes('设置已保存。全部验证通过')`), false);
+    assert.equal(await run(workbench, `document.querySelector('#modelSetupSteps [aria-current="step"]').textContent.includes('1. 模型配置')`), true);
+    await capture(workbench, "first-run-model-edited");
+    await run(workbench, `document.querySelector('[data-action="model-save"]').click()`);
     await waitFor(workbench, "!!document.querySelector('[data-action=\"model-start\"]')");
     assert.equal(host.panel.isVisible(), false);
     assert.equal(host._setupStep, "models");
@@ -160,7 +192,43 @@ if (!process.versions.electron) {
     await waitFor(host.panel, "document.querySelector('#receipt').textContent === '已受理'");
     assert.equal(requests.length, 1);
     assert.equal(requests[0].content, "整理项目待办");
-    assert.equal(modelSaves.length, 2);
+    assert.equal(modelSaves.length, 3);
+    assert.equal(modelSaves[2].credentials.FIRST_API_KEY, "updated-fixture-key");
+    // 常规设置：主层只显示用途和真实状态；字段错误不重复进入全局区域。
+    snapshot = { ...snapshot, default_model_override: "first", models: [
+      { ...snapshot.models[0], display_name: "主力模型", source: "shipped", provider: "openai", protocol: "chat_completions" },
+      { ...snapshot.models[0], name: "optional", display_name: "备用模型", default: false, curation_default: false },
+      { ...snapshot.models[0], name: "template", display_name: "待配置模型", default: false, curation_default: false, api_key_set: false },
+    ] };
+    await run(workbench, `modelSettings.snapshot = null; modelSettings.draft = null;
+      modelSettings.setupMode = false; modelSettings.onboarding = false;
+      document.querySelector('[data-action="open-settings"]').click();`);
+    workbench.show();
+    await waitFor(workbench, "document.querySelectorAll('.settings-model-row').length === 3");
+    await run(workbench, `document.querySelector('[data-settings-tab="models"]').click()`);
+    assert.equal(await run(workbench, `document.querySelector('.settings-model-row').textContent.includes('已通过验证')`), true);
+    assert.equal(await run(workbench, `document.querySelectorAll('.settings-model-row')[1].textContent.includes('未验证')`), true);
+    assert.equal(await run(workbench, `/fixture.invalid|8192|chat_completions/.test(document.querySelector('.settings-model-list').textContent)`), false);
+    await capture(workbench, "model-cards");
+    await run(workbench, `document.querySelector('[data-action="model-edit"][data-model-index="1"]').click()`);
+    await waitFor(workbench, `!!document.querySelector('#model-1-base_url')`);
+    await run(workbench, `const endpoint = document.querySelector('[data-model-field="base_url"]');
+      endpoint.value = 'invalid'; endpoint.dispatchEvent(new Event('input',{bubbles:true}));`);
+    rejectModelEdit = true;
+    await run(workbench, `document.querySelector('[data-action="model-save"]').click()`);
+    await waitFor(workbench, `document.activeElement.id === 'model-1-base_url'`);
+    assert.equal(await run(workbench, `document.querySelector('#model-1-base_url').getAttribute('aria-invalid')`), "true");
+    assert.equal(await run(workbench, `document.querySelector('#model-1-base_url').labels[0].textContent`), "端点");
+    assert.equal(await run(workbench, `document.getElementById(document.querySelector('#model-1-base_url').getAttribute('aria-describedby')).textContent`), "必须是 http 或 https 的绝对地址");
+    assert.equal(await run(workbench, `document.querySelector('.settings-model-errors').textContent`), "必须恰好指定一个默认模型");
+    assert.equal(await run(workbench, `document.querySelector('#globalStatus').textContent.includes('正在验证')`), false);
+    assert.equal(await run(workbench, `document.querySelectorAll('[data-model-credential]').length`), 1);
+    assert.equal(await run(workbench, `document.querySelector('[data-model-credential]').value`), "");
+    await capture(workbench, "model-field-error");
+    await run(workbench, `const fixed = document.querySelector('#model-1-base_url');
+      fixed.value='https://fixture.invalid/v1'; fixed.dispatchEvent(new Event('input',{bubbles:true}));`);
+    assert.equal(await run(workbench, `document.querySelector('#model-1-base_url').hasAttribute('aria-invalid')`), false);
+    assert.equal(await run(workbench, `!!document.querySelector('#model-1-base_url-error')`), false);
     assert.deepEqual(errors, []);
     await host.flushRecovery();
     console.log("FIRST_RUN_UI_PASS");

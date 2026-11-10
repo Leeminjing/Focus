@@ -161,6 +161,7 @@ const SNAPSHOT = `
       credential: modelCredentialValue(), setupHtml };
 
     modelSettings.snapshot = { ...snapshot, verification: { ok: false, reason: "策展输出不符合合同，请修改输出方式" } };
+    modelSettings.dirty = false;
     modelSettings.draft = null;
     renderModelSettings();
     const verificationHtml = document.querySelector("#modelSettingsHost").innerHTML;
@@ -185,8 +186,10 @@ const SNAPSHOT = `
   assert.match(result.listHtml, /data-action="model-remove" data-model-index="1"/);
   assert.match(result.listHtml, /Alpha/);
   assert.match(result.listHtml, /Gamma/);
-  assert.match(result.listHtml, /发行自带/);
-  assert.match(result.listHtml, /你新增的/);
+  assert.doesNotMatch(result.listHtml, /发行自带|你新增的|https:\/\/api\.example\.com|上下文窗口|langchain_openai/);
+  assert.match(result.listHtml, /未验证/);
+  assert.match(result.listHtml, /凭据: 已设置/);
+  assert.match(result.editorHtml, /发行自带/);
   assert.match(result.listHtml, /已设置/);
   assert.match(result.listHtml, /默认模型/);
   assert.match(result.listHtml, /策展默认模型/);
@@ -204,7 +207,10 @@ const SNAPSHOT = `
   // 字段级错误就地呈现
   assert.match(result.errorHtml, /必须是 http 或 https 的绝对地址/);
   assert.match(result.errorHtml, /has-error/);
-  assert.match(result.errorHtml, /settings-model-errors/);
+  assert.doesNotMatch(result.errorHtml, /class="settings-model-errors"/);
+  assert.match(result.errorHtml, /id="model-0-base_url" aria-invalid="true" aria-describedby="model-0-base_url-error"/);
+  assert.match(result.errorHtml, /<label for="model-0-base_url">端点<\/label>/);
+  assert.match(result.errorHtml, /id="model-0-base_url-error" class="field-error"/);
 
   // 保存：只提交可编辑字段、就地刷新装备、清掉未保存标记
   assert.equal(result.afterSave.payload.path, "/desktop/api/settings/models");
