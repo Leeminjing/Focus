@@ -310,7 +310,7 @@
       observationIdentity = id;
       observation = null;
       const owner = token, version = ++observationVersion;
-      host.querySelector("[data-patrol-observation]").textContent = localize("正在读取本轮冻结输入");
+      host.querySelector("[data-patrol-observation]").innerHTML = root.FocusObservationView.card(null, { compact: true, readState: "loading" });
       host.querySelector("[data-patrol-observation-open]").disabled = true;
       try {
         const value = await api.observation(loopId, id, { signal: lifetime.signal });
@@ -321,7 +321,7 @@
       } catch (failure) {
         if (owner === token && version === observationVersion && failure.name !== "AbortError") {
           observationIdentity = null;
-          host.querySelector("[data-patrol-observation]").innerHTML = localize`读取失败：${view.escape(failure.message)} <button data-patrol-observation-retry>重试</button>`;
+          host.querySelector("[data-patrol-observation]").innerHTML = root.FocusObservationView.card(null, { compact: true, readState: "error", failure });
         }
       }
     }
@@ -663,6 +663,7 @@
       if (!host) return;
       patchRetry();
       if (!next) {
+        patchObservation();
         patchRecovery();
         host.querySelector("[data-patrol-state]").textContent = status?.status === "unavailable" ? localize("连接不可用 · 正在保留输入") : localize("正在连接工作状态");
         return;
@@ -728,7 +729,8 @@
       if (!projection.round?.state?.observation_id) {
         observation = null; observationIdentity = null; observationVersion++;
         const node = host.querySelector("[data-patrol-observation]");
-        if (node.textContent !== localize("本轮尚未冻结")) node.textContent = localize("本轮尚未冻结");
+        const empty = root.FocusObservationView.card(null, { compact: true });
+        if (node.innerHTML !== empty) node.innerHTML = empty;
         host.querySelector("[data-patrol-observation-open]").disabled = true;
       }
       if (historyRefresh.observe(projection, inputs.get())) {

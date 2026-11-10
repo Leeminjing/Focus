@@ -33,7 +33,10 @@ test("verified workspace delivery is explicit while Patrol remains available", (
       ], unresolved: ["optional"] }, final_path: [{ context_id: "result", revision_id: "revision-result", title: "导入报告" }] } };
   assert.match(feedback.status({ loop: { state: loop } }, { status: "live" }, { rows: [] }).text, /本次工作已交付/);
   const html = view.delivery({ loop: { state: loop } }, { path: "C:/workspace" });
-  for (const text of ["本次工作交付", "修复导入并生成报告", "验收通过", "仍未解决", "导入测试通过", "可选平台尚未验证", "C:/workspace", "继续提出调整"]) assert.ok(html.includes(text), text);
+  for (const text of ["本次工作交付", "修复导入并生成报告", "验收依据 · 已通过 1 项", "仍未解决 · 1 项", "导入测试通过", "可选平台尚未验证", "C:/workspace"]) assert.ok(html.includes(text), text);
+  assert.ok(html.indexOf('aria-label="查看本次交付"') < html.indexOf('class="patrol-delivery-evidence"'));
+  assert.ok(html.indexOf('class="patrol-delivery-unresolved"') < html.indexOf('class="patrol-delivery-evidence"'));
+  assert.doesNotMatch(html, /继续提出调整|结果与修改位置|查看结果 ·/);
   assert.match(html, /data-patrol-delivery-context="result"/);
   assert.match(html, /data-revision-id="revision-result"/);
   loop.current_round_id = "discussion";
@@ -56,7 +59,9 @@ const row = (disposition = "decision") => ({ submission_id: "one", input_type: "
 test("each disposition shows its own explanation and expandable exact sources", () => {
   for (const [disposition, label] of Object.entries({ discussion: "已用于讨论", decision: "已纳入决策", reference: "已作为参考", deferred: "已延期" })) {
     const html = view.history({ rows: [row(disposition)] });
-    assert.ok(html.includes(`处理结果 · ${label}`));
+    assert.ok(html.includes(label));
+    assert.doesNotMatch(html, /处理结果 ·|普通信息/);
+    assert.ok(html.indexOf('先别改 UI') < html.indexOf(label));
     assert.match(html, /先定位导入失败/);
     assert.match(html, /<details[^>]*data-patrol-input-result/);
     assert.match(html, /Mission 版本.*<dd>3<\/dd>/);
@@ -65,6 +70,41 @@ test("each disposition shows its own explanation and expandable exact sources", 
     assert.match(html, /已请求停止 · 等待清理/);
     assert.doesNotMatch(html, />已停止</);
   }
+});
+
+test("input references stay with the original text and non-default input types remain explicit", () => {
+  const input = { ...row(), file_refs: [{ path: 'input.txt', revision: 3, fact_id: 'file', result_key: 'fixed-file' }] };
+  const html = view.history({ rows: [input] });
+  assert.ok(html.indexOf('先别改 UI') < html.indexOf('input.txt'));
+  assert.ok(html.indexOf('input.txt') < html.indexOf('已纳入决策'));
+  assert.match(html, /data-submission-id="one"/);
+  for (const [input_type, label] of Object.entries({ outcome: "最终结果", boundary: "执行边界", completion_check: "完成检查" })) {
+    assert.match(view.history({ rows: [{ ...row(), input_type }] }), new RegExp(label));
+  }
+});
+
+test("cancellation states remain distinct after removing the processing prefix", () => {
+  for (const [state, label] of Object.entries({ cancel_requested: "已请求停止 · 等待清理", stopped: "已停止", already_terminal: "请求时已结束", settled: "已结束", unknown: "停止状态待核实" })) {
+    const input = row(); input.processing_result.related_cancellations[0].state = state;
+    const html = feedback.inputResult(input);
+    assert.ok(html.includes(label));
+    if (state === 'cancel_requested') assert.doesNotMatch(html, />已停止</);
+    assert.doesNotMatch(html, /处理结果 ·/);
+  }
+});
+
+test("unresolved checks remain visible even without a criterion row", () => {
+  const loop = { interaction_mode: 'workspace_patrol', current_round_id: 'done', goal_revision: 2,
+    final_result: { round_id: 'done', goal_revision: 2, completion_checks: [{ check_id: 'missing', claim: '外部平台验证' }],
+      verification: { verification_id: 'v', conclusion: 'satisfied', criteria: [], unresolved: ['missing'] } } };
+  const html = feedback.delivery({ loop: { state: loop } });
+  assert.match(html, /仍未解决 · 1 项.*外部平台验证/s);
+  assert.ok(html.indexOf('外部平台验证') < html.indexOf('<details'));
+  assert.match(html, />已验收</);
+  loop.goal_revision = 3;
+  assert.match(feedback.delivery({ loop: { state: loop } }), /最近一次已验收交付/);
+  loop.final_result.verification.unresolved = [];
+  assert.doesNotMatch(feedback.delivery({ loop: { state: loop } }), /patrol-delivery-unresolved/);
 });
 
 test("delivery content is escaped and legacy results stay visible without claiming a new completion", () => {

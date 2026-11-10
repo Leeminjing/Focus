@@ -65,8 +65,11 @@ if (!process.versions.electron) {
     assert.match(await run("document.querySelector('[data-patrol-state]').textContent"), /本次工作已交付/);
     assert.equal(await run("document.querySelector('[data-patrol-content]').value"), "接下来调整报告格式");
     assert.equal(await run("document.querySelector('[data-patrol-control=pause]').disabled"), false);
-    await run("document.querySelector('[data-patrol-delivery] details').open=true");
-    assert.match(await run("document.querySelector('[data-patrol-delivery]').textContent"), /验收通过 1 项 · 仍未解决 1 项/);
+    assert.equal(await run("document.querySelector('[data-patrol-delivery] details').open"), false);
+    assert.match(await run("document.querySelector('[data-patrol-delivery] .patrol-delivery-unresolved').textContent"), /仍未解决 · 1 项.*可选平台尚未验证/s);
+    assert.equal(await run("Boolean(document.querySelector('[data-patrol-delivery] nav').compareDocumentPosition(document.querySelector('[data-patrol-delivery] details')) & Node.DOCUMENT_POSITION_FOLLOWING)"), true);
+    assert.match(await run("document.querySelector('[data-patrol-delivery] details summary').textContent"), /验收依据 · 已通过 1 项/);
+    assert.equal(await run("Boolean(document.querySelector('.patrol-delivery-next'))"), false);
     for (const width of [1280, 440]) {
       win.setSize(width, 1000);
       await run("document.fonts.ready");

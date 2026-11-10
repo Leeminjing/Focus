@@ -29,7 +29,7 @@ function fixture(api) {
     FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusContextInspector: { create: () => ({ mount() {}, dispose() {} }) },
     FocusSurfaceTransition: { visible: async (node, show) => { node.hidden = !show; }, finish() {} },
-    FocusObservationView: { rounds: () => "round" },
+    FocusObservationView: { ...require("./observation-view.js"), rounds: () => "round" },
     FocusLoopFactsView: { markFileReferences: () => [], reconcileTimeline() { work.facts++; } },
     FocusLoopLiveSelectors: { selectFacts: () => [] },
   });

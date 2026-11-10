@@ -492,10 +492,11 @@ if (!process.versions.electron) {
     streams.get("loop-workspace-a").write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: 2 })}\n\n`);
     await waitFor(host.panel, "!document.querySelector('#delivery').hidden", "已验收的常驻 Patrol 必须展示本次交付");
     assert.match(await run(host.panel, "document.querySelector('#status').textContent"), /本次工作已交付/);
-    assert.match(await run(host.panel, "document.querySelector('#delivery').textContent"), /完成截图分析并生成报告.*验收通过 1 项 · 仍未解决 1 项/s);
+    assert.match(await run(host.panel, "document.querySelector('#delivery').textContent"), /完成截图分析并生成报告.*仍未解决 · 1 项.*验收依据 · 已通过 1 项/s);
     assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "A 的草稿");
     assert.equal(await run(host.panel, "document.querySelector('#toggle-work').disabled"), false);
-    await run(host.panel, "document.querySelector('#delivery details').open=true; document.querySelector('#delivery').scrollIntoView({block:'start'})");
+    assert.equal(await run(host.panel, "document.querySelector('#delivery details').open"), false);
+    await run(host.panel, "document.querySelector('#delivery').scrollIntoView({block:'start'})");
     await capture(host.panel, "desktop-accepted-delivery");
     assert.equal(await run(host.panel, "document.querySelector('#delivery').scrollWidth <= document.querySelector('#delivery').clientWidth + 1"), true);
     await run(host.panel, "document.querySelector('#delivery details').open=false; document.querySelector('[data-patrol-delivery-context]').click()");

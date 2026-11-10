@@ -329,13 +329,19 @@ if (!process.versions.electron) {
     await run('window.patrolFixture.controlError=false');
     await run('window.patrolFixture.observationError=true; window.patrolFixture.emit("loop-completion_check", "round", "round-1", 1, {number:1,observation_id:"observation-1"})');
     await until('document.querySelector("[data-patrol-observation-retry]")');
+    assert.equal(await run('document.querySelector("[data-patrol-observation] [data-observation-state]").dataset.observationState'), "error");
+    assert.equal(await run('document.querySelector("[data-patrol-observation] h3")'), null);
     await run('window.patrolFixture.observationError=false; document.querySelector("[data-patrol-observation-retry]").click()');
     await until('!document.querySelector("[data-patrol-observation-open]").disabled');
-    assert.match(await run('document.querySelector("[data-patrol-observation]").textContent'), /看到了.*导入测试失败.*接下来.*先补齐测试配置.*当前阻塞/s);
+    assert.match(await run('document.querySelector("[data-patrol-observation]").textContent'), /结论.*导入测试失败.*下一步.*先补齐测试配置.*当前未报告阻塞/s);
     assert.doesNotMatch(await run('document.querySelector("[data-patrol-observation]").textContent'), /Round|Revision|OBSERVATION|因果关系/);
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-observation] .observation-blockers"))'), false);
     await run('window.patrolFixture.emit("loop-completion_check", "loop_wait_request", "observation-blocker", 1, {round_id:"round-1",status:"open",response_mode:"text",prompt:"请提供测试环境配置。",scope:{}})');
     await until('document.querySelector("[data-patrol-observation]").textContent.includes("请提供测试环境配置。")');
+    assert.equal(await run('document.querySelector("[data-patrol-observation]").firstElementChild.className'), "observation-blockers");
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-observation] [data-observation-state=unreported]"))'), false);
     if (process.env.FOCUS_OBSERVATION_QA_PATH) {
+      await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       const rect = await run('(() => { const r=document.querySelector(".patrol-observation-card").getBoundingClientRect(); return {x:Math.floor(r.x),y:Math.floor(r.y),width:Math.ceil(r.width),height:Math.ceil(r.height)}; })()');
       fs.writeFileSync(process.env.FOCUS_OBSERVATION_QA_PATH, (await win.webContents.capturePage(rect)).toPNG());
     }

@@ -26,14 +26,14 @@
     const result = row.processing_result;
     if (!result) {
       const pending = { pending: localize("等待 Patrol 处理"), observed: localize("正在处理 · 已进入本轮观察"), addressed: localize("已处理 · 暂无处理说明"), superseded: localize("已被替代") };
-      return localize`<p class="patrol-input-result" data-patrol-processing-state="${escape(row.processing_state || "pending")}">处理结果 · ${pending[row.processing_state] || localize("等待 Patrol 处理")}</p>`;
+      return `<p class="patrol-input-result" data-patrol-processing-state="${escape(row.processing_state || "pending")}">${pending[row.processing_state] || localize("等待 Patrol 处理")}</p>`;
     }
     const related = result.related_cancellations || [];
     const execution = related.map(item => cancellations[item.state] || cancellations.unknown);
     const evidence = result.evidence || [];
     const sections = { outcome: localize("最终结果"), boundary: localize("执行边界"), completion_check: localize("完成检查") };
     const operations = { supplement: localize("补充"), revise: localize("修订"), remove: localize("移除") };
-    return localize`<details class="patrol-input-result" data-patrol-input-result><summary><strong>处理结果 · ${escape(dispositions[result.disposition] || localize("已处理"))}</strong><span>${escape(result.explanation)}</span>${execution.length ? localize`<small>同次决策：${escape([...new Set(execution)].join("；"))}</small>` : ""}</summary>
+    return localize`<details class="patrol-input-result" data-patrol-input-result><summary><strong>${escape(dispositions[result.disposition] || localize("已处理"))}</strong><span>${escape(result.explanation)}</span>${execution.length ? localize`<small>同次决策：${escape([...new Set(execution)].join("；"))}</small>` : ""}</summary>
       <div class="patrol-input-evidence"><h4>决策依据</h4><p>${escape(result.rationale || localize("未记录额外决策说明"))}</p>
       <dl><dt>Mission 版本</dt><dd>${escape(result.mission_revision ?? localize("未记录"))}</dd><dt>决策</dt><dd>${escape(result.decision_id)}</dd><dt>工作轮次</dt><dd>${escape(result.round_id)}</dd><dt>冻结观察</dt><dd>${escape(result.observation_id || localize("未记录"))}${result.observation_id ? localize` · 版本 ${escape(result.observation_generation ?? localize("未记录"))}` : ""}</dd><dt>处理时间</dt><dd>${escape(result.applied_at)}</dd></dl>
       ${(result.changes || []).length ? localize`<h4>这条输入对 Mission 的修改</h4><ul>${result.changes.map(item => `<li>${escape(operations[item.operation || "supplement"] || item.operation)}${escape(sections[item.section] || item.section)}：${escape(item.quote)}</li>`).join("")}</ul>` : ""}
@@ -156,14 +156,15 @@
     const checks = new Map((result.completion_checks || []).map(item => [item.check_id, item.claim]));
     const unresolved = new Set(verification.unresolved || []);
     const passed = criteria.filter(item => item.status === "satisfied" && !unresolved.has(item.check_id));
-    const remaining = criteria.filter(item => item.status !== "satisfied" || unresolved.has(item.check_id));
-    const renderCheck = item => `<li><strong>${escape(checks.get(item.check_id) || item.check_id)}</strong><p>${escape(item.explanation)}</p></li>`;
+    const byId = new Map(criteria.map(item => [item.check_id, item]));
+    const remaining = [...new Set([...criteria.filter(item => item.status !== "satisfied").map(item => item.check_id), ...unresolved])]
+      .map(id => byId.get(id) || { check_id: id });
+    const renderCheck = item => `<li><strong>${escape(checks.get(item.check_id) || item.check_id)}</strong>${item.explanation ? `<p>${escape(item.explanation)}</p>` : ""}</li>`;
     return localize`<header><h2>本次工作交付</h2><span>${isCurrentDelivery(loop) ? localize("已验收") : localize("最近一次已验收交付")}</span></header>
       <p class="patrol-delivery-summary">${escape(result.summary || passed.map(item => item.explanation).join("；") || localize("已提交验收结果，可查看交付内容。"))}</p>
-      <details><summary>验收通过 ${passed.length} 项 · 仍未解决 ${remaining.length} 项</summary><h3>验收通过</h3><ul>${passed.map(renderCheck).join("") || localize("<li>未记录逐项验收说明</li>")}</ul><h3>仍未解决</h3>${remaining.length ? `<ul>${remaining.map(renderCheck).join("")}</ul>` : localize("<p>本次验收未记录未解决项</p>")}</details>
-      <h3>结果与修改位置</h3>${workspace?.path ? `<p>${escape(workspace.path)}</p>` : ""}
-      <nav aria-label="查看本次交付">${(result.final_path || []).map(item => localize`<button type="button" data-patrol-delivery-context="${escape(item.context_id)}"${item.revision_id ? ` data-revision-id="${escape(item.revision_id)}"` : ""}>查看结果 · ${escape(item.title || localize("已提交结果"))}</button>`).join("")}<button type="button" data-patrol-files-open>查看文件 / 修改</button></nav>
-      <p class="patrol-delivery-next">在输入框继续提出调整，Patrol 会继续处理。</p>`;
+      <nav aria-label="查看本次交付">${(result.final_path || []).map(item => localize`<button type="button" data-patrol-delivery-context="${escape(item.context_id)}"${item.revision_id ? ` data-revision-id="${escape(item.revision_id)}"` : ""} aria-label="查看交付结果：${escape(item.title || localize("已提交结果"))}">${escape(item.title || localize("已提交结果"))}</button>`).join("")}<button type="button" data-patrol-files-open>工作区文件</button></nav>
+      ${remaining.length ? localize`<section class="patrol-delivery-unresolved" aria-label="未解决事项"><h3>仍未解决 · ${remaining.length} 项</h3><ul>${remaining.map(renderCheck).join("")}</ul></section>` : ""}
+      <details class="patrol-delivery-evidence"><summary>验收依据 · 已通过 ${passed.length} 项</summary><ul>${passed.map(renderCheck).join("") || localize("<li>未记录逐项验收说明</li>")}</ul>${workspace?.path ? localize`<h3>工作区</h3><p>${escape(workspace.path)}</p>` : ""}</details>`;
   }
   function status(projection, connection, model) {
     if (["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) return { state: "disconnected", text: localize("工作状态连接中断 · 草稿已保留") };
