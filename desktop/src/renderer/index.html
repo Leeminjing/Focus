@@ -108,49 +108,55 @@
       <div class="dialog-actions"><button type="button" value="cancel" data-action="close-task-dialog" data-i18n="dialog.cancel">取消</button><button class="primary" type="submit" value="default" data-i18n="dialog.create">创建</button></div>
     </form>
   </dialog>
-  <dialog id="settingsDialog" class="settings-dialog">
+  <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle">
     <header class="settings-dialog-head glass-surface">
-      <div>
-        <h2 data-i18n="settings.title">设置</h2>
-        <span class="muted tiny" data-i18n="settings.subtitle">Focus 桌面配置</span>
-      </div>
+      <h2 id="settingsTitle" data-i18n="settings.title">设置</h2>
       <button class="quiet-button" data-action="close-settings" aria-label="关闭" data-i18n-aria-label="settings.close"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
     </header>
     <nav class="settings-sections" role="tablist" aria-label="设置区块" data-i18n-aria-label="settings.sections">
-      <button id="settingsTab-general" role="tab" aria-controls="settingsPane-general" tabindex="0" data-action="settings-tab" data-settings-tab="general" aria-selected="true" class="is-active" data-i18n="settings.general">常规</button>
-      <button id="settingsTab-models" role="tab" aria-controls="settingsPane-models" tabindex="-1" data-action="settings-tab" data-settings-tab="models" aria-selected="false" data-i18n="settings.models">模型</button>
-      <button id="settingsTab-data" role="tab" aria-controls="settingsPane-data" tabindex="-1" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
+      <button id="settingsTab-general" role="tab" data-action="settings-tab" data-settings-tab="general" aria-controls="settingsPane-general" aria-selected="true" tabindex="0" class="is-active" data-i18n="settings.general">常规</button>
+      <button id="settingsTab-models" role="tab" data-action="settings-tab" data-settings-tab="models" aria-controls="settingsPane-models" aria-selected="false" tabindex="-1" data-i18n="settings.models">模型</button>
+      <button id="settingsTab-data" role="tab" data-action="settings-tab" data-settings-tab="data" aria-controls="settingsPane-data" aria-selected="false" tabindex="-1" data-i18n="settings.data">数据</button>
     </nav>
-    <section id="settingsPane-general" role="tabpanel" tabindex="0" aria-labelledby="settingsTab-general" class="settings-pane" data-settings-pane="general">
-      <h3 data-i18n="settings.notifications">桌面提醒</h3>
-      <label><input id="taskNotificationsEnabled" type="checkbox" checked><span data-i18n="settings.notifications_enabled">启用桌面提醒</span></label>
-      <p class="muted tiny" data-i18n="settings.notifications_help">优先提醒需要你处理的事项，再提醒任务完成和失败。点击提醒可进入对应任务。</p>
-      <h3 data-i18n="settings.language">界面语言</h3>
-      <div class="settings-language-options" role="radiogroup" aria-label="界面语言" data-i18n-aria-label="settings.language">
-        <button type="button" data-action="set-language" data-locale="zh-CN" data-i18n="settings.chinese">中文</button>
-        <button type="button" data-action="set-language" data-locale="en-US" data-i18n="settings.english">English</button>
+    <section id="settingsPane-general" class="settings-pane" data-settings-pane="general" role="tabpanel" aria-labelledby="settingsTab-general" tabindex="0">
+      <div class="settings-field-list">
+        <div class="settings-field-row">
+          <div class="settings-field-name"><label for="taskNotificationsEnabled" data-i18n="settings.notifications">桌面提醒</label><small data-i18n="settings.notification_scope">本机 · 待处理、完成和失败</small></div>
+          <span id="notificationSettingsStatus" class="settings-field-value" role="status" data-i18n="settings.checking">正在检查…</span>
+          <input id="taskNotificationsEnabled" type="checkbox" aria-label="启用桌面提醒" data-i18n-aria-label="settings.notifications_enabled" disabled>
+        </div>
+        <div class="settings-field-row">
+          <div class="settings-field-name"><span id="settingsLanguageLabel" data-i18n="settings.language">界面语言</span><small data-i18n="settings.local_immediate">本机 · 立即生效</small></div>
+          <div class="settings-language-options settings-field-control" role="radiogroup" aria-labelledby="settingsLanguageLabel">
+            <button type="button" data-action="set-language" data-locale="zh-CN" role="radio" aria-checked="true" data-i18n="settings.chinese">中文</button>
+            <button type="button" data-action="set-language" data-locale="en-US" role="radio" aria-checked="false" data-i18n="settings.english">English</button>
+          </div>
+        </div>
+        <div class="settings-field-row">
+          <div class="settings-field-name"><label for="newSessionAccessMode" data-i18n="settings.file_mode">默认文件模式</label><small id="newSessionModeScope" data-i18n="settings.new_session_scope">仅新会话 · 现有会话不变</small></div>
+          <select id="newSessionAccessMode" class="settings-field-control" aria-describedby="newSessionModeScope">
+            <option value="read-only" data-i18n="access.mode_read_only">只读执行</option>
+            <option value="workspace-write" data-i18n="access.mode_workspace_write">工作区可写</option>
+            <option value="danger-full-access" data-i18n="access.mode_danger_full_access">未应用文件沙箱</option>
+          </select>
+        </div>
       </div>
-      <p class="muted tiny settings-language-help" data-i18n="settings.language_help">切换后立即应用，并保存在本机。</p>
-      <h3 data-i18n="settings.new_session_mode">新会话默认文件模式</h3>
-      <select id="newSessionAccessMode" aria-label="新会话默认文件模式" data-i18n-aria-label="settings.new_session_mode">
-        <option value="read-only" data-i18n="access.mode_read_only">只读执行</option>
-        <option value="workspace-write" data-i18n="access.mode_workspace_write">工作区可写</option>
-        <option value="danger-full-access" data-i18n="access.mode_danger_full_access">未应用文件沙箱</option>
-      </select>
-      <p class="muted tiny" data-i18n="settings.new_session_mode_help">只影响之后创建的会话；现有会话模式保持不变。</p>
-      <h3 data-i18n="settings.sandbox_status">Windows 文件沙箱</h3>
-      <div id="sandboxStatusHost" class="sandbox-status-host"></div>
-      <h3 data-i18n="shell_recovery.title">Shell 异常恢复</h3>
-      <p id="shellRecoveryFeedback" role="status" aria-live="polite"></p>
-      <div id="shellRecoveryHost" class="sandbox-status-host"></div>
+      <p id="generalSettingsFeedback" class="settings-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
+      <details id="sandboxDiagnostics" class="settings-diagnostic">
+        <summary><span data-i18n="settings.sandbox_status">Windows 文件沙箱</span><span id="sandboxStatusSummary" class="settings-field-value" role="status" data-i18n="settings.checking">正在检查…</span><span class="settings-diagnostic-action" data-i18n="settings.diagnostics">诊断与限制</span></summary>
+        <div id="sandboxStatusHost" class="settings-diagnostic-body"></div>
+      </details>
+      <details id="shellRecoveryDiagnostics" class="settings-diagnostic">
+        <summary><span data-i18n="shell_recovery.title">Shell 异常恢复</span><span id="shellRecoverySummary" class="settings-field-value" role="status" data-i18n="settings.checking">正在检查…</span><span class="settings-diagnostic-action" data-i18n="settings.details">查看详情</span></summary>
+        <div id="shellRecoveryHost" class="settings-diagnostic-body"></div>
+      </details>
+      <p id="shellRecoveryFeedback" class="settings-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
     </section>
-    <section id="settingsPane-models" role="tabpanel" tabindex="0" aria-labelledby="settingsTab-models" class="settings-pane" data-settings-pane="models" hidden>
-      <h3 data-i18n="settings.models">模型</h3>
-      <p class="muted tiny" data-i18n="settings.models_help">模型条目、默认选择与密钥都在这里配置；保存后立即生效，并逐项验证普通调用、策展输出和自动索引。</p>
+    <section id="settingsPane-models" class="settings-pane" data-settings-pane="models" role="tabpanel" aria-labelledby="settingsTab-models" tabindex="0" hidden>
+      <p class="settings-scope" data-i18n="settings.model_scope">本机模型与密钥 · 保存后立即生效</p>
       <div id="modelSettingsHost" class="model-settings-host" data-i18n-aria-label="settings.models" aria-label="模型"></div>
     </section>
-    <section id="settingsPane-data" role="tabpanel" tabindex="0" aria-labelledby="settingsTab-data" class="settings-pane" data-settings-pane="data" hidden>
-      <h3 data-i18n="settings.data">数据</h3>
+    <section id="settingsPane-data" class="settings-pane" data-settings-pane="data" role="tabpanel" aria-labelledby="settingsTab-data" tabindex="0" hidden>
       <section id="storageSettingsHost" class="settings-data-section" aria-label="长期存储维护" data-i18n-aria-label="settings.storage_maintenance"></section>
       <section class="settings-data-section">
         <header><strong data-i18n="settings.archived">已归档的会话</strong><span class="muted tiny" data-i18n="settings.archived_help">归档可恢复；删除需确认</span></header>

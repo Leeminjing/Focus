@@ -204,7 +204,7 @@ const state = {
     recovery: null,
   },
   accessReviews: { panel: null, payload: null, taskId: null, key: null, busy: false },
-  plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
+  plugins: { plugins: [], interfaces: {}, activation: {}, traces: [], filter: "all", selectedName: null, loading: false, reloading: false },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
   inspector: { open: window.innerWidth > 1100, tab: "materials", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
@@ -2922,11 +2922,23 @@ async function interruptMainRun() {
 }
 
 function renderPlugins() {
+  const focusedAction = document.activeElement?.dataset?.action;
   app.innerHTML = pluginView.render(state.plugins.plugins, state.plugins.interfaces, state.plugins.traces, state.plugins);
   interfaceI18n.apply(app);
+  if (["refresh-plugins", "reload-plugins"].includes(focusedAction)) {
+    app.querySelector(`[data-action="${focusedAction}"]`)?.focus({ preventScroll: true });
+  }
+}
+
+function applyPluginRegistry(data) {
+  const plugins = data.plugins || [];
+  const selectedName = plugins.some(item => item.name === state.plugins.selectedName)
+    ? state.plugins.selectedName : null;
+  state.plugins = { ...state.plugins, plugins, interfaces: data.interfaces || {}, activation: data.activation || {}, selectedName };
 }
 
 async function hydratePlugins() {
+  if (state.plugins.reloading) return false;
   const requestId = ++pluginHydrationSequence;
   state.plugins = { ...state.plugins, loading: true, error: null };
   if (state.view === "plugins") renderPlugins();
@@ -2935,13 +2947,9 @@ async function hydratePlugins() {
       api("/desktop/api/plugins"),
       api("/desktop/api/plugins/traces"),
     ]);
-    const plugins = data.plugins || [];
     if (requestId !== pluginHydrationSequence) return false;
-    const selectedName = plugins.some(item => item.name === state.plugins.selectedName)
-      ? state.plugins.selectedName
-      : null;
-    state.plugins = { plugins, interfaces: data.interfaces || {}, traces: traceData.traces || [], filter: state.plugins.filter || "all", selectedName, query: state.plugins.query || "" };
-    void ensurePluginAssets(plugins);
+    applyPluginRegistry(data);
+    state.plugins = { ...state.plugins, traces: traceData.traces || [], queried: true };
     return true;
   } catch (error) {
     if (requestId === pluginHydrationSequence) state.plugins = { ...state.plugins, error: error.message };
@@ -2951,6 +2959,24 @@ async function hydratePlugins() {
       state.plugins.loading = false;
       if (state.view === "plugins") renderPlugins();
     }
+  }
+}
+
+async function reloadPlugins() {
+  if (state.plugins.loading || state.plugins.reloading) return;
+  state.plugins = { ...state.plugins, reloading: true, reloadError: null, reloadSucceeded: false };
+  if (state.view === "plugins") renderPlugins();
+  try {
+    const data = await api("/desktop/api/plugins/reload", { method: "POST" });
+    applyPluginRegistry(data);
+    state.plugins = { ...state.plugins, reloading: false, reloadSucceeded: true };
+    // A confirmed registry update remains visible even if the follow-up query fails.
+    // UI/API resources remain mounted from process startup; querying cannot remount them.
+    await hydratePlugins();
+  } catch (error) {
+    state.plugins = { ...state.plugins, reloading: false, reloadError: error.message };
+  } finally {
+    if (state.view === "plugins") renderPlugins();
   }
 }
 
@@ -7682,7 +7708,32 @@ function syncLanguageControls() {
     const active = button.dataset.locale === current;
     button.setAttribute("role", "radio");
     button.setAttribute("aria-checked", String(active));
+    button.tabIndex = active ? 0 : -1;
   });
+}
+
+function setSettingsStatus(id, key) {
+  const node = settingsDialog?.querySelector?.(`#${id}`);
+  if (!node) return;
+  node.setAttribute?.("data-i18n", key);
+  node.textContent = interfaceI18n.t(key);
+}
+
+function setSettingsFeedback(message, failed = false, key = "") {
+  const node = settingsDialog?.querySelector?.("#generalSettingsFeedback");
+  if (!node) return;
+  node.textContent = message;
+  if (key) node.setAttribute?.("data-i18n", key);
+  else node.removeAttribute?.("data-i18n");
+  node.classList?.toggle("danger", failed);
+}
+
+function setSettingsDiagnostic(detailsId, summaryId, key, abnormal) {
+  setSettingsStatus(summaryId, key);
+  const details = settingsDialog?.querySelector?.(`#${detailsId}`);
+  if (details) details.open = abnormal;
+  const summary = settingsDialog?.querySelector?.(`#${summaryId}`);
+  summary?.classList?.toggle("danger", abnormal);
 }
 
 async function openSettings() {
@@ -7718,20 +7769,32 @@ async function openSettings() {
   if (newSessionMode) newSessionMode.value = accessMode.readNewSessionDefault(window.localStorage);
   const notificationsToggle = settingsDialog?.querySelector?.("#taskNotificationsEnabled");
   if (notificationsToggle) {
-    notificationsToggle.disabled = !window.focusDesktop?.notifications;
-    if (!notificationsToggle.disabled) {
-      try { notificationsToggle.checked = (await window.focusDesktop.notifications.settings()).enabled; }
-      catch (error) { setStatus(error.message, true); }
+    notificationsToggle.disabled = true;
+    setSettingsStatus("notificationSettingsStatus", window.focusDesktop?.notifications ? "settings.checking" : "settings.desktop_only");
+    if (window.focusDesktop?.notifications) {
+      try {
+        notificationsToggle.checked = (await window.focusDesktop.notifications.settings()).enabled;
+        notificationsToggle.disabled = false;
+        setSettingsStatus("notificationSettingsStatus", notificationsToggle.checked ? "settings.enabled" : "settings.disabled");
+      } catch (error) {
+        setSettingsStatus("notificationSettingsStatus", "settings.read_failed");
+        setSettingsFeedback(error.message, true);
+        setStatus(error.message, true);
+      }
     }
   }
   interfaceI18n.apply(settingsDialog);
   const sandboxHost = settingsDialog?.querySelector?.("#sandboxStatusHost");
   if (sandboxHost) {
+    setSettingsStatus("sandboxStatusSummary", "settings.checking");
     try {
       const status = await api("/desktop/api/sandbox/status");
       sandboxHost.innerHTML = renderSandboxStatus(status);
+      const available = status?.available === true && status?.enforcement === "partial";
+      setSettingsDiagnostic("sandboxDiagnostics", "sandboxStatusSummary", available ? "settings.sandbox_partial" : "settings.sandbox_unavailable", !available);
     } catch (error) {
       sandboxHost.textContent = error.message;
+      setSettingsDiagnostic("sandboxDiagnostics", "sandboxStatusSummary", "settings.read_failed", true);
     }
   }
   await loadShellRecovery();
@@ -7741,10 +7804,14 @@ async function openSettings() {
 async function loadShellRecovery() {
   const host = settingsDialog?.querySelector?.("#shellRecoveryHost");
   if (!host) return;
+  setSettingsStatus("shellRecoverySummary", "settings.checking");
   try {
-    host.innerHTML = renderShellRecovery(await api("/desktop/api/shell-recovery"));
+    const runs = await api("/desktop/api/shell-recovery");
+    host.innerHTML = renderShellRecovery(runs);
+    setSettingsDiagnostic("shellRecoveryDiagnostics", "shellRecoverySummary", runs.length ? "settings.recovery_pending" : "settings.recovery_clear", Boolean(runs.length));
   } catch (error) {
     host.textContent = error.message;
+    setSettingsDiagnostic("shellRecoveryDiagnostics", "shellRecoverySummary", "settings.read_failed", true);
   }
 }
 
@@ -7756,7 +7823,7 @@ function renderShellRecovery(runs) {
       <div class="archived-session-info"><strong>${escapeHtml(run.title)}</strong>
         <p>Run <code>${escapeHtml(run.run_id)}</code> · ${escapeHtml(run.status)}</p>
         <p><code>${escapeHtml(run.directory || uiText("shell_recovery.no_directory", "目录信息不可用"))}</code></p>
-        <ul>${run.attempts.map(attempt => `<li>${escapeHtml(attempt.tool)} · <code>${escapeHtml(attempt.call_id)}</code> · ${escapeHtml(attempt.state)}</li>`).join("")}</ul>
+        <ul>${run.attempts.map(attempt => `<li>${escapeHtml(attempt.tool)} · <code>${escapeHtml(attempt.call_id)}</code> · ${escapeHtml(attempt.state === "unknown" ? uiText("settings.execution_unknown", "执行结果未知") : attempt.state)}</li>`).join("")}</ul>
       </div><button class="text-button" data-action="recover-shell-cleanup" data-run-id="${escapeHtml(run.run_id)}" ${run.status !== "interrupted" ? "disabled" : ""}>${escapeHtml(uiText("shell_recovery.recover", "核验退出并恢复"))}</button>
     </div>`).join("")}${refresh}`;
 }
@@ -7769,14 +7836,26 @@ document.addEventListener("click", event => {
     const feedback = settingsDialog?.querySelector?.("#shellRecoveryFeedback");
     try {
       if (button.dataset.action === "recover-shell-cleanup") {
-        if (feedback) feedback.textContent = uiText("shell_recovery.verifying", "正在核验退出证据…");
+        if (feedback) {
+          feedback.textContent = uiText("shell_recovery.verifying", "正在核验退出证据…");
+          feedback.setAttribute?.("data-i18n", "shell_recovery.verifying");
+          feedback.classList?.toggle("danger", false);
+        }
         await api(`/desktop/api/runs/${encodeURIComponent(button.dataset.runId)}/shell-recovery`, { method: "POST" });
         const message = uiText("shell_recovery.done", "退出已核验，Run 已结算，目录已释放；请核对命令副作用后再发起新调用");
-        if (feedback) feedback.textContent = message;
+        if (feedback) {
+          feedback.textContent = message;
+          feedback.setAttribute?.("data-i18n", "shell_recovery.done");
+        }
+        feedback?.classList?.toggle("danger", false);
         setStatus(message);
       }
     } catch (error) {
-      if (feedback) feedback.textContent = error.message;
+      if (feedback) {
+        feedback.textContent = error.message;
+        feedback.removeAttribute?.("data-i18n");
+      }
+      feedback?.classList?.toggle("danger", true);
       throw error;
     } finally {
       button.disabled = false;
@@ -8022,21 +8101,11 @@ async function handleDocumentClick(event) {
     finally { button.disabled = false; }
     return;
   }
-  if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
-  if (action === "reload-plugins") {
-    if (state.plugins.loading) return;
-    state.plugins = { ...state.plugins, loading: true, error: null };
-    renderPlugins();
-    try {
-      await api("/desktop/api/plugins/reload", { method: "POST" });
-      pluginAssetsLoading = null;
-      await hydratePlugins();
-    } catch (error) {
-      state.plugins = { ...state.plugins, loading: false, error: error.message };
-      if (state.view === "plugins") renderPlugins();
-    }
-    return;
+  if (action === "refresh-plugins") {
+    if (state.plugins.loading || state.plugins.reloading) return;
+    return hydratePlugins();
   }
+  if (action === "reload-plugins") return reloadPlugins();
   if (action === "retry-equipment") return hydrateEquipment();
   if (action === "set-library-layout") {
     const library = button.dataset.library;
@@ -8465,6 +8534,22 @@ document.addEventListener("keydown", event => {
   if (mapTreeItem && handleMapTreeKeydown(event, mapTreeItem)) return;
   const tab = window.FocusAccessibleControls.tabDestination(event);
   if (tab) { tab.click(); tab.focus(); return; }
+  const languageOption = event.target.closest?.('[role="radio"][data-action="set-language"]');
+  if (languageOption && !event.altKey && !event.ctrlKey && !event.metaKey && !event.defaultPrevented
+      && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+    event.preventDefault();
+    const options = [...settingsDialog.querySelectorAll('[role="radio"][data-action="set-language"]')];
+    const index = options.indexOf(languageOption);
+    const nextIndex = event.key === "Home" ? 0
+      : event.key === "End" ? options.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + options.length) % options.length;
+    const next = options[nextIndex];
+    if (!next) return;
+    interfaceI18n.setLocale(next.dataset.locale);
+    syncLanguageControls();
+    next.focus();
+    return;
+  }
   const contextHandle = event.target.closest?.('[data-context-pointer-handle][data-context-drag-origin="draft"]');
   if (contextHandle && event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
     event.preventDefault();
@@ -8799,9 +8884,13 @@ document.addEventListener("change", event => {
   if (event.target.matches("[data-model-service]")) return updateModelService(event.target.value);
   if (event.target.id === "newSessionAccessMode") {
     const select = event.target;
-    try { select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value); }
+    try {
+      select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value);
+      setSettingsFeedback(uiText("settings.default_saved", "已保存，仅用于新会话"), false, "settings.default_saved");
+    }
     catch (error) {
       select.value = accessMode.readNewSessionDefault(window.localStorage);
+      setSettingsFeedback(error.message, true);
       setStatus(error.message, true);
     }
     return;
@@ -8810,10 +8899,17 @@ document.addEventListener("change", event => {
     const input = event.target;
     const enabled = input.checked;
     input.disabled = true;
+    setSettingsStatus("notificationSettingsStatus", "settings.saving");
     runUiAction(async () => {
-      try { input.checked = (await window.focusDesktop.notifications.settings(enabled)).enabled; }
-      catch (error) { input.checked = !enabled; setStatus(error.message, true); }
-      finally { input.disabled = false; }
+      try {
+        input.checked = (await window.focusDesktop.notifications.settings(enabled)).enabled;
+        setSettingsFeedback(uiText("settings.notification_saved", "桌面提醒设置已保存"), false, "settings.notification_saved");
+      }
+      catch (error) { input.checked = !enabled; setSettingsFeedback(error.message, true); setStatus(error.message, true); }
+      finally {
+        input.disabled = false;
+        setSettingsStatus("notificationSettingsStatus", input.checked ? "settings.enabled" : "settings.disabled");
+      }
     });
     return;
   }
