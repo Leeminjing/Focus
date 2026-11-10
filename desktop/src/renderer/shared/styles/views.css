@@ -752,6 +752,7 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .context-source-panel { padding: var(--space-3); border-right: 1px solid var(--border-default); background: var(--surface-base); }
 .context-definition-panel { padding: var(--space-4) var(--space-4) 88px; }
 .context-source-heading h2 { font-size: 24px; }
+.context-source-message .context-message-actions { opacity: 1; transform: none; }
 .context-definition-panel > header h1 { font-size: 28px; }
 .context-definition-panel > footer { bottom: -88px; margin: var(--space-4) calc(-1 * var(--space-4)) -88px; padding: var(--space-3) var(--space-4); border-color: var(--border-subtle); background: rgb(255 255 255 / 96%); }
 .context-message-editor,
@@ -1314,8 +1315,10 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .memory-msg[draggable="true"] { cursor: grab; }
 .memory-msg-head { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: var(--space-3); text-align: left; }
 .memory-msg-head strong { font-size: 12px; color: var(--text-secondary); }
-.memory-msg-check { flex: 0 0 auto; min-width: 20px; text-align: center; color: var(--text-secondary); }
-.memory-msg.is-checked .memory-msg-check { color: var(--text-accent); }
+.memory-msg-selection, .memory-source-merge-selection { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; cursor: pointer; }
+.memory-msg-selection input, .memory-source-merge-selection input { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; accent-color: var(--text-accent); }
+.memory-msg-head .text-button { flex: 0 0 auto; white-space: nowrap; }
+.memory-pane-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
 .memory-msg-preview { display: block; width: 100%; margin: 0; overflow: hidden; font-size: 12px; line-height: 1.5; color: var(--text-primary); text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
 .memory-msg-tool { color: var(--text-secondary); }
 .memory-msg-tool .memory-msg-head { cursor: pointer; list-style: none; }
@@ -1348,17 +1351,16 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .memory-source-edit-list.is-drop-target .memory-source-edit { border-color: var(--border-accent); }
 .memory-source-edit-head strong { color: var(--text-secondary); }
 
-/* 合并模式：卡片可点选高亮 */
-.memory-source-edit.is-mergeable { cursor: pointer; }
-.memory-source-edit.is-mergeable:hover { border-color: var(--border-accent); }
+/* 合并模式通过原生选择框选择，原文仍可阅读。 */
+.memory-source-edit.is-mergeable .memory-source-edit-head { cursor: default; }
 .memory-source-edit.is-merge-selected { border-color: var(--border-accent); background: var(--surface-selected); }
-.memory-source-merge-check { flex: 0 0 auto; color: var(--text-accent); font-weight: 600; }
 .memory-source-merge-actions { display: inline-flex; gap: var(--space-1); margin-right: auto; }
 .memory-source-merge-actions .text-button[disabled] { opacity: .4; cursor: not-allowed; }
 .memory-source-edit-label { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .memory-source-edit-text { width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-base); color: var(--text-primary); font: inherit; resize: vertical; }
 .memory-editor-target { padding: 0 var(--space-3) var(--space-3); gap: var(--space-2); }
 .memory-editor-target .memory-editor-head { margin: 0 calc(-1 * var(--space-3)); padding: 0 var(--space-3); }
+.memory-target-sources { margin: 0; }
 .memory-empty-edit { padding: var(--space-3) var(--space-4); color: var(--text-secondary); font-size: 12px; }
 
 /* 压缩语义切换（完整记忆 / 分段记忆） */

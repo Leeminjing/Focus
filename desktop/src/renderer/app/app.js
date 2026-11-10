@@ -3141,6 +3141,9 @@ function openMemoryCompose(editing = false) {
     enabledMessages: [],
     selectedMessageIds: [],
     activeMessageId: null,
+    textSelection: "",
+    textMessageId: null,
+    textRange: null,
     collectedSources: [],
     expandedGroups: [],
     mergeMode: false,
@@ -3162,7 +3165,7 @@ function toggleMemoryGroup(workspace) {
 
 async function pickMemorySession(contextId) {
   // 点选会话：加载其消息到消息栏，并清空选择。选中会话所在分组由渲染层恒展开。
-  state.memory = { ...state.memory, activeSessionId: contextId, enabledMessages: [], selectedMessageIds: [], activeMessageId: null };
+  state.memory = { ...state.memory, activeSessionId: contextId, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, textSelection: "", textMessageId: null, textRange: null };
   render();
   try {
     const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
@@ -3176,12 +3179,33 @@ async function pickMemorySession(contextId) {
   }
 }
 
-function toggleMemoryMessage(messageId) {
-  // 消息卡点击：勾选/取消该消息（部分消息来源），并设为当前原文。
+function selectMemoryMessage(messageId, checked) {
   const ids = new Set(state.memory.selectedMessageIds || []);
-  ids.has(messageId) ? ids.delete(messageId) : ids.add(messageId);
-  state.memory = { ...state.memory, selectedMessageIds: [...ids], activeMessageId: messageId };
-  render();
+  checked ? ids.add(messageId) : ids.delete(messageId);
+  state.memory = { ...state.memory, selectedMessageIds: [...ids] };
+  document.querySelectorAll("[data-memory-message-select]").forEach(input => {
+    input.checked = ids.has(input.dataset.messageId);
+    input.closest(".memory-msg").classList.toggle("is-checked", input.checked);
+  });
+  const count = document.querySelector("[data-memory-selected-count]");
+  if (count) count.textContent = `${ids.size} / ${document.querySelectorAll("[data-memory-message-select]").length}`;
+  const add = document.querySelector('[data-action="add-checked-messages"]');
+  if (add) add.disabled = !ids.size;
+}
+
+function readMemoryMessage(messageId) {
+  if (state.memory.activeMessageId === messageId) return;
+  state.memory = { ...state.memory, activeMessageId: messageId, textSelection: "", textMessageId: null, textRange: null };
+  document.querySelectorAll('[data-action="read-memory-message"]').forEach(button => {
+    const active = button.dataset.messageId === messageId;
+    button.setAttribute("aria-pressed", String(active));
+    button.closest(".memory-msg").classList.toggle("is-active", active);
+  });
+  const preview = document.querySelector(".memory-source-wrap");
+  if (preview) preview.innerHTML = memoryView.renderMessageSource(state.memory);
+  const role = document.querySelector("[data-memory-preview-role]");
+  const message = state.memory.enabledMessages.find(item => item.id === messageId);
+  if (role) role.textContent = message ? memoryView.roleLabel(message.role) : localize("未选");
 }
 
 function uniqueSources() {
@@ -3219,8 +3243,8 @@ function addMessagesSource(messageIds) {
 // 每次划选建立一个**独立**的文字来源（不做同消息合并）——3 次划选 = 3 源，
 // 且选取不要求连续（间断划选各自成源）。同消息多处文字自然表现为多个独立源。
 function addTextSource(text) {
-  const value = (text || "").trim();
-  if (!value) { setStatus(localize("请先在原文中划选文字"), true); return; }
+  const value = text || "";
+  if (!value.trim()) { setStatus(localize("请先在原文中划选文字"), true); return; }
   const messageId = state.memory.textMessageId;
   const range = state.memory.textRange || { start: 0, end: value.length };
   const contextId = state.memory.activeSessionId;
@@ -3253,11 +3277,16 @@ function cancelMergeSources() {
   render();
 }
 
-function toggleMergeSource(index) {
+function selectMergeSource(index, checked) {
   const selected = new Set(state.memory.selectedSourcesForMerge || []);
-  selected.has(index) ? selected.delete(index) : selected.add(index);
+  checked ? selected.add(index) : selected.delete(index);
   state.memory = { ...state.memory, selectedSourcesForMerge: [...selected] };
-  render();
+  document.querySelectorAll("[data-memory-merge-select]").forEach(input => {
+    input.checked = selected.has(Number(input.dataset.sourceIndex));
+    input.closest(".memory-source-edit").classList.toggle("is-merge-selected", input.checked);
+  });
+  const confirm = document.querySelector('[data-action="confirm-merge-sources"]');
+  if (confirm) confirm.disabled = selected.size < 2;
 }
 
 // 合并：把选中的多个来源归并成一个来源（保留原始子来源引用，正文逐项拼接）。
@@ -3271,7 +3300,7 @@ function confirmMergeSources() {
     kind: "merged",
     rawText: mergedText,
     text: mergedText,
-    subSources: parts.map(s => ({ kind: s.kind, context_id: s.context_id, title: s.title, message_ids: s.message_ids, ranges: s.ranges })),
+    subSources: JSON.parse(JSON.stringify(parts)),
   };
   // 用第一个被选中的来源的位置替换合并结果，移除其余选中项。
   const newSources = all.filter((_, i) => !selected.includes(i));
@@ -3295,7 +3324,7 @@ function rebuildMemoryContent() {
   // 加/删来源时，为「完整记忆」生成一个可编辑的初始草稿（拼接各源原文）；用户可再点「重新压缩」调后端。
   // 「分段记忆」不在这里拼接——每段需逐来源压缩，交给「重新压缩」。
   const draft = state.memory.draft || {};
-  if (draft.contentDirty) return;
+  if (draft.contentDirty) { render(); return; }
   const mode = draft.contentMode || "complete";
   if (mode !== "complete") { render(); return; }
   const parts = (state.memory.collectedSources || []).map(s => s.rawText || s.text || "").filter(Boolean);
@@ -4242,7 +4271,7 @@ function contextSourcePanelMarkup(draft) {
     const task = state.tasks.find(candidate => candidate.task_id === item.context_id);
     return `<button class="context-source-candidate" style="--context-depth:${item.depth}" data-action="add-context-source" data-context-id="${escapeHtml(item.context_id)}">${escapeHtml(task?.title || item.title)}</button>`;
   }).join("") || localize('<span class="muted tiny">没有其他可加入的 Context</span>');
-  return localize`<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2>已有消息</h2></div><span class="muted tiny">拖到右侧</span></header>
+  return localize`<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2 id="context-source-heading">来源</h2><p class="muted tiny">点击“加入”复制到新上下文末尾；拖放可选择插入位置。</p></div></header>
     <div class="context-source-tabs" role="group" aria-label="来源 Context">${tabs}</div>
     <div class="context-source-message-list">${contextEditor.renderSourceMessages(active?.messages || [], active?.context_id || "", locked)}</div>
     <details class="context-source-add"${created ? " hidden" : ""}><summary>加入其他来源</summary><div class="context-source-tree">${candidates}</div></details>`;
@@ -4303,15 +4332,15 @@ function renderContextEditor(scrollTop = null) {
   const created = Boolean(draft.context);
   const locked = contextDraftLocked(draft);
   app.innerHTML = localize`<section class="context-editor-view">
-    <aside class="context-source-panel">${contextSourcePanelMarkup(draft)}</aside>
-    <section class="context-definition-panel">
-      <header><div><span class="review-kicker">NEW CONTEXT</span><h1>自由组装</h1></div><button class="text-button" data-action="exit-context-editor">关闭</button></header>
+    <aside class="context-source-panel" aria-labelledby="context-source-heading">${contextSourcePanelMarkup(draft)}</aside>
+    <section class="context-definition-panel" aria-labelledby="context-definition-heading">
+      <header><div><span class="review-kicker">NEW CONTEXT</span><h1 id="context-definition-heading">新上下文</h1></div><button class="text-button" data-action="exit-context-editor">关闭</button></header>
       <label>Context 标题<input data-context-title value="${escapeHtml(draft.title)}" ${created ? "disabled" : ""}></label>
-      <div class="context-compose-heading"><div><strong>新 Context</strong><span>${draft.messages.length} 条消息</span></div><div class="history-actions"><button class="text-button" data-action="context-message-add" ${locked ? "disabled" : ""}>新增消息</button><button class="text-button danger" data-action="context-message-clear" ${locked ? "disabled" : ""}>清空</button></div></div>
+      <div class="context-compose-heading"><div><strong>消息列表</strong><span>${draft.messages.length} 条消息</span></div><div class="history-actions"><button class="text-button" data-action="context-message-add" ${locked ? "disabled" : ""}>新增消息</button><button class="text-button danger" data-action="context-message-clear" ${locked ? "disabled" : ""}>清空</button></div></div>
       <div class="context-message-list" data-context-drop-zone>${contextEditor.renderMessages(draft.messages, draft.uiKeys, draft.expandedKey, locked)}</div>
       ${renderContextDecision(draft.context)}
       <div class="context-undo-toast" hidden><span>已删除消息</span><button type="button" class="text-button" data-action="context-message-undo">撤销</button></div>
-      ${locked ? "" : localize`<footer><span class="muted tiny">只有右侧内容会成为新 Context；来源始终保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? localize("重新编译") : localize("创建 Context")}</button></footer>`}
+      ${locked ? "" : localize`<footer><span class="muted tiny">仅使用“新上下文”中的消息创建 Context；来源保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? localize("重新编译") : localize("创建 Context")}</button></footer>`}
     </section>
   </section>`;
   if (Number.isFinite(scrollTop)) document.querySelector(".context-definition-panel").scrollTop = scrollTop;
@@ -8234,13 +8263,12 @@ async function handleDocumentClick(event) {
   if (action === "select-memory") { state.memory = { ...state.memory, selectedId: button.dataset.memoryId || null }; return render(); }
   if (action === "pick-session") return pickMemorySession(button.dataset.contextId);
   if (action === "pick-session-source") { addSessionSource(button.dataset.contextId, button.dataset.contextTitle); return; }
-  if (action === "toggle-message") { toggleMemoryMessage(button.dataset.messageId); return; }
+  if (action === "read-memory-message") { readMemoryMessage(button.dataset.messageId); return; }
   if (action === "add-checked-messages") { addMessagesSource(state.memory.selectedMessageIds || []); return; }
   if (action === "add-text") { addTextSource(state.memory.textSelection); return; }
   if (action === "remove-collected") { removeCollectedSource(Number(button.dataset.collectedIndex)); return; }
   if (action === "enter-merge-sources") { enterMergeSources(); return; }
   if (action === "cancel-merge-sources") { cancelMergeSources(); return; }
-  if (action === "toggle-merge-source") { toggleMergeSource(Number(button.dataset.sourceIndex)); return; }
   if (action === "confirm-merge-sources") { confirmMergeSources(); return; }
   if (action === "recompress-memory") { recompressMemory(); return; }
   if (action === "set-memory-mode") { syncMemoryField("contentMode", button.dataset.mode || "complete"); return; }
@@ -8637,19 +8665,23 @@ document.addEventListener("mouseup", event => {
   const pre = event.target.closest("[data-selectable-text]");
   if (!pre) return;
   const sel = window.getSelection();
-  const text = sel ? sel.toString() : "";
+  if (!sel?.rangeCount) return;
+  const selectionRange = sel.getRangeAt(0);
+  if (!pre.contains(selectionRange.startContainer) || !pre.contains(selectionRange.endContainer)) return;
+  const text = selectionRange.toString();
   if (!text) return;
   const container = pre.closest("[data-message-id]");
   const messageId = container ? container.getAttribute("data-message-id") : null;
-  // 用选区文本在全文中的位置估算字符区间（同一条消息内划选足够准确）。
-  const full = pre.textContent || "";
-  const start = full.indexOf(text);
-  const end = start >= 0 ? start + text.length : null;
+  // 按实际 DOM 选区计算偏移，重复文字也保留其准确位置。
+  const prefix = document.createRange();
+  prefix.selectNodeContents(pre);
+  prefix.setEnd(selectionRange.startContainer, selectionRange.startOffset);
+  const start = prefix.toString().length;
   state.memory = {
     ...state.memory,
     textSelection: text,
     textMessageId: messageId,
-    textRange: start >= 0 ? { start, end } : { start: 0, end: text.length },
+    textRange: { start, end: start + text.length },
   };
 });
 
@@ -9049,6 +9081,8 @@ document.addEventListener("submit", event => {
   runUiAction(continueAgentDetails);
 });
 document.addEventListener("change", event => {
+  if (event.target.matches("[data-memory-message-select]")) return selectMemoryMessage(event.target.dataset.messageId, event.target.checked);
+  if (event.target.matches("[data-memory-merge-select]")) return selectMergeSource(Number(event.target.dataset.sourceIndex), event.target.checked);
   if (["sessionModel", "sessionReasoning"].includes(event.target.id)) {
     const detail = state.details.get(state.activeTaskId);
     if (!detail) return;

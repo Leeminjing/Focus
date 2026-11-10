@@ -65,6 +65,16 @@
     return role === "human" || role === "user" || role === "ai" || role === "assistant";
   }
 
+  function renderMessageSource(state) {
+    const message = (state.enabledMessages || []).find(m => m.id === state.activeMessageId);
+    return message
+      ? localize`<article class="memory-source" data-message-id="${escapeHtml(message.id)}">
+          <div class="memory-source-head"><strong>${escapeHtml(roleLabel(message.role))}</strong><button type="button" class="text-button" data-action="add-text">加入选中文字</button></div>
+          <pre class="memory-source-text" data-selectable-text>${escapeHtml(messageText(message.content))}</pre>
+        </article>`
+      : localize('<p class="muted">选择“阅读原文”查看消息。</p>');
+  }
+
   // === 浏览态：左记忆列表，右单条详情 ===
 
   const strategyText = memory => memory.category === "evolution_strategy" ? Object.values(memory.strategy || {}).join("\n") : memory.content;
@@ -150,25 +160,20 @@
       const id = message.id || `idx-${index}`;
       const checked = selectedIds.has(id);
       const active = state.activeMessageId === id;
-      return `<button type="button" class="memory-msg${active ? " is-active" : ""}${checked ? " is-checked" : ""}" draggable="true" data-action="toggle-message" data-message-id="${escapeHtml(id)}" aria-pressed="${checked}">
-        <div class="memory-msg-head"><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(roleLabel(message.role))}</strong><span class="memory-msg-check">${checked ? "✓" : "+"}</span></div>
+      return localize`<article class="memory-msg${active ? " is-active" : ""}${checked ? " is-checked" : ""}" draggable="true" data-message-id="${escapeHtml(id)}">
+        <div class="memory-msg-head"><label class="memory-msg-selection"><input type="checkbox" data-memory-message-select data-message-id="${escapeHtml(id)}"${checked ? " checked" : ""}><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(roleLabel(message.role))}</strong></label><button type="button" class="text-button" data-action="read-memory-message" data-message-id="${escapeHtml(id)}" aria-pressed="${active}">阅读原文</button></div>
         <p class="memory-msg-preview">${escapeHtml(messagePreview(message.content))}</p>
-      </button>`;
+      </article>`;
     }).join("");
-    const listEmpty = localize('<p class="muted">点击左侧会话，选择要整理的对话。</p>');
+    const listEmpty = localize('<p class="muted">选择会话后显示消息。</p>');
 
     // 第三栏：当前消息全文（可划选文字高亮 = 部分文字来源，可拖拽）
     const sel = (state.enabledMessages || []).find(m => (m.id || "") === state.activeMessageId) || null;
-    const source = sel
-      ? localize`<article class="memory-source" data-message-id="${escapeHtml(sel.id)}">
-          <div class="memory-source-head"><strong>${escapeHtml(roleLabel(sel.role))}</strong><button type="button" class="text-button" data-action="add-text">加入选中文字</button></div>
-          <pre class="memory-source-text" data-selectable-text>${escapeHtml(messageText(sel.content))}</pre>
-        </article>`
-      : localize('<p class="muted">在左侧消息栏点选一条，查看完整原文并划选文字。</p>');
+    const source = renderMessageSource(state);
 
     // 记忆编辑区：左「记忆源·原始」(可编辑原文 + 拖拽重排 + 多选合并) + 右「压缩后的记忆」(可编辑)
     const sourceItems = (state.collectedSources || []).map((source, index) => {
-      const kind = KIND_LABELS[source.kind] || source.kind;
+      const kind = KIND_LABELS[({ session: "full_session", messages: "partial_messages", text: "partial_text" })[source.kind] || source.kind] || source.kind;
       // 各 kind 组内序号，便于区分同 kind 多个来源。
       const sameKindIndex = (state.collectedSources || []).slice(0, index).filter(s => s.kind === source.kind).length + 1;
       const sameKindTotal = (state.collectedSources || []).filter(s => s.kind === source.kind).length;
@@ -182,17 +187,16 @@
       // 拖拽重排仅在非合并模式下启用，避免与点选合并冲突。
       const dragAttr = state.mergeMode ? "" : localize` draggable="true" title="拖动可调整合并顺序"`;
       const cardClass = `memory-source-edit${state.mergeMode ? " is-mergeable" : ""}${isMergeSelected ? " is-merge-selected" : ""}`;
-      const cardAction = state.mergeMode ? ` data-action="toggle-merge-source" data-source-index="${index}"` : "";
       const removeBtn = state.mergeMode ? "" : `<button type="button" class="text-button danger" data-action="remove-collected" data-collected-index="${index}">×</button>`;
-      return localize`<article class="${cardClass}" data-source-index="${index}"${cardAction}>
+      return localize`<article class="${cardClass}" data-source-index="${index}">
         <header class="memory-source-edit-head"${dragAttr}>
-          <strong>${index + 1}. ${escapeHtml(kind)}${kindOrdinal}</strong>
+          ${state.mergeMode ? `<label class="memory-source-merge-selection"><input type="checkbox" data-memory-merge-select data-source-index="${index}"${isMergeSelected ? " checked" : ""}><strong>${index + 1}. ${escapeHtml(kind)}${kindOrdinal}</strong></label>` : `<strong>${index + 1}. ${escapeHtml(kind)}${kindOrdinal}</strong>`}
           <span class="memory-source-edit-label">${label}</span>
-          ${state.mergeMode ? `<span class="memory-source-merge-check">${isMergeSelected ? "✓" : "+"}</span>` : removeBtn}
+          ${removeBtn}
         </header>
         <textarea class="memory-source-edit-text" data-source-index="${index}" data-source-field="rawText" rows="4" placeholder="原始内容（可编辑）"${state.mergeMode ? " readonly" : ""}>${escapeHtml(source.rawText || source.text || "")}</textarea>
       </article>`;
-    }).join("") || localize('<p class="memory-empty-edit muted">在上方选择会话 / 勾选消息 / 划选文字，添加记忆源。</p>');
+    }).join("") || localize('<p class="memory-empty-edit muted">尚未加入来源。</p>');
 
     const editorRatio = clampRatio(state.editorRatio, 0.15, 0.85);
     const sourceRatio = clampRatio(state.sourceRatio, 0.2, 0.8);
@@ -201,15 +205,15 @@
       <div class="memory-compose-top" id="memorySourceSelection" data-memory-top style="flex:${editorRatio} 1 0">
         <div class="memory-compose-grid">
           <aside class="memory-pane">
-            <header><strong>对话</strong><span>${(state.sessions || []).length}</span></header>
+            <header><strong>对话</strong><span class="memory-pane-actions"><button type="button" class="text-button" data-action="pick-session-source" data-context-id="${escapeHtml(state.activeSessionId || "")}" data-context-title="${escapeHtml((state.sessions || []).find(s => s.task_id === state.activeSessionId)?.title || "")}"${state.activeSessionId ? "" : " disabled"}>加入完整会话</button><span>${(state.sessions || []).length}</span></span></header>
             <div class="memory-session-list">${sessions}</div>
           </aside>
           <main class="memory-pane">
-            <header><strong>消息</strong><span class="memory-pane-actions"><button type="button" class="text-button" data-action="add-checked-messages">加入勾选</button><span>${dialogue.length}</span></span></header>
+            <header><strong>消息</strong><span class="memory-pane-actions"><button type="button" class="text-button" data-action="add-checked-messages"${selectedIds.size ? "" : " disabled"}>加入勾选</button><span data-memory-selected-count>${selectedIds.size} / ${dialogue.length}</span></span></header>
             <div class="memory-msg-list">${list || listEmpty}</div>
           </main>
           <main class="memory-pane">
-            <header><strong>原文</strong><span>${sel ? escapeHtml(roleLabel(sel.role)) : localize("未选")}</span></header>
+            <header><strong>原文</strong><span data-memory-preview-role>${sel ? escapeHtml(roleLabel(sel.role)) : localize("未选")}</span></header>
             <div class="memory-source-wrap">${source}</div>
           </main>
         </div>
@@ -219,10 +223,10 @@
         <div class="memory-editor" data-memory-editor>
           <section id="memoryEditorSources" class="memory-editor-sources" style="flex:${sourceRatio} 1 0">
             <header class="memory-editor-head">
-              <strong>记忆源 · 原始完整视图</strong>
+              <strong>已加入的来源</strong>
               <span class="memory-source-merge-actions">
                 ${state.mergeMode
-                  ? localize`<button type="button" class="text-button" data-action="confirm-merge-sources">合并所选</button>
+                  ? localize`<button type="button" class="text-button" data-action="confirm-merge-sources"${(state.selectedSourcesForMerge || []).length < 2 ? " disabled" : ""}>合并所选</button>
                      <button type="button" class="text-button" data-action="cancel-merge-sources">取消</button>`
                   : localize`<button type="button" class="text-button" data-action="enter-merge-sources" ${(state.collectedSources || []).length < 2 ? "disabled" : ""}>合并</button>`}
               </span>
@@ -233,13 +237,14 @@
           <div class="memory-resizer memory-resizer-h" data-memory-resizer-horizontal role="separator" tabindex="0" aria-label="调整记忆源与压缩记忆宽度" aria-controls="memoryEditorSources memoryEditorTarget" aria-orientation="vertical"></div>
           <section id="memoryEditorTarget" class="memory-editor-target" style="flex:${1 - sourceRatio} 1 0">
             <header class="memory-editor-head">
-              <strong>压缩后的记忆 · 完整视图</strong>
+              <strong>目标记忆</strong>
               <span class="memory-mode-toggle" role="group" aria-label="压缩语义">
                 <button type="button" class="text-button${state.contentMode !== "segmented" ? " is-active" : ""}" data-action="set-memory-mode" data-mode="complete">完整记忆</button>
                 <button type="button" class="text-button${state.contentMode === "segmented" ? " is-active" : ""}" data-action="set-memory-mode" data-mode="segmented">分段记忆</button>
               </span>
               <button type="button" class="text-button" data-action="recompress-memory">重新压缩</button>
             </header>
+            <p class="muted tiny memory-target-sources">来源集合：${(state.collectedSources || []).length} 项；重新压缩后生成目标记忆。</p>
             <input class="memory-title-input" data-memory-field="title" placeholder="记忆标题" value="${escapeHtml(state.draftTitle || "")}">
             ${state.contentMode === "segmented" ? renderSegments(state.segments) : localize`<textarea class="memory-content-input" data-memory-field="content" placeholder="压缩总结后的完整记忆（可编辑）" rows="8">${escapeHtml(state.draftContent || "")}</textarea>`}
           </section>
@@ -328,5 +333,5 @@
     </section>`;
   }
 
-  return { render, strategyText, messageText, messagePreview, roleLabel, isDialogueRole };
+  return { render, renderMessageSource, strategyText, messageText, messagePreview, roleLabel, isDialogueRole };
 });
