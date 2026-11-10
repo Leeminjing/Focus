@@ -1,4 +1,4 @@
-/* 验证真实 app.js 的设置 change 事件、重开显示及普通任务/Patrol 请求共用已保存默认模式。
+/* 验证真实 app.js 的设置 change 事件、重开显示及普通任务/Patrol 的独立默认模式。
  * Patrol store 在设置变更前创建，发送失败后切换默认值，重试必须保留原请求权限。
  * 示例：node --test desktop/tests/integration/new-session-access-mode.test.cjs。
  */
@@ -78,13 +78,13 @@ test("ordinary task creation uses the mode saved by the settings event", async (
   }
 });
 
-test("existing Patrol stores read the saved default for each new submission and freeze retries", async () => {
+test("existing Patrol stores keep their independent default and freeze retries across ordinary default changes", async () => {
   const h = await setup();
   h.run("workspacePatrolIntake.store('ws').edit({ content: '先写草稿' })");
-  // 先直接保存以独立检验 Patrol 是否仍缓存启动时默认值。
+  // 普通会话默认值不影响已创建的 Patrol store。
   h.run("accessMode.saveNewSessionDefault(localStorage, 'read-only')");
   await h.run("workspacePatrolIntake.submit('ws')");
-  assert.equal(h.patrolPosts[0].body.access_mode, "read-only");
+  assert.equal(h.patrolPosts[0].body.access_mode, "danger-full-access");
   h.run(`
     workspacePatrolIntake.store('ws').edit({ content: '待重试' });
     globalThis.failed = workspacePatrolIntake.store('ws').submit();
@@ -92,10 +92,10 @@ test("existing Patrol stores read the saved default for each new submission and 
   `);
   await h.change("workspace-write");
   await h.run("workspacePatrolIntake.retry('ws', failed.submission_id)");
-  assert.equal(h.patrolPosts[1].body.access_mode, "read-only");
+  assert.equal(h.patrolPosts[1].body.access_mode, "danger-full-access");
   h.run("workspacePatrolIntake.store('ws').edit({ content: '新会话' })");
   await h.run("workspacePatrolIntake.submit('ws')");
-  assert.equal(h.patrolPosts[2].body.access_mode, "workspace-write");
+  assert.equal(h.patrolPosts[2].body.access_mode, "danger-full-access");
 });
 
 test("storage failure restores the saved selection and reports the error", async () => {

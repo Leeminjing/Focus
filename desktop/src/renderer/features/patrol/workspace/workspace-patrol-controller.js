@@ -161,13 +161,11 @@
         const available = Math.max(panels.clientHeight - handle.getBoundingClientRect().height, minimum + observationMinimum);
         return { available, minimum, maximum: available - observationMinimum };
       };
-      const sync = () => {
+      const read = () => {
         const limits = bounds();
-        if (!limits) return;
-        for (const [name, value] of Object.entries({ min: limits.minimum, max: limits.maximum, now: progress.getBoundingClientRect().height })) {
-          handle.setAttribute(`aria-value${name}`, String(Math.round(value / limits.available * 100)));
-        }
+        return limits && { min: limits.minimum, max: limits.maximum, now: progress.getBoundingClientRect().height };
       };
+      const sync = () => root.FocusAccessibleControls.syncSeparator(handle, read());
       const apply = () => {
         panels.style.setProperty("--patrol-progress-weight", `${ratio}fr`);
         panels.style.setProperty("--patrol-observation-weight", `${1 - ratio}fr`);
@@ -198,14 +196,9 @@
         if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
       };
       for (const event of ["pointerup", "pointercancel", "lostpointercapture"]) handle.addEventListener(event, finish, options);
-      handle.addEventListener("keydown", event => {
-        const limits = bounds();
-        if (!limits || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-        event.preventDefault();
-        const delta = (event.key === "ArrowUp" ? -1 : 1) * (event.shiftKey ? 64 : 24);
-        resize(event.key === "Home" ? limits.minimum : event.key === "End" ? limits.maximum : progress.getBoundingClientRect().height + delta);
-        persist();
-      }, options);
+      root.FocusAccessibleControls.bindSeparator(handle, {
+        read, resize, commit: persist, signal: lifetime.signal,
+      });
       handle.addEventListener("dblclick", () => { ratio = .6; apply(); persist(); }, options);
       apply();
       if (root.ResizeObserver) {
@@ -715,7 +708,8 @@
       const pendingButton = host.querySelector("[data-patrol-pending]");
       pendingButton.hidden = !pending;
       const pendingText = localize`${pending} 项待处理`;
-      if (pendingButton.textContent !== pendingText) pendingButton.textContent = pendingText;
+      root.FocusAccessibleControls.announce(pendingButton, pendingText);
+      root.FocusAccessibleControls.announce(host.querySelector("[data-patrol-pending-status]"), pendingText);
       if (previous?.facts !== projection.facts) {
         patchFileFacts(true);
         artifacts?.update(root.FocusLoopLiveSelectors.selectFacts(projection));

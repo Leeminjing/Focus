@@ -33,6 +33,7 @@ function fixture(api) {
     FocusLoopFactsView: { markFileReferences: () => [], reconcileTimeline() { work.facts++; } },
     FocusLoopLiveSelectors: { selectFacts: () => [] },
   });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../../../shared/ui/accessible-controls.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "./workspace-patrol-controller.js"), "utf8"), context);
   const controller = context.FocusWorkspacePatrolController.create({ api, inputs,
     view: { ...View, history(model) { work.builds++; return View.history(model); } },

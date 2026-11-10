@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const { test } = require("node:test");
 const { createAppHarness, readAppSource } = require("../helpers/test-helper.cjs");
+const { createElement } = require("../helpers/test-dom.cjs");
 const Memory = require("../../src/renderer/features/memory/memory.js");
 const Observation = require("../../src/renderer/features/patrol/workspace/observation-view.js");
 
@@ -12,8 +13,8 @@ const strategy = { applicability: "关键假设未验证", evolution: "先验证
 const metadata = { schema: "focus.strategy/v1", id: "tests/validate", name: "先验证", version: "1.0.0", description: "减少返工" };
 const installed = { memory_id: "memory-1", title: metadata.name, category: "evolution_strategy", strategy, enabled: true, strategy_package: metadata, installation_hash: "a".repeat(64), locally_modified: true };
 
-function harness(extra = {}) {
-  const h = createAppHarness({ statusNode: "record", globals: { strategy, metadata, installed, ...extra } });
+function harness(extra = {}, selectors = {}) {
+  const h = createAppHarness({ statusNode: "record", selectors, globals: { strategy, metadata, installed, ...extra } });
   for (const filename of ["../../src/renderer/features/patrol/workspace/workspace-patrol-inputs.js", "../../src/renderer/features/patrol/workspace/workspace-patrol-intake.js"]) vm.runInContext(fs.readFileSync(require.resolve(`./${filename}`), "utf8"), h.context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/memory/memory.js"), "utf8"), h.context);
   new vm.Script(readAppSource().replace(/runUiAction\(async \(\) => \{ await bootstrap\(\); if \(desktopPatrol\) await desktopPatrol.ready\(\); \}\);\s*$/, "")).runInContext(h.context);
@@ -38,6 +39,64 @@ test("new strategy editor renders with an explicitly empty authoring state", () 
   const html = Memory.render([], { composing: true, draft: { category: "evolution_strategy", title: "Test", strategy }, authoring: null });
   assert.match(html, /data-memory-field="package:id"/);
   assert.match(html, /用三个场景预演方法/);
+});
+
+test("editing starts with stable method fields, folds publishing and keeps scope beside saving", () => {
+  const html = Memory.render([], { composing: true, draft: installed });
+  const root = createElement("div"); root.innerHTML = html;
+  const method = root.querySelector("[data-strategy-method]");
+  assert.deepEqual(method.querySelectorAll("label").map(label => label.childNodes[0].textContent), ["何时采用", "怎样推进", "继承什么"]);
+  assert.deepEqual(method.querySelectorAll("textarea").map(field => field.dataset.memoryField), ["strategy:applicability", "strategy:evolution", "strategy:inheritance"]);
+  const publishing = root.querySelector("[data-strategy-publishing]");
+  assert.equal(publishing.hasAttribute("open"), false);
+  assert.ok(publishing.querySelector('[data-memory-field="package:id"]'));
+  assert.ok(html.indexOf('data-memory-field="strategy:inheritance"') < html.indexOf('data-memory-field="package:id"'));
+  const settings = root.querySelector("[data-strategy-save-settings]");
+  for (const field of ["workspace_id", "enabled"]) assert.ok(settings.querySelector(`[data-memory-field="${field}"]`));
+  assert.ok(settings.querySelector('[data-action="save-strategy"]'));
+  assert.match(settings.textContent, /后续轮次生效/);
+});
+
+test("rehearsal results explicitly describe simulation instead of execution", () => {
+  const html = Memory.render([], { composing: true, draft: { ...installed, rehearsal_result: { applicable: {
+    adopted: true, reason: "建议", organization: "模拟安排", inheritance: "证据", missing_evidence: [], stop_when: "等待反馈",
+  } } } });
+  assert.match(html, /预演结果（模拟）/);
+  assert.match(html, /不执行工作或改变任务状态/);
+});
+
+test("import puts the old and new methods before folded metadata and capacity details", () => {
+  const html = Memory.render([], { strategyImport: { markdown: "source", preview: { metadata, strategy, existing: installed,
+    capacity: [{ fits: false, input_bound: 50000, previous_input_bound: 60000, strategy_input_limit: 40000 }] } } });
+  const root = createElement("div"); root.innerHTML = html;
+  assert.equal(root.querySelector("[data-strategy-import-source]").hasAttribute("open"), false);
+  const comparison = root.querySelector(".strategy-import-comparison");
+  assert.match(comparison.textContent, /当前安装.*包含本地修改/s);
+  assert.match(comparison.textContent, /待导入/);
+  assert.equal(comparison.querySelectorAll("pre").length, 6);
+  assert.ok(html.indexOf('class="memory-detail-content"') < html.indexOf("data-strategy-publishing"));
+  assert.ok(html.indexOf("data-strategy-publishing") < html.indexOf("data-strategy-capacity"));
+  assert.equal(root.querySelector("[data-strategy-publishing]").hasAttribute("open"), false);
+  assert.equal(root.querySelector("[data-strategy-capacity] details").hasAttribute("open"), false);
+  assert.match(root.querySelector("[data-strategy-capacity] > p").textContent, /本次减少占用可保存/);
+  assert.equal(root.querySelector('[data-action="install-strategy"]').hasAttribute("disabled"), false);
+});
+
+test("changing import scope, enabled state or source removes stale comparison and install actions", () => {
+  for (const [field, value] of [["workspace_id", "other"], ["enabled", false], ["markdown", "changed"]]) {
+    const root = createElement("div");
+    root.innerHTML = Memory.render([], { strategyImport: { markdown: "source", preview: { metadata, strategy, existing: installed } } });
+    const selectors = Object.fromEntries(["[data-strategy-import-preview]", "[data-strategy-import-actions]", "[data-strategy-import-error]"].map(selector => [selector, () => root.querySelector(selector)]));
+    const { run } = harness({}, selectors);
+    run('openStrategyImport(); state.memory.strategyImport.preview = { metadata, strategy, existing: installed };');
+    run(`syncStrategyImportField(${JSON.stringify(field)}, ${JSON.stringify(value)});`);
+    assert.equal(run("state.memory.strategyImport.preview"), null);
+    assert.equal(root.querySelector('[data-action="install-strategy"]'), null);
+    assert.equal(root.querySelector('[data-action="fork-imported-strategy"]'), null);
+    assert.equal(root.querySelector("[data-strategy-import-preview]"), null);
+    assert.ok(root.querySelector('[data-strategy-import-field="workspace_id"]'));
+    assert.ok(root.querySelector('[data-action="preview-strategy"]'));
+  }
 });
 
 test("failed save retains the generated stable package identity for retry", async () => {

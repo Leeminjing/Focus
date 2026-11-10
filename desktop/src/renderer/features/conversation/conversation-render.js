@@ -231,7 +231,7 @@
     };
   }
 
-  function _placeholderUnit(task, escapeHtml) {
+  function _placeholderUnit(task) {
     const signature = _join(["placeholder", task.harness_mode || "", task.workspace_path || "", task.assembly_target?.scope || ""]);
     return {
       key: "placeholder",
@@ -241,7 +241,10 @@
           <p>讨论、梳理材料、探索想法。</p>
           <p>${task.assembly_target?.scope === "workspace" ? localize("当前装配仅对所选工作区生效。") : localize("全局装配可供所有工作区使用。")}附加材料与输入按目标独立保存。</p>
         </div>`
-        : localize`<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`)),
+        : localize`<div class="conversation-empty" data-unit-key="placeholder">
+          <p class="conversation-empty-title">从一个任务开始。</p>
+          <button type="button" class="text-button" data-action="focus-main-input">输入任务</button>
+        </div>`)),
     };
   }
 
@@ -315,7 +318,6 @@
       state.units.push({ key, html: _unitHtml(key, _dividerSignature(item), () => input.renderDivider(item)) });
     }
     _messageGroupUnits(messageGroup, input, roleStructured, state);
-    if (!allMessages.length) state.units.push(_placeholderUnit(task, input.escapeHtml));
     for (const [runId, buffer] of input.state.streamBuffers || []) {
       if (buffer.taskId !== task.task_id || !(buffer.text || buffer.reasoning)) continue;
       const reasoning = streamingReasoningEvent(buffer, runId);
@@ -326,6 +328,7 @@
         html: _unitHtml(key, _streamingSignature(runId, buffer), () => `<article class="${STREAMING_PLACEHOLDER_CLASS}" data-stream-run="${runId}">${streamingContent(input.markdown, input.events, buffer, runId)}</article>`),
       });
     }
+    if (!allMessages.length && !state.units.length) state.units.push(_placeholderUnit(task));
     return { units: state.units, eventIndex: state.eventIndex };
   }
 

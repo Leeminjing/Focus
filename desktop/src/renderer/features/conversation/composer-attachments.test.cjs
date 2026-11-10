@@ -274,7 +274,9 @@ test("upload failure blocks sending and retains the text, failed card and retry 
   assert.equal(h.context.uploads[1].file, h.context.uploads[0].file);
   h.context.uploads[1].resolve({ material_id: "image", is_image: true, relative_path: "error.png" });
   await retry;
-  assert.match(h.cards.innerHTML, /已就绪/);
+  assert.match(h.cards.innerHTML, /is-ready/);
+  assert.doesNotMatch(h.cards.innerHTML, /已就绪|role="status"/);
+  assert.match(h.cards.innerHTML, /aria-label="error.png"/);
   await h.evaluate("sendMain()");
   assert.equal(h.context.requests[0].material_inputs[0].material_id, "image");
 });

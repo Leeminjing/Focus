@@ -4,6 +4,14 @@ const assert = require("node:assert/strict");
 const feedback = require("./workspace-patrol-feedback.js");
 const view = require("./workspace-patrol-view.js");
 const { create } = require("./workspace-patrol-inputs.js");
+const { createElement } = require("../../../../../tests/helpers/test-dom.cjs");
+const i18n = require("../../../shared/i18n/i18n.js");
+
+function fragment(html) {
+  const node = createElement("div");
+  node.innerHTML = html;
+  return node;
+}
 
 test("stopped and failed work separates saved inputs from reactivation", () => {
   for (const status of ["stopped", "failed"]) {
@@ -58,17 +66,24 @@ const row = (disposition = "decision") => ({ submission_id: "one", input_type: "
 
 test("each disposition shows its own explanation and expandable exact sources", () => {
   for (const [disposition, label] of Object.entries({ discussion: "已用于讨论", decision: "已纳入决策", reference: "已作为参考", deferred: "已延期" })) {
-    const html = view.history({ rows: [row(disposition)] });
-    assert.ok(html.includes(label));
+    const input = row(disposition);
+    const html = view.history({ rows: [input] });
     assert.doesNotMatch(html, /处理结果 ·|普通信息/);
     assert.ok(html.indexOf('先别改 UI') < html.indexOf(label));
-    assert.match(html, /先定位导入失败/);
-    assert.match(html, /<details[^>]*data-patrol-input-result/);
-    assert.match(html, /Mission 版本.*<dd>3<\/dd>/);
-    assert.match(html, /decision-1.*round-2.*observation-3/s);
-    assert.match(html, /fact-1/);
-    assert.match(html, /已请求停止 · 等待清理/);
-    assert.doesNotMatch(html, />已停止</);
+    const result = fragment(html).querySelector("details[data-patrol-input-result]");
+    assert.equal(result.dataset.patrolDisposition, disposition);
+    assert.ok(result.querySelector("summary strong").textContent.includes(label));
+    assert.equal(result.querySelector("summary span").textContent, input.processing_result.explanation);
+    for (const [field, value] of Object.entries({ mission_revision: "3", decision_id: "decision-1", round_id: "round-2", observation_id: "observation-3" })) {
+      assert.equal(result.querySelector(`[data-patrol-source="${field}"]`).textContent, value, field);
+    }
+    assert.equal(result.querySelector('[data-patrol-source="observation_generation"]').textContent, i18n.t("patrol.feedback.version", { version: 4 }));
+    assert.deepEqual(JSON.parse(result.querySelector("pre").textContent.replaceAll("&quot;", '"')), { fact_id: "fact-1", revision: 2 });
+    const cancellation = result.querySelector('[data-patrol-cancellation-state="cancel_requested"]');
+    assert.equal(cancellation.dataset.patrolTargetKind, "run");
+    assert.equal(cancellation.dataset.patrolTargetId, "ui-run");
+    assert.match(cancellation.textContent, /等待清理/);
+    assert.equal(result.querySelector('[data-patrol-cancellation-state="stopped"]'), null);
   }
 });
 
@@ -134,7 +149,42 @@ test("all explanation, evidence and identity strings are escaped", () => {
   input.processing_result.rationale = "<script>bad()</script>";
   input.processing_result.evidence = [{ fact_id: "</pre><svg onload=bad()>" }];
   input.processing_result.related_cancellations[0].target_id = '<iframe src="bad">';
-  assert.doesNotMatch(feedback.inputResult(input), /<img|<script|<svg|<iframe/);
+  input.processing_result.disposition = '\" onclick="bad()';
+  input.processing_result.related_cancellations[0].state = '\" onclick="bad()';
+  input.processing_result.related_cancellations[0].target_kind = '\" onclick="bad()';
+  input.processing_result.changes = [{ operation: '<script>', section: '<svg>', quote: '<img src=x onerror="bad()">' }];
+  const html = feedback.inputResult(input);
+  assert.doesNotMatch(html, /<img|<script|<svg|<iframe|"\s+onclick=/);
+  assert.equal(fragment(html).querySelector("[onclick]"), null);
+});
+
+test("stop receipts preserve each execution state and identity independently of display order", () => {
+  const input = row();
+  const states = ["cancel_requested", "stopped", "already_terminal", "settled", "unknown", "future_state"];
+  input.processing_result.related_cancellations = states.map((state, i) => ({ state, target_kind: "worker", target_id: `worker-${i}`, reason: `reason-${i}` })).reverse();
+  const result = fragment(feedback.inputResult(input));
+  for (const [i, state] of states.entries()) {
+    const receipt = result.querySelector(`[data-patrol-cancellation-state="${state}"]`);
+    assert.equal(receipt.dataset.patrolTargetId, `worker-${i}`);
+    assert.equal(receipt.dataset.patrolTargetKind, "worker");
+    assert.equal(receipt.querySelector("p").textContent, `reason-${i}`);
+    if (state === "future_state") assert.match(receipt.querySelector("strong").textContent, /待核实/);
+    else if (state === "cancel_requested") assert.match(receipt.querySelector("strong").textContent, /等待清理/);
+  }
+});
+
+test("unknown enum values including object property names keep safe domain fallbacks", () => {
+  for (const unknown of ["future_state", "constructor", "toString", "__proto__"]) {
+    const input = row(unknown);
+    input.processing_result.related_cancellations = [{ state: unknown, target_kind: unknown, target_id: "target", reason: "reason" }];
+    input.processing_result.changes = [{ operation: unknown, section: unknown, quote: "quote" }];
+    const result = fragment(feedback.inputResult(input));
+    assert.equal(result.querySelector("summary strong").textContent, i18n.t("patrol.feedback.processed"));
+    assert.equal(result.querySelector("li strong").textContent, i18n.t("patrol.feedback.cancel_unknown"));
+    assert.ok(result.textContent.includes(unknown), "unknown operation/section/target remains visible");
+    const pending = fragment(feedback.inputResult({ status: "accepted", processing_state: unknown }));
+    assert.equal(pending.querySelector("p").textContent, i18n.t("patrol.feedback.pending"));
+  }
 });
 
 test("history refresh updates old loaded inputs without changing the paging cursor or draft", async () => {
