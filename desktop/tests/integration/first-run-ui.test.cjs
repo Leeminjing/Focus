@@ -147,7 +147,7 @@ if (!process.versions.electron) {
     await capture(workbench, "first-run-model-settings");
     assert.equal(host.panel.isVisible(), false);
     assert.equal(await run(workbench, `document.querySelector('[data-action="model-save"]').textContent`), "保存并验证");
-    assert.equal(await run(workbench, `document.querySelector('[data-i18n="settings.models_help"]').hidden`), true);
+    assert.equal(await run(workbench, `document.querySelector('[data-i18n="settings.models_help"]:not([hidden])') === null`), true);
     assert.equal(await run(workbench, `document.querySelector('#modelSetupSteps [aria-current="step"]').textContent.includes('1. 模型配置')`), true);
     await run(workbench, `(() => {const key=document.querySelector('[data-model-credential]');key.value='fixture-key';key.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('[data-action="model-save"]').click();})()`);
     await waitFor(workbench, "document.querySelector('#modelSettingsHost').textContent.includes('策展验证失败')");
