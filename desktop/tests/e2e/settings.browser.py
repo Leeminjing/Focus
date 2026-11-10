@@ -137,7 +137,7 @@ with tempfile.TemporaryDirectory(prefix="focus-settings-fixture-") as temp, sync
     mode = page.locator("#newSessionAccessMode")
     mode.select_option("read-only")
     assert page.evaluate("localStorage.getItem('focus-new-session-file-mode-v1')") == "read-only"
-    expect(page.locator("#generalSettingsFeedback")).to_have_text("已保存，仅用于新会话")
+    expect(page.locator("#newSessionModeFeedback")).to_have_text("已保存普通会话新建默认值")
     notifications = page.get_by_role("checkbox", name="启用桌面提醒", exact=True)
     notifications.uncheck()
     expect(page.locator("#notificationSettingsStatus")).to_have_text("已关闭")
@@ -189,7 +189,7 @@ with tempfile.TemporaryDirectory(prefix="focus-settings-fixture-") as temp, sync
     expect(page.get_by_role("radio", name="English", exact=True)).to_be_focused()
     expect(page.get_by_role("radio", name="English", exact=True)).to_have_attribute("aria-checked", "true")
     expect(page.locator("#settingsTitle")).to_have_text("Settings")
-    expect(page.locator("#generalSettingsFeedback")).to_have_text("Saved for new sessions only")
+    expect(page.locator("#newSessionModeFeedback")).to_have_text("Default for new ordinary sessions saved")
     expect(page.locator("#shellRecoveryFeedback")).to_contain_text("Review command side effects")
     page.keyboard.press("ArrowLeft")
     expect(chinese).to_be_focused()

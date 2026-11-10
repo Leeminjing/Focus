@@ -1443,10 +1443,31 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 #storageSettingsHost .ui-toolbar { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 #storageSettingsHost .ui-toolbar button { flex: 0 0 auto; white-space: nowrap; }
 #storageSettingsHost > header, .storage-backups li { display: flex; justify-content: space-between; gap: var(--space-3); align-items: start; }
-.storage-usage { display: flex; flex-wrap: wrap; gap: var(--space-5); margin: 0; }
+.storage-section { display: grid; gap: var(--space-3); min-width: 0; padding-top: var(--space-3); border-top: 1px solid var(--border-subtle); }
+.storage-section h4, .storage-section h5, .storage-section p { margin: 0; }
+.storage-section h4 { font-size: 14px; }
+.storage-section h5 { font-size: 13px; }
+.storage-section-head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
+.storage-usage, .storage-usage dl, .storage-backup-scope, .storage-preview-usage { display: grid; gap: var(--space-2); margin: 0; }
+.storage-usage > div, .storage-usage dl > div, .storage-backup-scope > div, .storage-preview-usage > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
 .storage-usage dt { color: var(--text-secondary); font-size: 12px; }
-.storage-usage dd { margin: 4px 0 0; font-weight: 600; }
-.storage-preview { border: 1px solid var(--border-default); border-radius: 8px; padding: var(--space-3); }
+.storage-usage dd, .storage-backup-scope dd, .storage-preview-usage dd { margin: 0; font-weight: 600; }
+.storage-usage .storage-usage-children { grid-column: 1 / -1; padding-left: var(--space-4); border-left: 2px solid var(--border-subtle); font-weight: 400; }
+.storage-usage-children dd { color: var(--text-secondary); font-size: 12px; font-weight: 400; }
+.storage-backup-scope { font-size: 12px; }
+.storage-backup-scope-group { display: grid; gap: var(--space-2); }
+.storage-backup-scope > div { grid-template-columns: auto minmax(0, 1fr); }
+.storage-backup-scope dt { color: var(--text-secondary); }
+.storage-backup-scope dd { font-weight: 400; }
+.storage-section p, .storage-section dd { overflow-wrap: anywhere; }
+.storage-section .storage-status:empty { display: none; }
+.storage-protections { font-size: 12px; }
+.storage-protections p { margin-top: var(--space-2); }
+.storage-cleanup-steps { display: grid; gap: var(--space-4); margin: 0; padding-left: var(--space-4); }
+.storage-cleanup-steps li > * + * { margin-top: var(--space-2); }
+.storage-preview { display: grid; gap: var(--space-2); border: 1px solid var(--border-default); border-radius: var(--radius-control); padding: var(--space-3); }
+.storage-preview-usage { font-size: 12px; }
+.storage-preview-usage dd { text-align: right; }
 .storage-backups { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; }
 .storage-backups li { padding: var(--space-2) 0; overflow-wrap: anywhere; }
 .storage-backups small { display: block; color: var(--text-secondary); }

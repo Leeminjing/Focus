@@ -7736,8 +7736,41 @@ function setSettingsDiagnostic(detailsId, summaryId, key, abnormal) {
   summary?.classList?.toggle("danger", abnormal);
 }
 
+let fileModeSettingsRead = 0;
+async function loadFileModeSettings() {
+  const generation = ++fileModeSettingsRead;
+  const select = settingsDialog?.querySelector?.("#newSessionAccessMode");
+  if (select) select.value = accessMode.readNewSessionDefault(window.localStorage);
+  const future = settingsDialog?.querySelector?.("#newPatrolAccessMode");
+  const patrolDefault = window.FocusWorkspacePatrolInputs.DEFAULT_ACCESS_MODE;
+  if (future) future.textContent = uiText(accessMode.labelKey(patrolDefault), accessMode.labelFallback(patrolDefault));
+  const current = settingsDialog?.querySelector?.("#currentPatrolAccessMode");
+  const workspaceLabel = settingsDialog?.querySelector?.("#currentPatrolWorkspace");
+  if (!current) return;
+  const workspace = state.patrolWorkspace;
+  if (workspaceLabel) workspaceLabel.textContent = workspace?.name || workspace?.path || "";
+  if (!workspace) {
+    current.textContent = uiText("settings.no_patrol_workspace", "未选择工作区");
+    return;
+  }
+  current.textContent = uiText("settings.patrol_mode_loading", "正在读取实际模式…");
+  try {
+    const patrol = await loopApi.workspacePatrol(workspace.workspace_id);
+    if (generation !== fileModeSettingsRead || workspace.workspace_id !== state.patrolWorkspace?.workspace_id) return;
+    current.textContent = !patrol
+      ? uiText("settings.patrol_not_created", "尚未创建")
+      : accessMode.MODES.includes(patrol.access_mode)
+        ? uiText(accessMode.labelKey(patrol.access_mode), accessMode.labelFallback(patrol.access_mode))
+        : uiText("settings.patrol_mode_unknown", "实际模式不可用");
+  } catch (_) {
+    if (generation !== fileModeSettingsRead || workspace.workspace_id !== state.patrolWorkspace?.workspace_id) return;
+    current.textContent = uiText("settings.patrol_mode_failed", "读取失败，请刷新重试");
+  }
+}
+
 async function openSettings() {
   if (!settingsDialog?.open || settingsDialog.inert) void window.FocusSurfaceTransition.visible(settingsDialog, true, { modal: true, source: document.activeElement });
+  void loadFileModeSettings();
   try {
     const sessions = await api("/desktop/api/sessions/archived");
     const list = document.querySelector("#archivedSessions");
@@ -7765,8 +7798,6 @@ async function openSettings() {
   }
   renderModelSettings();
   syncLanguageControls();
-  const newSessionMode = settingsDialog?.querySelector?.("#newSessionAccessMode");
-  if (newSessionMode) newSessionMode.value = accessMode.readNewSessionDefault(window.localStorage);
   const notificationsToggle = settingsDialog?.querySelector?.("#taskNotificationsEnabled");
   if (notificationsToggle) {
     notificationsToggle.disabled = true;
@@ -8131,6 +8162,7 @@ async function handleDocumentClick(event) {
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
   if (action === "organize-context") return openCompressionView(activeTask(), null, null, true);
   if (action === "open-settings") return openSettings();
+  if (action === "refresh-file-modes") return loadFileModeSettings();
   if (action === "view-history") return openHistory(button.dataset.contextId);
   if (action === "open-history-result") {
     const hit = state.historySearch.results[Number(button.dataset.resultIndex)];
@@ -8884,13 +8916,20 @@ document.addEventListener("change", event => {
   if (event.target.matches("[data-model-service]")) return updateModelService(event.target.value);
   if (event.target.id === "newSessionAccessMode") {
     const select = event.target;
+    const feedback = settingsDialog?.querySelector?.("#newSessionModeFeedback");
     try {
       select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value);
-      setSettingsFeedback(uiText("settings.default_saved", "已保存，仅用于新会话"), false, "settings.default_saved");
+      if (feedback) {
+        feedback.setAttribute("data-i18n", "settings.ordinary_mode_saved");
+        feedback.textContent = uiText("settings.ordinary_mode_saved", "已保存普通会话新建默认值");
+      }
     }
     catch (error) {
       select.value = accessMode.readNewSessionDefault(window.localStorage);
-      setSettingsFeedback(error.message, true);
+      if (feedback) {
+        feedback.removeAttribute("data-i18n");
+        feedback.textContent = error.message;
+      }
       setStatus(error.message, true);
     }
     return;

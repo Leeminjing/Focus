@@ -132,15 +132,26 @@
             <button type="button" data-action="set-language" data-locale="en-US" role="radio" aria-checked="false" data-i18n="settings.english">English</button>
           </div>
         </div>
-        <div class="settings-field-row">
-          <div class="settings-field-name"><label for="newSessionAccessMode" data-i18n="settings.file_mode">默认文件模式</label><small id="newSessionModeScope" data-i18n="settings.new_session_scope">仅新会话 · 现有会话不变</small></div>
-          <select id="newSessionAccessMode" class="settings-field-control" aria-describedby="newSessionModeScope">
+      </div>
+      <h3 data-i18n="settings.file_modes">文件模式</h3>
+      <dl class="settings-file-modes">
+        <div>
+          <dt><label for="newSessionAccessMode" data-i18n="settings.ordinary_sessions">普通会话</label><span id="newSessionModeScope" class="muted tiny" data-i18n="settings.new_default">新建默认值</span></dt>
+          <dd><select id="newSessionAccessMode" aria-label="普通会话新建默认文件模式" data-i18n-aria-label="settings.new_session_mode" aria-describedby="newSessionModeScope">
             <option value="read-only" data-i18n="access.mode_read_only">只读执行</option>
             <option value="workspace-write" data-i18n="access.mode_workspace_write">工作区可写</option>
             <option value="danger-full-access" data-i18n="access.mode_danger_full_access">未应用文件沙箱</option>
-          </select>
+          </select><span id="newSessionModeFeedback" class="muted tiny" role="status"></span></dd>
         </div>
-      </div>
+        <div>
+          <dt><span id="currentPatrolModeLabel" data-i18n="settings.current_patrol">当前 Patrol</span><span id="currentPatrolWorkspace" class="muted tiny"></span></dt>
+          <dd><span id="currentPatrolAccessMode" role="status" aria-labelledby="currentPatrolModeLabel currentPatrolWorkspace"></span><button type="button" class="text-button" data-action="refresh-file-modes" data-i18n="settings.refresh_patrol_mode">刷新实际模式</button></dd>
+        </div>
+        <div>
+          <dt><span id="newPatrolModeLabel" data-i18n="settings.future_patrol">尚未创建的 Patrol</span><span id="newPatrolModeScope" class="muted tiny" data-i18n="settings.new_default">新建默认值</span></dt>
+          <dd id="newPatrolAccessMode" aria-labelledby="newPatrolModeLabel newPatrolModeScope"></dd>
+        </div>
+      </dl>
       <p id="generalSettingsFeedback" class="settings-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
       <details id="sandboxDiagnostics" class="settings-diagnostic">
         <summary><span data-i18n="settings.sandbox_status">Windows 文件沙箱</span><span id="sandboxStatusSummary" class="settings-field-value" role="status" data-i18n="settings.checking">正在检查…</span><span class="settings-diagnostic-action" data-i18n="settings.diagnostics">诊断与限制</span></summary>
