@@ -32,7 +32,7 @@ test("timeline uses event identities and keeps observation and verification dist
   assert.doesNotMatch(Timeline.entryHtml({ ...entry(1), title: '<img src=x onerror="bad()">', summary: "<script>bad()</script>" }), /<img|<script/);
 });
 
-test("timeline keeps core event information visible and puts evidence and audit data in closed details", () => {
+test("event title and time disclose historical evidence without generic or nested entry controls", () => {
   const host = createElement("div");
   host.innerHTML = Timeline.entryHtml({ ...entry(2, 2), summary: "补充测试说明", round_id: "round-1", round_number: 1, intent_id: "intent-1", source_event_id: "source-1",
     references: { state: "verified", context_labels: { ctx: "插件技术验证" } } });
@@ -40,12 +40,16 @@ test("timeline keeps core event information visible and puts evidence and audit 
   assert.equal(details.hasAttribute("open"), false);
   assert.equal(article.querySelector(".work-timeline-heading strong").textContent, "验证通过 · 8 passed");
   assert.equal(article.querySelector("time").getAttribute("datetime"), "2026-10-21T02:00:00Z");
-  const meta = article.querySelector(".work-timeline-meta");
+  assert.equal(details.querySelector("summary").querySelector("strong").textContent, "验证通过 · 8 passed");
+  assert.equal(details.dataset.timelineEvidence, "entry-2");
+  assert.equal(details.querySelector("details"), null);
+  assert.doesNotMatch(article.textContent, /查看详情|查看证据/);
+  const meta = article.querySelector(":scope > .work-timeline-meta");
   assert.equal(meta.querySelector("[data-timeline-context]").textContent, "插件技术验证");
   assert.equal(meta.querySelector(".work-timeline-state").textContent, "已验证");
   assert.doesNotMatch(meta.textContent, /v2|R1|追踪后续/);
   assert.equal(details.querySelector("p").textContent, "补充测试说明");
-  for (const selector of ["[data-timeline-round]", "[data-timeline-intent]", "[data-timeline-evidence]", ".work-timeline-source"]) {
+  for (const selector of ["[data-timeline-round]", "[data-timeline-intent]", "[data-timeline-evidence-body]", ".work-timeline-source"]) {
     assert.ok(details.querySelector(selector), `${selector} must stay available in details`);
   }
   assert.match(details.textContent, /source-1/);
@@ -108,6 +112,9 @@ test("incremental events keep existing evidence DOM and scroll position", async 
     assert.equal(f.stream.querySelector('[data-timeline-entry="entry-2"] .work-timeline-icon').textContent, "✓");
     assert.equal(reads, 2);
     assert.equal(f.card.querySelector("[data-patrol-new-facts]").hidden, false);
+    f.click("[data-patrol-new-facts]");
+    assert.equal(f.card.querySelector("[data-patrol-new-facts]").hidden, true);
+    assert.equal(f.stream.scrollTop, f.stream.scrollHeight);
   } finally { f.controller.dispose(); }
 });
 
@@ -129,17 +136,47 @@ test("filter resets reject a delayed response and query the whole history", asyn
   } finally { f.controller.dispose(); }
 });
 
+test("older pages preserve the reading offset and never replace the incremental cursor", async () => {
+  const requests = [];
+  const f = fixture(async (_id, options) => {
+    requests.push(options);
+    if (options.before) return { entries: [entry(1), entry(2)], next_before: 1, next_after: 777, projected_through: 9, source_sequence: 9 };
+    return options.after ? { entries: [entry(4)], next_after: 12, projected_through: 12, source_sequence: 12 }
+      : { entries: [entry(3)], next_before: 3, next_after: 9, projected_through: 9, source_sequence: 9 };
+  });
+  Object.defineProperty(f.stream, "scrollHeight", { get: () => 200 + f.stream.querySelectorAll("[data-timeline-entry]").length * 100 });
+  f.stream.clientHeight = 100;
+  try {
+    f.controller.sync("loop", { last_sequence: 9 }); await tick();
+    const anchor = f.stream.querySelector('[data-timeline-entry="entry-3"]');
+    f.stream.scrollTop = 40;
+    f.click("[data-timeline-older]"); await tick();
+    assert.equal(requests[1].before, 3);
+    assert.equal(f.stream.scrollTop, 240, "新增前页高度补偿保留原阅读位置");
+    assert.equal(f.stream.querySelector('[data-timeline-entry="entry-3"]'), anchor);
+    f.controller.sync("loop", { last_sequence: 12 }); await tick();
+    assert.equal(requests[2].after, 9, "旧页不能覆盖实时读取游标");
+    assert.equal(f.stream.scrollTop, 240, "新事件不能把历史阅读强制滚到底部");
+    assert.equal(f.card.querySelector("[data-patrol-new-facts]").hidden, false);
+    f.click("[data-timeline-older]"); await tick();
+    assert.equal(requests[3].before, 1);
+  } finally { f.controller.dispose(); }
+});
+
 test("read failures preserve history and expose an explicit retry", async () => {
   let fail = false;
   const f = fixture(async () => { if (fail) throw new Error("503"); return {entries:[entry(1)],next_after:1,projected_through:1,source_sequence:1}; });
   try {
     f.controller.sync("loop", {last_sequence:1}); await tick(); fail = true;
+    assert.equal(f.card.querySelector("[data-timeline-connection]").textContent, "已同步");
     const first = f.stream.querySelector("[data-timeline-entry]");
     f.controller.sync("loop", {last_sequence:2}); await tick();
     assert.equal(f.stream.querySelector("[data-timeline-entry]"), first);
     assert.equal(f.card.querySelector("[data-timeline-retry]").hidden, false);
+    assert.equal(f.card.querySelector("[data-timeline-connection]").textContent, "读取失败");
     fail = false; f.click("[data-timeline-retry]"); await tick();
     assert.equal(f.card.querySelector("[data-timeline-retry]").hidden, true);
+    assert.equal(f.card.querySelector("[data-timeline-connection]").textContent, "已同步");
   } finally { f.controller.dispose(); }
 });
 

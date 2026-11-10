@@ -5,6 +5,34 @@ const feedback = require("./workspace-patrol-feedback.js");
 const view = require("./workspace-patrol-view.js");
 const { create } = require("./workspace-patrol-inputs.js");
 
+test("presentation keeps receipt, execution, waiting and verified delivery separate", () => {
+  const loop = { status: "running", interaction_mode: "workspace_patrol", current_round_id: "r", goal_revision: 1 };
+  const projection = { loop: { updated_sequence: 10, state: loop } };
+  const model = { rows: [{ status: "accepted", accepted_sequence: 11 }] };
+  const show = connection => feedback.presentation(projection, { status: connection }, model);
+  assert.equal(show("live").work.state, "accepted");
+  assert.match(show("live").receipt, /已受理/);
+  projection.loop.updated_sequence = 11;
+  assert.equal(show("live").work.state, "running");
+  assert.equal(show("unavailable").work.state, "running");
+  assert.match(show("unavailable").sync, /更新中断.*上次状态/);
+  assert.equal(show("live").sync, "");
+  model.rows[0].status = "failed";
+  assert.equal(show("live").work.state, "running", "发送失败不覆盖正在执行的工作");
+  assert.match(show("live").receipt, /发送失败/);
+  loop.status = "waiting_user";
+  assert.equal(show("live").work.state, "waiting_user");
+  loop.waiting_reason = "awaiting_input";
+  assert.equal(show("live").work.state, "idle");
+  loop.status = "completed";
+  assert.match(show("live").work.text, /交付尚未验证/);
+  loop.final_result = { round_id: "r", goal_revision: 1, verification: { verification_id: "v", conclusion: "satisfied" } };
+  assert.equal(show("live").work.state, "delivered");
+  loop.goal_revision = 2;
+  assert.notEqual(show("live").work.state, "delivered");
+  assert.equal(feedback.presentation(null, { status: "live" }, { rows: [] }).work.state, "unknown", "连通不代表执行成功");
+});
+
 test("stopped and failed work separates saved inputs from reactivation", () => {
   for (const status of ["stopped", "failed"]) {
     const projection = { loop_id: "loop", loop: { state: { status } } };
@@ -31,7 +59,7 @@ test("verified workspace delivery is explicit while Patrol remains available", (
         { check_id: "import", status: "satisfied", explanation: "导入测试通过" },
         { check_id: "optional", status: "unknown", explanation: "可选平台尚未验证" },
       ], unresolved: ["optional"] }, final_path: [{ context_id: "result", revision_id: "revision-result", title: "导入报告" }] } };
-  assert.match(feedback.status({ loop: { state: loop } }, { status: "live" }, { rows: [] }).text, /本次工作已交付/);
+  assert.match(feedback.status({ loop: { state: loop } }, { status: "live" }, { rows: [] }).text, /已验证交付/);
   const html = view.delivery({ loop: { state: loop } }, { path: "C:/workspace" });
   for (const text of ["本次工作交付", "修复导入并生成报告", "验收通过", "仍未解决", "导入测试通过", "可选平台尚未验证", "C:/workspace", "继续提出调整"]) assert.ok(html.includes(text), text);
   assert.match(html, /data-patrol-delivery-context="result"/);

@@ -68,6 +68,15 @@ if (!process.versions.electron) {
     await click('[data-patrol-tools-toggle]');
     await click('[data-patrol-composer] [data-patrol-details]');
     await until('document.querySelector("[data-patrol-lineage] [data-context-id=root]")');
+    await run(`Promise.all(document.getAnimations().filter(a=>a.effect.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})))`);
+    await run(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+    assert.equal(await run(`(() => {
+      const detail=document.querySelector('[data-patrol-context]'), column=document.querySelector('.workbench-timeline-column'), timeline=column.querySelector('.patrol-facts-card');
+      return detail.hidden && detail.inert && !detail.querySelector('[data-patrol-context-content]').childElementCount
+        && document.querySelector('[data-workbench-show=context]').hidden
+        && Math.abs(timeline.getBoundingClientRect().height-column.getBoundingClientRect().height)<2;
+    })()`), true, '未选择时不生成空态，时间线使用释放出的空间');
+    fs.writeFileSync(path.join(output, 'unselected.png'), (await win.webContents.capturePage()).toPNG());
     await run(`document.querySelector('[data-patrol-lineage] [data-context-id=root]').click()`);
     await until('document.querySelector("[data-patrol-context-tab=conversation]")');
     await run(`Promise.all(document.getAnimations().filter(animation => animation.effect.getComputedTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => {})))`);
@@ -146,6 +155,7 @@ if (!process.versions.electron) {
           await pointer({x:geometry.input.x+geometry.input.width/2, y:geometry.input.y+geometry.input.height/2});
           const inputFocused = await run(`document.activeElement === document.querySelector('[data-patrol-content]')`);
           await click('[data-patrol-composer] button[type=submit]');
+          await until(`patrolFixture.submissions.length >= ${geometry.submissions+1}`);
           const submitted = await run(`patrolFixture.submissions.length === ${geometry.submissions+1}`);
           results.push({label, ...geometry, inputFocused, submitted});
           if (geometry.overlaps || !geometry.inputHit || !geometry.sendHit || !inputFocused || !submitted) {
@@ -157,10 +167,63 @@ if (!process.versions.electron) {
       }
     }
     fs.writeFileSync(path.join(output, "report.json"), JSON.stringify({results, menus, browserActions:['present','pages','downloads','binding'], failures}, null, 2));
-    console.log(`Context layout: ${results.length-failures.length}/${results.length} passed; ${menus.length} menu layouts and 4 browser actions passed; evidence: ${output}`);
     assert.equal(failures.length, 0, `Context 覆盖输入或阻止点击：${failures.join(', ')}`);
     assert.equal(await run('patrolFixture.mainSubmissions.length'), 0, "只读检查不应改变发送目标");
     assert.equal(await run(`patrolFixture.submissions.every(item => item.content === '展开后继续发送')`), true);
+    // 用现有工作区 store 检查精确回复身份；查看、切换页签和关闭不写入草稿。
+    await run(`workspacePatrolIntake.store('context-layout').edit({content:'保留的指定回复',request_id:'question-fixed',request_revision:7});
+      window.contextDraft=JSON.stringify(workspacePatrolIntake.store('context-layout').get().draft)`);
+    for (const width of [1748, 1100, 390]) {
+      win.webContents.setZoomFactor(1); win.setContentSize(width, 904); await sleep(100);
+      await run(`document.querySelector('[data-workbench-show=graph]').click();
+        document.querySelector('[data-patrol-lineage] [data-context-id=root]').click()`);
+      await until(`document.querySelector('[data-patrol-context]').dataset.revisionId==='r2'`);
+      assert.equal(await run(`(() => {
+        const panel=document.querySelector('[data-patrol-context]');
+        return !panel.hidden && !panel.inert && panel.checkVisibility() && panel.dataset.contextId==='root'
+          && document.getElementById(panel.getAttribute('aria-labelledby')).textContent==='Context 布局验收'
+          && document.getElementById(panel.getAttribute('aria-describedby')).textContent==='R2 · r2';
+      })()`), true, '详情区域对应对象、固定版本和可访问标题');
+      await run(`document.querySelector('[data-patrol-context-tab=sources]').click()`);
+      await until(`document.querySelector('[data-patrol-inspect-revision=r2]')`);
+      await run(`document.querySelector('[data-patrol-context-close]').click()`);
+      assert.equal(await run(`(() => {
+        const panel=document.querySelector('[data-patrol-context]');
+        return panel.hidden && panel.inert && !panel.querySelector('[data-patrol-context-content]').childElementCount
+          && document.querySelector('[data-workbench-show=context]').hidden
+          && document.querySelector('.workspace-patrol').dataset.workbenchPanel==='graph'
+          && document.activeElement===document.querySelector('[data-patrol-lineage] [data-context-id=root]')
+          && JSON.stringify(workspacePatrolIntake.store('context-layout').get().draft)===contextDraft;
+      })()`), true, '关闭收起详情、恢复关系图和原入口焦点，并保留指定回复身份');
+    }
+    await run(`(async () => {
+      const check=(value,label)=>{if(!value)throw new Error(label)};
+      const panel=document.createElement('aside'); panel.className='patrol-selected-card'; panel.innerHTML='<div data-patrol-context-content></div>'; document.body.append(panel);
+      const input=document.querySelector('[data-patrol-content]'), replies=[], reads=[];
+      const inspector=FocusContextInspector.create({presentation:'workbench',getManifest:()=>({nodes:[],edges:[{source_context_id:'a',source_revision_id:'a-r1',target_context_id:'b',target_revision_id:'b-r2'}],revisions:[]}),
+        api:{conversation:(_loop,context,options)=>new Promise(resolve=>{reads.push({context,revision:options.revisionId,signal:options.signal});replies.push(resolve)})}});
+      inspector.mount(panel);
+      const first=inspector.select('loop','a',{title:'对象 A'},input,'a-r1');
+      const second=inspector.select('loop','b',{title:'对象 B'},input,'b-r2');
+      check(reads[0].signal.aborted,'切换对象未取消旧读请求');
+      replies[1]({revision:{revision_id:'b-r2',generation:2},messages:[]});await second;
+      replies[0]({revision:{revision_id:'a-r1',generation:1},messages:[]});await first;
+      check(panel.dataset.contextId==='b'&&panel.dataset.revisionId==='b-r2','迟到响应改变对象或版本');
+      inspector.refresh();check(reads.length===2&&inspector.selection().revisionId==='b-r2','刷新丢失固定版本');
+      const pending=inspector.select('loop','c',{title:'对象 C'},input,'c-r3');
+      inspector.close();check(reads[2].signal.aborted&&panel.hidden&&panel.inert,'关闭未取消读取或隐藏详情');
+      replies[2]({revision:{revision_id:'c-r3'},messages:[]});await pending;
+      check(panel.hidden&&!panel.textContent&&inspector.selection()===null,'关闭后的迟到响应重新展开详情');
+      const reopened=inspector.select('loop','b',{title:'对象 B'},input,'b-r2');
+      check(reads[3].revision==='b-r2','重开未请求指定版本');
+      replies[3]({revision:{revision_id:'b-r2',generation:2},messages:[]});await reopened;
+      panel.querySelector('[data-context-related=a]').click();
+      check(reads[4].context==='a'&&reads[4].revision==='a-r1','来源跳转未保持指定对象及版本');
+      replies[4]({revision:{revision_id:'a-r1',generation:1},messages:[]});await new Promise(resolve=>setTimeout(resolve,0));
+      inspector.close();check(document.activeElement===input,'关闭未恢复原入口焦点');
+      inspector.dispose();panel.remove();
+    })()`);
+    console.log(`Context layout: ${results.length-failures.length}/${results.length} passed; ${menus.length} menu layouts and 4 browser actions passed; selection, pinned revisions, stale responses and focus passed; evidence: ${output}`);
     win.destroy();
     app.quit();
   }).catch(error => { console.error(error.stack || error); app.exit(1); });

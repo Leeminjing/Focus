@@ -165,18 +165,36 @@
       <nav aria-label="查看本次交付">${(result.final_path || []).map(item => localize`<button type="button" data-patrol-delivery-context="${escape(item.context_id)}"${item.revision_id ? ` data-revision-id="${escape(item.revision_id)}"` : ""}>查看结果 · ${escape(item.title || localize("已提交结果"))}</button>`).join("")}<button type="button" data-patrol-files-open>查看文件 / 修改</button></nav>
       <p class="patrol-delivery-next">在输入框继续提出调整，Patrol 会继续处理。</p>`;
   }
+  // 工作、发送回执与状态更新各有独立语义；两个工作入口共享同一投影。
+  function presentation(projection, connection, model) {
+    const latest = model?.rows?.[0], loop = projection?.loop?.state;
+    const saved = recovery(projection, model);
+    const receipt = latest?.status === "accepted" && saved ? localize("已保存")
+      : ({ accepted: localize("已受理 · 变化以提交进度为准"), sending: localize("发送中"), failed: localize("发送失败 · 可在输入记录重试") }[latest?.status] || "");
+    const stale = ["unavailable", "reconnecting", "resyncing"].includes(connection?.status);
+    const sync = stale ? localize("工作状态更新中断 · 显示上次状态") : connection?.status !== "live" ? localize("正在读取工作状态") : "";
+    let work;
+    if (latest?.status === "accepted" && (!loop || (latest.accepted_sequence != null && (projection.loop?.updated_sequence || 0) < latest.accepted_sequence))) {
+      work = { state: "accepted", text: localize("已受理 · 等待工作状态更新") };
+    } else if (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input") {
+      work = isCurrentDelivery(loop) ? { state: "delivered", text: localize("已验证交付 · 可以继续提出调整") }
+        : { state: "idle", text: localize("准备接收新输入") };
+    } else if (loop?.status === "completed" && isCurrentDelivery(loop)) {
+      work = { state: "delivered", text: localize("已验证交付 · 可以继续提出调整") };
+    } else {
+      const labels = { running: localize("推进中"), waiting_user: localize("等待你的处理"), paused: localize("已暂停"), stopped: localize("已停止"), failed: localize("执行失败"), completed: localize("当前执行已结束 · 交付尚未验证") };
+      work = labels[loop?.status] ? { state: loop.status, text: labels[loop.status] }
+        : { state: "unknown", text: localize("正在读取工作状态") };
+    }
+    return { work, receipt, sync: !loop && stale ? localize("工作状态暂不可用 · 输入已保留") : sync };
+  }
   function status(projection, connection, model) {
     if (["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) return { state: "disconnected", text: localize("工作状态连接中断 · 草稿已保留") };
     const latest = model?.rows?.[0];
     if (latest?.status === "failed") return { state: "failed", text: localize("发送未确认 · 可按原身份重试") };
     if (latest?.status === "sending") return { state: "sending", text: localize("正在发送 · 等待受理回执") };
-    const loop = projection?.loop?.state;
-    if (latest?.status === "accepted" && (!projection || (latest.accepted_sequence != null && (projection.loop?.updated_sequence || 0) < latest.accepted_sequence))) return { state: "accepted", text: localize("已受理 · 等待工作状态更新") };
-    const labels = { running: localize("正在工作"), waiting_user: localize("等待你的处理"), paused: localize("工作已暂停"), stopped: localize("工作已停止"), failed: localize("工作遇到问题"), completed: localize("当前工作已完成") };
-    if (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input") return isCurrentDelivery(loop)
-      ? { state: "delivered", text: localize("本次工作已交付 · 可以继续提出调整") }
-      : { state: "idle", text: localize("准备接收新输入") };
-    if (labels[loop?.status]) return { state: loop.status, text: labels[loop.status] };
+    const work = presentation(projection, connection, model).work;
+    if (work.state !== "unknown") return work;
     return latest?.status === "accepted" ? { state: "accepted", text: localize("已受理 · 等待工作状态更新") } : { state: "idle", text: localize("准备好了 · 拖入材料或写下问题") };
   }
   function answer(conversation) {
@@ -227,5 +245,5 @@
     return Object.freeze({ entries, read: (loopId, base, signal) => read(api, loopId, base, signal, cache),
       results: (projection, signal) => results(api, projection, signal, cache) });
   }
-  return Object.freeze({ status, recovery, answer, signature, results, createReader, inputResult, preserveInputResults, createInputRefresh, refreshInputs, deliveryVerification, isCurrentDelivery, delivery });
+  return Object.freeze({ presentation, status, recovery, answer, signature, results, createReader, inputResult, preserveInputResults, createInputRefresh, refreshInputs, deliveryVerification, isCurrentDelivery, delivery });
 });

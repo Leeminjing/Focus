@@ -62,7 +62,7 @@ if (!process.versions.electron) {
     `);
     await until("!document.querySelector('[data-patrol-delivery]').hidden");
     assert.equal(await run("document.querySelector('.workspace-patrol').classList.contains('is-quiet')"), true);
-    assert.match(await run("document.querySelector('[data-patrol-state]').textContent"), /本次工作已交付/);
+    assert.match(await run("document.querySelector('[data-patrol-state]').textContent"), /已验证交付/);
     assert.equal(await run("document.querySelector('[data-patrol-content]').value"), "接下来调整报告格式");
     assert.equal(await run("document.querySelector('[data-patrol-control=pause]').disabled"), false);
     await run("document.querySelector('[data-patrol-delivery] details').open=true");

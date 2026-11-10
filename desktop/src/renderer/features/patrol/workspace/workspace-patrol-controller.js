@@ -241,6 +241,7 @@
     }
     const manifest = () => lineageSnapshot ? view.lineageManifest(lineageSnapshot, projection) : { nodes: [], edges: [] };
     function showPanel(name) {
+      if (name === "context" && !inspector?.selection()) name = "graph";
       host.querySelector(".workspace-patrol").dataset.workbenchPanel = name;
       for (const button of host.querySelectorAll("[data-workbench-show]")) button.setAttribute("aria-pressed", String(button.dataset.workbenchShow === name));
     }
@@ -276,14 +277,19 @@
       });
     }
     function selectionChanged(selected) {
-      timeline?.selectContext(selected?.contextId);
+      timeline?.selectContext(selected?.contextId, manifest().nodes.find(node => node.context_id === selected?.contextId)?.title);
+      const tab = host.querySelector('[data-workbench-show="context"]');
+      tab.hidden = !selected;
+      if (!selected && host.querySelector(".workspace-patrol").dataset.workbenchPanel === "context") showPanel("graph");
       if (!selected) relatedOnly = false;
       patchGraph();
     }
     async function inspectContext(contextId, trigger, revisionId) {
       const node = manifest().nodes.find(node => node.context_id === contextId) || projection?.contexts?.[contextId]?.state || {};
+      const reading = inspector.select(loopId, contextId, node, trigger, revisionId || node.current_revision_id);
       showPanel("context");
-      await inspector.select(loopId, contextId, node, trigger, revisionId || node.current_revision_id);
+      host.querySelector("[data-patrol-context-close]").focus({ preventScroll: true });
+      await reading;
     }
     function locateProgress(ids) {
       highlightIds = ids;
@@ -620,9 +626,26 @@
         button.setAttribute("aria-busy", String(!!pending));
         if (inline) button.textContent = recovery?.label || localize("重新启用");
       }
-      const latest = inputs.get().rows[0];
-      host.querySelector("[data-patrol-receipt]").textContent = latest?.status === "accepted" && recovery ? localize("已保存")
-        : ({ accepted: localize("已受理 · 变化以提交进度为准"), sending: localize("发送中"), failed: localize("发送失败 · 可在输入记录重试") }[latest?.status] || "");
+      patchStatus();
+    }
+    function patchStatus() {
+      const current = projection?.loop_id === loopId ? projection : null;
+      const model = root.FocusWorkspacePatrolFeedback.presentation(current, liveStore.get().connection, inputs.get());
+      const setText = (selector, text) => {
+        const node = host.querySelector(selector);
+        if (node.textContent !== text) node.textContent = text;
+      };
+      setText("[data-patrol-state]", model.work.text);
+      setText("[data-patrol-receipt]", model.receipt);
+      setText("[data-patrol-sync]", model.sync);
+      host.querySelector("[data-patrol-sync]").hidden = !model.sync;
+      const scope = host.querySelector("[data-patrol-work-status]");
+      scope.dataset.loopId = loopId || "";
+      scope.dataset.workState = model.work.state;
+      const heading = host.querySelector("[data-workbench-status]");
+      setText("[data-workbench-status-full]", model.work.text);
+      setText("[data-workbench-status-compact]", model.work.text);
+      heading.title = model.work.text;
     }
     function patchFileFacts(announce = false) {
       if (timeline) { timeline.setFileReferences(fileRefs); return; }
@@ -659,12 +682,11 @@
         }
       }
     }
-    function patchLive({ projection: next, connection: status }) {
+    function patchLive({ projection: next }) {
       if (!host) return;
       patchRetry();
       if (!next) {
         patchRecovery();
-        host.querySelector("[data-patrol-state]").textContent = status?.status === "unavailable" ? localize("连接不可用 · 正在保留输入") : localize("正在连接工作状态");
         return;
       }
       if (next.loop_id !== loopId) return;
@@ -677,22 +699,9 @@
         if (!projection.wait_requests[id] || !["open", "resolving"].includes(projection.wait_requests[id].state.status)) waitUi.delete(id);
       }
       const loop = projection.loop?.state || {};
-      const states = { running: localize("推进中"), paused: localize("已暂停"), stopped: localize("已停止"), failed: localize("执行失败"), waiting_user: localize("等待处理"), completed: localize("已完成当前工作") };
-      const connections = { live: localize("实时更新"), syncing: localize("同步中"), connecting: localize("连接中"), reconnecting: localize("重连中"), resyncing: localize("重新同步"), unavailable: localize("连接不可用") };
-      const awaitingInput = loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input";
-      const stateLabel = states[loop.status] || localize("准备中");
-      const stateText = awaitingInput ? root.FocusWorkspacePatrolFeedback.status(projection, status, inputs.get()).text : `${stateLabel} · ${connections[status.status] || localize("同步中")}`;
-      const headingStatus = host.querySelector("[data-workbench-status]");
-      headingStatus.querySelector("[data-workbench-status-full]").textContent = stateText;
-      headingStatus.querySelector("[data-workbench-status-compact]").textContent = awaitingInput ? stateText : stateLabel;
-      headingStatus.title = stateText;
-      if (!timeline) host.querySelector("[data-timeline-scope]").textContent = localize("跨 Round 工作历史");
-      host.querySelector("[data-timeline-connection]").textContent = connections[status.status] || localize("同步中");
       if (["rounds", "runs", "patrol_sessions", "loop", "directives"].some(key => previous?.[key] !== projection[key])) {
         host.querySelector("[data-patrol-rounds]").innerHTML = root.FocusObservationView.rounds(projection);
       }
-      const stateNode = host.querySelector("[data-patrol-state]");
-      if (stateNode.textContent !== stateText) stateNode.textContent = stateText;
       const deliveryNode = host.querySelector("[data-patrol-delivery]"), deliveryHtml = view.delivery(projection, workspace);
       deliveryNode.hidden = !deliveryHtml;
       if (deliveryNode.innerHTML !== deliveryHtml) deliveryNode.innerHTML = deliveryHtml;
@@ -738,6 +747,7 @@
     function connect(identity) {
       if (loopId !== identity) previews?.stop();
       loopId = identity;
+      patchStatus();
       timeline?.sync(identity, null);
       void connection.start(identity).catch(failure => { if (loopId === identity) error(failure); });
     }

@@ -3,6 +3,23 @@
   "use strict";
   const catalog = Object.freeze(
 {
+  "当前工作": "Current work",
+  "工作线详情": "Work thread details",
+  "工作事件": "Work event",
+  "追踪后续：": "Follow up: ",
+  "重试历史证据：": "Retry historical evidence: ",
+  "整个工作区": "Entire workspace",
+  "工作线：": "Work thread: ",
+  "及后续决策": "and subsequent decisions",
+  "仅看": "Only",
+  "清除筛选": "Clear filters",
+  "当前工作 ·": "Current work ·",
+  "工作状态更新中断 · 显示上次状态": "Work updates interrupted · Showing last known state",
+  "工作状态暂不可用 · 输入已保留": "Work status unavailable · Input preserved",
+  "当前执行已结束 · 交付尚未验证": "Execution ended · Delivery not yet verified",
+  "已验证交付 · 可以继续提出调整": "Verified delivery · You can request adjustments",
+  "已同步": "Synced",
+  "读取失败": "Read failed",
   "说出你的想法，剩下的交给 Patrol。": "Share your ideas. Patrol handles the rest.",
   "清空输入": "Clear input",
   "描述你的任务、问题或想法…": "Describe your task, question or idea…",

@@ -42,8 +42,35 @@ function fixture(api) {
   const click = selector => host.dispatchEvent({ type: "click", target: host.querySelector(selector), stopPropagation() {} });
   return { controller, host, starts, histories, inputs, click, work,
     mount(id) { const mounted = controller.mount(host, { workspace_id: id, display_name: id }); host.querySelector("[data-patrol-dialog]").close = () => {}; return mounted; },
-    emit(patch = {}) { state.projection = { loop_id: "loop-a", loop: { state: { status: "running" } }, wait_requests: {}, interventions: {}, facts: {}, contexts: {}, ...patch }; listener(state); } };
+    emit(patch = {}, connection = "live") { state.connection = { status: connection }; state.projection = { loop_id: "loop-a", loop: { state: { status: "running" } }, wait_requests: {}, interventions: {}, facts: {}, contexts: {}, ...patch }; listener(state); } };
 }
+
+test("work status stays beside input and independent of send and timeline failures", async () => {
+  const f = fixture({ workspacePatrol: async () => ({ loop_id: "loop-a" }), workspaceInputs: async () => ({ items: [], next_before: null }) });
+  try {
+    await f.mount("a");
+    const state = f.host.querySelector("[data-patrol-state]");
+    assert.equal(state.closest("[data-patrol-composer-tools]"), null);
+    assert.match(f.host.querySelector("[data-patrol-work-scope]").textContent, /当前工作.*a/);
+    assert.equal(f.host.querySelector("[data-patrol-work-status]").dataset.loopId, "loop-a");
+    const timeline = f.host.querySelector("[data-timeline-connection]");
+    timeline.textContent = "读取失败";
+    f.emit();
+    f.inputs.edit({ content: "新的输入" });
+    const row = f.inputs.submit();
+    f.inputs.failed(row.submission_id, new Error("offline"));
+    assert.match(f.host.querySelector("[data-patrol-receipt]").textContent, /发送失败/);
+    assert.match(state.textContent, /推进中/);
+    f.emit({}, "unavailable");
+    assert.equal(f.host.querySelector("[data-patrol-state]"), state);
+    assert.match(state.textContent, /推进中/);
+    assert.match(f.host.querySelector("[data-patrol-sync]").textContent, /上次状态/);
+    assert.equal(f.host.querySelector("[data-patrol-live-retry]").hidden, false);
+    assert.equal(timeline.textContent, "读取失败", "工作 Live 不覆盖时间线自己的读取状态");
+    f.emit();
+    assert.equal(f.host.querySelector("[data-patrol-sync]").hidden, true);
+  } finally { f.controller.dispose(); }
+});
 
 test("history 503 leaves current Loop connected and retries only history", async () => {
   let loopReads = 0, historyReads = 0;
