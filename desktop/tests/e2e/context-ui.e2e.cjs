@@ -158,7 +158,8 @@ async function run() {
       if (document.querySelector('.context-drag-preview, .context-drop-placeholder')) failures.push('拖拽结束后未清理临时视觉');
     }
     const firstCard = list.querySelector('.context-message-editor');
-    firstCard.querySelector('[data-action="context-message-toggle"]').click();
+    firstCard.querySelector('.context-source-json').open = true;
+    firstCard.querySelector('[data-action="context-message-edit-json"]').click();
     const sourceInput = await waitFor('[data-context-message-json]');
     const edited = JSON.parse(sourceInput.value);
     edited.content = '未失焦编辑必须保留';

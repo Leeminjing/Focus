@@ -19,10 +19,22 @@
     return (Array.isArray(messages) ? messages : []).map(() => keyFactory());
   }
 
+  function textParts(message) {
+    if (typeof message?.content === "string") return [{ value: message.content }];
+    if (!Array.isArray(message?.content)) return [];
+    return message.content.flatMap((part, index) =>
+      part && ["text", "input_text", "output_text"].includes(part.type) && typeof part.text === "string"
+        ? [{ value: part.text, index }] : []
+    );
+  }
+
   function messagePreview(message) {
-    const content = message && typeof message === "object" ? message.content : message;
-    const text = typeof content === "string" ? content : JSON.stringify(content ?? "");
-    return text.replace(/\s+/g, " ").trim().slice(0, 260) || localize("空内容");
+    const parts = textParts(message);
+    const text = parts.map(part => part.value).join("\n");
+    const preview = text.replace(/\s+/g, " ").trim().slice(0, 260);
+    const content = message?.content;
+    const structured = Array.isArray(content) ? content.length > parts.length : content != null && typeof content !== "string";
+    return [preview, structured ? localize("含非文本内容") : ""].filter(Boolean).join(" · ") || localize("空内容");
   }
 
   function protocolSummary(message) {
@@ -33,15 +45,24 @@
     return details.join(" · ");
   }
 
+  function renderDetails(message, index, editable, editingJson = false, locked = false) {
+    const summary = protocolSummary(message);
+    return localize`<details class="context-source-json"${editingJson ? " open" : ""}><summary>结构详情</summary>
+      ${summary ? `<p>${escapeHtml(summary)}</p>` : ""}
+      ${editable ? localize`<button type="button" class="text-button" data-action="context-message-edit-json" aria-expanded="${editingJson ? "true" : "false"}"${locked ? " disabled" : ""}>${editingJson ? localize("收起编辑") : localize("编辑完整 JSON")}</button>` : ""}
+      ${editingJson ? localize`<textarea data-context-message-json data-context-message-index="${index}" spellcheck="false" aria-label="消息 ${index + 1} JSON"${locked ? " disabled" : ""}>${escapeHtml(JSON.stringify(message, null, 2))}</textarea>` : localize`<details><summary>查看完整 JSON</summary><pre>${escapeHtml(JSON.stringify(message, null, 2))}</pre></details>`}
+    </details>`;
+  }
+
   function renderSourceMessage(message, index, contextId, locked) {
     const role = message && typeof message === "object" ? (message.role || localize("未指定角色")) : localize("非法消息");
     return localize`<article class="context-source-message" data-context-source-index="${index}" data-source-context-id="${escapeHtml(contextId)}">
-      <header><span><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong>${protocolSummary(message) ? `<small>${escapeHtml(protocolSummary(message))}</small>` : ""}</span><span class="context-message-actions">
+      <header><span><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong></span><span class="context-message-actions">
         <button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="source" aria-label="拖拽此来源消息到新上下文"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button>
         <button type="button" class="text-button" data-action="context-source-copy"${locked ? " disabled" : ""}>加入</button>
       </span></header>
       <p class="context-message-preview">${escapeHtml(messagePreview(message))}</p>
-      <details class="context-source-json"><summary>查看完整 JSON</summary><pre>${escapeHtml(JSON.stringify(message, null, 2))}</pre></details>
+      ${renderDetails(message, index, false)}
     </article>`;
   }
 
@@ -49,25 +70,34 @@
     return (Array.isArray(messages) ? messages : []).map((message, index) => renderSourceMessage(message, index, contextId, locked)).join("") || localize('<p class="context-empty-source muted">这个来源 checkpoint 没有消息。</p>');
   }
 
-  function renderMessage(message, index, uiKey, expandedKey, locked) {
+  function renderMessage(message, index, uiKey, expandedKey, locked, editMode) {
     const role = message && typeof message === "object" ? (message.role || localize("未指定角色")) : localize("非法消息");
     const expanded = uiKey === expandedKey;
+    const editingJson = expanded && editMode === "json";
+    const editingBody = expanded && !editingJson;
+    const parts = textParts(message);
     return localize`<article class="context-message-editor${expanded ? " is-expanded" : ""}" data-context-message-index="${index}" data-context-ui-key="${escapeHtml(uiKey)}">
-      <header><span><button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="draft" aria-label="拖拽消息排序" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong>${protocolSummary(message) ? `<small>${escapeHtml(protocolSummary(message))}</small>` : ""}</span><span class="context-message-actions">
-        <button type="button" class="text-button" data-action="context-message-copy"${locked ? " disabled" : ""}>复制</button>
+      <header><span><button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="draft" aria-label="拖拽消息排序" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong></span><span class="context-message-actions">
+        <button type="button" class="text-button" data-action="context-message-duplicate"${locked ? " disabled" : ""}>创建副本</button>
         <button type="button" class="text-button danger" data-action="context-message-delete"${locked ? " disabled" : ""}>删除</button>
       </span></header>
-      <button type="button" class="context-message-summary" data-action="context-message-toggle" aria-expanded="${expanded ? "true" : "false"}"><span class="context-message-preview">${escapeHtml(messagePreview(message))}</span><span>${expanded ? localize("收起") : localize("编辑 JSON")}</span></button>
-      ${expanded ? localize`<textarea data-context-message-json data-context-message-index="${index}" spellcheck="false" aria-label="消息 ${index + 1} JSON"${locked ? " disabled" : ""}>${escapeHtml(JSON.stringify(message, null, 2))}</textarea>` : ""}
+      ${parts.length ? localize`<button type="button" class="context-message-summary" data-action="context-message-toggle" aria-expanded="${editingBody ? "true" : "false"}"><span class="context-message-preview">${escapeHtml(messagePreview(message))}</span><span>${editingBody ? localize("收起编辑") : localize("编辑正文")}</span></button>` : `<p class="context-message-preview">${escapeHtml(messagePreview(message))}</p>`}
+      ${editingBody ? parts.map(part => `<textarea data-context-message-content data-context-message-index="${index}"${part.index == null ? "" : ` data-context-part-index="${part.index}"`} aria-label="${escapeHtml(part.index == null ? localize`消息 ${index + 1} 正文` : localize`消息 ${index + 1} 正文 ${part.index + 1}`)}"${locked ? " disabled" : ""}>${escapeHtml(part.value)}</textarea>`).join("") : ""}
+      ${renderDetails(message, index, true, editingJson, locked)}
     </article>`;
   }
 
-  function renderMessages(messages, uiKeys = [], expandedKey = null, locked = false) {
-    return messages.map((message, index) => renderMessage(message, index, uiKeys[index] || `context-ui-${index}`, expandedKey, locked)).join("") || localize('<div class="context-empty-drop"><strong>从“来源”加入消息</strong><span>点击“加入”或拖放到此处，也可以新增消息。</span></div>');
+  function renderMessages(messages, uiKeys = [], expandedKey = null, locked = false, editMode = "body") {
+    return messages.map((message, index) => renderMessage(message, index, uiKeys[index] || `context-ui-${index}`, expandedKey, locked, editMode)).join("") || localize('<div class="context-empty-drop"><strong>从“来源”加入消息</strong><span>点击“加入”或拖放到此处，也可以新增消息。</span></div>');
   }
 
   function readMessages(root, currentMessages = []) {
     const messages = cloneMessages(currentMessages);
+    [...root.querySelectorAll("[data-context-message-content]")].forEach(input => {
+      const message = messages[Number(input.dataset.contextMessageIndex)];
+      if (input.dataset.contextPartIndex == null) message.content = input.value;
+      else message.content[Number(input.dataset.contextPartIndex)].text = input.value;
+    });
     [...root.querySelectorAll("[data-context-message-json]")].forEach((input, position) => {
       const index = Number(input.dataset.contextMessageIndex ?? position);
       let value;
@@ -147,5 +177,5 @@
     );
   }
 
-  global.FocusContextEditor = { cloneMessages, contextFamilyTasks, createUiKeys, move, orderTasksByTree, readMessages, renderMessages, renderSourceMessages };
+  global.FocusContextEditor = { cloneMessages, contextFamilyTasks, createUiKeys, move, orderTasksByTree, readMessages, renderMessage, renderMessages, renderSourceMessages };
 })(window);

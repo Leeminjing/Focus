@@ -408,15 +408,6 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
   gap: 7px;
 }
 
-.context-source-message header small,
-.context-message-editor header small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .context-message-preview {
   display: block;
   overflow: hidden;
@@ -564,6 +555,17 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   line-height: 1.45;
 }
+
+.context-message-editor textarea[data-context-message-content] {
+  min-height: 6rem;
+  font-family: inherit;
+}
+
+.context-source-json summary {
+  cursor: pointer;
+}
+
+.context-source-json > p { overflow-wrap: anywhere; }
 
 .context-empty-drop {
   display: grid;
