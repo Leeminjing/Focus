@@ -99,3 +99,73 @@ test("native chrome follows the saved language and leaves unknown content intact
   assert.equal(text("退出 Focus"), "Quit Focus");
   assert.equal(text("我的项目"), "我的项目");
 });
+
+test("Patrol feedback uses stable bilingual keys without the source catalog", async () => {
+  const c = surface("zh-CN");
+  c.FocusI18nCatalog = {};
+  const feedback = c.FocusWorkspacePatrolFeedback;
+  const reader = feedback.createReader({ conversation: async () => { throw new Error("offline"); } });
+  const cancellationStates = ["cancel_requested", "stopped", "already_terminal", "settled", "unknown", "future_state"];
+  const result = {
+    disposition: "decision", explanation: "User explanation", mission_revision: 3,
+    decision_id: "decision-1", round_id: "round-2", observation_id: "observation-3", observation_generation: 4,
+    applied_at: "2026-11-10T04:00:00Z",
+    changes: ["supplement", "revise", "remove"].map((operation, i) => ({ operation, section: ["outcome", "boundary", "completion_check"][i], quote: "User quote" })),
+    related_cancellations: cancellationStates.map((state, i) => ({ state, target_kind: ["run", "directive", "worker"][i % 3], target_id: `target-${i}`, reason: "User reason" })),
+  };
+  const loop = { interaction_mode: "workspace_patrol", status: "waiting_user", waiting_reason: "awaiting_input",
+    current_round_id: "round-2", goal_revision: 3,
+    final_result: { round_id: "round-2", goal_revision: 3,
+      verification: { verification_id: "verified", conclusion: "satisfied", criteria: [{ check_id: "check", status: "unknown", explanation: "Unverified" }] },
+      final_path: [{ context_id: "context-1", revision_id: "revision-2" }] } };
+  const before = JSON.stringify({ result, loop });
+  for (const locale of ["zh-CN", "en-US", "zh-CN", "en-US"]) {
+    c.FocusI18n.setLocale(locale);
+    const html = [
+      ...["discussion", "decision", "reference", "deferred", "future_disposition"].map(disposition => feedback.inputResult({ status: "accepted", processing_result: { ...result, disposition } })),
+      ...[undefined, "pending", "observed", "addressed", "superseded"].map(processing_state => feedback.inputResult({ status: "accepted", processing_state })),
+      feedback.delivery({ loop: { state: loop } }),
+      feedback.delivery({ loop: { state: { ...loop, current_round_id: "next-round", final_result: { ...loop.final_result,
+        verification: { verification_id: "verified", conclusion: "satisfied", criteria: [{ check_id: "check", status: "satisfied", explanation: "Passed" }] } } } } }),
+      ...["running", "waiting_user", "paused", "stopped", "failed", "completed"].map(status => feedback.status({ loop: { state: { status } } }, { status: "live" }, { rows: [] }).text),
+      ...["failed", "sending", "accepted"].map(status => feedback.status(null, { status: "live" }, { rows: [{ status }] }).text),
+      feedback.status(null, { status: "reconnecting" }, { rows: [] }).text,
+      feedback.status(null, { status: "live" }, { rows: [] }).text,
+      feedback.status({ loop: { state: loop } }, { status: "live" }, { rows: [] }).text,
+      ...["stopped", "failed"].flatMap(status => [[], [{ status: "accepted", processing_state: "pending" }]].map(rows => JSON.stringify(feedback.recovery({ loop: { state: { status } } }, { rows })))),
+      reader.entries({ contexts: { c: { entity_id: "c", state: { current_revision_id: "r" } } } })[0].title,
+      (await reader.read("loop", { context_id: "c", revision_id: "r" })).error,
+    ].join("\n");
+    assert.doesNotMatch(html, /patrol\.(?:feedback|delivery|status|recovery|answer)\./, "no missing-key fallback");
+    if (locale === "en-US") assert.doesNotMatch(html, /\p{Script=Han}/u, "all generated feedback and accessible names must be English");
+    else assert.match(html, /已纳入决策/);
+    const host = createElement("div");
+    host.innerHTML = feedback.delivery({ loop: { state: loop } });
+    const action = host.querySelector('[data-patrol-delivery-context="context-1"]');
+    assert.equal(action.dataset.revisionId, "revision-2");
+    assert.equal(host.querySelector("nav").getAttribute("aria-label"), c.FocusI18n.t("patrol.delivery.view"));
+    assert.ok(host.querySelector("[data-patrol-files-open]"));
+  }
+  assert.equal(JSON.stringify({ result, loop }), before, "language changes preserve domain data");
+});
+
+test("translated Patrol templates preserve and escape user text and action identities", () => {
+  const c = surface();
+  c.FocusI18nCatalog = {};
+  const userText = '用户原文 <img src=x onerror="bad()">';
+  const escaped = '用户原文 &lt;img src=x onerror=&quot;bad()&quot;&gt;';
+  const feedback = c.FocusWorkspacePatrolFeedback;
+  const html = feedback.inputResult({ status: "accepted", processing_result: {
+    disposition: "decision", explanation: userText, rationale: userText,
+    changes: [{ operation: "revise", section: "boundary", quote: userText }],
+    related_cancellations: [{ state: "cancel_requested", target_kind: "run", target_id: userText, reason: userText }],
+  } }) + feedback.delivery({ loop: { state: { interaction_mode: "workspace_patrol", final_result: {
+    summary: userText, verification: { verification_id: "v", conclusion: "satisfied" },
+    final_path: [{ context_id: userText, revision_id: userText, title: userText }],
+  } } } });
+  assert.ok(html.includes(escaped));
+  assert.ok(html.includes(`data-patrol-delivery-context="${escaped}" data-revision-id="${escaped}"`));
+  assert.ok(html.includes(`Revise Execution boundary: ${escaped}`), "translated interpolation preserves the whole user quote");
+  assert.doesNotMatch(html, /<img|<script|<svg|<iframe/);
+  assert.doesNotMatch(html.replaceAll(escaped, ""), /\p{Script=Han}/u);
+});
