@@ -62,6 +62,18 @@ test("English dynamic views contain no built-in Chinese text", () => {
   assert.doesNotMatch(html, /\p{Script=Han}/u);
 });
 
+test("context body and JSON editors translate labels while preserving message fields", () => {
+  const c = surface();
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../../src/renderer/features/context/context-editor.js"), "utf8"), c);
+  const messages = [{ role: "assistant", content: [{ type: "text", text: "用户正文" }], tool_call_id: "call-1" }];
+  for (const mode of ["body", "json"]) {
+    const html = c.FocusContextEditor.renderMessages(messages, ["a"], "a", false, mode);
+    assert.doesNotMatch(html.replaceAll("用户正文", ""), /\p{Script=Han}/u);
+    assert.match(html, /Create duplicate/);
+    assert.match(html, /用户正文/);
+  }
+});
+
 test("language changes refresh generated labels and preserve user content", () => {
   const c = surface("zh-CN");
   const render = () => c.FocusPluginView.render([{ name: "用户插件", version: "1", status: "active", requires: [] }], {}, [], {});

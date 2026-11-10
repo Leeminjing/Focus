@@ -4152,11 +4152,8 @@ function renderContextSourcePanel() {
 
 function contextMessageElement(message, index, uiKey, expanded = false) {
   const template = document.createElement("template");
-  template.innerHTML = contextEditor.renderMessages([message], [uiKey], expanded ? uiKey : null, contextDraftLocked()).trim();
-  const element = template.content.firstElementChild;
-  element.dataset.contextMessageIndex = String(index);
-  element.querySelector("[data-context-message-json]")?.setAttribute("data-context-message-index", String(index));
-  return element;
+  template.innerHTML = contextEditor.renderMessage(message, index, uiKey, expanded ? uiKey : null, contextDraftLocked(), state.contextDraft?.editMode).trim();
+  return template.content.firstElementChild;
 }
 
 function contextListPositions() {
@@ -4182,11 +4179,12 @@ function updateContextMessageIndices() {
     row.dataset.contextMessageIndex = String(index);
     const role = draft.messages[index]?.role || localize("未指定角色");
     row.querySelector("header strong").textContent = `${String(index + 1).padStart(2, "0")} · ${role}`;
-    const input = row.querySelector("[data-context-message-json]");
-    if (input) {
+    row.querySelectorAll("textarea").forEach(input => {
       input.dataset.contextMessageIndex = String(index);
-      input.setAttribute("aria-label", localize`消息 ${index + 1} JSON`);
-    }
+      input.setAttribute("aria-label", input.hasAttribute("data-context-message-json") ? localize`消息 ${index + 1} JSON`
+        : input.dataset.contextPartIndex == null ? localize`消息 ${index + 1} 正文`
+          : localize`消息 ${index + 1} 正文 ${Number(input.dataset.contextPartIndex) + 1}`);
+    });
   });
   const count = document.querySelector(".context-compose-heading > div > span");
   if (count) count.textContent = localize`${draft.messages.length} 条消息`;
@@ -4205,7 +4203,7 @@ function renderContextEditor(scrollTop = null) {
       <header><div><span class="review-kicker">NEW CONTEXT</span><h1>自由组装</h1></div><button class="text-button" data-action="exit-context-editor">关闭</button></header>
       <label>Context 标题<input data-context-title value="${escapeHtml(draft.title)}" ${created ? "disabled" : ""}></label>
       <div class="context-compose-heading"><div><strong>新 Context</strong><span>${draft.messages.length} 条消息</span></div><div class="history-actions"><button class="text-button" data-action="context-message-add" ${locked ? "disabled" : ""}>新增消息</button><button class="text-button danger" data-action="context-message-clear" ${locked ? "disabled" : ""}>清空</button></div></div>
-      <div class="context-message-list" data-context-drop-zone>${contextEditor.renderMessages(draft.messages, draft.uiKeys, draft.expandedKey, locked)}</div>
+      <div class="context-message-list" data-context-drop-zone>${contextEditor.renderMessages(draft.messages, draft.uiKeys, draft.expandedKey, locked, draft.editMode)}</div>
       ${renderContextDecision(draft.context)}
       <div class="context-undo-toast" hidden><span>已删除消息</span><button type="button" class="text-button" data-action="context-message-undo">撤销</button></div>
       ${locked ? "" : localize`<footer><span class="muted tiny">只有右侧内容会成为新 Context；来源始终保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? localize("重新编译") : localize("创建 Context")}</button></footer>`}
@@ -4223,13 +4221,13 @@ function insertContextMessage(message, index, options = {}) {
   const key = options.key || nextContextUiKey();
   draft.messages.splice(safeIndex, 0, contextEditor.cloneMessages([message])[0]);
   draft.uiKeys.splice(safeIndex, 0, key);
-  if (options.expand) draft.expandedKey = key;
   list.querySelector(".context-empty-drop")?.remove();
   const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
-  list.insertBefore(contextMessageElement(draft.messages[safeIndex], safeIndex, key, Boolean(options.expand)), rows[safeIndex] || null);
+  list.insertBefore(contextMessageElement(draft.messages[safeIndex], safeIndex, key), rows[safeIndex] || null);
   updateContextMessageIndices();
   animateContextReflow(previous);
-  if (options.focus) requestAnimationFrame(() => list.querySelector(`[data-context-ui-key="${key}"] [data-context-message-json]`)?.focus());
+  if (options.expand) toggleContextMessage(key);
+  if (options.focus) requestAnimationFrame(() => list.querySelector(`[data-context-ui-key="${key}"] textarea`)?.focus());
   return key;
 }
 
@@ -4248,19 +4246,26 @@ function moveContextMessage(from, to, focus = false) {
   if (focus) document.querySelector(`[data-context-ui-key="${key}"] [data-context-pointer-handle]`)?.focus();
 }
 
-function toggleContextMessage(uiKey) {
+function toggleContextMessage(uiKey, editMode = "body") {
   const draft = syncContextDraft();
   const previousExpanded = draft.expandedKey;
-  draft.expandedKey = previousExpanded === uiKey ? null : uiKey;
+  draft.expandedKey = previousExpanded === uiKey && (draft.editMode || "body") === editMode ? null : uiKey;
+  draft.editMode = editMode;
   const replace = key => {
     if (!key) return;
     const index = draft.uiKeys.indexOf(key);
     const row = document.querySelector(`[data-context-ui-key="${key}"]`);
-    if (row && index >= 0) row.replaceWith(contextMessageElement(draft.messages[index], index, key, draft.expandedKey === key));
+    if (row && index >= 0) {
+      const replacement = contextMessageElement(draft.messages[index], index, key, draft.expandedKey === key);
+      if (key === uiKey && editMode === "json") replacement.querySelector(".context-source-json").open = true;
+      row.replaceWith(replacement);
+    }
   };
   replace(previousExpanded);
   if (uiKey !== previousExpanded) replace(uiKey);
-  if (draft.expandedKey) requestAnimationFrame(() => document.querySelector(`[data-context-ui-key="${draft.expandedKey}"] [data-context-message-json]`)?.focus());
+  const focusSelector = draft.expandedKey ? `[data-context-ui-key="${draft.expandedKey}"] textarea`
+    : `[data-context-ui-key="${uiKey}"] [data-action="${editMode === "json" ? "context-message-edit-json" : "context-message-toggle"}"]`;
+  requestAnimationFrame(() => document.querySelector(focusSelector)?.focus());
 }
 
 function showContextUndo() {
@@ -4293,6 +4298,7 @@ async function deleteContextMessage(uiKey) {
   row.removeAttribute("data-context-message-index");
   row.querySelectorAll("button, textarea").forEach(input => { input.disabled = true; });
   row.querySelector("[data-context-message-json]")?.removeAttribute("data-context-message-json");
+  row.querySelectorAll("[data-context-message-content]").forEach(input => input.removeAttribute("data-context-message-content"));
   updateContextMessageIndices();
   showContextUndo();
   try {
@@ -8076,18 +8082,19 @@ async function handleDocumentClick(event) {
     try { return clearContextMessages(); }
     catch (error) { return setStatus(error.message, true); }
   }
-  if (action === "context-message-toggle") {
+  if (["context-message-toggle", "context-message-edit-json"].includes(action)) {
     const row = button.closest("[data-context-ui-key]");
-    if (row) return toggleContextMessage(row.dataset.contextUiKey);
+    try { if (row) return toggleContextMessage(row.dataset.contextUiKey, action === "context-message-edit-json" ? "json" : "body"); }
+    catch (error) { return setStatus(error.message, true); }
     return;
   }
   if (action === "context-message-undo") return undoContextMessageDelete();
-  if (["context-message-copy", "context-message-delete"].includes(action)) {
+  if (["context-message-duplicate", "context-message-delete"].includes(action)) {
     try {
       const uiKey = button.closest("[data-context-ui-key]")?.dataset.contextUiKey;
       const index = state.contextDraft?.uiKeys.indexOf(uiKey) ?? -1;
       if (index < 0) return;
-      if (action === "context-message-copy") return insertContextMessage(state.contextDraft.messages[index], index + 1);
+      if (action === "context-message-duplicate") return insertContextMessage(syncContextDraft().messages[index], index + 1);
       return deleteContextMessage(uiKey);
     } catch (error) { return setStatus(error.message, true); }
   }
