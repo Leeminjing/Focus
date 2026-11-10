@@ -190,7 +190,7 @@
     const sourceRatio = clampRatio(state.sourceRatio, 0.2, 0.8);
 
     return localize`<div class="memory-compose">
-      <div class="memory-compose-top" data-memory-top style="flex:${editorRatio} 1 0">
+      <div class="memory-compose-top" id="memorySourceSelection" data-memory-top style="flex:${editorRatio} 1 0">
         <div class="memory-compose-grid">
           <aside class="memory-pane">
             <header><strong>对话</strong><span>${(state.sessions || []).length}</span></header>
@@ -206,10 +206,10 @@
           </main>
         </div>
       </div>
-      <div class="memory-resizer memory-resizer-v" data-memory-resizer-vertical role="separator" aria-orientation="horizontal"></div>
-      <div class="memory-compose-bottom" data-memory-bottom style="flex:${1 - editorRatio} 1 0">
+      <div class="memory-resizer memory-resizer-v" data-memory-resizer-vertical role="separator" tabindex="0" aria-label="调整选源与记忆编辑区高度" aria-controls="memorySourceSelection memoryCompose" aria-orientation="horizontal"></div>
+      <div class="memory-compose-bottom" id="memoryCompose" data-memory-bottom style="flex:${1 - editorRatio} 1 0">
         <div class="memory-editor" data-memory-editor>
-          <section class="memory-editor-sources" style="flex:${sourceRatio} 1 0">
+          <section id="memoryEditorSources" class="memory-editor-sources" style="flex:${sourceRatio} 1 0">
             <header class="memory-editor-head">
               <strong>记忆源 · 原始完整视图</strong>
               <span class="memory-source-merge-actions">
@@ -222,8 +222,8 @@
             </header>
             <div class="memory-source-edit-list${state.mergeMode ? " is-merge-mode" : ""}">${sourceItems}</div>
           </section>
-          <div class="memory-resizer memory-resizer-h" data-memory-resizer-horizontal role="separator" aria-orientation="vertical"></div>
-          <section class="memory-editor-target" style="flex:${1 - sourceRatio} 1 0">
+          <div class="memory-resizer memory-resizer-h" data-memory-resizer-horizontal role="separator" tabindex="0" aria-label="调整记忆源与压缩记忆宽度" aria-controls="memoryEditorSources memoryEditorTarget" aria-orientation="vertical"></div>
+          <section id="memoryEditorTarget" class="memory-editor-target" style="flex:${1 - sourceRatio} 1 0">
             <header class="memory-editor-head">
               <strong>压缩后的记忆 · 完整视图</strong>
               <span class="memory-mode-toggle" role="group" aria-label="压缩语义">
