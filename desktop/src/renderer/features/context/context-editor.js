@@ -140,8 +140,10 @@
           children.get(parentId).push(node.context_id);
         } else roots.push(node.context_id);
       });
+      const visited = new Set();
       const walk = contextId => {
-        if (seen.has(contextId)) return;
+        if (visited.has(contextId)) return;
+        visited.add(contextId);
         append(byId.get(contextId));
         (children.get(contextId) || []).forEach(walk);
       };
@@ -153,28 +155,38 @@
     return ordered;
   }
 
-  function rootContextId(nodes, contextId) {
-    let currentId = contextId;
-    const visited = new Set();
-    while (!visited.has(currentId)) {
-      visited.add(currentId);
-      const parentId = nodes.get(currentId)?.parents?.[0]?.context_id;
-      if (!parentId) return currentId;
-      currentId = parentId;
-    }
-    return [...visited].sort()[0];
-  }
-
   function contextFamilyTasks(tasks, trees, activeTaskId) {
     const taskList = Array.isArray(tasks) ? tasks : [];
     const activeTask = taskList.find(task => task.task_id === activeTaskId);
     if (!activeTask) return [];
     const tree = trees instanceof Map ? trees.get(activeTask.workspace_id) : null;
-    const nodes = new Map((Array.isArray(tree) ? tree : []).map(node => [node.context_id, node]));
-    const rootId = rootContextId(nodes, activeTaskId);
-    return orderTasksByTree(taskList, trees).filter(task =>
-      task.workspace_id === activeTask.workspace_id && rootContextId(nodes, task.task_id) === rootId
-    );
+    const nodes = Array.isArray(tree) ? tree : [];
+    const byId = new Map(taskList.filter(task => task.workspace_id === activeTask.workspace_id).map(task => [task.task_id, task]));
+    const relations = new Map();
+    for (const node of nodes) {
+      // Deleted sources may be absent from the active task list. Keep their
+      // identity and lifecycle from the lineage response for navigation notes.
+      if (!byId.has(node.context_id) && node.lifecycle && node.lifecycle !== "active") {
+        byId.set(node.context_id, { ...node, task_id: node.context_id, workspace_id: activeTask.workspace_id });
+      }
+      for (const parent of node.parents || []) {
+        for (const [from, to] of [[node.context_id, parent.context_id], [parent.context_id, node.context_id]]) {
+          if (!relations.has(from)) relations.set(from, new Set());
+          relations.get(from).add(to);
+        }
+      }
+    }
+    // Family membership follows every source edge. First-parent ordering is
+    // only a reading order; it must not discard cross-branch merge relations.
+    const related = new Set();
+    const pending = [activeTaskId];
+    while (pending.length) {
+      const id = pending.pop();
+      if (related.has(id)) continue;
+      related.add(id);
+      pending.push(...(relations.get(id) || []));
+    }
+    return orderTasksByTree([...byId.values()], trees).filter(task => related.has(task.task_id));
   }
 
   global.FocusContextEditor = { cloneMessages, contextFamilyTasks, createUiKeys, move, orderTasksByTree, readMessages, renderMessage, renderMessages, renderSourceMessages };

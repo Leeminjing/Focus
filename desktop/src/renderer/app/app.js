@@ -149,6 +149,7 @@ const state = {
   skillCatalogs: new Map(),
   capabilityRefreshResults: new Map(),
   contextTrees: new Map(),
+  openContextDiagnostics: new Set(),
   contextDraft: null,
   pickerActive: { main: 0, draft: 0 },
   equipment: { models: [], tools: [], skills: [], permissions: [] },
@@ -1320,6 +1321,12 @@ function refreshSessionControls() {
 
 function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
+  // Native toggle events are queued. Read the live disclosure before replacing
+  // the rail so a refresh immediately after opening it cannot close it again.
+  for (const details of inspectorContent.querySelectorAll?.(".context-rail-diagnostics") || []) {
+    if (details.open) state.openContextDiagnostics.add(details.dataset.contextId);
+    else state.openContextDiagnostics.delete(details.dataset.contextId);
+  }
   const open = state.inspector.open && state.view !== "patrol" && !(state.view === "focus" && state.filesPanel);
   if (!appInspector.hasAttribute("data-surface-closing")) appInspector.hidden = !open;
   appInspector.inert = !open;
@@ -1707,47 +1714,65 @@ function setComposerError(error = null, taskId = state.activeTaskId) {
   node.textContent = feedback?.text || "";
 }
 
+function renderContextDiagnostics(item, node) {
+  const cacheRate = Number.isFinite(node?.cache_hit_rate) ? `${Math.round(node.cache_hit_rate * 100)}%` : "—";
+  return localize`<details class="context-rail-diagnostics" data-context-id="${escapeHtml(item.task_id)}"${state.openContextDiagnostics.has(item.task_id) ? " open" : ""}>
+    <summary aria-label="${escapeHtml(localize`技术详情：${item.title}`)}">技术详情</summary>
+    <dl>
+      <div><dt>Context ID</dt><dd><code>${escapeHtml(item.task_id)}</code></dd></div>
+      <div><dt>类型</dt><dd>${node?.parents?.length ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")}</dd></div>
+      <div><dt>执行投影</dt><dd>${escapeHtml(node?.projection_status || "root")}</dd></div>
+      <div><dt>${uiText("focus.cache", "缓存")}</dt><dd>${cacheRate}</dd></div>
+      ${node?.managed_status ? localize`<div><dt>受管状态</dt><dd>${escapeHtml(curatorTrackingLabel(node.managed_status))}</dd></div>` : ""}
+      ${node?.managed_health ? localize`<div><dt>处理健康</dt><dd>${escapeHtml(node.managed_health)}</dd></div>` : ""}
+    </dl>
+  </details>`;
+}
+
 function renderContextRail(task) {
   const tasks = contextEditor.contextFamilyTasks(state.tasks, state.contextTrees, task.task_id);
   const tree = state.contextTrees.get(task.workspace_id) || [];
   const nodes = new Map(tree.map(node => [node.context_id, node]));
+  const taskById = new Map(state.tasks.map(item => [item.task_id, item]));
   const cardList = tasks.map(item => {
     const node = nodes.get(item.task_id);
     const depth = Number(node?.depth || 0);
     const projectionStatus = node?.projection_status || "root";
     const blocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
-    const cacheRate = Number.isFinite(node?.cache_hit_rate)
-      ? `${Math.round(node.cache_hit_rate * 100)}%`
-      : "—";
-    const otherParents = (node?.parents || []).slice(1).map(parent =>
-      state.tasks.find(candidate => candidate.task_id === parent.context_id)?.title || parent.context_id
-    ).join("、");
     const lifecycle = item.lifecycle || node?.lifecycle || "active";
-    if (lifecycle !== "active") {
-      // 墓碑：仅当被归档/删除的会话仍被后代引用（有后代）时才保留原位占位；无后代直接消失。
-      if (!contextHasDescendants(item.task_id, tree)) return "";
-      const tag = lifecycle === "archived" ? localize("已归档") : localize("已删除");
-      return `<div class="context-rail-item is-tombstone" style="--context-depth:${depth}" data-context-depth="${depth}">
-        <span class="context-rail-card is-deleted" role="presentation">
-          <span class="context-rail-title">${escapeHtml(item.title)}</span>
-          <span class="context-rail-meta">${depth ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")} · ${escapeHtml(item.task_id.slice(0, 8))} · ${tag}</span>
-        </span>
-      </div>`;
-    }
-    return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}">
-      <button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}">
-        <span class="context-rail-title">${escapeHtml(item.title)}</span>
-        <span class="context-rail-meta">${depth ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")} · ${escapeHtml(item.task_id.slice(0, 8))}${node?.managed_status ? localize` · 受管 ${escapeHtml(curatorTrackingLabel(node.managed_status))}${node.managed_health && node.managed_health !== "idle" ? `/${escapeHtml(node.managed_health)}` : ""}` : ""}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · ${uiText("focus.cache", "缓存")} ${cacheRate}</span>
-        ${otherParents ? localize`<span class="context-rail-parents">另含：${escapeHtml(otherParents)}</span>` : ""}
-      </button>
-      ${node?.editable ? localize`<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
+    const tombstone = lifecycle !== "active";
+    if (tombstone && !contextHasDescendants(item.task_id, tree)) return "";
+    const lifecycleLabel = tombstone ? (lifecycle === "archived" ? localize("已归档") : localize("已删除")) : "";
+    const parents = node?.parents || [];
+    const relationId = `context-sources-${item.task_id}`;
+    const sources = parents.map(parent => {
+      const source = taskById.get(parent.context_id) || nodes.get(parent.context_id);
+      const title = source?.title || parent.context_id;
+      const sourceLifecycle = source?.lifecycle || nodes.get(parent.context_id)?.lifecycle || "active";
+      const label = sourceLifecycle !== "active"
+        ? localize`${title}（${sourceLifecycle === "archived" ? localize("已归档") : localize("已删除")}）` : title;
+      return source && sourceLifecycle === "active" && taskById.has(parent.context_id)
+        ? `<button type="button" class="context-rail-source" data-action="context-rail-card" data-task-id="${escapeHtml(parent.context_id)}" title="${escapeHtml(parent.context_id)}">${escapeHtml(label)}</button>`
+        : `<span data-context-id="${escapeHtml(parent.context_id)}" title="${escapeHtml(parent.context_id)}">${escapeHtml(label)}</span>`;
+    }).join("");
+    const healthAlert = node?.managed_health === "degraded" ? localize("更新失败，请查看协作详情")
+      : node?.managed_health === "blocked" ? localize("更新受阻，请查看协作详情") : "";
+    return `<div class="context-rail-item${tombstone ? " is-tombstone" : node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}" data-context-id="${escapeHtml(item.task_id)}" data-parent-context-ids="${escapeHtml(JSON.stringify(parents.map(parent => parent.context_id)))}">
+      ${tombstone ? `<div class="context-rail-card is-deleted"><span class="context-rail-title">${escapeHtml(item.title)}</span><span class="context-rail-lifecycle">${escapeHtml(lifecycleLabel)}</span></div>` : `<button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"${parents.length ? ` aria-describedby="${escapeHtml(relationId)}"` : ""}>
+        <span class="context-rail-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
+        ${blocked ? localize`<span class="context-rail-alert">需要确认后继续</span>` : ""}
+        ${healthAlert ? `<span class="context-rail-alert">${escapeHtml(healthAlert)}</span>` : ""}
+      </button>`}
+      ${sources ? localize`<div class="context-rail-parents" id="${escapeHtml(relationId)}" role="group" aria-label="来源 Context"><span>来源：</span>${sources}</div>` : ""}
+      ${!tombstone && blocked ? localize`<button type="button" class="context-rail-resolve text-button" data-action="resume-context-decision" data-context-id="${escapeHtml(item.task_id)}">查看并决断</button>` : ""}
+      ${renderContextDiagnostics(item, node)}
+      ${!tombstone && node?.editable ? localize`<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
     </div>`;
   }).filter(Boolean);
-  const cards = cardList.join("");
-  return localize`<aside class="context-rail" aria-label="Context 树">
+  return localize`<aside class="context-rail" aria-label="Context 关系">
     <header class="context-rail-heading"><strong>${uiText("nav.contexts", "上下文")}</strong><span>${cardList.length}</span></header>
-    <nav class="context-rail-list" aria-label="当前聊天派生的 Context">
-      ${cards}
+    <nav class="context-rail-list" aria-label="当前聊天关联的 Context">
+      ${cardList.join("")}
       <button type="button" class="context-rail-add" data-action="derive-context">${uiText("focus.context_add", "新增 Context")}</button>
     </nav>
   </aside>`;
@@ -1755,7 +1780,17 @@ function renderContextRail(task) {
 
 function renderTaskRail(task) {
   const tasks = state.tasks.filter(item => item.harness_mode !== "assembly" && sessionLifecycle(item) === "active");
-  return localize`<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || localize("本地工作区"))} · ${escapeHtml(presentTaskStatus(item).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
+  const workspaces = new Map();
+  for (const item of tasks) {
+    const key = item.workspace_id || item.workspace_path || "";
+    if (!workspaces.has(key)) workspaces.set(key, { task: item, tasks: [] });
+    workspaces.get(key).tasks.push(item);
+  }
+  const groups = [...workspaces.entries()].map(([workspaceId, group], index) => {
+    const headingId = `task-workspace-group-${index}`;
+    return `<section class="task-workspace-group" data-workspace-id="${escapeHtml(workspaceId)}" aria-labelledby="${headingId}"><h2 id="${headingId}" title="${escapeHtml(group.task.workspace_path || "")}">${escapeHtml(group.task.workspace_name || localize("本地工作区"))}</h2><div class="task-workspace-group-tasks">${group.tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}" title="${escapeHtml(item.task_id)}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(presentTaskStatus(item).label)}</small></button>`).join("")}</div></section>`;
+  }).join("");
+  return localize`<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav aria-label="工作区任务">${groups}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
 }
 
 function capabilityRefreshSummary(result) {
@@ -1878,11 +1913,12 @@ function renderFocus(task = activeTask()) {
   const keepEditor = app.dataset.taskId === task.task_id
     && app.querySelector?.(".focus-view")?.dataset?.taskId === task.task_id
     && !!app.querySelector?.("#mainInput");
+  const taskStatus = presentTaskStatus(task);
   const markup = localize`
-    <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? localize("独立会话") : escapeHtml(task.workspace_name || localize("本地工作区"))}</small><h1>${task.harness_mode === "assembly" ? localize("无工作区模式") : localize("任务")}</h1><p>${task.harness_mode === "assembly" ? localize("从一个问题或一份材料开始。") : localize("一条任务，一条持续会话。")}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
+    ${isAssembly ? localize`<header class="task-page-heading"><div><small>独立会话</small><h1>无工作区模式</h1><p>从一个问题或一份材料开始。</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>` : ""}
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
-      <section class="focus-view" data-task-id="${task.task_id}">
-        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong>${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-task-patrol">工作区 Patrol 详情</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
+      <section class="focus-view" data-task-id="${task.task_id}"${isAssembly ? "" : ' aria-labelledby="currentTaskTitle"'}>
+        <header class="task-workspace-tools">${isAssembly ? `<strong>${escapeHtml(task.title)}</strong>` : `<div class="task-heading"><h1 id="currentTaskTitle">${escapeHtml(task.title)}</h1><div class="task-identity-meta"><span class="ui-badge is-${taskStatus.tone}">${escapeHtml(taskStatus.label)}</span><code title="${escapeHtml(localize("任务 ID"))}">${escapeHtml(task.task_id)}</code></div></div><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button>`}${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-task-patrol">工作区 Patrol 详情</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
         ${admission ? localize`<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-task-patrol">查看工作区 Patrol 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
@@ -1895,7 +1931,7 @@ function renderFocus(task = activeTask()) {
           <div id="roundChanges"></div>
           <div id="taskDetailLoadStatus">${renderTaskResourceStatus(task.task_id, ["detail"])}</div>
           <div class="composer-shell glass-surface">
-            <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
+            ${isAssembly ? `<div class="composer-context"><span class="ui-badge is-active">${uiText("focus.free_session", "自由会话")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>` : ""}
             <div class="composer" data-main-composer>
               <div id="composerReference">${conversationReference.render(mainReference(task.task_id))}</div>
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
@@ -7037,7 +7073,7 @@ function sessionLifecycle(task) {
 }
 
 function contextHasDescendants(contextId, tree) {
-  return (Array.isArray(tree) ? tree : []).some(node => node.parents?.[0]?.context_id === contextId);
+  return (Array.isArray(tree) ? tree : []).some(node => node.parents?.some(parent => parent.context_id === contextId));
 }
 
 async function archiveContext(contextId, cascade) {
@@ -8406,7 +8442,7 @@ async function handleDocumentClick(event) {
   if (action === "batch-cascade-delete-selected") return batchDeleteSessions(true);
   if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);
   if (action === "context-rail-card") return switchTask(button.dataset.taskId);
-  if (action === "resume-context-decision") return reopenContextDecision(state.activeTaskId);
+  if (action === "resume-context-decision") return reopenContextDecision(button.dataset.contextId || state.activeTaskId);
   if (action === "exit-context-editor") { state.contextDraft = null; state.view = "map"; return render(); }
   if (action === "add-context-source") return addContextSource(button.dataset.contextId);
   if (action === "context-source-select") {
@@ -8820,6 +8856,13 @@ document.addEventListener("keydown", event => {
 });
 
 document.addEventListener("toggle", event => {
+  if (event.target.matches(".context-rail-diagnostics")) {
+    if (!event.target.isConnected) return;
+    const id = event.target.dataset.contextId;
+    if (event.target.open) state.openContextDiagnostics.add(id);
+    else state.openContextDiagnostics.delete(id);
+    return;
+  }
   if (!event.target.matches(".draft-advanced")) return;
   state.openDraftSection = event.target.open ? "system" : null;
 }, true);
