@@ -80,6 +80,10 @@ if (!process.versions.electron) {
     await until('document.querySelector("[data-patrol-content]")');
     assert.equal(await run('window.patrolFixture.workspaceBinds.at(-1).path'), chosen);
     assert.equal(await run('window.patrolFixture.submissions.length'), 0);
+    assert.equal(await run(`Boolean(document.querySelector('.patrol-quiet-heading, .workbench-composer-label, [data-i18n="patrol.tagline"]'))`), false);
+    assert.equal(await run('document.querySelector(".patrol-workspace-heading").textContent.includes(state.patrolWorkspace.display_name)'), true);
+    assert.equal(await run('Boolean(document.querySelector("form[aria-label] [data-patrol-clear-draft]"))'), true);
+    assert.equal(await run('document.querySelector("[data-patrol-clear-draft]").hidden'), true);
     if (process.env.FOCUS_PATROL_TEST_NATIVE === "1") {
       assert.equal(await run('document.querySelector("[data-patrol-content]").hidden && document.querySelector("[data-patrol-content]").disabled'),true);
       assert.equal(await run('document.querySelector("[data-patrol-file-picker-open]").disabled'),true);
@@ -92,6 +96,8 @@ if (!process.versions.electron) {
       await until('window.patrolFixture.robotPanelOpens.length === 2');
       assert.deepEqual(await run('patrolFixture.robotPanelOpens[1]'),{workspaceId,file_refs:[file]});
       assert.equal(await run('workspacePatrolIntake.store(state.patrolWorkspace.workspace_id).get().draft.file_refs.length'),0);
+      await run(`workspacePatrolIntake.store(state.patrolWorkspace.workspace_id).edit({content:'机器人面板草稿',file_refs:[${JSON.stringify(file)}]})`);
+      assert.equal(await run('document.querySelector("[data-patrol-clear-draft]").hidden && document.querySelector("[data-patrol-clear-draft]").disabled'),true);
       assert.equal(await run('window.patrolFixture.submissions.length'),0);
       assert.equal(await run('patrolFixture.robotReady'),true);
       assert.equal(await run('typeof patrolFixture.openWorkbench'),"function");
@@ -223,8 +229,10 @@ if (!process.versions.electron) {
     assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "新回答草稿");
     const submissionsBeforeClear = await run('window.patrolFixture.submissions.length');
     await until('!document.querySelector("[data-patrol-dialog]").open');
+    assert.equal(await run('document.querySelector("[data-patrol-clear-draft]").hidden'), false);
     await run('document.querySelector("[data-patrol-clear-draft]").click()');
     assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "");
+    assert.equal(await run('document.querySelector("[data-patrol-clear-draft]").hidden'), true);
     assert.match(await run('document.querySelector("[data-patrol-target]").textContent'), /question-next · 版本 3/);
     assert.equal(await run('window.patrolFixture.submissions.length'), submissionsBeforeClear);
     assert.equal(await run('document.activeElement.hasAttribute("data-patrol-content")'), true);
@@ -506,7 +514,7 @@ if (!process.versions.electron) {
     await snapshot("standalone");
     await run('document.querySelector("[data-action=show-map]").click()');
     await until('document.body.dataset.view === "map"');
-    const exactEdges = await run('(() => { const manifest={nodes:[{context_id:"A",title:"A"},{context_id:"B",title:"B"}],edges:["A1","A2"].map(source_revision_id=>({source_context_id:"A",source_revision_id,target_context_id:"B",target_revision_id:"B1"}))}; const host=document.createElement("div"); host.innerHTML=FocusPortfolioMapView.render(manifest); app.append(host); const counts=[]; for(let i=0;i<4;i++){ FocusPortfolioMapView.reconcile(host,manifest); counts.push(host.querySelectorAll("path[data-edge-id]").length); } const titles=[...host.querySelectorAll("path[data-edge-id] title")].map(node=>node.textContent).sort(); FocusPortfolioMapView.reconcile(host,{...manifest,edges:[manifest.edges[1]]}); const remaining=host.querySelector("path[data-edge-id] title").textContent; host.remove(); return {counts,titles,remaining}; })()');
+    const exactEdges = await run('(() => { const manifest={nodes:[{context_id:"A",title:"A"},{context_id:"B",title:"B"}],edges:["A1","A2"].map(source_revision_id=>({source_context_id:"A",source_revision_id,target_context_id:"B",target_revision_id:"B1"}))}; const host=document.createElement("div"); host.innerHTML=FocusPortfolioMapView.render(manifest); app.append(host); const counts=[]; for(let i=0;i<4;i++){ FocusPortfolioMapView.reconcile(host,manifest); counts.push(host.querySelectorAll("[data-edge-id]").length); } const titles=[...host.querySelectorAll("[data-edge-id] title")].map(node=>node.textContent).sort(); FocusPortfolioMapView.reconcile(host,{...manifest,edges:[manifest.edges[1]]}); const remaining=host.querySelector("[data-edge-id] title").textContent; host.remove(); return {counts,titles,remaining}; })()');
     assert.deepEqual(exactEdges, {counts:[2,2,2,2],titles:["A1 → B1","A2 → B1"],remaining:"A2 → B1"});
     await run('mapPortfolio={workspaceId:state.patrolWorkspace.workspace_id,snapshot:{nodes:[{context_id:"root",revision_id:"r1",generation:1}],edges:[],complete:true},manifest:{loop_id:"loop-completion_check",nodes:[{context_id:"root",title:"首线程"}]}}; state.mapViewMode="graph"; state.selectionMode=false; state.soldierArmed=false; renderMap()');
     await run('document.querySelector("[data-action=toggle-selection-mode]").click(); document.querySelector(".portfolio-context-node").click()');
@@ -541,11 +549,10 @@ if (!process.versions.electron) {
     win.setContentSize(1400, 942);
     await until('innerWidth >= 1399 && innerHeight >= 941');
     await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    const historyBounds = () => run('(() => { const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON(); return {panel:rect("[data-patrol-input-history]"),clear:rect("[data-patrol-clear-draft]"),composer:rect("[data-patrol-composer]"),viewport:{width:innerWidth,height:innerHeight}}; })()');
+    const historyBounds = () => run('(() => { const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON(); return {panel:rect("[data-patrol-input-history]"),composer:rect("[data-patrol-composer]"),viewport:{width:innerWidth,height:innerHeight}}; })()');
     const assertHistoryBounds = bounds => {
       assert.ok(bounds.panel.left >= 8 && bounds.panel.top >= 8, JSON.stringify(bounds));
-      assert.ok(bounds.clear.left - bounds.panel.right >= 10, JSON.stringify(bounds));
-      assert.ok(Math.abs(bounds.panel.bottom - bounds.clear.bottom) <= 2, JSON.stringify(bounds));
+      assert.ok(Math.abs(bounds.panel.right - bounds.composer.right) <= 2, JSON.stringify(bounds));
       assert.ok(bounds.composer.top - bounds.panel.bottom >= 12, JSON.stringify(bounds));
     };
     const hiddenComposer = await run('document.querySelector("[data-patrol-composer]").getBoundingClientRect().toJSON()');
@@ -555,7 +562,7 @@ if (!process.versions.electron) {
     const desktopBounds = await historyBounds();
     assertHistoryBounds(desktopBounds);
     assert.ok(Math.abs(desktopBounds.panel.width / desktopBounds.composer.width - .344) < .005, JSON.stringify(desktopBounds));
-    const availableHistoryHeight = desktopBounds.clear.bottom - 16;
+    const availableHistoryHeight = desktopBounds.composer.top - Math.min(40, desktopBounds.composer.width * .031) - 16;
     assert.ok(Math.abs(desktopBounds.panel.height - Math.min(360, desktopBounds.viewport.height * .5, availableHistoryHeight)) < 2, JSON.stringify(desktopBounds));
     assert.ok(Math.abs(desktopBounds.composer.top - hiddenComposer.top) < 1);
     await snapshot("history-desktop-open");

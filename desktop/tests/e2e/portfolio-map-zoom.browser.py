@@ -13,7 +13,7 @@ with sync_playwright() as playwright:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.set_content('<div id="host"></div>')
-    for source in ["shared/styles/views.css", "features/map/portfolio-map.css"]:
+    for source in ["shared/styles/views.css", "features/map/portfolio-map.css", "shared/styles/workspace-patrol.css"]:
         page.add_style_tag(path=str(RENDERER / source))
     for source in ["portfolio-map-layout.js", "portfolio-map-view.js"]:
         page.add_script_tag(path=str(RENDERER / "features/map" / source))
@@ -25,8 +25,9 @@ with sync_playwright() as playwright:
             const nodes = Array.from({length:32}, (_,i) => ({context_id:`n-${i}`, title:`Context ${i}`}));
             const edges = nodes.slice(1).map((node,i) => ({source_context_id:nodes[i].context_id, target_context_id:node.context_id}));
             const html = FocusPortfolioMapView.render({nodes,edges}, null, [], {presentation});
+            window.fitManifest = {nodes,edges};
             host.innerHTML = presentation === 'workbench'
-                ? `<header>32 Context</header><p data-map-status></p><div data-map-graph>${html}</div><div class="workbench-legend"><span>来源关系</span></div>`
+                ? `<header>32 Context</header><p data-map-status></p><div data-map-graph>${html}</div>`
                 : html;
             FocusPortfolioMapView.bind(host);
         }""", presentation)
@@ -46,12 +47,31 @@ with sync_playwright() as playwright:
                     noOverflow:scroll.scrollWidth <= scroll.clientWidth+1 && scroll.scrollHeight <= scroll.clientHeight+1};
             }""")
             assert result["canvasInside"] and result["nodesInside"] and result["noOverflow"], (presentation, width, height, result)
+            if presentation == "workbench":
+                assert page.locator('.portfolio-map-zoom').evaluate("tools => getComputedStyle(tools).position") == "static", "Patrol 样式不能改变独立全图的工具布局"
             fitted = result["zoom"]
             page.locator('[data-portfolio-zoom="out"]').click()
             assert page.locator(".portfolio-map").evaluate("map => Number(map.dataset.zoom)") <= fitted
             page.locator('[data-portfolio-zoom="in"]').click()
             assert page.locator(".portfolio-map").evaluate("map => Number(map.dataset.zoom)") > fitted
             page.locator('[data-portfolio-zoom="fit"]').click()
+            page.locator('.portfolio-map-relations summary').click()
+            page.locator('button[data-edge-hit]').first.focus()
+            page.keyboard.press('Enter')
+            page.evaluate("""presentation => {
+                window.savedRelationButton = document.activeElement;
+                fitManifest.nodes[0].title = 'Updated source title';
+                FocusPortfolioMapView.reconcile(document.querySelector('#host'), fitManifest, null, [], {presentation});
+            }""", presentation)
+            assert page.evaluate("savedRelationButton === document.activeElement && savedRelationButton.isConnected")
+            assert page.evaluate("document.querySelector('.portfolio-map-relations').open")
+            assert page.evaluate("document.querySelector('.portfolio-edge.is-selected').dataset.edgeId === savedRelationButton.dataset.edgeHit")
+            assert page.evaluate("""() => {
+                const map = document.querySelector('.portfolio-map').getBoundingClientRect();
+                const list = document.querySelector('.portfolio-map-relations').getBoundingClientRect();
+                return list.left >= map.left && list.right <= map.right && list.top >= map.top && list.bottom <= map.bottom;
+            }""")
+            page.locator('.portfolio-map-relations summary').click()
             print(json.dumps({"presentation": presentation, "container": [width, height], **result}))
             if os.environ.get("FOCUS_MAP_ZOOM_EVIDENCE"):
                 output = Path(os.environ["FOCUS_MAP_ZOOM_EVIDENCE"])

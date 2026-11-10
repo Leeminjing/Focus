@@ -45,6 +45,22 @@ function fixture(api) {
     emit(patch = {}) { state.projection = { loop_id: "loop-a", loop: { state: { status: "running" } }, wait_requests: {}, interventions: {}, facts: {}, contexts: {}, ...patch }; listener(state); } };
 }
 
+test("clear draft follows text, file references and attachments, without treating a reply target as content", async () => {
+  const f = fixture({ workspacePatrol: async () => null, workspaceInputs: async () => ({ items: [] }) });
+  await f.mount("a");
+  const clear = f.host.querySelector("[data-patrol-clear-draft]");
+  assert.equal(clear.hidden, true);
+  f.inputs.edit({ request_id: "question", request_revision: 3 });
+  assert.equal(clear.hidden, true);
+  for (const patch of [{ content: "草稿" }, { file_refs: [{ result_key: "file" }] }, { attachments: [{ local_id: "image" }] }]) {
+    f.inputs.edit(patch);
+    assert.equal(clear.hidden, false);
+    f.inputs.edit({ content: "", file_refs: [], attachments: [] });
+    assert.equal(clear.hidden, true);
+  }
+  f.controller.dispose();
+});
+
 test("history 503 leaves current Loop connected and retries only history", async () => {
   let loopReads = 0, historyReads = 0;
   const f = fixture({ workspacePatrol: async () => { loopReads++; return { loop_id: "loop-a" }; },

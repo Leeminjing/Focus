@@ -569,7 +569,7 @@
 .map-view:has(.map-portfolio-surface):has(> .patrol-context-drawer:not([hidden])) { grid-template-columns: minmax(0, 1fr) minmax(290px, 340px); }
 .map-view:has(.map-portfolio-surface) > :is(.task-page-heading, .map-toolbar, .page-search) { grid-column: 1 / -1; }
 .map-view > .patrol-context-drawer { position: relative; grid-column: 2; grid-row: 4; inset: auto; width: 100%; min-height: 0; border: 1px solid var(--border-subtle); border-radius: 20px; }
-.map-portfolio-surface { --workbench-muted: #7d8e9b; position: relative; height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; border: 0; border-radius: 18px; background: #ecf0f033; overflow: hidden; }
+.map-portfolio-surface { --workbench-muted: #7d8e9b; position: relative; height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); border: 0; border-radius: 18px; background: #ecf0f033; overflow: hidden; }
 .map-portfolio-surface > header { grid-row: 1; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 14px; color: var(--workbench-muted); font-size: 11px; }
 .map-portfolio-surface > header > div { display: flex; gap: 8px; }
 .map-portfolio-surface > header button { min-height: 30px; font-size: 11px; border: 1px solid #ffffff80; border-radius: 18px; padding: 4px 12px; color: inherit; background: #ffffff24; }
@@ -577,9 +577,8 @@
 .map-portfolio-surface [data-map-graph] { grid-row: 3; min-height: 0; min-width: 0; }
 .map-portfolio-surface .portfolio-map { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .map-portfolio-surface .portfolio-map-scroll { grid-row: 1; display: grid; place-items: safe center; }
-/* 缩放控件独占一行，图例无需为悬浮控件预留固定宽度。 */
+/* 缩放控件独占一行，来源关系列表锚定图谱区域。 */
 .map-portfolio-surface .portfolio-map .portfolio-map-zoom { position: static; grid-row: 2; justify-self: start; margin: 6px 12px; }
-.map-portfolio-surface .workbench-legend { grid-row: 4; margin: 0; padding: 12px 14px; min-height: 50px; gap: 8px 16px; align-items: center; }
 .map-portfolio-surface .loop-map-empty { height: 100%; display: grid; place-items: center; }
 html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .map-relationship-dialog { width: min(720px, calc(100vw - 32px)); max-height: 85dvh; overflow: auto; }

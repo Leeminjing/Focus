@@ -64,7 +64,7 @@ if (!process.versions.electron) {
     await sleep(500); await capture("patrol-unbound");
     const referenceGeometry = await run(`(() => {
       const rect = selector => { const {x,y,width,height} = document.querySelector(selector).getBoundingClientRect(); return {x,y,width,height}; };
-      return { viewport: { width:innerWidth, height:innerHeight }, navigation:rect('.app-navigation'), heading:rect('.patrol-quiet-heading'), composer:rect('[data-patrol-composer]') };
+      return { viewport: { width:innerWidth, height:innerHeight }, navigation:rect('.app-navigation'), composer:rect('[data-patrol-composer]') };
     })()`);
     fs.writeFileSync(path.join(output,"reference-geometry.json"), JSON.stringify(referenceGeometry,null,2));
     await run("state.patrolWorkspace={workspace_id:'native',display_name:'材质验收',path:'C:/isolated/native'}; render()");

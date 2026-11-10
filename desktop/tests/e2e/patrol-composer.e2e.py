@@ -31,6 +31,7 @@ FIXTURE = """async (remote = false) => {
   const api = {workspacePatrol: async () => ({loop_id:'loop'}),
     workspaceInputs: async () => ({items:[],next_before:null}), facts: async () => ({facts:[fact]})};
   const inputs = FocusWorkspacePatrolInputs.create(() => 'submission');
+  window.testInputs = inputs;
   window.sent = [];
   const intake = {history: (_id, page, ...args) => inputs.history(page, ...args), reconcile: async () => {},
     send: async (_id, row) => {sent.push(row); return {loop_id:'loop'};}};
@@ -76,7 +77,11 @@ def main():
         tools = page.locator("[data-patrol-composer-tools]")
         toggle = page.locator("[data-patrol-tools-toggle]")
         content = page.locator("[data-patrol-content]")
+        clear = page.get_by_role("button", name="清空输入", exact=True)
+        expect(clear).to_be_hidden()
+        expect(page.get_by_role("form", name="Patrol 输入")).to_be_visible()
         content.fill("Keep this draft")
+        expect(clear).to_be_visible()
 
         for width, height in [(1440, 900), (1000, 720), (390, 844), (1280, 480)]:
             page.set_viewport_size({"width": width, "height": height})
@@ -132,10 +137,41 @@ def main():
         sent = page.evaluate("sent[0]")
         assert sent["content"] == "Keep this draft" and sent["input_type"] == "outcome", sent
         assert sent["file_refs"][0]["result_key"] == "snapshot", sent
+        expect(clear).to_be_hidden()
+
+        # History stays anchored to the form when clearing removes its button.
+        page.evaluate("""() => {
+          if (!document.querySelector('.is-quiet')) document.querySelector('[data-patrol-composer] [data-patrol-details]').click();
+          testInputs.history({items:Array.from({length:30},(_,i)=>({submission_id:'old-'+i,content:'输入记录 '+i,input_type:'information'}))});
+        }""")
+        for width, height in [(1440, 900), (390, 844), (1920, 500), (900, 400)]:
+            page.set_viewport_size({"width": width, "height": height})
+            content.fill("可以清空的草稿")
+            toggle.click()
+            page.locator("[data-patrol-history-open]").click()
+            expect(history).to_be_visible()
+            for has_draft in [True, False]:
+                if not has_draft:
+                    clear.click()
+                    expect(clear).to_be_hidden()
+                    expect(content).to_be_empty()
+                    expect(content).to_be_focused()
+                bounds = history.bounding_box()
+                form = page.locator("[data-patrol-composer]").bounding_box()
+                assert bounds and form and bounds["height"] > 0, (bounds, form)
+                assert bounds["x"] >= 15 and bounds["y"] >= 15, bounds
+                assert bounds["y"] + bounds["height"] <= form["y"] - 11, (bounds, form)
+                assert abs(bounds["x"] + bounds["width"] - form["x"] - form["width"]) < 2, (bounds, form)
+                assert history.evaluate("node => node.scrollHeight > node.clientHeight")
+                page.screenshot(path=str(args.output / f"composer-{width}-history-{'draft' if has_draft else 'empty'}.png"))
+            history.focus()
+            page.keyboard.press("Escape")
+            expect(history).to_be_hidden()
         assert not errors, errors
         page.evaluate("controller.dispose()")
         page.evaluate(FIXTURE, True)
         expect(content).to_be_hidden()
+        expect(clear).to_be_hidden()
         expect(page.locator("[data-patrol-file-picker-open]")).to_be_hidden()
         toggle.click()
         expect(page.locator("[data-patrol-type-field]")).to_be_hidden()

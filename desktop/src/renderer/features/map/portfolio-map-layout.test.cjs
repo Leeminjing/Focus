@@ -7,6 +7,35 @@ const assert = require("node:assert/strict");
 const { layout, nodeSizes } = require("./portfolio-map-layout.js");
 const graph = require("./portfolio-map-view.js");
 const view = require("../patrol/workspace/workspace-patrol-view.js");
+const { createElement } = require("../../../../tests/helpers/test-dom.cjs");
+
+test("nodes show their title and one version, retaining exact IDs in details and relation actions", () => {
+  const manifest = { nodes: [
+    { context_id: "full-context-source", title: "核对需求", current_revision_id: "source-r2", revision: { generation: 2 }, counts: { runs: 8, artifacts: 2 } },
+    { context_id: "full-context-target", title: "验证实现", current_revision_id: "target-r3", revision: { generation: 3 } },
+  ], revisions: [{ revision_id: "source-r0", generation: 0 }], edges: ["source-r0", "source-r2"].map(source_revision_id => ({
+    source_context_id: "full-context-source", source_revision_id, target_context_id: "full-context-target", target_revision_id: "target-r3",
+  })) };
+  for (const presentation of ["default", "workbench"]) {
+    const host = createElement("div");
+    host.innerHTML = graph.render(manifest, "full-context-source", [], { presentation });
+    const node = host.querySelector('[data-context-id="full-context-source"]');
+    assert.equal((node.textContent.match(/R2/g) || []).length, 1);
+    assert.match(node.textContent, /核对需求.*2 个产物/);
+    assert.doesNotMatch(node.textContent, /full-con|次 Run|来源|去向/);
+    const entries = host.querySelectorAll("button[data-edge-hit]");
+    assert.equal(entries.length, 2);
+    assert.match(entries[0].textContent, /核对需求 · R0 → 验证实现 · R3/);
+    assert.match(entries[1].textContent, /核对需求 · R2 → 验证实现 · R3/);
+    const identity = JSON.stringify(["full-context-source", "source-r0", "full-context-target", "target-r3"]);
+    assert.equal(entries[0].dataset.edgeHit, view.escape(identity));
+    const detail = createElement("div");
+    detail.innerHTML = graph.relationship(manifest, identity);
+    assert.equal(detail.querySelectorAll(".workbench-edge-list li").length, 2);
+    assert.equal(detail.querySelectorAll(".workbench-edge-list li.is-selected").length, 1);
+    assert.match(detail.textContent, /Context full-context-source.*Revision source-r0.*Context full-context-target.*Revision target-r3/);
+  }
+});
 
 test("published roots win over newer ancestor revisions and preserve every edge", () => {
   const snapshot = {
@@ -19,12 +48,12 @@ test("published roots win over newer ancestor revisions and preserve every edge"
   assert.equal(manifest.nodes.find(node => node.context_id === "history").historical, true);
   assert.deepEqual(manifest.edges, snapshot.edges);
   const html = graph.render(manifest, "a", [], { presentation: "workbench", selectedRevisionId: "a9" });
-  assert.equal((html.match(/data-edge-hit=/g) || []).length, 2);
+  assert.equal((html.match(/class="edge-hit"/g) || []).length, 2);
   assert.match(html, /R9/);
   assert.match(html, /历史来源/);
   assert.equal((html.match(/workbench-edge is-related/g) || []).length, 1);
   const withSelf = { ...manifest, edges: [...manifest.edges, { source_context_id: "a", source_revision_id: "a9", target_context_id: "a", target_revision_id: "a1" }] };
-  assert.equal((graph.render(withSelf, "a", [], {presentation:"workbench", selectedRevisionId:"a9"}).match(/data-edge-hit=/g) || []).length, 3);
+  assert.equal((graph.render(withSelf, "a", [], {presentation:"workbench", selectedRevisionId:"a9"}).match(/class="edge-hit"/g) || []).length, 3);
 });
 
 test("selection and metadata updates preserve finite topology positions in both presentations", () => {

@@ -499,14 +499,15 @@
         panel.scrollTop = retained ? panel.scrollTop + retained.getBoundingClientRect().top - edge - offset : top;
       }
       historyReferences?.bind(model);
-      patchHistoryActions(model, true);
+      patchDraftActions(model, true);
       patchHistoryStatus();
       void loadOlderHistory();
     }
-    function patchHistoryActions(model, force = false) {
+    function patchDraftActions(model, force = false) {
       const occupied = Boolean(model.draft.content || model.draft.file_refs?.length || model.draft.attachments?.length);
       if (!force && draftOccupied === occupied) return;
       draftOccupied = occupied;
+      host.querySelector("[data-patrol-clear-draft]").hidden = Boolean(onCompose) || !occupied;
       for (const button of host.querySelectorAll("[data-patrol-edit-failed]")) {
         button.disabled = occupied;
         button.title = occupied ? localize("先处理当前草稿") : "";
@@ -580,7 +581,7 @@
       if (!host) return;
       const historyChanged = renderedHistoryRevision !== model.historyRevision;
       patchHistory(model);
-      patchHistoryActions(model);
+      patchDraftActions(model);
       materialPreview?.render(model.draft);
       const content = host.querySelector("[data-patrol-content]");
       if (content.value !== model.draft.content) content.value = model.draft.content;
@@ -754,7 +755,11 @@
     }
     async function click(event) {
       const edge = event.target.closest("[data-edge-hit]");
-      if (edge) { event.stopPropagation(); inspectEdges(edge.dataset.edgeHit); return; }
+      if (edge) {
+        event.stopPropagation();
+        (edge.matches("button") ? edge : host.querySelector("[data-patrol-related]")).focus({ preventScroll: true });
+        inspectEdges(edge.dataset.edgeHit); return;
+      }
       const button = event.target.closest("button");
       if (!button || !host.contains(button)) return;
       const tools = button.closest("[data-patrol-composer-tools]");

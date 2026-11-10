@@ -3867,7 +3867,7 @@ function renderMap(focusKey = null) {
     app.innerHTML = localize`<section class="map-view">
       <header class="task-page-heading"><div><h1>全图</h1><p>沿精确来源关系检查工作。层次与卡片浏览保留所有工作区操作。</p></div><button data-action="show-patrol">回到 Patrol</button></header>
       ${toolbar}<label class="page-search">搜索历史 <input type="search" data-page-search="map" maxlength="200" value="${escapeHtml(state.mapQuery || "")}" placeholder="消息正文、任务或文件名…"></label>
-      ${graphMode ? localize`<section class="map-portfolio-surface" data-workspace-id="${escapeHtml(workspaceId || "")}"><header><span>当前工作区 · 已提交来源</span><div><button data-action="map-related" disabled>仅看所选关联</button><button data-action="refresh-map-portfolio">刷新</button></div></header><p data-map-status role="status" hidden></p><div data-map-graph></div><footer class="workbench-legend"><span>已提交来源关系</span><span>所选 Context 的直接关联</span><span>Run 状态以节点为准</span><small>连线可查看来源与目标版本</small></footer></section><aside data-patrol-context class="patrol-context-drawer" aria-label="只读 Context 检查" hidden><div data-patrol-context-content></div></aside>` : `<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : localize('<p>暂无匹配的活动任务</p>')}</div>`}
+      ${graphMode ? localize`<section class="map-portfolio-surface" data-workspace-id="${escapeHtml(workspaceId || "")}"><header><span>当前工作区 · 已提交来源</span><div><button data-action="map-related" disabled>仅看所选关联</button><button data-action="refresh-map-portfolio">刷新</button></div></header><p data-map-status role="status" hidden></p><div data-map-graph></div></section><aside data-patrol-context class="patrol-context-drawer" aria-label="只读 Context 检查" hidden><div data-patrol-context-content></div></aside>` : `<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : localize('<p>暂无匹配的活动任务</p>')}</div>`}
     </section>`;
     if (graphMode) {
       mapContextInspector = window.FocusContextInspector.create({ api: loopApi, onOpenTask: switchTask, getManifest: mapGraphManifest, onSelectionChange: selected => { if (!selected) mapRelatedOnly = false; patchMapGraph(); } });
@@ -7771,7 +7771,7 @@ function runUiAction(action) {
 
 async function handleDocumentClick(event) {
   const edge = event.target.closest(".map-portfolio-surface [data-edge-hit]");
-  if (edge && state.view === "map") return inspectMapRelationship(edge.dataset.edgeHit, app.querySelector('[data-action="map-related"]'));
+  if (edge && state.view === "map") return inspectMapRelationship(edge.dataset.edgeHit, edge.matches("button") ? edge : app.querySelector('[data-action="map-related"]'));
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
