@@ -236,15 +236,53 @@ details.task-card-more .task-card-actions .text-button { font-size: 12px; }
 .settings-sections button.is-active,
 .settings-sections button[aria-selected="true"] { color: var(--text-primary); background: var(--surface-selected); font-weight: 600; }
 .settings-pane { padding: var(--space-4); }
-.settings-pane h3 { margin: 0 0 var(--space-3); font-size: 15px; }
+.settings-field-list { display: grid; }
+.settings-field-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 68px;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.settings-field-row:first-child { padding-top: 0; }
+.settings-field-name { display: grid; gap: var(--space-1); min-width: 0; }
+.settings-field-name > :first-child { font-weight: 600; }
+.settings-field-name small, .settings-field-value, .settings-scope { color: var(--text-secondary); font-size: 12px; }
+.settings-field-value.danger { color: var(--text-danger); }
+.settings-field-control { grid-column: 2 / -1; min-width: 0; width: 100%; }
+select.settings-field-control { padding: var(--space-2); border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-base); }
+.settings-scope { margin: 0 0 var(--space-3); }
+.settings-feedback { margin: var(--space-2) 0; font-size: 12px; overflow-wrap: anywhere; }
+.settings-feedback:empty { margin: 0; }
+.settings-diagnostic { border-bottom: 1px solid var(--border-subtle); }
+.settings-diagnostic > summary {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  cursor: pointer;
+  list-style: none;
+}
+.settings-diagnostic > summary::-webkit-details-marker { display: none; }
+.settings-diagnostic-action { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-accent); font-size: 12px; }
+.settings-diagnostic-action::after { content: ""; width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); }
+.settings-diagnostic[open] .settings-diagnostic-action::after { transform: rotate(225deg); }
+.settings-diagnostic-body { padding: 0 0 var(--space-3); font-size: 12px; overflow-wrap: anywhere; }
+.settings-diagnostic-body p { margin: 0 0 var(--space-2); }
+.settings-diagnostic-body h4 { margin: var(--space-3) 0 var(--space-2); font-size: 12px; }
+.settings-diagnostic-body ul { margin: var(--space-2) 0; padding-left: var(--space-5); }
+.settings-diagnostic-body .archived-session-item { padding: var(--space-3) 0; flex-wrap: wrap; }
+.settings-diagnostic-body .archived-session-info { flex-basis: 260px; }
 .settings-language-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-2);
-  max-width: 420px;
 }
 .settings-language-options button {
-  min-height: 42px;
+  min-height: 34px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   color: var(--text-secondary);
@@ -258,7 +296,18 @@ details.task-card-more .task-card-actions .text-button { font-size: 12px; }
   background: var(--surface-selected);
   font-weight: 650;
 }
-.settings-language-help { margin: var(--space-2) 0 0; }
+.settings-pane[data-settings-pane="data"] { display: grid; gap: var(--space-4); }
+.settings-storage-policy .settings-field-row { grid-template-columns: minmax(0, 1fr) auto; min-height: 48px; }
+.settings-storage-policy input[type="number"] { width: 84px; padding: 6px; border: 1px solid var(--border-default); border-radius: var(--radius-control); }
+.settings-storage-policy small { display: block; color: var(--text-secondary); font-size: 12px; }
+.settings-storage-help { font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .settings-field-row, .settings-diagnostic > summary { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
+  .settings-field-name, .settings-diagnostic > summary > :first-child { grid-column: 1 / -1; }
+  .settings-field-control { grid-column: 1 / -1; }
+  .settings-dialog .archived-session-item { flex-wrap: wrap; }
+  .settings-dialog .archived-session-actions { flex-wrap: wrap; }
+}
 .settings-data-section { border: 1px solid var(--border-default); border-radius: var(--radius-card); overflow: hidden; }
 .settings-data-section > header {
   display: flex;

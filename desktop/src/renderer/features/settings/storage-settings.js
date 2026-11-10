@@ -19,26 +19,28 @@
       if (!host) return;
       const disabled = busy ? "disabled" : "";
       if (!snapshot) { host.innerHTML = `<p role="status">${esc(message || t("正在读取存储信息…", "Loading storage…"))}</p><button data-storage-action="refresh" ${disabled}>${t("重试", "Retry")}</button>`; return; }
-      const field = (key, label, min, max) => `<label class="settings-model-field">${label}<input data-storage-field="${key}" type="number" min="${min}" max="${max}" step="1" value="${esc(String(draft[key]))}" ${disabled}></label>`;
+      const field = (key, label, min, max) => `<label class="settings-field-row"><span>${label}</span><input data-storage-field="${key}" type="number" min="${min}" max="${max}" step="1" value="${esc(String(draft[key]))}" ${disabled}></label>`;
       const rows = snapshot.backups.entries.map(row => `<li><span><strong>${esc(row.id)}</strong><small>${esc(size(row.bytes))} · ${esc(row.created_at ? new Date(row.created_at).toLocaleString(english() ? "en-US" : "zh-CN") : t("时间未知", "Unknown date"))}</small></span><span>${esc(row.protected_reason ? t(...(reasons[row.protected_reason] || [row.protected_reason, row.protected_reason])) : t("可清理", "Eligible"))}</span></li>`).join("");
       host.innerHTML = `<header><strong>${t("长期存储维护", "Storage maintenance")}</strong><button class="text-button" data-storage-action="refresh" ${disabled}>${t("刷新容量", "Refresh")}</button></header>
         <dl class="storage-usage"><div><dt>${t("数据库", "Database")}</dt><dd>${size(snapshot.database_bytes)}</dd></div><div><dt>Journal</dt><dd>${size(snapshot.journal_bytes)} · ${snapshot.journal_events} ${t("条", "events")}</dd></div><div><dt>${t("备份", "Backups")}</dt><dd>${size(snapshot.backups.bytes)}</dd></div></dl>
-        <p class="muted tiny">${t("Journal 容量包含在数据库内。删除日志会释放可复用空间，数据库文件未必立即缩小。", "Journal size is included in the database. Deleted rows free reusable space; database files may not shrink immediately.")}</p>
-        <div class="settings-model-grid">
+        <div class="settings-storage-policy settings-field-list">
           ${field("journal_retention_days", t("Journal 保留天数", "Journal retention days"), 1, 3650)}
           ${field("backup_retention_days", t("备份保留天数", "Backup retention days"), 1, 3650)}
           ${field("backup_keep_count", t("每类至少保留的备份数", "Minimum backups per type"), 1, 100)}
           ${field("backup_interval_hours", t("备份间隔（小时，0 为关闭）", "Backup interval (hours, 0 disables)"), 0, 8760)}
+          <label class="settings-field-row"><span>${t("启用周期安全清理", "Enable periodic safe cleanup")}<small>${t("Focus 运行时 · 每小时检查", "While Focus runs · Checked hourly")}</small></span><input type="checkbox" data-storage-field="automatic_cleanup" ${draft.automatic_cleanup ? "checked" : ""} ${disabled}></label>
         </div>
-        <label><input type="checkbox" data-storage-field="automatic_cleanup" ${draft.automatic_cleanup ? "checked" : ""} ${disabled}>${t("启用周期安全清理", "Enable periodic safe cleanup")}</label>
-        <p class="muted tiny">${t("周期任务仅在 Focus 运行时每小时检查一次。保留期和最低备份数同时满足后才清理；恢复点、未消费日志、显式保留和引用证据受保护。", "Maintenance checks hourly while Focus is running. Cleanup requires both age and minimum-count rules. Recovery points, unconsumed events, retention pins and referenced evidence are protected.")}</p>
         <div class="ui-toolbar"><button class="primary" data-storage-action="save" ${disabled}>${t("保存策略", "Save policy")}</button><button class="text-button" data-storage-action="preview" ${disabled}>${t("预览安全清理", "Preview cleanup")}</button><button class="text-button" data-storage-action="backup" ${disabled || (!snapshot.backup_available ? "disabled" : "")}>${t("立即备份数据库", "Back up database now")}</button></div>
         ${!snapshot.backup_available ? `<p class="muted tiny">${t("常规备份仅支持内置本地 PostgreSQL；自定义数据库请使用其备份工具。", "Backups require the bundled local PostgreSQL. Use your database tooling for custom deployments.")}</p>` : ""}
-        <p class="muted tiny">${t("常规备份是校验过的 PostgreSQL 归档，不含升级依赖快照和工作区文件。", "Regular backups are verified PostgreSQL archives; dependency snapshots and workspace files are excluded.")}</p>
         ${preview ? `<section class="storage-preview"><p>${t("本次最多清理", "This cleanup removes at most")} ${preview.journal_events} ${t("条 Journal，", "journal events and")} ${preview.backup_ids.length} ${t("个备份，备份空间", "backups, freeing backup space of")} ${size(preview.backup_bytes)}。</p><p class="muted tiny">${t("预览有效期 10 分钟；执行时重新检查保护条件。", "Preview expires after 10 minutes; protections are checked again on execution.")}</p><button class="text-button danger" data-storage-action="cleanup" ${disabled || (!preview.journal_events && !preview.backup_ids.length ? "disabled" : "")}>${t("执行本次清理", "Apply this cleanup")}</button></section>` : ""}
         <p role="status" aria-live="polite" class="${failed ? "danger" : ""}">${esc(message)}</p>
         ${snapshot.last_error ? `<p class="danger">${t("最近周期维护失败：", "Last maintenance error: ")}${esc(snapshot.last_error)}</p>` : ""}
-        <p class="muted tiny">${t("备份目录：", "Backup directory: ")}${esc(snapshot.backup_directory || "")}</p>
+        <details class="settings-storage-help"><summary>${t("维护范围与保护规则", "Maintenance scope and protections")}</summary>
+          <p class="muted tiny">${t("Journal 容量包含在数据库内。删除日志会释放可复用空间，数据库文件未必立即缩小。", "Journal size is included in the database. Deleted rows free reusable space; database files may not shrink immediately.")}</p>
+          <p class="muted tiny">${t("周期任务仅在 Focus 运行时每小时检查一次。保留期和最低备份数同时满足后才清理；恢复点、未消费日志、显式保留和引用证据受保护。", "Maintenance checks hourly while Focus is running. Cleanup requires both age and minimum-count rules. Recovery points, unconsumed events, retention pins and referenced evidence are protected.")}</p>
+          <p class="muted tiny">${t("常规备份是校验过的 PostgreSQL 归档，不含升级依赖快照和工作区文件。", "Regular backups are verified PostgreSQL archives; dependency snapshots and workspace files are excluded.")}</p>
+          <p class="muted tiny">${t("备份目录：", "Backup directory: ")}${esc(snapshot.backup_directory || "")}</p>
+        </details>
         <details><summary>${t("备份清单", "Backup inventory")} (${snapshot.backups.entries.length})</summary><ul class="storage-backups">${rows || `<li>${t("暂无备份", "No backups yet")}</li>`}</ul></details>`;
     }
     async function load() {
