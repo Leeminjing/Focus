@@ -62,7 +62,7 @@ app.whenReady().then(async () => {
     for (let i = 0; i < 100 && !state.tasks.length; i++) await new Promise(resolve => setTimeout(resolve, 20));
     state.inspector.open = false;
     state.view = 'memory'; openMemoryCompose(); await pickMemorySession('root');
-    document.querySelector('.memory-msg').click();
+    document.querySelector('[data-action="read-memory-message"]').click();
     document.querySelector('[data-action=add-checked-messages]').click();
     for (const [field, value] of [['title', '整理中的标题'], ['content', '整理中的记忆草稿']]) {
       const input = document.querySelector('[data-memory-field=' + field + ']');

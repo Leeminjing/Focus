@@ -66,6 +66,7 @@ class WorkspacePatrolService:
                     "status": loop.status,
                     "workspace_id": workspace_id,
                     "interaction_mode": loop.interaction_mode,
+                    "access_mode": (loop.equipment or {}).get("access_mode"),
                 }
             )
 

@@ -149,6 +149,7 @@ const state = {
   skillCatalogs: new Map(),
   capabilityRefreshResults: new Map(),
   contextTrees: new Map(),
+  openContextDiagnostics: new Set(),
   contextDraft: null,
   pickerActive: { main: 0, draft: 0 },
   equipment: { models: [], tools: [], skills: [], permissions: [] },
@@ -204,7 +205,7 @@ const state = {
     recovery: null,
   },
   accessReviews: { panel: null, payload: null, taskId: null, key: null, busy: false },
-  plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
+  plugins: { plugins: [], interfaces: {}, activation: {}, traces: [], filter: "all", selectedName: null, loading: false, reloading: false },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
   inspector: { open: window.innerWidth > 1100, tab: "materials", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
@@ -408,7 +409,7 @@ let memoryViewRequestSequence = 0;
 let memoryHydrationSequence = 0;
 let memoryCompressionRequestSequence = 0;
 let contextTreeRequestSequence = 0;
-let panelResizeFrame = null;
+let panelResizeFrame = null, shellResizeFrame = null;
 let patrolAvatarController = null;
 const pluginStyleAssets = new Set();
 const pluginScriptAssets = new Map();
@@ -492,6 +493,7 @@ function applyShellLayout(layout) {
   shell.classList?.toggle("is-nav-collapsed", layout.navCollapsed);
   syncShellResizerVisibility();
   syncNavToggleButton(layout.navCollapsed);
+  syncShellSeparatorValues();
 }
 
 function persistShellLayout() {
@@ -506,9 +508,16 @@ function syncShellResizerVisibility() {
   const shell = document.querySelector(".app-shell");
   if (!shell?.querySelector) return;
   const navResizer = shell.querySelector(".shell-resizer-nav");
-  if (navResizer?.setAttribute) navResizer.setAttribute("aria-hidden", String(state.shellLayout.navCollapsed));
+  if (navResizer?.setAttribute) {
+    navResizer.setAttribute("aria-hidden", String(state.shellLayout.navCollapsed));
+    navResizer.tabIndex = state.shellLayout.navCollapsed ? -1 : 0;
+  }
   const inspectorResizer = shell.querySelector(".shell-resizer-inspector");
-  if (inspectorResizer?.setAttribute) inspectorResizer.setAttribute("aria-hidden", String(appInspector.hidden));
+  if (inspectorResizer?.setAttribute) {
+    const hidden = appInspector.hidden || appInspector.inert || window.innerWidth <= 1100;
+    inspectorResizer.setAttribute("aria-hidden", String(hidden));
+    inspectorResizer.tabIndex = hidden ? -1 : 0;
+  }
 }
 
 function syncNavToggleButton(navCollapsed) {
@@ -529,6 +538,25 @@ function setShellNavCollapsed(navCollapsed) {
   persistShellLayout();
 }
 
+// CSS defaults and stored preferences share the rendered width as the current value.
+function shellSeparatorRange(target) {
+  const nav = document.querySelector("#appNavigation");
+  const element = target === "nav" ? nav : appInspector;
+  const key = target === "nav" ? "navWidth" : "inspectorWidth";
+  const style = element && window.getComputedStyle?.(element);
+  const frame = style ? ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"]
+    .reduce((sum, key) => sum + (parseFloat(style[key]) || 0), 0) : 0;
+  return { min: Math.max(frame, SHELL_LAYOUT_BOUNDS[`${target}Min`]), max: SHELL_LAYOUT_BOUNDS[`${target}Max`],
+    now: element?.getBoundingClientRect?.().width || state.shellLayout[key] };
+}
+
+function syncShellSeparatorValues() {
+  for (const target of ["nav", "inspector"]) {
+    const node = document.querySelector(`.shell-resizer-${target}`);
+    if (node?.setAttribute) window.FocusAccessibleControls.syncSeparator(node, shellSeparatorRange(target));
+  }
+}
+
 // 给两个 resizer 手柄绑定指针拖拽：把相邻栏宽度写回 .app-shell 内联自定义属性。
 function bindShellResizers() {
   const shell = document.querySelector(".app-shell");
@@ -540,22 +568,34 @@ function bindShellResizers() {
   for (const { node, target } of resizers) {
     if (!node || node.dataset.shellResizerBound) continue;
     node.dataset.shellResizerBound = "true";
+    window.FocusAccessibleControls.bindSeparator(node, {
+      read: () => shellSeparatorRange(target), direction: target === "nav" ? 1 : -1,
+      resize: value => {
+        const draft = { ...state.shellLayout, navWidth: shellSeparatorRange("nav").now,
+          inspectorWidth: shellSeparatorRange("inspector").now, customized: true };
+        draft[target === "nav" ? "navWidth" : "inspectorWidth"] = value;
+        state.shellLayout = normalizeShellLayout(draft);
+        applyShellLayout(state.shellLayout);
+      }, commit: persistShellLayout,
+    });
+    syncShellResizerVisibility();
     let frame = null;
     node.addEventListener("pointerdown", event => {
       if (event.button !== 0) return;
       event.preventDefault();
       node.setPointerCapture?.(event.pointerId);
       const startX = event.clientX;
-      const startNav = state.shellLayout.navWidth;
-      const startInspector = state.shellLayout.inspectorWidth;
+      node.focus({ preventScroll: true });
+      const startNav = shellSeparatorRange("nav").now;
+      const startInspector = shellSeparatorRange("inspector").now;
       const move = moveEvent => {
         if (frame != null) cancelAnimationFrame(frame);
         frame = requestAnimationFrame(() => {
           frame = null;
           const delta = moveEvent.clientX - startX;
-          const draft = { ...state.shellLayout, navCollapsed: false, customized: true };
+          const draft = { ...state.shellLayout, navWidth: startNav, inspectorWidth: startInspector, customized: true };
           // 导航↔工作区：向右拖(+)放大导航；工作区↔检查器：向左拖(-)放大检查器。
-          if (target === "nav") draft.navWidth = startNav + delta;
+          if (target === "nav") draft.navWidth = Math.max(shellSeparatorRange("nav").min, startNav + delta);
           else draft.inspectorWidth = startInspector - delta;
           state.shellLayout = normalizeShellLayout(draft, shell.clientWidth || window.innerWidth);
           applyShellLayout(state.shellLayout);
@@ -829,7 +869,7 @@ function streamMarkdownBlocks(text) {
 
 function setStatus(text, isError = false) {
   clearTimeout(state.statusTimer);
-  statusNode.textContent = text;
+  window.FocusAccessibleControls.announce(statusNode, text);
   statusNode.classList.toggle("danger", isError);
   if (text && !isError && text.includes("已保存")) {
     state.statusTimer = setTimeout(() => {
@@ -1281,13 +1321,21 @@ function refreshSessionControls() {
 
 function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
+  // Native toggle events are queued. Read the live disclosure before replacing
+  // the rail so a refresh immediately after opening it cannot close it again.
+  for (const details of inspectorContent.querySelectorAll?.(".context-rail-diagnostics") || []) {
+    if (details.open) state.openContextDiagnostics.add(details.dataset.contextId);
+    else state.openContextDiagnostics.delete(details.dataset.contextId);
+  }
   const open = state.inspector.open && state.view !== "patrol" && !(state.view === "focus" && state.filesPanel);
   if (!appInspector.hasAttribute("data-surface-closing")) appInspector.hidden = !open;
   appInspector.inert = !open;
   appInspector.setAttribute("aria-hidden", String(!open));
   syncShellResizerVisibility();
+  syncShellSeparatorValues();
   if (!open) return;
   const tab = state.inspector.tab;
+  inspectorContent.setAttribute("aria-labelledby", `inspectorTab-${tab}`);
   const activeBranch = document.querySelector('#patrolBranchControls');
   if (tab === 'agents' && activeBranch?.dataset?.agentId === state.agentDetails.agentId && ['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) && activeBranch.parentElement?.contains(document.activeElement)) return;
   const task = activeTask();
@@ -1666,47 +1714,65 @@ function setComposerError(error = null, taskId = state.activeTaskId) {
   node.textContent = feedback?.text || "";
 }
 
+function renderContextDiagnostics(item, node) {
+  const cacheRate = Number.isFinite(node?.cache_hit_rate) ? `${Math.round(node.cache_hit_rate * 100)}%` : "—";
+  return localize`<details class="context-rail-diagnostics" data-context-id="${escapeHtml(item.task_id)}"${state.openContextDiagnostics.has(item.task_id) ? " open" : ""}>
+    <summary aria-label="${escapeHtml(localize`技术详情：${item.title}`)}">技术详情</summary>
+    <dl>
+      <div><dt>Context ID</dt><dd><code>${escapeHtml(item.task_id)}</code></dd></div>
+      <div><dt>类型</dt><dd>${node?.parents?.length ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")}</dd></div>
+      <div><dt>执行投影</dt><dd>${escapeHtml(node?.projection_status || "root")}</dd></div>
+      <div><dt>${uiText("focus.cache", "缓存")}</dt><dd>${cacheRate}</dd></div>
+      ${node?.managed_status ? localize`<div><dt>受管状态</dt><dd>${escapeHtml(curatorTrackingLabel(node.managed_status))}</dd></div>` : ""}
+      ${node?.managed_health ? localize`<div><dt>处理健康</dt><dd>${escapeHtml(node.managed_health)}</dd></div>` : ""}
+    </dl>
+  </details>`;
+}
+
 function renderContextRail(task) {
   const tasks = contextEditor.contextFamilyTasks(state.tasks, state.contextTrees, task.task_id);
   const tree = state.contextTrees.get(task.workspace_id) || [];
   const nodes = new Map(tree.map(node => [node.context_id, node]));
+  const taskById = new Map(state.tasks.map(item => [item.task_id, item]));
   const cardList = tasks.map(item => {
     const node = nodes.get(item.task_id);
     const depth = Number(node?.depth || 0);
     const projectionStatus = node?.projection_status || "root";
     const blocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
-    const cacheRate = Number.isFinite(node?.cache_hit_rate)
-      ? `${Math.round(node.cache_hit_rate * 100)}%`
-      : "—";
-    const otherParents = (node?.parents || []).slice(1).map(parent =>
-      state.tasks.find(candidate => candidate.task_id === parent.context_id)?.title || parent.context_id
-    ).join("、");
     const lifecycle = item.lifecycle || node?.lifecycle || "active";
-    if (lifecycle !== "active") {
-      // 墓碑：仅当被归档/删除的会话仍被后代引用（有后代）时才保留原位占位；无后代直接消失。
-      if (!contextHasDescendants(item.task_id, tree)) return "";
-      const tag = lifecycle === "archived" ? localize("已归档") : localize("已删除");
-      return `<div class="context-rail-item is-tombstone" style="--context-depth:${depth}" data-context-depth="${depth}">
-        <span class="context-rail-card is-deleted" role="presentation">
-          <span class="context-rail-title">${escapeHtml(item.title)}</span>
-          <span class="context-rail-meta">${depth ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")} · ${escapeHtml(item.task_id.slice(0, 8))} · ${tag}</span>
-        </span>
-      </div>`;
-    }
-    return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}">
-      <button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}">
-        <span class="context-rail-title">${escapeHtml(item.title)}</span>
-        <span class="context-rail-meta">${depth ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")} · ${escapeHtml(item.task_id.slice(0, 8))}${node?.managed_status ? localize` · 受管 ${escapeHtml(curatorTrackingLabel(node.managed_status))}${node.managed_health && node.managed_health !== "idle" ? `/${escapeHtml(node.managed_health)}` : ""}` : ""}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · ${uiText("focus.cache", "缓存")} ${cacheRate}</span>
-        ${otherParents ? localize`<span class="context-rail-parents">另含：${escapeHtml(otherParents)}</span>` : ""}
-      </button>
-      ${node?.editable ? localize`<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
+    const tombstone = lifecycle !== "active";
+    if (tombstone && !contextHasDescendants(item.task_id, tree)) return "";
+    const lifecycleLabel = tombstone ? (lifecycle === "archived" ? localize("已归档") : localize("已删除")) : "";
+    const parents = node?.parents || [];
+    const relationId = `context-sources-${item.task_id}`;
+    const sources = parents.map(parent => {
+      const source = taskById.get(parent.context_id) || nodes.get(parent.context_id);
+      const title = source?.title || parent.context_id;
+      const sourceLifecycle = source?.lifecycle || nodes.get(parent.context_id)?.lifecycle || "active";
+      const label = sourceLifecycle !== "active"
+        ? localize`${title}（${sourceLifecycle === "archived" ? localize("已归档") : localize("已删除")}）` : title;
+      return source && sourceLifecycle === "active" && taskById.has(parent.context_id)
+        ? `<button type="button" class="context-rail-source" data-action="context-rail-card" data-task-id="${escapeHtml(parent.context_id)}" title="${escapeHtml(parent.context_id)}">${escapeHtml(label)}</button>`
+        : `<span data-context-id="${escapeHtml(parent.context_id)}" title="${escapeHtml(parent.context_id)}">${escapeHtml(label)}</span>`;
+    }).join("");
+    const healthAlert = node?.managed_health === "degraded" ? localize("更新失败，请查看协作详情")
+      : node?.managed_health === "blocked" ? localize("更新受阻，请查看协作详情") : "";
+    return `<div class="context-rail-item${tombstone ? " is-tombstone" : node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}" data-context-id="${escapeHtml(item.task_id)}" data-parent-context-ids="${escapeHtml(JSON.stringify(parents.map(parent => parent.context_id)))}">
+      ${tombstone ? `<div class="context-rail-card is-deleted"><span class="context-rail-title">${escapeHtml(item.title)}</span><span class="context-rail-lifecycle">${escapeHtml(lifecycleLabel)}</span></div>` : `<button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"${parents.length ? ` aria-describedby="${escapeHtml(relationId)}"` : ""}>
+        <span class="context-rail-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
+        ${blocked ? localize`<span class="context-rail-alert">需要确认后继续</span>` : ""}
+        ${healthAlert ? `<span class="context-rail-alert">${escapeHtml(healthAlert)}</span>` : ""}
+      </button>`}
+      ${sources ? localize`<div class="context-rail-parents" id="${escapeHtml(relationId)}" role="group" aria-label="来源 Context"><span>来源：</span>${sources}</div>` : ""}
+      ${!tombstone && blocked ? localize`<button type="button" class="context-rail-resolve text-button" data-action="resume-context-decision" data-context-id="${escapeHtml(item.task_id)}">查看并决断</button>` : ""}
+      ${renderContextDiagnostics(item, node)}
+      ${!tombstone && node?.editable ? localize`<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
     </div>`;
   }).filter(Boolean);
-  const cards = cardList.join("");
-  return localize`<aside class="context-rail" aria-label="Context 树">
+  return localize`<aside class="context-rail" aria-label="Context 关系">
     <header class="context-rail-heading"><strong>${uiText("nav.contexts", "上下文")}</strong><span>${cardList.length}</span></header>
-    <nav class="context-rail-list" aria-label="当前聊天派生的 Context">
-      ${cards}
+    <nav class="context-rail-list" aria-label="当前聊天关联的 Context">
+      ${cardList.join("")}
       <button type="button" class="context-rail-add" data-action="derive-context">${uiText("focus.context_add", "新增 Context")}</button>
     </nav>
   </aside>`;
@@ -1714,7 +1780,17 @@ function renderContextRail(task) {
 
 function renderTaskRail(task) {
   const tasks = state.tasks.filter(item => item.harness_mode !== "assembly" && sessionLifecycle(item) === "active");
-  return localize`<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || localize("本地工作区"))} · ${escapeHtml(presentTaskStatus(item).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
+  const workspaces = new Map();
+  for (const item of tasks) {
+    const key = item.workspace_id || item.workspace_path || "";
+    if (!workspaces.has(key)) workspaces.set(key, { task: item, tasks: [] });
+    workspaces.get(key).tasks.push(item);
+  }
+  const groups = [...workspaces.entries()].map(([workspaceId, group], index) => {
+    const headingId = `task-workspace-group-${index}`;
+    return `<section class="task-workspace-group" data-workspace-id="${escapeHtml(workspaceId)}" aria-labelledby="${headingId}"><h2 id="${headingId}" title="${escapeHtml(group.task.workspace_path || "")}">${escapeHtml(group.task.workspace_name || localize("本地工作区"))}</h2><div class="task-workspace-group-tasks">${group.tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}" title="${escapeHtml(item.task_id)}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(presentTaskStatus(item).label)}</small></button>`).join("")}</div></section>`;
+  }).join("");
+  return localize`<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav aria-label="工作区任务">${groups}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
 }
 
 function capabilityRefreshSummary(result) {
@@ -1837,11 +1913,12 @@ function renderFocus(task = activeTask()) {
   const keepEditor = app.dataset.taskId === task.task_id
     && app.querySelector?.(".focus-view")?.dataset?.taskId === task.task_id
     && !!app.querySelector?.("#mainInput");
+  const taskStatus = presentTaskStatus(task);
   const markup = localize`
-    <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? localize("独立会话") : escapeHtml(task.workspace_name || localize("本地工作区"))}</small><h1>${task.harness_mode === "assembly" ? localize("无工作区模式") : localize("任务")}</h1><p>${task.harness_mode === "assembly" ? localize("从一个问题或一份材料开始。") : localize("一条任务，一条持续会话。")}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
+    ${isAssembly ? localize`<header class="task-page-heading"><div><small>独立会话</small><h1>无工作区模式</h1><p>从一个问题或一份材料开始。</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>` : ""}
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
-      <section class="focus-view" data-task-id="${task.task_id}">
-        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong>${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-task-patrol">工作区 Patrol 详情</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
+      <section class="focus-view" data-task-id="${task.task_id}"${isAssembly ? "" : ' aria-labelledby="currentTaskTitle"'}>
+        <header class="task-workspace-tools">${isAssembly ? `<strong>${escapeHtml(task.title)}</strong>` : `<div class="task-heading"><h1 id="currentTaskTitle">${escapeHtml(task.title)}</h1><div class="task-identity-meta"><span class="ui-badge is-${taskStatus.tone}">${escapeHtml(taskStatus.label)}</span><code title="${escapeHtml(localize("任务 ID"))}">${escapeHtml(task.task_id)}</code></div></div><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button>`}${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-task-patrol">工作区 Patrol 详情</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
         ${admission ? localize`<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-task-patrol">查看工作区 Patrol 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
@@ -1854,7 +1931,7 @@ function renderFocus(task = activeTask()) {
           <div id="roundChanges"></div>
           <div id="taskDetailLoadStatus">${renderTaskResourceStatus(task.task_id, ["detail"])}</div>
           <div class="composer-shell glass-surface">
-            <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
+            ${isAssembly ? `<div class="composer-context"><span class="ui-badge is-active">${uiText("focus.free_session", "自由会话")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>` : ""}
             <div class="composer" data-main-composer>
               <div id="composerReference">${conversationReference.render(mainReference(task.task_id))}</div>
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
@@ -1870,7 +1947,7 @@ function renderFocus(task = activeTask()) {
           </div>
         </div>
       </section>
-      ${panelOpen ? localize`<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
+      ${panelOpen ? localize`<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整文件面板宽度" aria-controls="filePanel" title="拖动或按左右方向键调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section></section>`;
   if (keepEditor) {
     patchFocusChrome(markup);
@@ -1969,10 +2046,23 @@ const boundPanelResizers = new WeakSet();
 function bindPanelResizer() {
   const resizer = document.querySelector("#panelResizer");
   const shell = document.querySelector(".focus-shell");
-  if (!resizer || !shell || boundPanelResizers.has(resizer)) return;
+  if (!resizer || !shell) return;
+  window.FocusAccessibleControls.syncSeparator(resizer, { min: 280, max: normalizePanelWidth(Number.MAX_SAFE_INTEGER), now: state.panelWidth });
+  if (boundPanelResizers.has(resizer)) return;
   boundPanelResizers.add(resizer);
+  const sync = window.FocusAccessibleControls.bindSeparator(resizer, {
+    read: () => ({ min: 280, max: normalizePanelWidth(Number.MAX_SAFE_INTEGER), now: state.panelWidth }),
+    direction: -1,
+    resize: value => {
+      state.panelWidth = normalizePanelWidth(value);
+      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.panelWidth}px`;
+    },
+    commit: () => preferenceStorage.setItem("focus-panel-width", String(state.panelWidth)),
+  });
   resizer.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
     event.preventDefault();
+    resizer.focus({ preventScroll: true });
     resizer.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startWidth = state.panelWidth;
@@ -1981,6 +2071,7 @@ function bindPanelResizer() {
       const width = startWidth - (moveEvent.clientX - startX);
       state.panelWidth = normalizePanelWidth(width);
       shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.panelWidth}px`;
+      sync();
     };
     const finish = () => {
       try {
@@ -2007,18 +2098,26 @@ function bindMemoryResizers() {
     const top = document.querySelector("[data-memory-top]");
     const bottom = document.querySelector("[data-memory-bottom]");
     const parent = vertical.parentElement;
+    const resize = value => {
+      const ratio = Math.min(.85, Math.max(.15, value / 100));
+      top.style.flex = `${ratio} 1 0`; bottom.style.flex = `${1 - ratio} 1 0`;
+      state.memory = { ...state.memory, editorRatio: ratio };
+    };
+    const sync = window.FocusAccessibleControls.bindSeparator(vertical, {
+      read: () => ({ min: 15, max: 85, now: (state.memory.editorRatio ?? .5) * 100 }),
+      resize, step: 2, largeStep: 10,
+    });
     vertical.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
       event.preventDefault();
+      vertical.focus({ preventScroll: true });
       vertical.setPointerCapture(event.pointerId);
       const startY = event.clientY;
       const startH = parent.getBoundingClientRect().height || 1;
       const startTopH = top.getBoundingClientRect().height;
       const move = moveEvent => {
         const ratio = Math.min(0.85, Math.max(0.15, (startTopH + (moveEvent.clientY - startY)) / startH));
-        top.style.flex = `${ratio} 1 0`;
-        bottom.style.flex = `${1 - ratio} 1 0`;
-        // 比例写回 state，作为重建布局的唯一数据源（不触发 render，避免拖拽卡顿）。
-        state.memory = { ...state.memory, editorRatio: ratio };
+        resize(ratio * 100); sync();
       };
       const finish = () => {
         try { if (vertical.hasPointerCapture?.(event.pointerId)) vertical.releasePointerCapture(event.pointerId); } catch {}
@@ -2037,18 +2136,26 @@ function bindMemoryResizers() {
     const editor = document.querySelector("[data-memory-editor]");
     const left = document.querySelector(".memory-editor-sources");
     const right = document.querySelector(".memory-editor-target");
+    const resize = value => {
+      const ratio = Math.min(.8, Math.max(.2, value / 100));
+      left.style.flex = `${ratio} 1 0`; right.style.flex = `${1 - ratio} 1 0`;
+      state.memory = { ...state.memory, sourceRatio: ratio };
+    };
+    const sync = window.FocusAccessibleControls.bindSeparator(horizontal, {
+      read: () => ({ min: 20, max: 80, now: (state.memory.sourceRatio ?? .5) * 100 }),
+      resize, step: 2, largeStep: 10,
+    });
     horizontal.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
       event.preventDefault();
+      horizontal.focus({ preventScroll: true });
       horizontal.setPointerCapture(event.pointerId);
       const startX = event.clientX;
       const startW = editor.getBoundingClientRect().width || 1;
       const startLeftW = left.getBoundingClientRect().width;
       const move = moveEvent => {
         const ratio = Math.min(0.8, Math.max(0.2, (startLeftW + (moveEvent.clientX - startX)) / startW));
-        left.style.flex = `${ratio} 1 0`;
-        right.style.flex = `${1 - ratio} 1 0`;
-        // 比例写回 state，作为重建布局的唯一数据源。
-        state.memory = { ...state.memory, sourceRatio: ratio };
+        resize(ratio * 100); sync();
       };
       const finish = () => {
         try { if (horizontal.hasPointerCapture?.(event.pointerId)) horizontal.releasePointerCapture(event.pointerId); } catch {}
@@ -2071,6 +2178,9 @@ window.addEventListener("resize", () => {
   panelResizeFrame = requestAnimationFrame(() => {
     panelResizeFrame = null;
     const width = normalizePanelWidth(state.panelWidth);
+    window.FocusAccessibleControls.syncSeparator(document.querySelector("#panelResizer"), {
+      min: 280, max: normalizePanelWidth(Number.MAX_SAFE_INTEGER), now: width,
+    });
     if (width === state.panelWidth) return;
     state.panelWidth = width;
     const shell = document.querySelector(".focus-shell");
@@ -2081,9 +2191,11 @@ window.addEventListener("resize", () => {
 // 壳层三栏：窗口尺寸变化时对持久化的宽度做钳制并重新应用（内联自定义属性仍是唯一来源）。
 // 未定制用户不介入（让 CSS 断点默认值驱动），定制用户才跟随窗口重新钳制。
 window.addEventListener("resize", () => {
-  if (panelResizeFrame != null) cancelAnimationFrame(panelResizeFrame);
-  panelResizeFrame = requestAnimationFrame(() => {
-    panelResizeFrame = null;
+  if (shellResizeFrame != null) cancelAnimationFrame(shellResizeFrame);
+  shellResizeFrame = requestAnimationFrame(() => {
+    shellResizeFrame = null;
+    syncShellResizerVisibility();
+    syncShellSeparatorValues();
     if (!state.shellLayout.customized) return;
     const next = normalizeShellLayout(state.shellLayout, window.innerWidth);
     if (next.navWidth !== state.shellLayout.navWidth
@@ -2840,11 +2952,23 @@ async function interruptMainRun() {
 }
 
 function renderPlugins() {
+  const focusedAction = document.activeElement?.dataset?.action;
   app.innerHTML = pluginView.render(state.plugins.plugins, state.plugins.interfaces, state.plugins.traces, state.plugins);
   interfaceI18n.apply(app);
+  if (["refresh-plugins", "reload-plugins"].includes(focusedAction)) {
+    app.querySelector(`[data-action="${focusedAction}"]`)?.focus({ preventScroll: true });
+  }
+}
+
+function applyPluginRegistry(data) {
+  const plugins = data.plugins || [];
+  const selectedName = plugins.some(item => item.name === state.plugins.selectedName)
+    ? state.plugins.selectedName : null;
+  state.plugins = { ...state.plugins, plugins, interfaces: data.interfaces || {}, activation: data.activation || {}, selectedName };
 }
 
 async function hydratePlugins() {
+  if (state.plugins.reloading) return false;
   const requestId = ++pluginHydrationSequence;
   state.plugins = { ...state.plugins, loading: true, error: null };
   if (state.view === "plugins") renderPlugins();
@@ -2853,13 +2977,9 @@ async function hydratePlugins() {
       api("/desktop/api/plugins"),
       api("/desktop/api/plugins/traces"),
     ]);
-    const plugins = data.plugins || [];
     if (requestId !== pluginHydrationSequence) return false;
-    const selectedName = plugins.some(item => item.name === state.plugins.selectedName)
-      ? state.plugins.selectedName
-      : null;
-    state.plugins = { plugins, interfaces: data.interfaces || {}, traces: traceData.traces || [], filter: state.plugins.filter || "all", selectedName, query: state.plugins.query || "" };
-    void ensurePluginAssets(plugins);
+    applyPluginRegistry(data);
+    state.plugins = { ...state.plugins, traces: traceData.traces || [], queried: true };
     return true;
   } catch (error) {
     if (requestId === pluginHydrationSequence) state.plugins = { ...state.plugins, error: error.message };
@@ -2869,6 +2989,24 @@ async function hydratePlugins() {
       state.plugins.loading = false;
       if (state.view === "plugins") renderPlugins();
     }
+  }
+}
+
+async function reloadPlugins() {
+  if (state.plugins.loading || state.plugins.reloading) return;
+  state.plugins = { ...state.plugins, reloading: true, reloadError: null, reloadSucceeded: false };
+  if (state.view === "plugins") renderPlugins();
+  try {
+    const data = await api("/desktop/api/plugins/reload", { method: "POST" });
+    applyPluginRegistry(data);
+    state.plugins = { ...state.plugins, reloading: false, reloadSucceeded: true };
+    // A confirmed registry update remains visible even if the follow-up query fails.
+    // UI/API resources remain mounted from process startup; querying cannot remount them.
+    await hydratePlugins();
+  } catch (error) {
+    state.plugins = { ...state.plugins, reloading: false, reloadError: error.message };
+  } finally {
+    if (state.view === "plugins") renderPlugins();
   }
 }
 
@@ -3033,6 +3171,9 @@ function openMemoryCompose(editing = false) {
     enabledMessages: [],
     selectedMessageIds: [],
     activeMessageId: null,
+    textSelection: "",
+    textMessageId: null,
+    textRange: null,
     collectedSources: [],
     expandedGroups: [],
     mergeMode: false,
@@ -3054,7 +3195,7 @@ function toggleMemoryGroup(workspace) {
 
 async function pickMemorySession(contextId) {
   // 点选会话：加载其消息到消息栏，并清空选择。选中会话所在分组由渲染层恒展开。
-  state.memory = { ...state.memory, activeSessionId: contextId, enabledMessages: [], selectedMessageIds: [], activeMessageId: null };
+  state.memory = { ...state.memory, activeSessionId: contextId, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, textSelection: "", textMessageId: null, textRange: null };
   render();
   try {
     const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
@@ -3068,12 +3209,33 @@ async function pickMemorySession(contextId) {
   }
 }
 
-function toggleMemoryMessage(messageId) {
-  // 消息卡点击：勾选/取消该消息（部分消息来源），并设为当前原文。
+function selectMemoryMessage(messageId, checked) {
   const ids = new Set(state.memory.selectedMessageIds || []);
-  ids.has(messageId) ? ids.delete(messageId) : ids.add(messageId);
-  state.memory = { ...state.memory, selectedMessageIds: [...ids], activeMessageId: messageId };
-  render();
+  checked ? ids.add(messageId) : ids.delete(messageId);
+  state.memory = { ...state.memory, selectedMessageIds: [...ids] };
+  document.querySelectorAll("[data-memory-message-select]").forEach(input => {
+    input.checked = ids.has(input.dataset.messageId);
+    input.closest(".memory-msg").classList.toggle("is-checked", input.checked);
+  });
+  const count = document.querySelector("[data-memory-selected-count]");
+  if (count) count.textContent = `${ids.size} / ${document.querySelectorAll("[data-memory-message-select]").length}`;
+  const add = document.querySelector('[data-action="add-checked-messages"]');
+  if (add) add.disabled = !ids.size;
+}
+
+function readMemoryMessage(messageId) {
+  if (state.memory.activeMessageId === messageId) return;
+  state.memory = { ...state.memory, activeMessageId: messageId, textSelection: "", textMessageId: null, textRange: null };
+  document.querySelectorAll('[data-action="read-memory-message"]').forEach(button => {
+    const active = button.dataset.messageId === messageId;
+    button.setAttribute("aria-pressed", String(active));
+    button.closest(".memory-msg").classList.toggle("is-active", active);
+  });
+  const preview = document.querySelector(".memory-source-wrap");
+  if (preview) preview.innerHTML = memoryView.renderMessageSource(state.memory);
+  const role = document.querySelector("[data-memory-preview-role]");
+  const message = state.memory.enabledMessages.find(item => item.id === messageId);
+  if (role) role.textContent = message ? memoryView.roleLabel(message.role) : localize("未选");
 }
 
 function uniqueSources() {
@@ -3111,8 +3273,8 @@ function addMessagesSource(messageIds) {
 // 每次划选建立一个**独立**的文字来源（不做同消息合并）——3 次划选 = 3 源，
 // 且选取不要求连续（间断划选各自成源）。同消息多处文字自然表现为多个独立源。
 function addTextSource(text) {
-  const value = (text || "").trim();
-  if (!value) { setStatus(localize("请先在原文中划选文字"), true); return; }
+  const value = text || "";
+  if (!value.trim()) { setStatus(localize("请先在原文中划选文字"), true); return; }
   const messageId = state.memory.textMessageId;
   const range = state.memory.textRange || { start: 0, end: value.length };
   const contextId = state.memory.activeSessionId;
@@ -3145,11 +3307,16 @@ function cancelMergeSources() {
   render();
 }
 
-function toggleMergeSource(index) {
+function selectMergeSource(index, checked) {
   const selected = new Set(state.memory.selectedSourcesForMerge || []);
-  selected.has(index) ? selected.delete(index) : selected.add(index);
+  checked ? selected.add(index) : selected.delete(index);
   state.memory = { ...state.memory, selectedSourcesForMerge: [...selected] };
-  render();
+  document.querySelectorAll("[data-memory-merge-select]").forEach(input => {
+    input.checked = selected.has(Number(input.dataset.sourceIndex));
+    input.closest(".memory-source-edit").classList.toggle("is-merge-selected", input.checked);
+  });
+  const confirm = document.querySelector('[data-action="confirm-merge-sources"]');
+  if (confirm) confirm.disabled = selected.size < 2;
 }
 
 // 合并：把选中的多个来源归并成一个来源（保留原始子来源引用，正文逐项拼接）。
@@ -3163,7 +3330,7 @@ function confirmMergeSources() {
     kind: "merged",
     rawText: mergedText,
     text: mergedText,
-    subSources: parts.map(s => ({ kind: s.kind, context_id: s.context_id, title: s.title, message_ids: s.message_ids, ranges: s.ranges })),
+    subSources: JSON.parse(JSON.stringify(parts)),
   };
   // 用第一个被选中的来源的位置替换合并结果，移除其余选中项。
   const newSources = all.filter((_, i) => !selected.includes(i));
@@ -3187,7 +3354,7 @@ function rebuildMemoryContent() {
   // 加/删来源时，为「完整记忆」生成一个可编辑的初始草稿（拼接各源原文）；用户可再点「重新压缩」调后端。
   // 「分段记忆」不在这里拼接——每段需逐来源压缩，交给「重新压缩」。
   const draft = state.memory.draft || {};
-  if (draft.contentDirty) return;
+  if (draft.contentDirty) { render(); return; }
   const mode = draft.contentMode || "complete";
   if (mode !== "complete") { render(); return; }
   const parts = (state.memory.collectedSources || []).map(s => s.rawText || s.text || "").filter(Boolean);
@@ -3285,6 +3452,7 @@ function syncStrategyImportField(field, value) {
   strategyImportRequestSequence++;
   state.memory.strategyImport = { ...draft, [field]: field === "workspace_id" ? value || null : value, preview: null, error: "" };
   document.querySelector("[data-strategy-import-preview]")?.remove?.();
+  document.querySelector("[data-strategy-import-actions]")?.remove?.();
   const error = document.querySelector("[data-strategy-import-error]");
   if (error) error.textContent = localize("内容或设置已更改，请预览后安装。");
 }
@@ -4133,8 +4301,8 @@ function contextSourcePanelMarkup(draft) {
     const task = state.tasks.find(candidate => candidate.task_id === item.context_id);
     return `<button class="context-source-candidate" style="--context-depth:${item.depth}" data-action="add-context-source" data-context-id="${escapeHtml(item.context_id)}">${escapeHtml(task?.title || item.title)}</button>`;
   }).join("") || localize('<span class="muted tiny">没有其他可加入的 Context</span>');
-  return localize`<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2>已有消息</h2></div><span class="muted tiny">拖到右侧</span></header>
-    <div class="context-source-tabs" role="tablist" aria-label="来源 Context">${tabs}</div>
+  return localize`<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2 id="context-source-heading">来源</h2><p class="muted tiny">点击“加入”复制到新上下文末尾；拖放可选择插入位置。</p></div></header>
+    <div class="context-source-tabs" role="group" aria-label="来源 Context">${tabs}</div>
     <div class="context-source-message-list">${contextEditor.renderSourceMessages(active?.messages || [], active?.context_id || "", locked)}</div>
     <details class="context-source-add"${created ? " hidden" : ""}><summary>加入其他来源</summary><div class="context-source-tree">${candidates}</div></details>`;
 }
@@ -4146,11 +4314,8 @@ function renderContextSourcePanel() {
 
 function contextMessageElement(message, index, uiKey, expanded = false) {
   const template = document.createElement("template");
-  template.innerHTML = contextEditor.renderMessages([message], [uiKey], expanded ? uiKey : null, contextDraftLocked()).trim();
-  const element = template.content.firstElementChild;
-  element.dataset.contextMessageIndex = String(index);
-  element.querySelector("[data-context-message-json]")?.setAttribute("data-context-message-index", String(index));
-  return element;
+  template.innerHTML = contextEditor.renderMessage(message, index, uiKey, expanded ? uiKey : null, contextDraftLocked(), state.contextDraft?.editMode).trim();
+  return template.content.firstElementChild;
 }
 
 function contextListPositions() {
@@ -4176,11 +4341,12 @@ function updateContextMessageIndices() {
     row.dataset.contextMessageIndex = String(index);
     const role = draft.messages[index]?.role || localize("未指定角色");
     row.querySelector("header strong").textContent = `${String(index + 1).padStart(2, "0")} · ${role}`;
-    const input = row.querySelector("[data-context-message-json]");
-    if (input) {
+    row.querySelectorAll("textarea").forEach(input => {
       input.dataset.contextMessageIndex = String(index);
-      input.setAttribute("aria-label", localize`消息 ${index + 1} JSON`);
-    }
+      input.setAttribute("aria-label", input.hasAttribute("data-context-message-json") ? localize`消息 ${index + 1} JSON`
+        : input.dataset.contextPartIndex == null ? localize`消息 ${index + 1} 正文`
+          : localize`消息 ${index + 1} 正文 ${Number(input.dataset.contextPartIndex) + 1}`);
+    });
   });
   const count = document.querySelector(".context-compose-heading > div > span");
   if (count) count.textContent = localize`${draft.messages.length} 条消息`;
@@ -4194,15 +4360,15 @@ function renderContextEditor(scrollTop = null) {
   const created = Boolean(draft.context);
   const locked = contextDraftLocked(draft);
   app.innerHTML = localize`<section class="context-editor-view">
-    <aside class="context-source-panel">${contextSourcePanelMarkup(draft)}</aside>
-    <section class="context-definition-panel">
-      <header><div><span class="review-kicker">NEW CONTEXT</span><h1>自由组装</h1></div><button class="text-button" data-action="exit-context-editor">关闭</button></header>
+    <aside class="context-source-panel" aria-labelledby="context-source-heading">${contextSourcePanelMarkup(draft)}</aside>
+    <section class="context-definition-panel" aria-labelledby="context-definition-heading">
+      <header><div><span class="review-kicker">NEW CONTEXT</span><h1 id="context-definition-heading">新上下文</h1></div><button class="text-button" data-action="exit-context-editor">关闭</button></header>
       <label>Context 标题<input data-context-title value="${escapeHtml(draft.title)}" ${created ? "disabled" : ""}></label>
-      <div class="context-compose-heading"><div><strong>新 Context</strong><span>${draft.messages.length} 条消息</span></div><div class="history-actions"><button class="text-button" data-action="context-message-add" ${locked ? "disabled" : ""}>新增消息</button><button class="text-button danger" data-action="context-message-clear" ${locked ? "disabled" : ""}>清空</button></div></div>
-      <div class="context-message-list" data-context-drop-zone>${contextEditor.renderMessages(draft.messages, draft.uiKeys, draft.expandedKey, locked)}</div>
+      <div class="context-compose-heading"><div><strong>消息列表</strong><span>${draft.messages.length} 条消息</span></div><div class="history-actions"><button class="text-button" data-action="context-message-add" ${locked ? "disabled" : ""}>新增消息</button><button class="text-button danger" data-action="context-message-clear" ${locked ? "disabled" : ""}>清空</button></div></div>
+      <div class="context-message-list" data-context-drop-zone>${contextEditor.renderMessages(draft.messages, draft.uiKeys, draft.expandedKey, locked, draft.editMode)}</div>
       ${renderContextDecision(draft.context)}
       <div class="context-undo-toast" hidden><span>已删除消息</span><button type="button" class="text-button" data-action="context-message-undo">撤销</button></div>
-      ${locked ? "" : localize`<footer><span class="muted tiny">只有右侧内容会成为新 Context；来源始终保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? localize("重新编译") : localize("创建 Context")}</button></footer>`}
+      ${locked ? "" : localize`<footer><span class="muted tiny">仅使用“新上下文”中的消息创建 Context；来源保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? localize("重新编译") : localize("创建 Context")}</button></footer>`}
     </section>
   </section>`;
   if (Number.isFinite(scrollTop)) document.querySelector(".context-definition-panel").scrollTop = scrollTop;
@@ -4217,13 +4383,13 @@ function insertContextMessage(message, index, options = {}) {
   const key = options.key || nextContextUiKey();
   draft.messages.splice(safeIndex, 0, contextEditor.cloneMessages([message])[0]);
   draft.uiKeys.splice(safeIndex, 0, key);
-  if (options.expand) draft.expandedKey = key;
   list.querySelector(".context-empty-drop")?.remove();
   const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
-  list.insertBefore(contextMessageElement(draft.messages[safeIndex], safeIndex, key, Boolean(options.expand)), rows[safeIndex] || null);
+  list.insertBefore(contextMessageElement(draft.messages[safeIndex], safeIndex, key), rows[safeIndex] || null);
   updateContextMessageIndices();
   animateContextReflow(previous);
-  if (options.focus) requestAnimationFrame(() => list.querySelector(`[data-context-ui-key="${key}"] [data-context-message-json]`)?.focus());
+  if (options.expand) toggleContextMessage(key);
+  if (options.focus) requestAnimationFrame(() => list.querySelector(`[data-context-ui-key="${key}"] textarea`)?.focus());
   return key;
 }
 
@@ -4242,19 +4408,26 @@ function moveContextMessage(from, to, focus = false) {
   if (focus) document.querySelector(`[data-context-ui-key="${key}"] [data-context-pointer-handle]`)?.focus();
 }
 
-function toggleContextMessage(uiKey) {
+function toggleContextMessage(uiKey, editMode = "body") {
   const draft = syncContextDraft();
   const previousExpanded = draft.expandedKey;
-  draft.expandedKey = previousExpanded === uiKey ? null : uiKey;
+  draft.expandedKey = previousExpanded === uiKey && (draft.editMode || "body") === editMode ? null : uiKey;
+  draft.editMode = editMode;
   const replace = key => {
     if (!key) return;
     const index = draft.uiKeys.indexOf(key);
     const row = document.querySelector(`[data-context-ui-key="${key}"]`);
-    if (row && index >= 0) row.replaceWith(contextMessageElement(draft.messages[index], index, key, draft.expandedKey === key));
+    if (row && index >= 0) {
+      const replacement = contextMessageElement(draft.messages[index], index, key, draft.expandedKey === key);
+      if (key === uiKey && editMode === "json") replacement.querySelector(".context-source-json").open = true;
+      row.replaceWith(replacement);
+    }
   };
   replace(previousExpanded);
   if (uiKey !== previousExpanded) replace(uiKey);
-  if (draft.expandedKey) requestAnimationFrame(() => document.querySelector(`[data-context-ui-key="${draft.expandedKey}"] [data-context-message-json]`)?.focus());
+  const focusSelector = draft.expandedKey ? `[data-context-ui-key="${draft.expandedKey}"] textarea`
+    : `[data-context-ui-key="${uiKey}"] [data-action="${editMode === "json" ? "context-message-edit-json" : "context-message-toggle"}"]`;
+  requestAnimationFrame(() => document.querySelector(focusSelector)?.focus());
 }
 
 function showContextUndo() {
@@ -4287,6 +4460,7 @@ async function deleteContextMessage(uiKey) {
   row.removeAttribute("data-context-message-index");
   row.querySelectorAll("button, textarea").forEach(input => { input.disabled = true; });
   row.querySelector("[data-context-message-json]")?.removeAttribute("data-context-message-json");
+  row.querySelectorAll("[data-context-message-content]").forEach(input => input.removeAttribute("data-context-message-content"));
   updateContextMessageIndices();
   showContextUndo();
   try {
@@ -6907,7 +7081,7 @@ function sessionLifecycle(task) {
 }
 
 function contextHasDescendants(contextId, tree) {
-  return (Array.isArray(tree) ? tree : []).some(node => node.parents?.[0]?.context_id === contextId);
+  return (Array.isArray(tree) ? tree : []).some(node => node.parents?.some(parent => parent.context_id === contextId));
 }
 
 async function archiveContext(contextId, cascade) {
@@ -7004,6 +7178,69 @@ const modelSettings = {
 
 const MODEL_NUMERIC_FIELDS = ["context_window", "curation_max_output_tokens"];
 const MODEL_FLAG_FIELDS = ["default", "curation_default", "supports_image_input"];
+const MODEL_FIELDS = {
+  name: ["settings.model_field_name", "条目名（查表键）"],
+  display_name: ["settings.model_field_display_name", "显示名"],
+  model: ["settings.model_field_model", "模型标识"],
+  use: ["settings.model_field_use", "适配器"],
+  provider: ["settings.model_field_provider", "提供商"],
+  protocol: ["settings.model_field_protocol", "API 协议"],
+  base_url: ["settings.model_field_base_url", "端点"],
+  context_window: ["settings.model_field_context_window", "上下文窗口"],
+  curation_output_method: ["settings.model_field_curation_method", "策展输出方式"],
+  curation_max_output_tokens: ["settings.model_field_curation_tokens", "策展输出上限"],
+  api_key: ["settings.model_field_api_key", "密钥来源变量"],
+  api_key_value: ["settings.model_field_key_value", "密钥值"],
+  default: ["settings.model_field_default", "默认模型"],
+  curation_default: ["settings.model_field_curation_default", "策展默认模型"],
+  supports_image_input: ["settings.model_field_supports_image", "支持图像输入"],
+};
+
+function modelFieldLabel(field) {
+  return uiText(...MODEL_FIELDS[field]);
+}
+
+function modelErrorTarget(key) {
+  const match = /^models\[(\d+)\]\.([a-z_]+)$/.exec(key);
+  if (!match || !Object.hasOwn(MODEL_FIELDS, match[2])) return null;
+  return { index: Number(match[1]), field: match[2] === "api_key" ? "api_key_value" : match[2] };
+}
+
+function modelErrors() {
+  const index = modelSettings.draft?.index ?? modelSettings.snapshot?.models.findIndex(entry => entry.default);
+  return Object.fromEntries(Object.entries({ ...modelSettings.snapshot?.setup_issues, ...modelSettings.errors }).map(([key, message]) =>
+    [Object.hasOwn(MODEL_FIELDS, key) && !MODEL_FLAG_FIELDS.includes(key) && index >= 0 ? `models[${index}].${key}` : key, message]));
+}
+
+function showModelFieldErrors(errors, probeIndex = null) {
+  // 单条连接测试的后端字段固定从 models[0] 开始，映射回当前编辑条目。
+  modelSettings.errors = Object.fromEntries(Object.entries(errors).map(([key, message]) =>
+    [probeIndex === null ? key : key.replace(/^models\[0\]/, `models[${probeIndex}]`), message]));
+  const target = Object.keys(modelSettings.errors).map(modelErrorTarget).find(target => modelSettings.snapshot.models[target?.index]);
+  if (target && modelSettings.draft?.index !== target.index) startModelDraft(target.index);
+  modelSettings.advanced = true;
+}
+
+function focusModelFieldError() {
+  document.querySelectorAll('.settings-model-editor [aria-invalid="true"]')[0]?.focus();
+}
+
+function clearModelFieldError(field) {
+  const targetField = field === "api_key" ? "api_key_value" : field;
+  for (const errors of [modelSettings.errors, modelSettings.snapshot?.setup_issues]) {
+    for (const key of Object.keys(errors || {})) {
+      const target = modelErrorTarget(key);
+      if ((target?.index === modelSettings.draft?.index && target.field === targetField) || key === field
+          || (key === "api_key" && targetField === "api_key_value")) delete errors[key];
+    }
+  }
+  const feedback = modelFieldFeedback(targetField);
+  const control = document.querySelectorAll(`#${feedback.id}`)[0];
+  control?.removeAttribute("aria-invalid");
+  control?.removeAttribute("aria-describedby");
+  control?.closest(".settings-model-field")?.classList.remove("has-error");
+  document.querySelectorAll(`#${feedback.id}-error`)[0]?.remove();
+}
 
 function modelCredentialVariable(entry) {
   // 与后端 match_env_ref 一致；$VAR 和 ${VAR} 共用同一份草稿。
@@ -7025,8 +7262,8 @@ function updateModelCredential(value) {
   if (!variable) return;
   if (value) modelSettings.credentialDrafts[variable] = value;
   else delete modelSettings.credentialDrafts[variable];
-  modelSettings.dirty = true;
-  modelSettings.test = null;
+  clearModelFieldError("api_key_value");
+  invalidateModelVerification();
 }
 
 function pendingModelCredentials() {
@@ -7063,12 +7300,44 @@ function modelCredentialState(entry) {
   return uiText("settings.model_key_unset", "未设置");
 }
 
-function modelFieldError(field) {
-  if (modelSettings.draft) {
-    const indexed = modelSettings.errors[`models[${modelSettings.draft.index}].${field}`];
-    if (indexed) return indexed;
+function modelFieldError(field, index = modelSettings.draft?.index) {
+  return Object.entries(modelErrors()).find(([key]) => {
+    const target = modelErrorTarget(key);
+    return target?.index === index && target.field === field;
+  })?.[1] || "";
+}
+
+function modelAvailability(entry, index) {
+  const text = (key, fallback, status = "pending") => ({ label: uiText(key, fallback), status });
+  if (Object.keys(modelErrors()).some(key => modelErrorTarget(key)?.index === index)) {
+    return text("settings.model_needs_fix", "配置有误", "failed");
   }
-  return modelSettings.errors[field] || "";
+  if (modelSettings.test?.index === index) {
+    if (modelSettings.test.state === "running") return text("settings.model_testing", "正在测试…", "running");
+    if (modelSettings.test.state === "ok") return text("settings.model_test_ok", "连接成功", "passed");
+    return text("settings.model_connection_failed", "连接失败", "failed");
+  }
+  if (modelCredentialValue(entry)) return text("settings.model_needs_verify", "配置待验证");
+  if ((!(entry.api_key_set ?? Boolean(entry.api_key)) && !entry.api_key_literal) || entry.api_key_placeholder) return text("settings.model_needs_key", "需配置凭据", "failed");
+  const defaultName = modelSettings.snapshot.default_model_override || modelSettings.snapshot.default_model_name;
+  const checks = (modelSettings.progress || modelSettings.snapshot?.verification)?.checks?.filter(check =>
+    check.model === entry.name || (!check.model && (check.capability === "chat"
+      ? defaultName ? entry.name === defaultName : entry.default
+      : entry.curation_default))) || [];
+  if (checks.some(check => check.status === "failed" || check.ok === false && !["pending", "running"].includes(check.status))) {
+    return text("settings.model_verification_failed", "验证未通过", "failed");
+  }
+  if (checks.some(check => check.status === "running")) return text("settings.model_check_running", "验证中", "running");
+  if (checks.length && checks.every(check => check.status === "passed" || check.ok === true)) {
+    return text("settings.model_availability_verified", "已通过验证", "passed");
+  }
+  return text("settings.model_not_verified", "未验证");
+}
+
+function renderModelAvailability(entry, index) {
+  const availability = modelAvailability(entry, index);
+  return `<span data-model-availability="${availability.status}">${escapeHtml(availability.label)}</span>
+    <span class="muted tiny">${uiText("settings.model_credentials", "凭据")}: ${escapeHtml(modelCredentialState(entry))}</span>`;
 }
 
 function modelEntryRow(entry, index) {
@@ -7076,32 +7345,57 @@ function modelEntryRow(entry, index) {
     entry.default ? `<span class="model-badge is-default">${uiText("settings.model_field_default", "默认模型")}</span>` : "",
     entry.curation_default ? `<span class="model-badge">${uiText("settings.model_field_curation_default", "策展默认模型")}</span>` : "",
     entry.supports_image_input ? `<span class="model-badge">${uiText("settings.model_field_supports_image", "支持图像输入")}</span>` : "",
+    !entry.default && !entry.curation_default ? `<span class="model-badge">${uiText("settings.model_optional", "按需使用")}</span>` : "",
   ].join("");
+  const editing = !modelSettings.setupMode && modelSettings.draft?.index === index;
+  const name = escapeHtml(entry.display_name || entry.name || "");
   return `<div class="settings-model-row${modelSettings.draft?.index === index ? " is-editing" : ""}" data-model-index="${index}">
     <div class="settings-model-info">
       <div class="settings-model-title"><strong>${escapeHtml(entry.display_name || entry.name || "")}</strong>${badges}</div>
-      <div class="muted tiny">${escapeHtml(entry.name || "")} · ${escapeHtml(entry.model || "")} · ${escapeHtml(entry.base_url || "")}</div>
-      <div class="muted tiny">${escapeHtml(entry.effective_provider || entry.provider || "")} · ${escapeHtml(entry.effective_protocol || entry.protocol || "")}</div>
-      <div class="muted tiny">${escapeHtml(modelEntrySource(entry))} · ${uiText("settings.model_field_context_window", "上下文窗口")}: ${escapeHtml(String(entry.context_window ?? uiText("settings.model_unknown", "未知")))} · ${uiText("settings.model_field_api_key", "密钥来源变量")}: ${escapeHtml(modelCredentialState(entry))}</div>
+      <div class="settings-model-status">${renderModelAvailability(entry, index)}</div>
     </div>
     <div class="settings-model-row-actions">
-      <button class="text-button" data-action="model-edit" data-model-index="${index}">${uiText("settings.model_edit", "编辑")}</button>
-      <button class="text-button danger" data-action="model-remove" data-model-index="${index}">${uiText("settings.model_remove", "删除")}</button>
+      <button class="text-button" data-action="model-edit" data-model-index="${index}" aria-expanded="${editing}" ${editing ? `aria-controls="modelEditor-${index}"` : ""} aria-label="${uiText("settings.model_edit", "编辑")}: ${name}">${uiText("settings.model_edit", "编辑")}</button>
+      <button class="text-button danger" data-action="model-remove" data-model-index="${index}" aria-label="${uiText("settings.model_remove", "删除")}: ${name}">${uiText("settings.model_remove", "删除")}</button>
     </div>
-  </div>`;
+  </div>${editing ? renderModelDraft() : ""}`;
 }
 
-function modelTextField(label, field, entry, options = {}) {
+function modelFieldFeedback(field) {
   const error = modelFieldError(field);
-  const value = entry[field] ?? "";
-  const control = options.select
-    ? `<select data-model-field="${field}">${options.select.map(option => `<option value="${escapeHtml(option.value)}" ${option.value === value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select>`
-    : `<input type="${options.type || "text"}" data-model-field="${field}" value="${escapeHtml(String(value))}" ${options.list ? `list="${options.list}"` : ""} ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""}>`;
-  return `<label class="settings-model-field${error ? " has-error" : ""}">${escapeHtml(label)}${control}${error ? `<span class="field-error">${escapeHtml(error)}</span>` : ""}</label>`;
+  const id = `model-${modelSettings.draft.index}-${field}`;
+  return { error, id, attributes: `id="${id}"${error ? ` aria-invalid="true" aria-describedby="${id}-error"` : ""}`,
+    html: error ? `<span id="${id}-error" class="field-error">${escapeHtml(error)}</span>` : "" };
 }
 
-function modelFlagField(label, field, entry) {
-  return `<label class="settings-model-flag"><input type="checkbox" data-model-field="${field}" ${entry[field] ? "checked" : ""}>${escapeHtml(label)}</label>`;
+function modelTextField(field, entry, options = {}) {
+  const feedback = modelFieldFeedback(field);
+  const credential = field === "api_key_value";
+  const label = credential && modelSettings.setupMode ? "API Key" : modelFieldLabel(field);
+  const value = credential ? modelCredentialValue(entry) : entry[field] ?? "";
+  const effective = ["provider", "protocol"].includes(field) ? entry[`effective_${field}`] : null;
+  if (credential) {
+    options = { ...options, type: "password", placeholder: modelSettings.setupMode && !entry.api_key_set
+      ? uiText("settings.model_setup_key_placeholder", "请输入服务商提供的 API Key") : uiText("settings.model_key_placeholder", "留空表示不修改") };
+  }
+  const control = options.select
+    ? `<select data-model-field="${field}" ${feedback.attributes}>${options.select.map(option => `<option value="${escapeHtml(option.value)}" ${option.value === value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select>`
+    : `<input type="${options.type || "text"}" ${credential ? "data-model-credential" : `data-model-field="${field}"`} value="${escapeHtml(String(value))}" ${feedback.attributes} ${credential ? 'autocomplete="off"' : ""} ${options.list ? `list="${options.list}"` : ""} ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""}>`;
+  return `<div class="settings-model-field${feedback.error ? " has-error" : ""}"><label for="${feedback.id}">${escapeHtml(label)}</label>${credential ? `<span class="muted tiny">${escapeHtml(modelCredentialState(entry))}</span>` : ""}${control}${effective && effective !== value ? `<span class="muted tiny">${escapeHtml(uiText("settings.model_effective_value", "当前生效：{value}", { value: effective }))}</span>` : ""}${feedback.html}</div>`;
+}
+
+function modelFlagField(field, entry) {
+  const feedback = modelFieldFeedback(field);
+  return `<div><label class="settings-model-flag" for="${feedback.id}"><input type="checkbox" data-model-field="${field}" ${feedback.attributes} ${entry[field] ? "checked" : ""}>${escapeHtml(modelFieldLabel(field))}</label>${feedback.html}</div>`;
+}
+
+function renderModelConnectionResult() {
+  if (!modelSettings.test || modelSettings.test.index !== modelSettings.draft?.index) return "";
+  const { state, reason } = modelSettings.test;
+  const text = state === "running" ? uiText("settings.model_testing", "正在测试…")
+    : state === "ok" ? uiText("settings.model_test_ok", "连接成功")
+      : uiText("settings.model_test_fail", "连接失败：{reason}", { reason: reason || "" });
+  return `<p role="status" data-model-connection-result class="settings-model-banner${state === "ok" ? " is-ok" : state === "fail" ? " is-error" : ""}">${escapeHtml(text)}</p>`;
 }
 
 function renderModelDraft() {
@@ -7111,47 +7405,48 @@ function renderModelDraft() {
   const methods = [{ value: "", label: uiText("settings.model_curation_method_none", "不用于策展") }]
     .concat((modelSettings.snapshot.curation_output_methods || []).map(name => ({ value: name, label: name })));
   const simple = modelSettings.setupMode;
-  const credential = `<label class="settings-model-field${modelFieldError("api_key") ? " has-error" : ""}">${simple ? "API Key" : uiText("settings.model_field_key_value", "密钥值")} · ${escapeHtml(modelCredentialState(entry))}
-    <input type="password" data-model-credential value="${escapeHtml(modelCredentialValue(entry))}" autocomplete="off" placeholder="${escapeHtml(simple && !entry.api_key_set ? uiText("settings.model_setup_key_placeholder", "请输入服务商提供的 API Key") : uiText("settings.model_key_placeholder", "留空表示不修改"))}">
-    ${modelFieldError("api_key") ? `<span class="field-error">${escapeHtml(modelFieldError("api_key"))}</span>` : ""}
-  </label>`;
-  return `<section class="settings-model-editor">
+  const advancedErrors = Object.keys(modelErrors()).some(key => {
+    const target = modelErrorTarget(key);
+    return target?.index === modelSettings.draft.index && !["model", "api_key_value"].includes(target.field);
+  });
+  if (simple && advancedErrors) modelSettings.advanced = true;
+  const credential = modelTextField("api_key_value", entry);
+  return `<section class="settings-model-editor" id="modelEditor-${modelSettings.draft.index}">
     <header><strong>${simple ? uiText("settings.model_connect", "连接模型") : uiText(modelSettings.draft.isNew ? "settings.model_add" : "settings.model_edit", modelSettings.draft.isNew ? "新增模型" : "编辑")}</strong>${simple ? "" : `<span class="muted tiny">${escapeHtml(entry.name || "")}</span>`}</header>
     ${simple ? `<div class="settings-model-grid is-simple">
       <label class="settings-model-field">${uiText("settings.model_service", "服务商")}<select data-model-service>${modelServiceOptions(entry).map(option => `<option value="${escapeHtml(option.id)}" ${option.selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
       ${credential}
-      ${modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry, { list: "modelSetupSuggestions" })}
+      ${modelTextField("model", entry, { list: "modelSetupSuggestions" })}
       <datalist id="modelSetupSuggestions">${(modelSettings.snapshot.shipped_models || []).filter(model => model.base_url === entry.base_url).map(model => `<option value="${escapeHtml(model.model)}"></option>`).join("")}</datalist>
     </div><p class="muted tiny">${uiText("settings.model_shared_default", "普通调用与策展使用同一个模型。其他设置可在高级配置中调整。")}</p>
     <button class="text-button" data-action="model-advanced" aria-expanded="${modelSettings.advanced}">${uiText("settings.model_advanced", "高级配置")}</button>` : ""}
     <div ${simple && !modelSettings.advanced ? "hidden" : ""}>
+    <p class="muted tiny">${escapeHtml(modelEntrySource(entry))}</p>
     <div class="settings-model-grid">
-      ${modelTextField(uiText("settings.model_field_name", "条目名（查表键）"), "name", entry)}
-      ${modelTextField(uiText("settings.model_field_display_name", "显示名"), "display_name", entry)}
-      ${simple ? "" : modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry)}
-      ${modelTextField(uiText("settings.model_field_use", "适配器"), "use", entry, { select: adapters })}
-      ${modelTextField("Provider", "provider", entry, { select: [{ value: "", label: localize("沿用旧适配器映射") }, { value: "openai", label: "OpenAI" }, { value: "deepseek", label: "DeepSeek" }] })}
-      ${modelTextField(localize("API 协议"), "protocol", entry, { select: [{ value: "", label: localize("沿用旧适配器映射") }, { value: "responses", label: "Responses" }, { value: "chat_completions", label: localize("Chat Completions（兼容）") }] })}
-      ${modelTextField(uiText("settings.model_field_base_url", "端点"), "base_url", entry)}
-      ${modelTextField(uiText("settings.model_field_context_window", "上下文窗口"), "context_window", entry, { type: "number" })}
-      ${modelTextField(uiText("settings.model_field_curation_method", "策展输出方式"), "curation_output_method", entry, { select: methods })}
-      ${modelTextField(uiText("settings.model_field_curation_tokens", "策展输出上限"), "curation_max_output_tokens", entry, { type: "number" })}
-      <label class="settings-model-field${modelFieldError("api_key") ? " has-error" : ""}">${uiText("settings.model_field_api_key", "密钥来源变量")}
-        <input type="text" data-model-field="api_key" value="${escapeHtml(String(entry.api_key || ""))}" placeholder="$OPENAI_API_KEY">
-        ${modelFieldError("api_key") ? `<span class="field-error">${escapeHtml(modelFieldError("api_key"))}</span>` : ""}
-      </label>
+      ${modelTextField("name", entry)}
+      ${modelTextField("display_name", entry)}
+      ${simple ? "" : modelTextField("model", entry)}
+      ${modelTextField("use", entry, { select: adapters })}
+      ${modelTextField("provider", entry, { select: [{ value: "", label: localize("沿用旧适配器映射") }, { value: "openai", label: "OpenAI" }, { value: "deepseek", label: "DeepSeek" }] })}
+      ${modelTextField("protocol", entry, { select: [{ value: "", label: localize("沿用旧适配器映射") }, { value: "responses", label: "Responses" }, { value: "chat_completions", label: localize("Chat Completions（兼容）") }] })}
+      ${modelTextField("base_url", entry)}
+      ${modelTextField("context_window", entry, { type: "number" })}
+      ${modelTextField("curation_output_method", entry, { select: methods })}
+      ${modelTextField("curation_max_output_tokens", entry, { type: "number" })}
+      ${modelTextField("api_key", entry, { placeholder: "$OPENAI_API_KEY" })}
       ${simple ? "" : credential}
     </div>
     <div class="settings-model-flags">
-      ${modelFlagField(uiText("settings.model_field_default", "默认模型"), "default", entry)}
-      ${modelFlagField(uiText("settings.model_field_curation_default", "策展默认模型"), "curation_default", entry)}
-      ${modelFlagField(uiText("settings.model_field_supports_image", "支持图像输入"), "supports_image_input", entry)}
+      ${modelFlagField("default", entry)}
+      ${modelFlagField("curation_default", entry)}
+      ${modelFlagField("supports_image_input", entry)}
     </div>
     </div>
     <div class="settings-model-editor-actions" ${simple && !modelSettings.advanced ? "hidden" : ""}>
       <button class="text-button" data-action="model-test">${modelSettings.test?.state === "running" ? uiText("settings.model_testing", "正在测试…") : uiText("settings.model_test", "测试连接")}</button>
       ${simple ? "" : `<button class="text-button" data-action="model-cancel">${uiText("settings.model_cancel", "取消")}</button>`}
     </div>
+    ${renderModelConnectionResult()}
   </section>`;
 }
 
@@ -7182,7 +7477,7 @@ function updateModelService(value) {
     Object.assign(entry, { use: "langchain_openai:ChatOpenAI", provider: "openai", protocol: "chat_completions", base_url: "", model: "", context_window: null, curation_output_method: "prompt_json", supports_image_input: false });
     modelSettings.advanced = true;
   }
-  modelSettings.dirty = true;
+  invalidateModelVerification();
   renderModelSettings();
 }
 
@@ -7192,12 +7487,51 @@ const MODEL_SETUP_CHECKS = () => [
   ["semantic_index", localize("自动索引"), localize("能否为后续工作检索上下文")],
 ];
 
+function canContinueModelSetup() {
+  return !modelSettings.saving && !modelSettings.dirty && !modelSettings.snapshot?.setup_required
+    && (modelSettings.progress || modelSettings.snapshot?.verification)?.ok === true;
+}
+
+function renderModelSetupSteps() {
+  if (!modelSettings.setupMode && !modelSettings.onboarding) return "";
+  const ready = canContinueModelSetup();
+  return `<ol class="settings-model-steps" aria-label="${uiText("settings.model_setup_steps", "首次设置")}">
+    <li ${ready ? "" : 'aria-current="step"'}><strong>1. ${uiText("settings.model_setup_config", "模型配置")}</strong>
+      <span>${ready ? uiText("settings.model_setup_verified", "已保存并通过验证") : uiText("settings.model_setup_validate", "保存并通过全部验证后继续")}</span></li>
+    <li ${ready ? 'aria-current="step"' : ""}><strong>2. ${uiText("settings.model_setup_project", "选择项目")}</strong>
+      ${ready ? `<button class="primary" data-action="model-start">${uiText("settings.model_start", "选择项目文件夹")}</button>` : `<span>${uiText("settings.model_setup_wait", "等待模型验证通过")}</span>`}</li>
+  </ol>`;
+}
+
+function invalidateModelVerification() {
+  const hadResult = modelSettings.test || modelSettings.progress || modelSettings.snapshot?.verification;
+  modelSettings.dirty = true;
+  modelSettings.test = null;
+  modelSettings.progress = null;
+  if (modelSettings.snapshot) modelSettings.snapshot.verification = null;
+  document.querySelectorAll(".settings-model-row[data-model-index]").forEach(row => {
+    const index = Number(row.dataset.modelIndex);
+    const entry = modelSettings.snapshot.models[index];
+    if (entry) row.querySelector(".settings-model-status").innerHTML = renderModelAvailability(entry, index);
+  });
+  if (hadResult) setStatus(uiText("settings.model_validation_stale", "配置已修改，请保存并重新验证"));
+  document.querySelectorAll("[data-model-connection-result]").forEach(node => node.remove());
+  // 只更新操作状态，输入时保留编辑器焦点与光标。
+  const steps = document.querySelector("#modelSetupSteps");
+  if (steps) steps.innerHTML = renderModelSetupSteps();
+  const verification = document.querySelector("#modelVerificationHost");
+  if (verification) verification.innerHTML = renderModelVerification();
+}
+
 function renderModelVerification() {
-  const verification = modelSettings.progress || modelSettings.snapshot?.verification;
-  if (!verification && !modelSettings.setupMode && !modelSettings.saving) return "";
+  const verification = modelSettings.saving || !modelSettings.dirty ? modelSettings.progress || modelSettings.snapshot?.verification : null;
+  if (!verification && !modelSettings.setupMode && !modelSettings.saving && !modelSettings.dirty) return "";
   const checks = verification?.checks || [];
   const labels = { pending: localize("等待中"), running: localize("验证中"), passed: localize("已通过"), failed: localize("失败"), interrupted: localize("未完成") };
+  const reason = verification?.reason || uiText(verification?.ok ? "settings.model_setup_verified" : "settings.model_incomplete", verification?.ok ? "已保存并通过验证" : "验证未完成，请重新验证");
   return `<section class="settings-model-verification" aria-label="${uiText("settings.model_checks", "模型验证")}">
+    ${modelSettings.dirty && !modelSettings.saving ? `<p role="status" class="settings-model-banner is-warn">${uiText("settings.model_validation_stale", "配置已修改，请保存并重新验证")}</p>` : ""}
+    ${modelSettings.saving ? `<p role="status">${uiText("settings.model_verifying", "正在验证模型能力，请查看各项进度…")}</p>` : verification ? `<p role="status" class="settings-model-banner ${verification.ok ? "is-ok" : "is-error"}">${escapeHtml(verification.status === "interrupted" ? reason : uiText("settings.model_verified", "设置已保存。{reason}", { reason }))}</p>` : ""}
     <ol>${MODEL_SETUP_CHECKS().map(([capability, label, description]) => {
       const check = checks.find(item => item.capability === capability);
       const status = check?.status || (check ? (check.ok ? "passed" : "failed") : "pending");
@@ -7209,7 +7543,6 @@ function renderModelVerification() {
       </li>`;
     }).join("")}</ol>
     ${verification && !modelSettings.saving ? `<button class="text-button" data-action="model-verify" ${modelSettings.dirty ? "disabled" : ""}>${uiText("settings.model_retry", "重新验证")}</button>` : ""}
-    ${verification?.ok && !modelSettings.saving && !modelSettings.dirty && modelSettings.setupMode ? `<button class="primary" data-action="model-start">${uiText("settings.model_start", "开始第一个项目")}</button>` : ""}
   </section>`;
 }
 
@@ -7225,6 +7558,8 @@ function repairModelCheck(capability) {
 function renderModelSettings() {
   const host = document.querySelector("#modelSettingsHost");
   if (!host) return;
+  const help = document.querySelector('[data-i18n="settings.models_help"]');
+  if (help) help.hidden = modelSettings.setupMode || modelSettings.onboarding;
   const snapshot = modelSettings.snapshot;
   if (!snapshot) {
     host.innerHTML = `<p class="muted tiny settings-model-empty">${escapeHtml(modelSettings.error || "")}</p>`;
@@ -7233,47 +7568,18 @@ function renderModelSettings() {
   }
 
   const banners = [];
-  const verification = modelSettings.progress || snapshot.verification;
-  if (modelSettings.onboarding) {
-    banners.push(`<p role="status" class="settings-model-banner">${uiText("settings.model_setup_steps", "首次使用：配置模型 → 验证可用 → 选择项目文件夹 → 输入第一个目标。保存并验证通过后，点击“开始第一个项目”继续。")}</p>`);
-    if (!modelSettings.setupMode && !snapshot.setup_required && snapshot.verification?.ok === true && !modelSettings.dirty && !modelSettings.saving) {
-      banners.push(`<button class="primary" data-action="model-setup-continue">${uiText("settings.model_setup_continue", "继续：选择项目文件夹")}</button>`);
-    }
-  }
-  if (snapshot.setup_required) {
-    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_setup_help", "选择服务商，填写 API Key 和模型，然后验证并开始。"))}</p>`);
-    banners.push(`<ul class="settings-model-errors">${Object.values(snapshot.setup_issues || {}).map(message => `<li>${escapeHtml(message)}</li>`).join("")}</ul>`);
-  }
-  if (modelSettings.saving) {
-    banners.push(`<p role="status" class="settings-model-banner">${escapeHtml(uiText("settings.model_verifying", "正在验证模型能力，请查看各项进度…"))}</p>`);
-  } else if (verification) {
-    const reason = verification.reason || uiText("settings.model_incomplete", "验证未完成，请重新验证");
-    banners.push(`<p role="status" class="settings-model-banner ${verification.ok ? "is-ok" : "is-error"}">${escapeHtml(verification.status === "interrupted" ? reason : uiText("settings.model_verified", "设置已保存。{reason}", { reason }))}</p>`);
-  }
   if (snapshot.default_error) {
     banners.push(`<p class="settings-model-banner is-error">${escapeHtml(uiText("settings.model_default_error", "默认模型无法解析：{message}", { message: snapshot.default_error }))}</p>`);
   }
   if (snapshot.default_model_override) {
     banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_env_override", "环境变量 FOCUS_MODEL 正在覆盖默认模型：{name}；它优先于这里的默认选择。", { name: snapshot.default_model_override }))}</p>`);
   }
-  if (modelSettings.test) {
-    const ok = modelSettings.test.state === "ok";
-    const running = modelSettings.test.state === "running";
-    const text = running
-      ? uiText("settings.model_testing", "正在测试…")
-      : ok ? uiText("settings.model_test_ok", "连接成功")
-        : uiText("settings.model_test_fail", "连接失败：{reason}", { reason: modelSettings.test.reason || "" });
-    banners.push(`<p class="settings-model-banner${ok ? " is-ok" : running ? "" : " is-error"}">${escapeHtml(text)}</p>`);
-  }
-  if (modelSettings.dirty) {
-    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_dirty", "有未保存的改动"))}</p>`);
-  }
   if (snapshot.removed_models?.length) {
     banners.push(`<p class="muted tiny">${escapeHtml(uiText("settings.model_removed_note", "已删除：{names}", { names: snapshot.removed_models.join(", ") }))}</p>`);
   }
-  const errorKeys = Object.keys(modelSettings.errors);
-  if (errorKeys.length) {
-    banners.push(`<ul class="settings-model-errors">${errorKeys.map(key => `<li>${escapeHtml(`${key}: ${modelSettings.errors[key]}`)}</li>`).join("")}</ul>`);
+  const globalErrors = Object.entries(modelErrors()).filter(([key]) => !snapshot.models[modelErrorTarget(key)?.index]);
+  if (globalErrors.length) {
+    banners.push(`<ul class="settings-model-errors" role="alert">${globalErrors.map(([, message]) => `<li>${escapeHtml(message)}</li>`).join("")}</ul>`);
   }
 
   const rows = snapshot.models.length
@@ -7281,18 +7587,18 @@ function renderModelSettings() {
     : `<p class="muted tiny settings-model-empty">${escapeHtml(uiText("settings.model_empty", "当前没有可用模型条目，请新增一个。"))}</p>`;
 
   host.innerHTML = `
+    <div id="modelSetupSteps">${renderModelSetupSteps()}</div>
     ${banners.join("")}
     <fieldset class="settings-model-controls" ${modelSettings.saving ? "disabled" : ""}>
     ${modelSettings.setupMode && modelSettings.draft ? renderModelDraft() : ""}
     <div class="settings-model-actions">
       ${!modelSettings.setupMode || modelSettings.advanced ? `<button class="text-button" data-action="model-add">${uiText("settings.model_add", "新增模型")}</button>
       <button class="text-button" data-action="model-reset">${uiText("settings.model_reset", "恢复发行默认")}</button>` : ""}
-      <button class="primary" data-action="model-save" ${modelSettings.saving ? "disabled" : ""}>${modelSettings.setupMode ? uiText("settings.model_validate_start", "验证并开始") : uiText("settings.model_save", "保存并立即生效")}</button>
+      <button class="primary" data-action="model-save" ${modelSettings.saving ? "disabled" : ""}>${modelSettings.setupMode ? uiText("settings.model_save_verify", "保存并验证") : uiText("settings.model_save", "保存并立即生效")}</button>
     </div>
     <div class="settings-model-list" ${modelSettings.setupMode && !modelSettings.advanced ? "hidden" : ""}>${rows}</div>
-    ${!modelSettings.setupMode && modelSettings.draft ? renderModelDraft() : ""}
     </fieldset>
-    ${renderModelVerification()}`;
+    <div id="modelVerificationHost">${renderModelVerification()}</div>`;
   interfaceI18n.apply(host);
 }
 
@@ -7343,14 +7649,13 @@ async function ensureModelSetup({ onboarding = false } = {}) {
   if (firstSetup) {
     snapshot.models.forEach(model => { model.default = model === entry; model.curation_default = model === entry; });
     entry.curation_output_method ||= "prompt_json";
-    modelSettings.dirty = true;
+    invalidateModelVerification();
   }
   renderModelSettings();
 }
 
 async function finishDesktopModelSetup() {
-  if (!modelSettings.onboarding || modelSettings.dirty || modelSettings.snapshot?.setup_required
-      || modelSettings.snapshot?.verification?.ok !== true) return;
+  if (!modelSettings.onboarding || !canContinueModelSetup()) return;
   if (await desktopPatrol?.completeModelSetup()) {
     modelSettings.onboarding = false;
     void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
@@ -7364,7 +7669,6 @@ function startModelDraft(index, isNew = false) {
     beforeFlags: modelSettings.snapshot.models.map(model => ({ default: model.default, curation_default: model.curation_default })),
     beforeCredentials: { ...modelSettings.credentialDrafts },
   };
-  modelSettings.errors = {};
   modelSettings.test = null;
   renderModelSettings();
 }
@@ -7377,7 +7681,7 @@ function cancelModelDraft() {
   modelSettings.snapshot.models.forEach((entry, index) => Object.assign(entry, draft.beforeFlags?.[index] || {}));
   modelSettings.credentialDrafts = draft.beforeCredentials || {};
   modelSettings.draft = null;
-  modelSettings.errors = {};
+  modelSettings.errors = Object.fromEntries(Object.entries(modelSettings.errors).filter(([key]) => modelErrorTarget(key)?.index !== draft.index));
   modelSettings.test = null;
   renderModelSettings();
 }
@@ -7393,7 +7697,7 @@ function addModelEntry() {
     curation_default: false, default: false, supports_image_input: false, source: "user_added",
   };
   modelSettings.snapshot.models.push(entry);
-  modelSettings.dirty = true;
+  invalidateModelVerification();
   startModelDraft(modelSettings.snapshot.models.length - 1, true);
 }
 
@@ -7401,8 +7705,16 @@ function removeModelEntry(index) {
   modelSettings.snapshot.models.splice(index, 1);
   modelSettings.credentialDrafts = pendingModelCredentials();
   modelSettings.draft = null;
-  modelSettings.dirty = true;
-  modelSettings.errors = {};
+  invalidateModelVerification();
+  for (const source of ["errors", "setup_issues"]) {
+    const owner = source === "errors" ? modelSettings : modelSettings.snapshot;
+    owner[source] = Object.fromEntries(Object.entries(owner[source] || {}).flatMap(([key, message]) => {
+      const match = /^models\[(\d+)\](.*)$/.exec(key);
+      if (!match) return [[key, message]];
+      const previous = Number(match[1]);
+      return previous === index ? [] : [[`models[${previous > index ? previous - 1 : previous}]${match[2]}`, message]];
+    }));
+  }
   renderModelSettings();
 }
 
@@ -7411,8 +7723,9 @@ function restoreShippedModels() {
   modelSettings.snapshot.models = (modelSettings.snapshot.shipped_models || []).map(entry => ({ ...entry, source: "shipped" }));
   modelSettings.credentialDrafts = {};
   modelSettings.draft = null;
-  modelSettings.dirty = true;
+  invalidateModelVerification();
   modelSettings.errors = {};
+  modelSettings.snapshot.setup_issues = {};
   renderModelSettings();
 }
 
@@ -7421,12 +7734,13 @@ function updateModelField(target) {
   const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
   if (!entry) return;
   const field = target.dataset.modelField;
+  clearModelFieldError(field);
   if (MODEL_FLAG_FIELDS.includes(field)) {
     if (target.checked && ["default", "curation_default"].includes(field)) {
       modelSettings.snapshot.models.forEach(model => { model[field] = false; });
     }
     entry[field] = target.checked;
-    modelSettings.dirty = true;
+    invalidateModelVerification();
     renderModelSettings();
     return;
   }
@@ -7441,10 +7755,7 @@ function updateModelField(target) {
     const input = document.querySelector("[data-model-credential]");
     if (input) input.value = modelCredentialValue(entry);
   }
-  modelSettings.dirty = true;
-  document.querySelectorAll('[data-action="model-start"], [data-action="model-verify"]').forEach(button => { button.disabled = true; });
-  // 新的输入需要新一轮验证，旧的成功结果不能成为开始入口。
-  modelSettings.progress = null;
+  invalidateModelVerification();
 }
 
 function pollModelVerification(verificationId) {
@@ -7543,21 +7854,25 @@ async function saveModelSettings() {
     modelSettings.progress = interruptedModelVerification();
     if (error.silent) return;
     if (error.status === 422 && error.detail?.errors) {
-      modelSettings.errors = error.detail.errors;
-      modelSettings.advanced = true;
+      modelSettings.progress = null;
+      showModelFieldErrors(error.detail.errors);
+      setStatus("");
     }
     else setStatus(error.message, true);
   } finally {
     stopPolling();
     modelSettings.saving = false;
     renderModelSettings();
+    if (Object.keys(modelSettings.errors).length) focusModelFieldError();
   }
 }
 
 async function testModelConnection() {
   const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
   if (!entry) return;
-  modelSettings.test = { state: "running" };
+  const index = modelSettings.draft.index;
+  const pending = { state: "running", index };
+  modelSettings.test = pending;
   modelSettings.errors = {};
   renderModelSettings();
   try {
@@ -7565,16 +7880,19 @@ async function testModelConnection() {
       method: "POST",
       body: JSON.stringify({ entry: modelEntryPayload(entry), api_key_value: modelCredentialValue(entry) || undefined }),
     });
-    modelSettings.test = { state: result.ok ? "ok" : "fail", reason: result.reason };
+    if (modelSettings.test !== pending) return;
+    modelSettings.test = { state: result.ok ? "ok" : "fail", reason: result.reason, index };
   } catch (error) {
+    if (modelSettings.test !== pending) return;
     if (error.status === 422 && error.detail?.errors) {
-      modelSettings.errors = error.detail.errors;
+      showModelFieldErrors(error.detail.errors, index);
       modelSettings.test = null;
     } else {
-      modelSettings.test = { state: "fail", reason: error.message };
+      modelSettings.test = { state: "fail", reason: error.message, index };
     }
   }
   renderModelSettings();
+  if (Object.keys(modelSettings.errors).length) focusModelFieldError();
 }
 
 let storageSettingsController = null;
@@ -7615,7 +7933,64 @@ function syncLanguageControls() {
     const active = button.dataset.locale === current;
     button.setAttribute("role", "radio");
     button.setAttribute("aria-checked", String(active));
+    button.tabIndex = active ? 0 : -1;
   });
+}
+
+function setSettingsStatus(id, key) {
+  const node = settingsDialog?.querySelector?.(`#${id}`);
+  if (!node) return;
+  node.setAttribute?.("data-i18n", key);
+  node.textContent = interfaceI18n.t(key);
+}
+
+function setSettingsFeedback(message, failed = false, key = "") {
+  const node = settingsDialog?.querySelector?.("#generalSettingsFeedback");
+  if (!node) return;
+  node.textContent = message;
+  if (key) node.setAttribute?.("data-i18n", key);
+  else node.removeAttribute?.("data-i18n");
+  node.classList?.toggle("danger", failed);
+}
+
+function setSettingsDiagnostic(detailsId, summaryId, key, abnormal) {
+  setSettingsStatus(summaryId, key);
+  const details = settingsDialog?.querySelector?.(`#${detailsId}`);
+  if (details) details.open = abnormal;
+  const summary = settingsDialog?.querySelector?.(`#${summaryId}`);
+  summary?.classList?.toggle("danger", abnormal);
+}
+
+let fileModeSettingsRead = 0;
+async function loadFileModeSettings() {
+  const generation = ++fileModeSettingsRead;
+  const select = settingsDialog?.querySelector?.("#newSessionAccessMode");
+  if (select) select.value = accessMode.readNewSessionDefault(window.localStorage);
+  const future = settingsDialog?.querySelector?.("#newPatrolAccessMode");
+  const patrolDefault = window.FocusWorkspacePatrolInputs.DEFAULT_ACCESS_MODE;
+  if (future) future.textContent = uiText(accessMode.labelKey(patrolDefault), accessMode.labelFallback(patrolDefault));
+  const current = settingsDialog?.querySelector?.("#currentPatrolAccessMode");
+  const workspaceLabel = settingsDialog?.querySelector?.("#currentPatrolWorkspace");
+  if (!current) return;
+  const workspace = state.patrolWorkspace;
+  if (workspaceLabel) workspaceLabel.textContent = workspace?.name || workspace?.path || "";
+  if (!workspace) {
+    current.textContent = uiText("settings.no_patrol_workspace", "未选择工作区");
+    return;
+  }
+  current.textContent = uiText("settings.patrol_mode_loading", "正在读取实际模式…");
+  try {
+    const patrol = await loopApi.workspacePatrol(workspace.workspace_id);
+    if (generation !== fileModeSettingsRead || workspace.workspace_id !== state.patrolWorkspace?.workspace_id) return;
+    current.textContent = !patrol
+      ? uiText("settings.patrol_not_created", "尚未创建")
+      : accessMode.MODES.includes(patrol.access_mode)
+        ? uiText(accessMode.labelKey(patrol.access_mode), accessMode.labelFallback(patrol.access_mode))
+        : uiText("settings.patrol_mode_unknown", "实际模式不可用");
+  } catch (_) {
+    if (generation !== fileModeSettingsRead || workspace.workspace_id !== state.patrolWorkspace?.workspace_id) return;
+    current.textContent = uiText("settings.patrol_mode_failed", "读取失败，请刷新重试");
+  }
 }
 
 async function openSettings({ tab, section } = {}) {
@@ -7625,6 +8000,7 @@ async function openSettings({ tab, section } = {}) {
     .find(node => node.dataset.settingsSection === section && !node.closest("[hidden]")) : null;
   target?.focus({ preventScroll: true });
   target?.scrollIntoView({ block: "start" });
+  void loadFileModeSettings();
   try {
     const sessions = await api("/desktop/api/sessions/archived");
     const list = document.querySelector("#archivedSessions");
@@ -7652,24 +8028,34 @@ async function openSettings({ tab, section } = {}) {
   }
   renderModelSettings();
   syncLanguageControls();
-  const newSessionMode = settingsDialog?.querySelector?.("#newSessionAccessMode");
-  if (newSessionMode) newSessionMode.value = accessMode.readNewSessionDefault(window.localStorage);
   const notificationsToggle = settingsDialog?.querySelector?.("#taskNotificationsEnabled");
   if (notificationsToggle) {
-    notificationsToggle.disabled = !window.focusDesktop?.notifications;
-    if (!notificationsToggle.disabled) {
-      try { notificationsToggle.checked = (await window.focusDesktop.notifications.settings()).enabled; }
-      catch (error) { setStatus(error.message, true); }
+    notificationsToggle.disabled = true;
+    setSettingsStatus("notificationSettingsStatus", window.focusDesktop?.notifications ? "settings.checking" : "settings.desktop_only");
+    if (window.focusDesktop?.notifications) {
+      try {
+        notificationsToggle.checked = (await window.focusDesktop.notifications.settings()).enabled;
+        notificationsToggle.disabled = false;
+        setSettingsStatus("notificationSettingsStatus", notificationsToggle.checked ? "settings.enabled" : "settings.disabled");
+      } catch (error) {
+        setSettingsStatus("notificationSettingsStatus", "settings.read_failed");
+        setSettingsFeedback(error.message, true);
+        setStatus(error.message, true);
+      }
     }
   }
   interfaceI18n.apply(settingsDialog);
   const sandboxHost = settingsDialog?.querySelector?.("#sandboxStatusHost");
   if (sandboxHost) {
+    setSettingsStatus("sandboxStatusSummary", "settings.checking");
     try {
       const status = await api("/desktop/api/sandbox/status");
       sandboxHost.innerHTML = renderSandboxStatus(status);
+      const available = status?.available === true && status?.enforcement === "partial";
+      setSettingsDiagnostic("sandboxDiagnostics", "sandboxStatusSummary", available ? "settings.sandbox_partial" : "settings.sandbox_unavailable", !available);
     } catch (error) {
       sandboxHost.textContent = error.message;
+      setSettingsDiagnostic("sandboxDiagnostics", "sandboxStatusSummary", "settings.read_failed", true);
     }
   }
   await loadShellRecovery();
@@ -7681,10 +8067,14 @@ async function openSettings({ tab, section } = {}) {
 async function loadShellRecovery() {
   const host = settingsDialog?.querySelector?.("#shellRecoveryHost");
   if (!host) return;
+  setSettingsStatus("shellRecoverySummary", "settings.checking");
   try {
-    host.innerHTML = renderShellRecovery(await api("/desktop/api/shell-recovery"));
+    const runs = await api("/desktop/api/shell-recovery");
+    host.innerHTML = renderShellRecovery(runs);
+    setSettingsDiagnostic("shellRecoveryDiagnostics", "shellRecoverySummary", runs.length ? "settings.recovery_pending" : "settings.recovery_clear", Boolean(runs.length));
   } catch (error) {
     host.textContent = error.message;
+    setSettingsDiagnostic("shellRecoveryDiagnostics", "shellRecoverySummary", "settings.read_failed", true);
   }
 }
 
@@ -7696,7 +8086,7 @@ function renderShellRecovery(runs) {
       <div class="archived-session-info"><strong>${escapeHtml(run.title)}</strong>
         <p>Run <code>${escapeHtml(run.run_id)}</code> · ${escapeHtml(run.status)}</p>
         <p><code>${escapeHtml(run.directory || uiText("shell_recovery.no_directory", "目录信息不可用"))}</code></p>
-        <ul>${run.attempts.map(attempt => `<li>${escapeHtml(attempt.tool)} · <code>${escapeHtml(attempt.call_id)}</code> · ${escapeHtml(attempt.state)}</li>`).join("")}</ul>
+        <ul>${run.attempts.map(attempt => `<li>${escapeHtml(attempt.tool)} · <code>${escapeHtml(attempt.call_id)}</code> · ${escapeHtml(attempt.state === "unknown" ? uiText("settings.execution_unknown", "执行结果未知") : attempt.state)}</li>`).join("")}</ul>
       </div><button class="text-button" data-action="recover-shell-cleanup" data-run-id="${escapeHtml(run.run_id)}" ${run.status !== "interrupted" ? "disabled" : ""}>${escapeHtml(uiText("shell_recovery.recover", "核验退出并恢复"))}</button>
     </div>`).join("")}${refresh}`;
 }
@@ -7709,14 +8099,26 @@ document.addEventListener("click", event => {
     const feedback = settingsDialog?.querySelector?.("#shellRecoveryFeedback");
     try {
       if (button.dataset.action === "recover-shell-cleanup") {
-        if (feedback) feedback.textContent = uiText("shell_recovery.verifying", "正在核验退出证据…");
+        if (feedback) {
+          feedback.textContent = uiText("shell_recovery.verifying", "正在核验退出证据…");
+          feedback.setAttribute?.("data-i18n", "shell_recovery.verifying");
+          feedback.classList?.toggle("danger", false);
+        }
         await api(`/desktop/api/runs/${encodeURIComponent(button.dataset.runId)}/shell-recovery`, { method: "POST" });
         const message = uiText("shell_recovery.done", "退出已核验，Run 已结算，目录已释放；请核对命令副作用后再发起新调用");
-        if (feedback) feedback.textContent = message;
+        if (feedback) {
+          feedback.textContent = message;
+          feedback.setAttribute?.("data-i18n", "shell_recovery.done");
+        }
+        feedback?.classList?.toggle("danger", false);
         setStatus(message);
       }
     } catch (error) {
-      if (feedback) feedback.textContent = error.message;
+      if (feedback) {
+        feedback.textContent = error.message;
+        feedback.removeAttribute?.("data-i18n");
+      }
+      feedback?.classList?.toggle("danger", true);
       throw error;
     } finally {
       button.disabled = false;
@@ -7898,6 +8300,12 @@ async function handleDocumentClick(event) {
   if (action === "show-plugins") return openPluginsView();
   if (action === "show-memory") return openMemoryView();
   if (action === "memory-category") { state.memory.category = button.dataset.category; return renderMemory(); }
+  if (action === "clear-memory-search") {
+    state.memory.query = "";
+    renderMemory();
+    app.querySelector('[data-page-search="memory"]')?.focus();
+    return;
+  }
   if (action === "new-strategy") { openMemoryCompose(false); state.memory.draft = { ...state.memory.draft, category: "evolution_strategy", enabled: true }; renderMemory(); return; }
   if (action === "save-strategy") return saveStrategy();
   if (action === "import-strategy") return openStrategyImport();
@@ -7913,13 +8321,12 @@ async function handleDocumentClick(event) {
   if (action === "select-memory") { state.memory = { ...state.memory, selectedId: button.dataset.memoryId || null }; return render(); }
   if (action === "pick-session") return pickMemorySession(button.dataset.contextId);
   if (action === "pick-session-source") { addSessionSource(button.dataset.contextId, button.dataset.contextTitle); return; }
-  if (action === "toggle-message") { toggleMemoryMessage(button.dataset.messageId); return; }
+  if (action === "read-memory-message") { readMemoryMessage(button.dataset.messageId); return; }
   if (action === "add-checked-messages") { addMessagesSource(state.memory.selectedMessageIds || []); return; }
   if (action === "add-text") { addTextSource(state.memory.textSelection); return; }
   if (action === "remove-collected") { removeCollectedSource(Number(button.dataset.collectedIndex)); return; }
   if (action === "enter-merge-sources") { enterMergeSources(); return; }
   if (action === "cancel-merge-sources") { cancelMergeSources(); return; }
-  if (action === "toggle-merge-source") { toggleMergeSource(Number(button.dataset.sourceIndex)); return; }
   if (action === "confirm-merge-sources") { confirmMergeSources(); return; }
   if (action === "recompress-memory") { recompressMemory(); return; }
   if (action === "set-memory-mode") { syncMemoryField("contentMode", button.dataset.mode || "complete"); return; }
@@ -7962,21 +8369,11 @@ async function handleDocumentClick(event) {
     finally { button.disabled = false; }
     return;
   }
-  if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
-  if (action === "reload-plugins") {
-    if (state.plugins.loading) return;
-    state.plugins = { ...state.plugins, loading: true, error: null };
-    renderPlugins();
-    try {
-      await api("/desktop/api/plugins/reload", { method: "POST" });
-      pluginAssetsLoading = null;
-      await hydratePlugins();
-    } catch (error) {
-      state.plugins = { ...state.plugins, loading: false, error: error.message };
-      if (state.view === "plugins") renderPlugins();
-    }
-    return;
+  if (action === "refresh-plugins") {
+    if (state.plugins.loading || state.plugins.reloading) return;
+    return hydratePlugins();
   }
+  if (action === "reload-plugins") return reloadPlugins();
   if (action === "retry-equipment") return hydrateEquipment();
   if (action === "set-library-layout") {
     const library = button.dataset.library;
@@ -8003,6 +8400,7 @@ async function handleDocumentClick(event) {
   if (action === "organize-context") return openCompressionView(activeTask(), null, null, true);
   if (action === "open-settings") return openSettings({ tab: button.dataset.settingsTab, section: button.dataset.settingsSection });
   if (action === "focus-main-input") return document.querySelector("#mainInput")?.focus();
+  if (action === "refresh-file-modes") return loadFileModeSettings();
   if (action === "view-history") return openHistory(button.dataset.contextId);
   if (action === "open-history-result") {
     const hit = state.historySearch.results[Number(button.dataset.resultIndex)];
@@ -8029,14 +8427,13 @@ async function handleDocumentClick(event) {
   if (action === "model-reset") return runUiAction(restoreShippedModels);
   if (action === "model-cancel") return runUiAction(cancelModelDraft);
   if (action === "model-save") return runUiAction(saveModelSettings);
-  if (action === "model-setup-continue") return runUiAction(finishDesktopModelSetup);
   if (action === "model-setup-retry") return runUiAction(() => ensureModelSetup({ onboarding: true }));
   if (action === "model-test") return runUiAction(testModelConnection);
   if (action === "model-advanced") { modelSettings.advanced = !modelSettings.advanced; return renderModelSettings(); }
   if (action === "model-verify") return runUiAction(reverifyModelSettings);
   if (action === "model-repair") return runUiAction(() => repairModelCheck(button.dataset.capability));
   if (action === "model-start") {
-    if (modelSettings.saving || modelSettings.dirty || !modelSettings.snapshot?.verification?.ok) return;
+    if (!canContinueModelSetup()) return;
     if (modelSettings.onboarding) {
       await finishDesktopModelSetup();
       if (!modelSettings.onboarding) modelSettings.setupMode = false;
@@ -8062,7 +8459,7 @@ async function handleDocumentClick(event) {
   if (action === "batch-cascade-delete-selected") return batchDeleteSessions(true);
   if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);
   if (action === "context-rail-card") return switchTask(button.dataset.taskId);
-  if (action === "resume-context-decision") return reopenContextDecision(state.activeTaskId);
+  if (action === "resume-context-decision") return reopenContextDecision(button.dataset.contextId || state.activeTaskId);
   if (action === "exit-context-editor") { state.contextDraft = null; state.view = "map"; return render(); }
   if (action === "add-context-source") return addContextSource(button.dataset.contextId);
   if (action === "context-source-select") {
@@ -8093,18 +8490,19 @@ async function handleDocumentClick(event) {
     try { return clearContextMessages(); }
     catch (error) { return setStatus(error.message, true); }
   }
-  if (action === "context-message-toggle") {
+  if (["context-message-toggle", "context-message-edit-json"].includes(action)) {
     const row = button.closest("[data-context-ui-key]");
-    if (row) return toggleContextMessage(row.dataset.contextUiKey);
+    try { if (row) return toggleContextMessage(row.dataset.contextUiKey, action === "context-message-edit-json" ? "json" : "body"); }
+    catch (error) { return setStatus(error.message, true); }
     return;
   }
   if (action === "context-message-undo") return undoContextMessageDelete();
-  if (["context-message-copy", "context-message-delete"].includes(action)) {
+  if (["context-message-duplicate", "context-message-delete"].includes(action)) {
     try {
       const uiKey = button.closest("[data-context-ui-key]")?.dataset.contextUiKey;
       const index = state.contextDraft?.uiKeys.indexOf(uiKey) ?? -1;
       if (index < 0) return;
-      if (action === "context-message-copy") return insertContextMessage(state.contextDraft.messages[index], index + 1);
+      if (action === "context-message-duplicate") return insertContextMessage(syncContextDraft().messages[index], index + 1);
       return deleteContextMessage(uiKey);
     } catch (error) { return setStatus(error.message, true); }
   }
@@ -8313,8 +8711,6 @@ document.addEventListener("input", event => {
   // 密钥输入只进内存、不回填：任何响应都不携带凭据值
   if (event.target.matches("[data-model-credential]") && !modelSettings.saving) {
     updateModelCredential(event.target.value);
-    // 不重建输入框，以免打断键盘输入；立即禁用旧结果上的开始与重试入口。
-    document.querySelectorAll('[data-action="model-start"], [data-action="model-verify"]').forEach(button => { button.disabled = true; });
   }
 });
 
@@ -8329,19 +8725,23 @@ document.addEventListener("mouseup", event => {
   const pre = event.target.closest("[data-selectable-text]");
   if (!pre) return;
   const sel = window.getSelection();
-  const text = sel ? sel.toString() : "";
+  if (!sel?.rangeCount) return;
+  const selectionRange = sel.getRangeAt(0);
+  if (!pre.contains(selectionRange.startContainer) || !pre.contains(selectionRange.endContainer)) return;
+  const text = selectionRange.toString();
   if (!text) return;
   const container = pre.closest("[data-message-id]");
   const messageId = container ? container.getAttribute("data-message-id") : null;
-  // 用选区文本在全文中的位置估算字符区间（同一条消息内划选足够准确）。
-  const full = pre.textContent || "";
-  const start = full.indexOf(text);
-  const end = start >= 0 ? start + text.length : null;
+  // 按实际 DOM 选区计算偏移，重复文字也保留其准确位置。
+  const prefix = document.createRange();
+  prefix.selectNodeContents(pre);
+  prefix.setEnd(selectionRange.startContainer, selectionRange.startOffset);
+  const start = prefix.toString().length;
   state.memory = {
     ...state.memory,
     textSelection: text,
     textMessageId: messageId,
-    textRange: start >= 0 ? { start, end } : { start: 0, end: text.length },
+    textRange: { start, end: start + text.length },
   };
 });
 
@@ -8404,16 +8804,22 @@ document.addEventListener("keydown", event => {
   }
   const mapTreeItem = event.target.closest?.(".map-collapsible-tree [role='treeitem'][data-tree-key]");
   if (mapTreeItem && handleMapTreeKeydown(event, mapTreeItem)) return;
-  const inspectorTab = event.target.closest?.('[role="tab"][data-inspector-tab]');
-  if (inspectorTab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+  const tab = window.FocusAccessibleControls.tabDestination(event);
+  if (tab) { tab.click(); tab.focus(); return; }
+  const languageOption = event.target.closest?.('[role="radio"][data-action="set-language"]');
+  if (languageOption && !event.altKey && !event.ctrlKey && !event.metaKey && !event.defaultPrevented
+      && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
     event.preventDefault();
-    const tabs = [...appInspector.querySelectorAll('[role="tab"][data-inspector-tab]')];
-    const index = tabs.indexOf(inspectorTab);
+    const options = [...settingsDialog.querySelectorAll('[role="radio"][data-action="set-language"]')];
+    const index = options.indexOf(languageOption);
     const nextIndex = event.key === "Home" ? 0
-      : event.key === "End" ? tabs.length - 1
-        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-    openInspector(tabs[nextIndex].dataset.inspectorTab, tabs[nextIndex]);
-    tabs[nextIndex].focus();
+      : event.key === "End" ? options.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + options.length) % options.length;
+    const next = options[nextIndex];
+    if (!next) return;
+    interfaceI18n.setLocale(next.dataset.locale);
+    syncLanguageControls();
+    next.focus();
     return;
   }
   const contextHandle = event.target.closest?.('[data-context-pointer-handle][data-context-drag-origin="draft"]');
@@ -8467,6 +8873,13 @@ document.addEventListener("keydown", event => {
 });
 
 document.addEventListener("toggle", event => {
+  if (event.target.matches(".context-rail-diagnostics")) {
+    if (!event.target.isConnected) return;
+    const id = event.target.dataset.contextId;
+    if (event.target.open) state.openContextDiagnostics.add(id);
+    else state.openContextDiagnostics.delete(id);
+    return;
+  }
   if (!event.target.matches(".draft-advanced")) return;
   state.openDraftSection = event.target.open ? "system" : null;
 }, true);
@@ -8735,6 +9148,8 @@ document.addEventListener("submit", event => {
   runUiAction(continueAgentDetails);
 });
 document.addEventListener("change", event => {
+  if (event.target.matches("[data-memory-message-select]")) return selectMemoryMessage(event.target.dataset.messageId, event.target.checked);
+  if (event.target.matches("[data-memory-merge-select]")) return selectMergeSource(Number(event.target.dataset.sourceIndex), event.target.checked);
   if (["sessionModel", "sessionReasoning"].includes(event.target.id)) {
     const detail = state.details.get(state.activeTaskId);
     if (!detail) return;
@@ -8750,9 +9165,20 @@ document.addEventListener("change", event => {
   if (event.target.matches("[data-model-service]")) return updateModelService(event.target.value);
   if (event.target.id === "newSessionAccessMode") {
     const select = event.target;
-    try { select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value); }
+    const feedback = settingsDialog?.querySelector?.("#newSessionModeFeedback");
+    try {
+      select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value);
+      if (feedback) {
+        feedback.setAttribute("data-i18n", "settings.ordinary_mode_saved");
+        feedback.textContent = uiText("settings.ordinary_mode_saved", "已保存普通会话新建默认值");
+      }
+    }
     catch (error) {
       select.value = accessMode.readNewSessionDefault(window.localStorage);
+      if (feedback) {
+        feedback.removeAttribute("data-i18n");
+        feedback.textContent = error.message;
+      }
       setStatus(error.message, true);
     }
     return;
@@ -8761,10 +9187,17 @@ document.addEventListener("change", event => {
     const input = event.target;
     const enabled = input.checked;
     input.disabled = true;
+    setSettingsStatus("notificationSettingsStatus", "settings.saving");
     runUiAction(async () => {
-      try { input.checked = (await window.focusDesktop.notifications.settings(enabled)).enabled; }
-      catch (error) { input.checked = !enabled; setStatus(error.message, true); }
-      finally { input.disabled = false; }
+      try {
+        input.checked = (await window.focusDesktop.notifications.settings(enabled)).enabled;
+        setSettingsFeedback(uiText("settings.notification_saved", "桌面提醒设置已保存"), false, "settings.notification_saved");
+      }
+      catch (error) { input.checked = !enabled; setSettingsFeedback(error.message, true); setStatus(error.message, true); }
+      finally {
+        input.disabled = false;
+        setSettingsStatus("notificationSettingsStatus", input.checked ? "settings.enabled" : "settings.disabled");
+      }
     });
     return;
   }

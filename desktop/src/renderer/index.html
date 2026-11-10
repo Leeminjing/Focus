@@ -45,7 +45,7 @@
     <header class="app-header">
       <button class="app-mark" data-action="toggle-nav-collapse" aria-controls="appNavigation" aria-expanded="true" aria-label="收起导航" data-i18n-aria-label="nav.collapse"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"></button>
       <strong class="shell-brand">Focus<span>.</span></strong>
-      <div class="shell-task-context" aria-live="polite">
+      <div class="shell-task-context">
         <strong id="shellTaskTitle" data-i18n="header.no_task">尚未选择任务</strong>
         <span id="shellTaskMeta" data-i18n="header.workbench">本地 Agent 工作台</span>
       </div>
@@ -77,26 +77,26 @@
         </button>
         <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
       </nav>
-      <div class="shell-resizer shell-resizer-nav" role="separator" aria-orientation="vertical" aria-label="调整导航宽度" title="拖拽调整导航宽度" data-i18n-aria-label="nav.resize" data-i18n-title="nav.resize_help"></div>
+      <div class="shell-resizer shell-resizer-nav" role="separator" tabindex="0" aria-controls="appNavigation" aria-orientation="vertical" aria-label="调整导航宽度" title="拖动或按左右方向键调整导航宽度，Home / End 调至边界" data-i18n-aria-label="nav.resize" data-i18n-title="nav.resize_help"></div>
       <section class="app-workspace">
-        <main id="app" tabindex="-1" aria-live="polite"></main>
+        <main id="app" tabindex="-1"></main>
       </section>
-      <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度" data-i18n-aria-label="inspector.resize" data-i18n-title="inspector.resize_help"></div>
+      <div class="shell-resizer shell-resizer-inspector" role="separator" tabindex="0" aria-controls="appInspector" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖动或按左右方向键调整检查器宽度，Home / End 调至边界" data-i18n-aria-label="inspector.resize" data-i18n-title="inspector.resize_help"></div>
       <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden data-i18n-aria-label="inspector.title">
         <div class="inspector-tabs glass-surface">
           <div class="inspector-tab-list" role="tablist" aria-label="检查器内容" data-i18n-aria-label="inspector.tabs">
-            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
-            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
-            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
-            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
+            <button id="inspectorTab-context" role="tab" aria-controls="inspectorContent" aria-selected="true" tabindex="0" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
+            <button id="inspectorTab-materials" role="tab" aria-controls="inspectorContent" aria-selected="false" tabindex="-1" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
+            <button id="inspectorTab-agents" role="tab" aria-controls="inspectorContent" aria-selected="false" tabindex="-1" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
+            <button id="inspectorTab-run" role="tab" aria-controls="inspectorContent" aria-selected="false" tabindex="-1" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
           </div>
           <button data-action="close-inspector" aria-label="关闭任务检查器" data-i18n-aria-label="inspector.close">×</button>
         </div>
-        <div id="inspectorContent" class="inspector-content"></div>
+        <div id="inspectorContent" class="inspector-content" role="tabpanel" tabindex="0" aria-labelledby="inspectorTab-context"></div>
       </aside>
     </div>
     <span id="zoomAnnouncement" class="visually-hidden" role="status" aria-live="polite"></span>
-    <div id="overlayRoot" class="overlay-root" aria-live="polite"></div>
+    <div id="overlayRoot" class="overlay-root"></div>
   </div>
   <dialog id="taskDialog">
     <form method="dialog" id="taskForm" class="dialog-form">
@@ -108,49 +108,66 @@
       <div class="dialog-actions"><button type="button" value="cancel" data-action="close-task-dialog" data-i18n="dialog.cancel">取消</button><button class="primary" type="submit" value="default" data-i18n="dialog.create">创建</button></div>
     </form>
   </dialog>
-  <dialog id="settingsDialog" class="settings-dialog">
+  <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle">
     <header class="settings-dialog-head glass-surface">
-      <div>
-        <h2 data-i18n="settings.title">设置</h2>
-        <span class="muted tiny" data-i18n="settings.subtitle">Focus 桌面配置</span>
-      </div>
+      <h2 id="settingsTitle" data-i18n="settings.title">设置</h2>
       <button class="quiet-button" data-action="close-settings" aria-label="关闭" data-i18n-aria-label="settings.close"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
     </header>
     <nav class="settings-sections" role="tablist" aria-label="设置区块" data-i18n-aria-label="settings.sections">
-      <button role="tab" data-action="settings-tab" data-settings-tab="general" aria-selected="true" class="is-active" data-i18n="settings.general">常规</button>
-      <button role="tab" data-action="settings-tab" data-settings-tab="models" aria-selected="false" data-i18n="settings.models">模型</button>
-      <button role="tab" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
+      <button id="settingsTab-general" role="tab" data-action="settings-tab" data-settings-tab="general" aria-controls="settingsPane-general" aria-selected="true" tabindex="0" class="is-active" data-i18n="settings.general">常规</button>
+      <button id="settingsTab-models" role="tab" data-action="settings-tab" data-settings-tab="models" aria-controls="settingsPane-models" aria-selected="false" tabindex="-1" data-i18n="settings.models">模型</button>
+      <button id="settingsTab-data" role="tab" data-action="settings-tab" data-settings-tab="data" aria-controls="settingsPane-data" aria-selected="false" tabindex="-1" data-i18n="settings.data">数据</button>
     </nav>
-    <section class="settings-pane" data-settings-pane="general">
-      <h3 data-i18n="settings.notifications">桌面提醒</h3>
-      <label><input id="taskNotificationsEnabled" type="checkbox" checked><span data-i18n="settings.notifications_enabled">启用桌面提醒</span></label>
-      <p class="muted tiny" data-i18n="settings.notifications_help">优先提醒需要你处理的事项，再提醒任务完成和失败。点击提醒可进入对应任务。</p>
-      <h3 data-i18n="settings.language">界面语言</h3>
-      <div class="settings-language-options" role="radiogroup" aria-label="界面语言" data-i18n-aria-label="settings.language">
-        <button type="button" data-action="set-language" data-locale="zh-CN" data-i18n="settings.chinese">中文</button>
-        <button type="button" data-action="set-language" data-locale="en-US" data-i18n="settings.english">English</button>
+    <section id="settingsPane-general" class="settings-pane" data-settings-pane="general" role="tabpanel" aria-labelledby="settingsTab-general" tabindex="0">
+      <div class="settings-field-list">
+        <div class="settings-field-row">
+          <div class="settings-field-name"><label for="taskNotificationsEnabled" data-i18n="settings.notifications">桌面提醒</label><small data-i18n="settings.notification_scope">本机 · 待处理、完成和失败</small></div>
+          <span id="notificationSettingsStatus" class="settings-field-value" role="status" data-i18n="settings.checking">正在检查…</span>
+          <input id="taskNotificationsEnabled" type="checkbox" aria-label="启用桌面提醒" data-i18n-aria-label="settings.notifications_enabled" disabled>
+        </div>
+        <div class="settings-field-row">
+          <div class="settings-field-name"><span id="settingsLanguageLabel" data-i18n="settings.language">界面语言</span><small data-i18n="settings.local_immediate">本机 · 立即生效</small></div>
+          <div class="settings-language-options settings-field-control" role="radiogroup" aria-labelledby="settingsLanguageLabel">
+            <button type="button" data-action="set-language" data-locale="zh-CN" role="radio" aria-checked="true" data-i18n="settings.chinese">中文</button>
+            <button type="button" data-action="set-language" data-locale="en-US" role="radio" aria-checked="false" data-i18n="settings.english">English</button>
+          </div>
+        </div>
       </div>
-      <p class="muted tiny settings-language-help" data-i18n="settings.language_help">切换后立即应用，并保存在本机。</p>
-      <h3 data-i18n="settings.new_session_mode">新会话默认文件模式</h3>
-      <select id="newSessionAccessMode" aria-label="新会话默认文件模式" data-i18n-aria-label="settings.new_session_mode">
-        <option value="read-only" data-i18n="access.mode_read_only">只读执行</option>
-        <option value="workspace-write" data-i18n="access.mode_workspace_write">工作区可写</option>
-        <option value="danger-full-access" data-i18n="access.mode_danger_full_access">未应用文件沙箱</option>
-      </select>
-      <p class="muted tiny" data-i18n="settings.new_session_mode_help">只影响之后创建的会话；现有会话模式保持不变。</p>
-      <h3 data-i18n="settings.sandbox_status">Windows 文件沙箱</h3>
-      <div id="sandboxStatusHost" class="sandbox-status-host"></div>
-      <h3 data-i18n="shell_recovery.title">Shell 异常恢复</h3>
-      <p id="shellRecoveryFeedback" role="status" aria-live="polite"></p>
-      <div id="shellRecoveryHost" class="sandbox-status-host" aria-live="polite"></div>
+      <h3 data-i18n="settings.file_modes">文件模式</h3>
+      <dl class="settings-file-modes">
+        <div>
+          <dt><label for="newSessionAccessMode" data-i18n="settings.ordinary_sessions">普通会话</label><span id="newSessionModeScope" class="muted tiny" data-i18n="settings.new_default">新建默认值</span></dt>
+          <dd><select id="newSessionAccessMode" aria-label="普通会话新建默认文件模式" data-i18n-aria-label="settings.new_session_mode" aria-describedby="newSessionModeScope">
+            <option value="read-only" data-i18n="access.mode_read_only">只读执行</option>
+            <option value="workspace-write" data-i18n="access.mode_workspace_write">工作区可写</option>
+            <option value="danger-full-access" data-i18n="access.mode_danger_full_access">未应用文件沙箱</option>
+          </select><span id="newSessionModeFeedback" class="muted tiny" role="status"></span></dd>
+        </div>
+        <div>
+          <dt><span id="currentPatrolModeLabel" data-i18n="settings.current_patrol">当前 Patrol</span><span id="currentPatrolWorkspace" class="muted tiny"></span></dt>
+          <dd><span id="currentPatrolAccessMode" role="status" aria-labelledby="currentPatrolModeLabel currentPatrolWorkspace"></span><button type="button" class="text-button" data-action="refresh-file-modes" data-i18n="settings.refresh_patrol_mode">刷新实际模式</button></dd>
+        </div>
+        <div>
+          <dt><span id="newPatrolModeLabel" data-i18n="settings.future_patrol">尚未创建的 Patrol</span><span id="newPatrolModeScope" class="muted tiny" data-i18n="settings.new_default">新建默认值</span></dt>
+          <dd id="newPatrolAccessMode" aria-labelledby="newPatrolModeLabel newPatrolModeScope"></dd>
+        </div>
+      </dl>
+      <p id="generalSettingsFeedback" class="settings-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
+      <details id="sandboxDiagnostics" class="settings-diagnostic">
+        <summary><span data-i18n="settings.sandbox_status">Windows 文件沙箱</span><span id="sandboxStatusSummary" class="settings-field-value" role="status" data-i18n="settings.checking">正在检查…</span><span class="settings-diagnostic-action" data-i18n="settings.diagnostics">诊断与限制</span></summary>
+        <div id="sandboxStatusHost" class="settings-diagnostic-body"></div>
+      </details>
+      <details id="shellRecoveryDiagnostics" class="settings-diagnostic">
+        <summary><span data-i18n="shell_recovery.title">Shell 异常恢复</span><span id="shellRecoverySummary" class="settings-field-value" role="status" data-i18n="settings.checking">正在检查…</span><span class="settings-diagnostic-action" data-i18n="settings.details">查看详情</span></summary>
+        <div id="shellRecoveryHost" class="settings-diagnostic-body"></div>
+      </details>
+      <p id="shellRecoveryFeedback" class="settings-feedback" role="status" aria-live="polite" aria-atomic="true"></p>
     </section>
-    <section class="settings-pane" data-settings-pane="models" hidden>
-      <h3 data-i18n="settings.models">模型</h3>
-      <p class="muted tiny" data-i18n="settings.models_help">模型条目、默认选择与密钥都在这里配置；保存后立即生效，并逐项验证普通调用、策展输出和自动索引。</p>
+    <section id="settingsPane-models" class="settings-pane" data-settings-pane="models" role="tabpanel" aria-labelledby="settingsTab-models" tabindex="0" hidden>
+      <p class="settings-scope" data-i18n="settings.model_scope">本机模型与密钥 · 保存后立即生效</p>
       <div id="modelSettingsHost" class="model-settings-host" data-i18n-aria-label="settings.models" aria-label="模型"></div>
     </section>
-    <section class="settings-pane" data-settings-pane="data" hidden>
-      <h3 data-i18n="settings.data">数据</h3>
+    <section id="settingsPane-data" class="settings-pane" data-settings-pane="data" role="tabpanel" aria-labelledby="settingsTab-data" tabindex="0" hidden>
       <section id="storageSettingsHost" class="settings-data-section" aria-label="长期存储维护" data-i18n-aria-label="settings.storage_maintenance"></section>
       <section class="settings-data-section" data-settings-section="archived" tabindex="-1" aria-labelledby="archivedSessionsHeading">
         <header><strong id="archivedSessionsHeading" data-i18n="settings.archived">已归档的会话</strong><span class="muted tiny" data-i18n="settings.archived_help">归档可恢复；删除需确认</span></header>
@@ -278,6 +295,7 @@
   <script src="./features/context/context-inspection-view.js"></script>
   <script src="./features/loop/loop-grant-view.js?v=20261017-strategy"></script>
   <script src="./shared/ui/surface-transition.js"></script>
+  <script src="./shared/ui/accessible-controls.js"></script>
   <script src="./features/patrol/workspace/workspace-patrol-inputs.js"></script>
   <script src="./features/patrol/workspace/workspace-patrol-feedback.js"></script>
   <script src="./features/patrol/workspace/patrol-browser-recovery.js"></script>
