@@ -37,7 +37,7 @@
     const role = message && typeof message === "object" ? (message.role || localize("未指定角色")) : localize("非法消息");
     return localize`<article class="context-source-message" data-context-source-index="${index}" data-source-context-id="${escapeHtml(contextId)}">
       <header><span><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong>${protocolSummary(message) ? `<small>${escapeHtml(protocolSummary(message))}</small>` : ""}</span><span class="context-message-actions">
-        <button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="source" aria-label="拖拽此来源消息到新 Context"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button>
+        <button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="source" aria-label="拖拽此来源消息到新上下文"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button>
         <button type="button" class="text-button" data-action="context-source-copy"${locked ? " disabled" : ""}>加入</button>
       </span></header>
       <p class="context-message-preview">${escapeHtml(messagePreview(message))}</p>
@@ -63,7 +63,7 @@
   }
 
   function renderMessages(messages, uiKeys = [], expandedKey = null, locked = false) {
-    return messages.map((message, index) => renderMessage(message, index, uiKeys[index] || `context-ui-${index}`, expandedKey, locked)).join("") || localize('<div class="context-empty-drop"><strong>把左侧消息拖到这里</strong><span>也可以直接新增任意消息</span></div>');
+    return messages.map((message, index) => renderMessage(message, index, uiKeys[index] || `context-ui-${index}`, expandedKey, locked)).join("") || localize('<div class="context-empty-drop"><strong>从“来源”加入消息</strong><span>点击“加入”或拖放到此处，也可以新增消息。</span></div>');
   }
 
   function readMessages(root, currentMessages = []) {
