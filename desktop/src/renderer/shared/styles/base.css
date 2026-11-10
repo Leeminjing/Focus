@@ -70,6 +70,11 @@ a {
 
 a:hover { color: var(--accent-hover); }
 
+[role="separator"][tabindex="0"]:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -2px;
+}
+
 ::selection {
   color: var(--text-primary);
   background: rgb(11 108 245 / 18%);
@@ -122,4 +127,5 @@ a:hover { color: var(--accent-hover); }
   .app-frame::after, .app-navigation::before, [data-patrol-composer]::before { display: none; }
   .glass-surface { background: Canvas; border-color: CanvasText; box-shadow: none; }
   button[aria-busy="true"] { outline-color: Highlight; }
+  [role="separator"][tabindex="0"]:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
 }

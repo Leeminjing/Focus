@@ -45,7 +45,7 @@
     <header class="app-header">
       <button class="app-mark" data-action="toggle-nav-collapse" aria-controls="appNavigation" aria-expanded="true" aria-label="收起导航" data-i18n-aria-label="nav.collapse"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"></button>
       <strong class="shell-brand">Focus<span>.</span></strong>
-      <div class="shell-task-context" aria-live="polite">
+      <div class="shell-task-context">
         <strong id="shellTaskTitle" data-i18n="header.no_task">尚未选择任务</strong>
         <span id="shellTaskMeta" data-i18n="header.workbench">本地 Agent 工作台</span>
       </div>
@@ -77,26 +77,26 @@
         </button>
         <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
       </nav>
-      <div class="shell-resizer shell-resizer-nav" role="separator" aria-orientation="vertical" aria-label="调整导航宽度" title="拖拽调整导航宽度" data-i18n-aria-label="nav.resize" data-i18n-title="nav.resize_help"></div>
+      <div class="shell-resizer shell-resizer-nav" role="separator" tabindex="0" aria-controls="appNavigation" aria-orientation="vertical" aria-label="调整导航宽度" title="拖动或按左右方向键调整导航宽度，Home / End 调至边界" data-i18n-aria-label="nav.resize" data-i18n-title="nav.resize_help"></div>
       <section class="app-workspace">
-        <main id="app" tabindex="-1" aria-live="polite"></main>
+        <main id="app" tabindex="-1"></main>
       </section>
-      <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度" data-i18n-aria-label="inspector.resize" data-i18n-title="inspector.resize_help"></div>
+      <div class="shell-resizer shell-resizer-inspector" role="separator" tabindex="0" aria-controls="appInspector" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖动或按左右方向键调整检查器宽度，Home / End 调至边界" data-i18n-aria-label="inspector.resize" data-i18n-title="inspector.resize_help"></div>
       <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden data-i18n-aria-label="inspector.title">
         <div class="inspector-tabs glass-surface">
           <div class="inspector-tab-list" role="tablist" aria-label="检查器内容" data-i18n-aria-label="inspector.tabs">
-            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
-            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
-            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
-            <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
+            <button id="inspectorTab-context" role="tab" aria-controls="inspectorContent" aria-selected="true" tabindex="0" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
+            <button id="inspectorTab-materials" role="tab" aria-controls="inspectorContent" aria-selected="false" tabindex="-1" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
+            <button id="inspectorTab-agents" role="tab" aria-controls="inspectorContent" aria-selected="false" tabindex="-1" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
+            <button id="inspectorTab-run" role="tab" aria-controls="inspectorContent" aria-selected="false" tabindex="-1" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
           </div>
           <button data-action="close-inspector" aria-label="关闭任务检查器" data-i18n-aria-label="inspector.close">×</button>
         </div>
-        <div id="inspectorContent" class="inspector-content"></div>
+        <div id="inspectorContent" class="inspector-content" role="tabpanel" tabindex="0" aria-labelledby="inspectorTab-context"></div>
       </aside>
     </div>
     <span id="zoomAnnouncement" class="visually-hidden" role="status" aria-live="polite"></span>
-    <div id="overlayRoot" class="overlay-root" aria-live="polite"></div>
+    <div id="overlayRoot" class="overlay-root"></div>
   </div>
   <dialog id="taskDialog">
     <form method="dialog" id="taskForm" class="dialog-form">
@@ -117,11 +117,11 @@
       <button class="quiet-button" data-action="close-settings" aria-label="关闭" data-i18n-aria-label="settings.close"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
     </header>
     <nav class="settings-sections" role="tablist" aria-label="设置区块" data-i18n-aria-label="settings.sections">
-      <button role="tab" data-action="settings-tab" data-settings-tab="general" aria-selected="true" class="is-active" data-i18n="settings.general">常规</button>
-      <button role="tab" data-action="settings-tab" data-settings-tab="models" aria-selected="false" data-i18n="settings.models">模型</button>
-      <button role="tab" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
+      <button id="settingsTab-general" role="tab" aria-controls="settingsPane-general" tabindex="0" data-action="settings-tab" data-settings-tab="general" aria-selected="true" class="is-active" data-i18n="settings.general">常规</button>
+      <button id="settingsTab-models" role="tab" aria-controls="settingsPane-models" tabindex="-1" data-action="settings-tab" data-settings-tab="models" aria-selected="false" data-i18n="settings.models">模型</button>
+      <button id="settingsTab-data" role="tab" aria-controls="settingsPane-data" tabindex="-1" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
     </nav>
-    <section class="settings-pane" data-settings-pane="general">
+    <section id="settingsPane-general" role="tabpanel" tabindex="0" aria-labelledby="settingsTab-general" class="settings-pane" data-settings-pane="general">
       <h3 data-i18n="settings.notifications">桌面提醒</h3>
       <label><input id="taskNotificationsEnabled" type="checkbox" checked><span data-i18n="settings.notifications_enabled">启用桌面提醒</span></label>
       <p class="muted tiny" data-i18n="settings.notifications_help">优先提醒需要你处理的事项，再提醒任务完成和失败。点击提醒可进入对应任务。</p>
@@ -142,14 +142,14 @@
       <div id="sandboxStatusHost" class="sandbox-status-host"></div>
       <h3 data-i18n="shell_recovery.title">Shell 异常恢复</h3>
       <p id="shellRecoveryFeedback" role="status" aria-live="polite"></p>
-      <div id="shellRecoveryHost" class="sandbox-status-host" aria-live="polite"></div>
+      <div id="shellRecoveryHost" class="sandbox-status-host"></div>
     </section>
-    <section class="settings-pane" data-settings-pane="models" hidden>
+    <section id="settingsPane-models" role="tabpanel" tabindex="0" aria-labelledby="settingsTab-models" class="settings-pane" data-settings-pane="models" hidden>
       <h3 data-i18n="settings.models">模型</h3>
       <p class="muted tiny" data-i18n="settings.models_help">模型条目、默认选择与密钥都在这里配置；保存后立即生效，并逐项验证普通调用、策展输出和自动索引。</p>
       <div id="modelSettingsHost" class="model-settings-host" data-i18n-aria-label="settings.models" aria-label="模型"></div>
     </section>
-    <section class="settings-pane" data-settings-pane="data" hidden>
+    <section id="settingsPane-data" role="tabpanel" tabindex="0" aria-labelledby="settingsTab-data" class="settings-pane" data-settings-pane="data" hidden>
       <h3 data-i18n="settings.data">数据</h3>
       <section id="storageSettingsHost" class="settings-data-section" aria-label="长期存储维护" data-i18n-aria-label="settings.storage_maintenance"></section>
       <section class="settings-data-section">
@@ -278,6 +278,7 @@
   <script src="./features/context/context-inspection-view.js"></script>
   <script src="./features/loop/loop-grant-view.js?v=20261017-strategy"></script>
   <script src="./shared/ui/surface-transition.js"></script>
+  <script src="./shared/ui/accessible-controls.js"></script>
   <script src="./features/patrol/workspace/workspace-patrol-inputs.js"></script>
   <script src="./features/patrol/workspace/workspace-patrol-feedback.js"></script>
   <script src="./features/patrol/workspace/patrol-browser-recovery.js"></script>

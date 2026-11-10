@@ -3,6 +3,10 @@
   "use strict";
   const catalog = Object.freeze(
 {
+  "调整选源与记忆编辑区高度": "Resize source selection and memory editor height",
+  "调整记忆源与压缩记忆宽度": "Resize memory sources and compressed memory width",
+  "调整文件面板宽度": "Resize file panel width",
+  "拖动或按左右方向键调整面板宽度": "Drag or use Left/Right arrows to resize the file panel",
   "说出你的想法，剩下的交给 Patrol。": "Share your ideas. Patrol handles the rest.",
   "清空输入": "Clear input",
   "描述你的任务、问题或想法…": "Describe your task, question or idea…",

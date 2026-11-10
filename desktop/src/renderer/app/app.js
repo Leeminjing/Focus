@@ -408,7 +408,7 @@ let memoryViewRequestSequence = 0;
 let memoryHydrationSequence = 0;
 let memoryCompressionRequestSequence = 0;
 let contextTreeRequestSequence = 0;
-let panelResizeFrame = null;
+let panelResizeFrame = null, shellResizeFrame = null;
 let patrolAvatarController = null;
 const pluginStyleAssets = new Set();
 const pluginScriptAssets = new Map();
@@ -492,6 +492,7 @@ function applyShellLayout(layout) {
   shell.classList?.toggle("is-nav-collapsed", layout.navCollapsed);
   syncShellResizerVisibility();
   syncNavToggleButton(layout.navCollapsed);
+  syncShellSeparatorValues();
 }
 
 function persistShellLayout() {
@@ -506,9 +507,16 @@ function syncShellResizerVisibility() {
   const shell = document.querySelector(".app-shell");
   if (!shell?.querySelector) return;
   const navResizer = shell.querySelector(".shell-resizer-nav");
-  if (navResizer?.setAttribute) navResizer.setAttribute("aria-hidden", String(state.shellLayout.navCollapsed));
+  if (navResizer?.setAttribute) {
+    navResizer.setAttribute("aria-hidden", String(state.shellLayout.navCollapsed));
+    navResizer.tabIndex = state.shellLayout.navCollapsed ? -1 : 0;
+  }
   const inspectorResizer = shell.querySelector(".shell-resizer-inspector");
-  if (inspectorResizer?.setAttribute) inspectorResizer.setAttribute("aria-hidden", String(appInspector.hidden));
+  if (inspectorResizer?.setAttribute) {
+    const hidden = appInspector.hidden || appInspector.inert || window.innerWidth <= 1100;
+    inspectorResizer.setAttribute("aria-hidden", String(hidden));
+    inspectorResizer.tabIndex = hidden ? -1 : 0;
+  }
 }
 
 function syncNavToggleButton(navCollapsed) {
@@ -529,6 +537,25 @@ function setShellNavCollapsed(navCollapsed) {
   persistShellLayout();
 }
 
+// CSS defaults and stored preferences share the rendered width as the current value.
+function shellSeparatorRange(target) {
+  const nav = document.querySelector("#appNavigation");
+  const element = target === "nav" ? nav : appInspector;
+  const key = target === "nav" ? "navWidth" : "inspectorWidth";
+  const style = element && window.getComputedStyle?.(element);
+  const frame = style ? ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"]
+    .reduce((sum, key) => sum + (parseFloat(style[key]) || 0), 0) : 0;
+  return { min: Math.max(frame, SHELL_LAYOUT_BOUNDS[`${target}Min`]), max: SHELL_LAYOUT_BOUNDS[`${target}Max`],
+    now: element?.getBoundingClientRect?.().width || state.shellLayout[key] };
+}
+
+function syncShellSeparatorValues() {
+  for (const target of ["nav", "inspector"]) {
+    const node = document.querySelector(`.shell-resizer-${target}`);
+    if (node?.setAttribute) window.FocusAccessibleControls.syncSeparator(node, shellSeparatorRange(target));
+  }
+}
+
 // 给两个 resizer 手柄绑定指针拖拽：把相邻栏宽度写回 .app-shell 内联自定义属性。
 function bindShellResizers() {
   const shell = document.querySelector(".app-shell");
@@ -540,22 +567,34 @@ function bindShellResizers() {
   for (const { node, target } of resizers) {
     if (!node || node.dataset.shellResizerBound) continue;
     node.dataset.shellResizerBound = "true";
+    window.FocusAccessibleControls.bindSeparator(node, {
+      read: () => shellSeparatorRange(target), direction: target === "nav" ? 1 : -1,
+      resize: value => {
+        const draft = { ...state.shellLayout, navWidth: shellSeparatorRange("nav").now,
+          inspectorWidth: shellSeparatorRange("inspector").now, customized: true };
+        draft[target === "nav" ? "navWidth" : "inspectorWidth"] = value;
+        state.shellLayout = normalizeShellLayout(draft);
+        applyShellLayout(state.shellLayout);
+      }, commit: persistShellLayout,
+    });
+    syncShellResizerVisibility();
     let frame = null;
     node.addEventListener("pointerdown", event => {
       if (event.button !== 0) return;
       event.preventDefault();
       node.setPointerCapture?.(event.pointerId);
       const startX = event.clientX;
-      const startNav = state.shellLayout.navWidth;
-      const startInspector = state.shellLayout.inspectorWidth;
+      node.focus({ preventScroll: true });
+      const startNav = shellSeparatorRange("nav").now;
+      const startInspector = shellSeparatorRange("inspector").now;
       const move = moveEvent => {
         if (frame != null) cancelAnimationFrame(frame);
         frame = requestAnimationFrame(() => {
           frame = null;
           const delta = moveEvent.clientX - startX;
-          const draft = { ...state.shellLayout, navCollapsed: false, customized: true };
+          const draft = { ...state.shellLayout, navWidth: startNav, inspectorWidth: startInspector, customized: true };
           // 导航↔工作区：向右拖(+)放大导航；工作区↔检查器：向左拖(-)放大检查器。
-          if (target === "nav") draft.navWidth = startNav + delta;
+          if (target === "nav") draft.navWidth = Math.max(shellSeparatorRange("nav").min, startNav + delta);
           else draft.inspectorWidth = startInspector - delta;
           state.shellLayout = normalizeShellLayout(draft, shell.clientWidth || window.innerWidth);
           applyShellLayout(state.shellLayout);
@@ -829,7 +868,7 @@ function streamMarkdownBlocks(text) {
 
 function setStatus(text, isError = false) {
   clearTimeout(state.statusTimer);
-  statusNode.textContent = text;
+  window.FocusAccessibleControls.announce(statusNode, text);
   statusNode.classList.toggle("danger", isError);
   if (text && !isError && text.includes("已保存")) {
     state.statusTimer = setTimeout(() => {
@@ -1286,8 +1325,10 @@ function renderInspector() {
   appInspector.inert = !open;
   appInspector.setAttribute("aria-hidden", String(!open));
   syncShellResizerVisibility();
+  syncShellSeparatorValues();
   if (!open) return;
   const tab = state.inspector.tab;
+  inspectorContent.setAttribute("aria-labelledby", `inspectorTab-${tab}`);
   const activeBranch = document.querySelector('#patrolBranchControls');
   if (tab === 'agents' && activeBranch?.dataset?.agentId === state.agentDetails.agentId && ['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) && activeBranch.parentElement?.contains(document.activeElement)) return;
   const task = activeTask();
@@ -1870,7 +1911,7 @@ function renderFocus(task = activeTask()) {
           </div>
         </div>
       </section>
-      ${panelOpen ? localize`<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
+      ${panelOpen ? localize`<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整文件面板宽度" aria-controls="filePanel" title="拖动或按左右方向键调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section></section>`;
   if (keepEditor) {
     patchFocusChrome(markup);
@@ -1969,10 +2010,23 @@ const boundPanelResizers = new WeakSet();
 function bindPanelResizer() {
   const resizer = document.querySelector("#panelResizer");
   const shell = document.querySelector(".focus-shell");
-  if (!resizer || !shell || boundPanelResizers.has(resizer)) return;
+  if (!resizer || !shell) return;
+  window.FocusAccessibleControls.syncSeparator(resizer, { min: 280, max: normalizePanelWidth(Number.MAX_SAFE_INTEGER), now: state.panelWidth });
+  if (boundPanelResizers.has(resizer)) return;
   boundPanelResizers.add(resizer);
+  const sync = window.FocusAccessibleControls.bindSeparator(resizer, {
+    read: () => ({ min: 280, max: normalizePanelWidth(Number.MAX_SAFE_INTEGER), now: state.panelWidth }),
+    direction: -1,
+    resize: value => {
+      state.panelWidth = normalizePanelWidth(value);
+      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.panelWidth}px`;
+    },
+    commit: () => preferenceStorage.setItem("focus-panel-width", String(state.panelWidth)),
+  });
   resizer.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
     event.preventDefault();
+    resizer.focus({ preventScroll: true });
     resizer.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startWidth = state.panelWidth;
@@ -1981,6 +2035,7 @@ function bindPanelResizer() {
       const width = startWidth - (moveEvent.clientX - startX);
       state.panelWidth = normalizePanelWidth(width);
       shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.panelWidth}px`;
+      sync();
     };
     const finish = () => {
       try {
@@ -2007,18 +2062,26 @@ function bindMemoryResizers() {
     const top = document.querySelector("[data-memory-top]");
     const bottom = document.querySelector("[data-memory-bottom]");
     const parent = vertical.parentElement;
+    const resize = value => {
+      const ratio = Math.min(.85, Math.max(.15, value / 100));
+      top.style.flex = `${ratio} 1 0`; bottom.style.flex = `${1 - ratio} 1 0`;
+      state.memory = { ...state.memory, editorRatio: ratio };
+    };
+    const sync = window.FocusAccessibleControls.bindSeparator(vertical, {
+      read: () => ({ min: 15, max: 85, now: (state.memory.editorRatio ?? .5) * 100 }),
+      resize, step: 2, largeStep: 10,
+    });
     vertical.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
       event.preventDefault();
+      vertical.focus({ preventScroll: true });
       vertical.setPointerCapture(event.pointerId);
       const startY = event.clientY;
       const startH = parent.getBoundingClientRect().height || 1;
       const startTopH = top.getBoundingClientRect().height;
       const move = moveEvent => {
         const ratio = Math.min(0.85, Math.max(0.15, (startTopH + (moveEvent.clientY - startY)) / startH));
-        top.style.flex = `${ratio} 1 0`;
-        bottom.style.flex = `${1 - ratio} 1 0`;
-        // 比例写回 state，作为重建布局的唯一数据源（不触发 render，避免拖拽卡顿）。
-        state.memory = { ...state.memory, editorRatio: ratio };
+        resize(ratio * 100); sync();
       };
       const finish = () => {
         try { if (vertical.hasPointerCapture?.(event.pointerId)) vertical.releasePointerCapture(event.pointerId); } catch {}
@@ -2037,18 +2100,26 @@ function bindMemoryResizers() {
     const editor = document.querySelector("[data-memory-editor]");
     const left = document.querySelector(".memory-editor-sources");
     const right = document.querySelector(".memory-editor-target");
+    const resize = value => {
+      const ratio = Math.min(.8, Math.max(.2, value / 100));
+      left.style.flex = `${ratio} 1 0`; right.style.flex = `${1 - ratio} 1 0`;
+      state.memory = { ...state.memory, sourceRatio: ratio };
+    };
+    const sync = window.FocusAccessibleControls.bindSeparator(horizontal, {
+      read: () => ({ min: 20, max: 80, now: (state.memory.sourceRatio ?? .5) * 100 }),
+      resize, step: 2, largeStep: 10,
+    });
     horizontal.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
       event.preventDefault();
+      horizontal.focus({ preventScroll: true });
       horizontal.setPointerCapture(event.pointerId);
       const startX = event.clientX;
       const startW = editor.getBoundingClientRect().width || 1;
       const startLeftW = left.getBoundingClientRect().width;
       const move = moveEvent => {
         const ratio = Math.min(0.8, Math.max(0.2, (startLeftW + (moveEvent.clientX - startX)) / startW));
-        left.style.flex = `${ratio} 1 0`;
-        right.style.flex = `${1 - ratio} 1 0`;
-        // 比例写回 state，作为重建布局的唯一数据源。
-        state.memory = { ...state.memory, sourceRatio: ratio };
+        resize(ratio * 100); sync();
       };
       const finish = () => {
         try { if (horizontal.hasPointerCapture?.(event.pointerId)) horizontal.releasePointerCapture(event.pointerId); } catch {}
@@ -2071,6 +2142,9 @@ window.addEventListener("resize", () => {
   panelResizeFrame = requestAnimationFrame(() => {
     panelResizeFrame = null;
     const width = normalizePanelWidth(state.panelWidth);
+    window.FocusAccessibleControls.syncSeparator(document.querySelector("#panelResizer"), {
+      min: 280, max: normalizePanelWidth(Number.MAX_SAFE_INTEGER), now: width,
+    });
     if (width === state.panelWidth) return;
     state.panelWidth = width;
     const shell = document.querySelector(".focus-shell");
@@ -2081,9 +2155,11 @@ window.addEventListener("resize", () => {
 // 壳层三栏：窗口尺寸变化时对持久化的宽度做钳制并重新应用（内联自定义属性仍是唯一来源）。
 // 未定制用户不介入（让 CSS 断点默认值驱动），定制用户才跟随窗口重新钳制。
 window.addEventListener("resize", () => {
-  if (panelResizeFrame != null) cancelAnimationFrame(panelResizeFrame);
-  panelResizeFrame = requestAnimationFrame(() => {
-    panelResizeFrame = null;
+  if (shellResizeFrame != null) cancelAnimationFrame(shellResizeFrame);
+  shellResizeFrame = requestAnimationFrame(() => {
+    shellResizeFrame = null;
+    syncShellResizerVisibility();
+    syncShellSeparatorValues();
     if (!state.shellLayout.customized) return;
     const next = normalizeShellLayout(state.shellLayout, window.innerWidth);
     if (next.navWidth !== state.shellLayout.navWidth
@@ -4140,7 +4216,7 @@ function contextSourcePanelMarkup(draft) {
     return `<button class="context-source-candidate" style="--context-depth:${item.depth}" data-action="add-context-source" data-context-id="${escapeHtml(item.context_id)}">${escapeHtml(task?.title || item.title)}</button>`;
   }).join("") || localize('<span class="muted tiny">没有其他可加入的 Context</span>');
   return localize`<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2>已有消息</h2></div><span class="muted tiny">拖到右侧</span></header>
-    <div class="context-source-tabs" role="tablist" aria-label="来源 Context">${tabs}</div>
+    <div class="context-source-tabs" role="group" aria-label="来源 Context">${tabs}</div>
     <div class="context-source-message-list">${contextEditor.renderSourceMessages(active?.messages || [], active?.context_id || "", locked)}</div>
     <details class="context-source-add"${created ? " hidden" : ""}><summary>加入其他来源</summary><div class="context-source-tree">${candidates}</div></details>`;
 }
@@ -8387,18 +8463,8 @@ document.addEventListener("keydown", event => {
   }
   const mapTreeItem = event.target.closest?.(".map-collapsible-tree [role='treeitem'][data-tree-key]");
   if (mapTreeItem && handleMapTreeKeydown(event, mapTreeItem)) return;
-  const inspectorTab = event.target.closest?.('[role="tab"][data-inspector-tab]');
-  if (inspectorTab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-    event.preventDefault();
-    const tabs = [...appInspector.querySelectorAll('[role="tab"][data-inspector-tab]')];
-    const index = tabs.indexOf(inspectorTab);
-    const nextIndex = event.key === "Home" ? 0
-      : event.key === "End" ? tabs.length - 1
-        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-    openInspector(tabs[nextIndex].dataset.inspectorTab, tabs[nextIndex]);
-    tabs[nextIndex].focus();
-    return;
-  }
+  const tab = window.FocusAccessibleControls.tabDestination(event);
+  if (tab) { tab.click(); tab.focus(); return; }
   const contextHandle = event.target.closest?.('[data-context-pointer-handle][data-context-drag-origin="draft"]');
   if (contextHandle && event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
     event.preventDefault();
