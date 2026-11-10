@@ -117,16 +117,18 @@
     function paint(next) {
       const nextSignature = JSON.stringify(next);
       if (signature === nextSignature) return;
+      const sameRun = data?.run_id === next.run_id;
       data = next;
       signature = nextSignature;
-      const open = new Set([...root.querySelectorAll("details[data-change-key][open]")].map(row => row.dataset.changeKey));
-      const previous = new Map([...root.querySelectorAll("details[data-change-key]")].map(row => [row.dataset.changeKey, row]));
+      root.dataset.runId = next.run_id || "";
+      const open = new Set((sameRun ? [...root.querySelectorAll("details[data-change-key][open]")] : []).map(row => row.dataset.changeKey));
+      const previous = new Map((sameRun ? [...root.querySelectorAll("details[data-change-key]")] : []).map(row => [row.dataset.changeKey, row]));
       const panelOpen = root.querySelector(".round-changes-panel")?.open;
       const files = next.files || [];
       const running = ["pending", "running"].includes(next.status);
       const known = files.filter(file => file.added != null);
       const totals = known.reduce((sum, file) => ({ added: sum.added + file.added, removed: sum.removed + file.removed }), { added: 0, removed: 0 });
-      root.innerHTML = localize`<details class="round-changes-panel"${panelOpen ? " open" : ""}><summary><strong>本轮改动</strong><span>${files.length} 个文件</span>${files.length ? `${counts(totals)}${known.length < files.length ? localize('<small>部分行数未知</small>') : ""}` : ""}${running ? localize('<small>执行中</small>') : ""}</summary><div class="round-changes-content"><div class="round-changes-toolbar"><span>本次运行的文件改动${running ? localize("，随执行更新") : ""}</span><button type="button" data-review-changes${!files.length || running ? " disabled" : ""}>发起审查</button></div><div data-change-list></div><p class="round-change-status" role="status" data-change-status>${files.length ? "" : localize("本次运行暂无已记录的文件改动。")}</p></div></details>`;
+      root.innerHTML = localize`<details class="round-changes-panel"${panelOpen ? " open" : ""}><summary><strong>本轮改动</strong>${next.run_id ? `<span class="round-change-run" title="${escape(next.run_id)}">Run ${escape(next.run_id)}</span>` : ""}<span>${files.length} 个文件</span>${files.length ? `${counts(totals)}${known.length < files.length ? localize('<small>部分行数未知</small>') : ""}` : ""}${running ? localize('<small>执行中</small>') : ""}</summary><div class="round-changes-content"><div class="round-changes-toolbar"><button type="button" data-review-changes${!files.length || running ? " disabled" : ""}>发起审查</button></div><div data-change-list></div><p class="round-change-status" role="status" data-change-status>${files.length ? "" : localize("暂无文件改动。")}</p></div></details>`;
       const list = root.querySelector("[data-change-list]");
       for (const file of files) {
         const key = keyOf(file);

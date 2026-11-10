@@ -45,8 +45,11 @@ with sync_playwright() as p:
         }, api: async (url, options = {}) => {
           calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
           if (url.endsWith('/policy')) { snapshot.policy = JSON.parse(options.body); return snapshot.policy; }
-          if (url.endsWith('/preview')) return { token: 'fixture-token', journal_events: 200, backup_ids: [], backup_bytes: 0 };
-          if (url.endsWith('/cleanup')) return { journal_events_removed: 200, backups_removed: [] };
+          if (url.endsWith('/preview')) return { token: `fixture-token-${calls.length}`, expires_in_seconds: 600, journal_events: 200, backup_ids: [], backup_bytes: 0 };
+          if (url.endsWith('/cleanup')) {
+            if (window.expireCleanup) throw Error('预览已过期，请重新预览');
+            return { journal_events_removed: 200, backups_removed: [] };
+          }
           if (url.endsWith('/backup')) return { id: 'regular-fixture-backup' };
           return snapshot;
         } });
@@ -56,26 +59,57 @@ with sync_playwright() as p:
     page.wait_for_load_state("networkidle")
     host = page.locator("#storageSettingsHost")
     assert host.get_by_text("长期存储维护", exact=True).is_visible()
+    assert host.get_by_role("region", name="存储容量").count() == 1
+    assert host.get_by_role("group", name="新建数据库备份范围").get_by_text("工作区文件、升级依赖快照").is_visible()
+    usage = host.locator(".storage-usage")
+    assert usage.locator(":scope > div").count() == 2
+    journal = usage.get_by_text("其中 Journal 日志", exact=True)
+    assert journal.bounding_box()["x"] > usage.get_by_text("数据库总量", exact=True).bounding_box()["x"]
+    assert host.get_by_role("button", name="执行本次清理").is_disabled()
+    page.screenshot(path=str(output / "storage-capacity-desktop.png"), full_page=True)
     host.get_by_role("button", name="预览安全清理").click()
     page.wait_for_selector(".storage-preview")
-    host.locator('[data-storage-field="backup_keep_count"]').fill("4")
+    count = host.locator('[data-storage-field="backup_keep_count"]')
+    count.fill("4")
+    assert count.evaluate("el => el === document.activeElement"), "policy editing lost focus"
     assert page.locator(".storage-preview").count() == 0
+    assert host.get_by_role("button", name="执行本次清理").is_disabled()
     host.get_by_role("button", name="预览安全清理").click()
     assert host.get_by_text("请先保存策略，再预览清理", exact=True).is_visible()
     host.get_by_role("button", name="保存策略").click()
     host.get_by_role("button", name="预览安全清理").click()
     page.wait_for_selector(".storage-preview")
+    assert host.get_by_role("region", name="本次最多清理").is_visible()
+    assert host.locator(".storage-cleanup-steps > li").count() == 2
+    assert host.get_by_role("button", name="执行本次清理").is_enabled()
+    host.get_by_role("region", name="安全清理").scroll_into_view_if_needed()
     page.screenshot(path=str(output / "storage-desktop.png"), full_page=True)
+    page.evaluate("window.expireCleanup = true")
     host.get_by_role("button", name="执行本次清理").click()
-    page.wait_for_function("calls.some(row => row.url.endsWith('/cleanup'))")
-    assert page.evaluate("calls.find(row => row.url.endsWith('/cleanup')).body.token") == "fixture-token"
+    assert host.locator('[data-storage-status="cleanup"]').inner_text() == "预览已过期，请重新预览"
+    assert page.locator(".storage-preview").count() == 0
+    assert host.get_by_role("button", name="执行本次清理").is_disabled()
+    page.evaluate("window.expireCleanup = false")
+    host.get_by_role("button", name="预览安全清理").click()
+    # The preview token remains private UI state and only the token is sent on execution.
+    assert "fixture-token" not in host.inner_text()
+    host.get_by_role("button", name="执行本次清理").click()
+    assert host.locator('[data-storage-status="cleanup"]').inner_text() == "已清理 200 条日志、0 个备份"
+    cleanup = page.evaluate("calls.filter(row => row.url.endsWith('/cleanup'))")
+    assert len(cleanup) == 2 and cleanup[0]["body"]["token"] != cleanup[1]["body"]["token"]
+    assert list(cleanup[1]["body"]) == ["token"]
     host.get_by_role("button", name="立即备份数据库").click()
     assert host.get_by_text("数据库备份已完成：regular-fixture-backup", exact=True).is_visible()
     page.set_viewport_size({"width": 390, "height": 844})
+    host.get_by_role("region", name="存储容量").scroll_into_view_if_needed()
     page.screenshot(path=str(output / "storage-mobile.png"), full_page=True)
     assert page.locator("#settingsDialog").evaluate("el => el.scrollWidth <= el.clientWidth + 1"), "settings overflow horizontally"
     page.evaluate("english = true; controller.render()")
     assert host.get_by_role("button", name="Back up database now").is_visible()
+    assert host.get_by_role("region", name="Storage usage").count() == 1
+    assert host.get_by_role("group", name="New database backup scope").get_by_text("Workspace files and upgrade dependency snapshots").is_visible()
+    host.get_by_role("region", name="Safe cleanup").scroll_into_view_if_needed()
+    page.screenshot(path=str(output / "storage-cleanup-narrow-en.png"), full_page=True)
     assert not errors, errors
     browser.close()
 print(f"Storage browser checks passed; screenshots: {output}")

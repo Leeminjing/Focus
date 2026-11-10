@@ -18,13 +18,13 @@
       const heading=node("header","patrol-document-heading");heading.append(node("h2","",localize("Patrol 上下文")),node("span","patrol-document-hint",localize("挑选来源，编排模型要看到的内容")));
       this.tabs=node("nav","patrol-assembly-tabs");this.tabs.setAttribute("aria-label",localize("上下文编排视图"));
       for(const [page,label]of [["source",localize("来源")],["target",localize("上下文")]])this.tabs.append(action(label,()=>this.setPage(page)));
-      this.body=node("div","patrol-assembly");this.source=node("div","patrol-source-container");this.target=node("section","patrol-target-pane");this.target.setAttribute("aria-label",localize("可编辑上下文"));
-      this.divider=node("div","patrol-divider");this.divider.tabIndex=0;this.divider.setAttribute("role","separator");this.divider.setAttribute("aria-orientation","vertical");this.divider.setAttribute("aria-label",localize("调整来源与上下文宽度"));this.divider.setAttribute("aria-valuemin","30");this.divider.setAttribute("aria-valuemax","60");
+      this.body=node("div","patrol-assembly");this.source=node("div","patrol-source-container");this.source.id="patrolAssemblySources";this.target=node("section","patrol-target-pane");this.target.id="patrolAssemblyTarget";this.target.setAttribute("aria-label",localize("可编辑上下文"));
+      this.divider=node("div","patrol-divider");this.divider.tabIndex=0;this.divider.setAttribute("role","separator");this.divider.setAttribute("aria-orientation","vertical");this.divider.setAttribute("aria-label",localize("调整来源与上下文宽度"));this.divider.setAttribute("aria-controls","patrolAssemblySources patrolAssemblyTarget");
       this.ratio=wb.sourceRatio || 42;this._setRatio(this.ratio);
-      this.divider.onpointerdown=event=>{event.preventDefault();this.divider.setPointerCapture(event.pointerId);this.resizing=true;};
+      this.divider.onpointerdown=event=>{if(event.button!==0)return;event.preventDefault();this.divider.focus({preventScroll:true});this.divider.setPointerCapture(event.pointerId);this.resizing=true;};
       this.divider.onpointermove=event=>{if(!this.resizing)return;const box=this.body.getBoundingClientRect();this._setRatio((event.clientX-box.left)/box.width*100);};
       this.divider.onpointerup=this.divider.onpointercancel=()=>{this.resizing=false;};
-      this.divider.onkeydown=event=>{if(["ArrowLeft","ArrowRight"].includes(event.key)){event.preventDefault();this._setRatio(this.ratio+(event.key==="ArrowLeft"?-2:2));}};
+      root.FocusAccessibleControls.bindSeparator(this.divider,{read:()=>({...this._ratioBounds(),now:this.ratio}),resize:value=>this._setRatio(value),step:2,largeStep:10});
       this._target();this._footer();this.panel=node("aside","patrol-panel");this.panel.hidden=true;this.panel.setAttribute("aria-label",localize("上下文检查结果"));
       this.body.append(this.source,this.divider,this.target,this.panel);container.append(heading,this.tabs,this.body,this.footer);
       container.dataset.patrolPage=wb.assemblyPage || "target";
@@ -51,9 +51,14 @@
       this.check=action(localize("检查"),()=>this.wb.preview(),"patrol-check-button");this.result=action(localize("查看结果"),()=>this.wb.review.open());this.result.hidden=true;
       this.footer.append(this.status,this.checkState,this.budget,this.result,this.check);
     }
+    _ratioBounds(){
+      const width=this.body?.clientWidth || 1000,min=Math.min(60,Math.max(30,280/width*100)),max=Math.max(min,Math.min(60,(width-434)/width*100));
+      return {min,max};
+    }
     _setRatio(value){
-      const width=this.body?.clientWidth || 1000,min=Math.max(30,280/width*100),max=Math.min(60,(width-434)/width*100);
-      this.ratio=Math.max(min,Math.min(Math.max(min,max),value));this.wb.sourceRatio=this.ratio;this.container.style.setProperty("--patrol-source-ratio",`${this.ratio}%`);this.divider?.setAttribute("aria-valuenow",String(Math.round(this.ratio)));
+      const {min,max}=this._ratioBounds();
+      this.ratio=Math.max(min,Math.min(max,value));this.wb.sourceRatio=this.ratio;this.container.style.setProperty("--patrol-source-ratio",`${this.ratio}%`);
+      root.FocusAccessibleControls.syncSeparator(this.divider,{min,max,now:this.ratio});
     }
     _adapt(){const narrow=this.container.clientWidth<760;this.container.dataset.patrolNarrow=String(narrow);this.tabs.hidden=!narrow;this._setRatio(this.ratio);this.setPage(this.container.dataset.patrolPage);this.wb.viewport?.schedule();this.wb.sourceView?.viewport.schedule();}
     setPage(page){this.container.dataset.patrolPage=page;this.wb.assemblyPage=page;[...this.tabs.children].forEach((button,index)=>button.setAttribute("aria-pressed",String(page===(index?"target":"source"))));}

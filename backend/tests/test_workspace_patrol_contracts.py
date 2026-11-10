@@ -14,6 +14,29 @@ import pytest
 
 
 @pytest.mark.parametrize("mode", [None, "read-only", "workspace-write", "danger-full-access"])
+def test_current_patrol_reports_saved_file_mode_without_default_substitution(mode):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolService
+
+    @asynccontextmanager
+    async def sessions():
+        yield object()
+
+    service = WorkspacePatrolService(sessions, SimpleNamespace())
+    loop = SimpleNamespace(loop_id="loop", status="running", interaction_mode="workspace_patrol",
+                           equipment={} if mode is None else {"access_mode": mode})
+    service._current = AsyncMock(return_value=loop)
+    result = asyncio.run(service.current("workspace"))
+    assert result["access_mode"] == mode
+    service._current = AsyncMock(return_value=None)
+    assert asyncio.run(service.current("workspace")) is None
+
+
+@pytest.mark.parametrize("mode", [None, "read-only", "workspace-write", "danger-full-access"])
 def test_patrol_file_mode_defaults_to_full_access_but_respects_explicit_mode(mode):
     from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
 

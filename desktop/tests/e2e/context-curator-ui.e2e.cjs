@@ -170,7 +170,7 @@ async function run() {
   if (details.initialRevisionCount !== 1 || details.pagedRevisionCount !== 2 || !details.auditText.includes("failed_tool_noise") || !details.auditText.includes("selected_by_plan") || !details.auditText.includes("compose_message") || !details.auditText.includes("来源证据")) {
     throw new Error(`策展审计分页失败: ${JSON.stringify(details)}`);
   }
-  if (details.tracking !== "following" || !details.hasManagedLink || details.hasConversationHistory || !details.railText.includes("受管 已暂停")) {
+  if (details.tracking !== "following" || !details.hasManagedLink || details.hasConversationHistory || !details.railText.includes("受管状态") || !details.railText.includes("已暂停")) {
     throw new Error(`策展操作或 Context rail 失败: ${JSON.stringify(details)}`);
   }
 

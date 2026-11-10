@@ -379,7 +379,7 @@ async function testRenderWithoutActiveTask() {
     return app.innerHTML;
   })()`, harness.context);
 
-  assert.match(result, /暂无活动 Context/);
+  assert.match(result, /暂无活动会话/);
 }
 
 async function testUiActionErrorBoundary() {

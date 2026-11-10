@@ -19,6 +19,9 @@ test("only metadata loads initially; expanding loads the pinned diff and retains
   controller.mount(host, "task"); await tick();
   assert.equal(calls.length, 1);
   assert.match(host.innerHTML, /src\/&lt;unsafe&gt;.js/);
+  assert.equal(host.querySelector("[data-run-id]").dataset.runId, "run");
+  assert.match(host.querySelector(".round-changes-panel > summary").textContent, /Run run/);
+  assert.doesNotMatch(host.textContent, /本次运行的文件改动/);
   const row = host.querySelector("[data-change-key]");
   row.open = true; row.dispatchEvent({ type: "toggle" }); await tick();
   assert.equal(calls[1], "/desktop/api/tasks/task/changes/run/first/last");
@@ -39,6 +42,22 @@ test("late response from another task cannot overwrite the selected task", async
   release({ ...overview, files: [{ ...file, path: "old-only" }] }); await tick();
   assert.doesNotMatch(next.innerHTML, /old-only/);
   assert.match(next.innerHTML, /src/);
+});
+
+test("the same file keys in a different Run reload that Run's pinned diff", async () => {
+  let current = structuredClone(overview);
+  const calls = [];
+  const { host, controller } = setup(async url => { calls.push(url); return url.endsWith('/changes') ? current : snapshot; });
+  controller.mount(host, 'task'); await tick();
+  const original = host.querySelector('[data-change-key]');
+  original.open = true; original.dispatchEvent({type: 'toggle'}); await tick();
+  current = {...overview, run_id: 'next-run'};
+  await controller.refresh();
+  const next = host.querySelector('[data-change-key]');
+  assert.notEqual(next, original);
+  assert.match(host.querySelector('.round-change-run').textContent, /next-run/);
+  next.open = true; next.dispatchEvent({type: 'toggle'}); await tick();
+  assert.equal(calls.at(-1), '/desktop/api/tasks/task/changes/next-run/first/last');
 });
 
 test("errors allow retry, unavailable diffs retain honest counts, and review preserves pinned evidence", async () => {
