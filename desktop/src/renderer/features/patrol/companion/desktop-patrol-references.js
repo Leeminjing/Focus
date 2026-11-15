@@ -1,6 +1,7 @@
 /* Desktop fixed-version references use the existing Fact API and input store.
  * Picker reads are scoped to the active workspace and cancelled on close/switch.
  * The original fact/revision/result/hash identity is kept for detail and submission.
+ * Fixed versions open directly as a diff with a single content scroller and a scoped folder action.
  */
 (function (root) {
   "use strict";
@@ -21,6 +22,7 @@
       linkedTarget = null; linkedPreview.release();
       typed = false;
       $("#version-picker").hidden = true; $("#version-detail").hidden = true;
+      $("#version-detail > header [data-version-folder]")?.remove();
       $("#reference-file").setAttribute("aria-expanded", "false");
       if (focus) $("#instruction").focus({ preventScroll:true });
     }
@@ -84,35 +86,33 @@
         const result = await api.factDetail(id,file.fact_id,reads.signal,file.revision);
         if (owner !== epoch) return;
         if (!result.file || result.file.result_key !== file.result_key || (file.sha256 && result.file.sha256 !== file.sha256)) throw new Error(localize("引用版本不可用，请重新选择；原引用和要求已保留。"));
-        body.innerHTML = view.renderFile({ ...result.file, fact_id:file.fact_id, revision:file.revision });
-        const section = body.querySelector(".file-version"), tabs = document.createElement("div");
-        section.querySelector("h3").textContent = file.path.split(/[\\/]/).at(-1);
-        section.querySelector("h3").title = file.path;
-        section.querySelector("p").textContent = localize`${(file.sha256 || file.result_key).slice(0,8)} · 已提交来源${result.file.after?.redacted || result.file.before?.redacted ? localize(" · 已脱敏") : ""}`;
-        tabs.className = "version-tabs"; tabs.setAttribute("role","tablist"); tabs.setAttribute("aria-label",localize("版本内容"));
-        const panels = [...section.querySelectorAll(":scope > details")];
-        section.querySelectorAll(":scope > p")[1]?.classList.add("sr-only");
-        const cite = section.querySelector("[data-patrol-file-add]");
-        section.insertBefore(tabs,cite);
-        panels.forEach((panel,index) => {
-          const tab = button(panel.querySelector("summary").textContent,tabs,() => select(index));
-          tab.id = `version-tab-${index}`; tab.setAttribute("role","tab"); tab.setAttribute("aria-controls",`version-tabpanel-${index}`);
-          const content = document.createElement("div"); content.id = `version-tabpanel-${index}`; content.setAttribute("role","tabpanel"); content.setAttribute("aria-labelledby",tab.id); content.tabIndex = 0;
-          panel.querySelector("summary").remove(); content.append(...panel.childNodes); panel.replaceWith(content);
-          tab.addEventListener("keydown",event => {
-            if (!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return;
-            event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? panels.length-1 : (index+(event.key === "ArrowRight" ? 1 : panels.length-1))%panels.length;
-            select(next); tabs.children[next].focus();
-          });
-        });
-        function select(index) {
-          [...tabs.children].forEach((tab,i) => { tab.setAttribute("aria-selected",String(i === index)); tab.tabIndex = i === index ? 0 : -1; });
-          section.querySelectorAll(':scope > [role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
+        const title = $("#version-detail > header strong");
+        title.removeAttribute("data-i18n"); title.textContent = file.path.split(/[\\/]/).at(-1); title.title = file.path;
+        body.replaceChildren();
+        const section = document.createElement("section"); section.className = "file-version version-diff";
+        section.tabIndex = 0; section.setAttribute("aria-label",file.path); body.append(section);
+        const { before, after } = result.file;
+        if (before?.available && after?.available) {
+          const comparison = view.buildLineDiff(before.text,after.text);
+          section.innerHTML = view.renderLineDiff(comparison);
+          section.querySelector(".file-diff-summary")?.remove();
+          section.querySelector(".file-diff-columns")?.remove();
+          if (!comparison.limited && !comparison.hunks.length) section.textContent = localize("无逐行变更");
+        } else {
+          const notice = document.createElement("p"); notice.className = "file-diff-notice";
+          notice.textContent = before?.reason === "before_unobserved" ? localize("写入前版本未被观察，无法生成可靠 Diff") : localize("历史快照不可用"); section.append(notice);
+          if (after?.available) { const content = document.createElement("pre"); content.textContent = after.text; section.append(content); }
         }
-        select(0); section.append(cite);
-        root.FocusFilePreview?.mountHistory(body, { ...result.file, fact_id: file.fact_id, revision: file.revision }, id);
-        const note = document.createElement("small"); note.className = "version-note"; note.textContent = localize("固定版本，不随文件更新漂移"); section.append(note);
-        body.querySelector("[data-patrol-file-add]")?.addEventListener("click",() => { try { add(file); } catch (error) { onError(error); } });
+        const folder = button("",$("#version-detail > header"),async () => {
+          const desktop = root.focusDesktop || root.window?.focusDesktop;
+          if (!desktop?.fileAction) throw new Error(localize("请在 Focus 桌面应用中使用系统文件操作"));
+          folder.disabled = true;
+          try { await desktop.fileAction({ operation:"reveal", target:{loop_id:id,fact_id:file.fact_id,revision:file.revision,current:true},name:file.path }); }
+          finally { folder.disabled = false; }
+        });
+        folder.dataset.versionFolder = ""; folder.title = localize("打开所在文件夹"); folder.setAttribute("aria-label",folder.title);
+        const icon = document.createElement("span"); icon.className = "ui-icon icon-folder"; icon.setAttribute("aria-hidden","true"); folder.append(icon);
+        $("#version-detail > header").insertBefore(folder,$("#close-version-detail"));
       } catch (error) { if (owner === epoch && error.name !== "AbortError") body.textContent = localize("引用版本不可用，请重新选择；原引用和要求已保留。"); }
     }
     async function link(reference, taskId) {

@@ -394,7 +394,7 @@ class DesktopPatrolHost {
       if (!Number.isFinite(height)) throw new Error("面板高度无效");
       if (!Number.isFinite(width)) throw new Error("面板宽度无效");
       const nextHeight = Math.max(109 + this._panelGutter*2, Math.min(500 + this._panelGutter*2, Math.ceil(height)));
-      const nextWidth = Math.max(288 + this._panelGutter*2, Math.min(590 + this._panelGutter*2, Math.ceil(width)));
+      const nextWidth = Math.max(288 + this._panelGutter*2, Math.min(848 + this._panelGutter*2, Math.ceil(width)));
       this._panelCssSize = { height: nextHeight, width: nextWidth };
       // An unchanged CSS target still needs positioning when page zoom changed.
       this._positionPanel();

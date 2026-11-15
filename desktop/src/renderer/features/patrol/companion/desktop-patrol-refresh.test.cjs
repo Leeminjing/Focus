@@ -532,10 +532,11 @@ test("artifact names open fixed version details and can be referenced without le
   const file = { path: "reports/result.md", result_key: "result-v1", sha256: "hash-v1", slot_id: "slot-a" };
   const f = await panel();
   const details = [];
-  f.api.factDetail = async (...args) => { details.push(args); return { file: { ...file, after: { available: true, text: "产物内容" } } }; };
+  f.api.factDetail = async (...args) => { details.push(args); return { file: { ...file, before: { available:true,text:"旧内容\n" }, after: { available: true, text: "产物内容\n新增内容\n" } } }; };
   await f.emit(projection("r1", { files: [{ fact_id: "artifact-a", revision: 2, kind: "artifact", file }] }));
   const artifacts = f.body.querySelector("#artifacts");
   assert.match(artifacts.textContent, /result.md/);
+  assert.equal(artifacts.querySelector(".artifact-diff-count").textContent, "+2/-1");
   artifacts.querySelector('button[aria-label="引用"]').dispatchEvent({ type: "click" }); await tick();
   assert.equal(f.store("a").get().draft.file_refs[0].result_key, "result-v1");
   assert.equal(f.store("a").get().draft.file_refs[0].revision, 2);
@@ -544,6 +545,7 @@ test("artifact names open fixed version details and can be referenced without le
   assert.equal(details[0][1], "artifact-a");
   assert.equal(details[0][3], 2);
   assert.equal(f.body.querySelector("#version-detail").hidden, false);
+  assert.equal(f.body.querySelector("#version-body .file-diff-summary"), null);
 });
 
 test("other contexts and title changes preserve an expanded answer and its Markdown DOM", async () => {
