@@ -30,7 +30,7 @@ def test_workspace_material_migration_preserves_legacy_and_refuses_destructive_d
         connection.execute(text("INSERT INTO desktop_materials (material_id,task_id,relative_path,reading_mode,instruction_mode,retention) VALUES (:m,:t,'same.txt','full','reference','removable')"),
             {"m": legacy, "t": task})
     command.upgrade(config, "head")
-    statement = text("INSERT INTO desktop_materials (material_id,task_id,workspace_id,relative_path,intake_upload_key,reading_mode,instruction_mode,retention) VALUES (:m,:t,:w,:p,:k,'full','reference','removable')")
+    statement = text("INSERT INTO desktop_materials (material_id,task_id,workspace_id,relative_path,intake_upload_key,retention) VALUES (:m,:t,:w,:p,:k,'removable')")
     try:
         with engine.begin() as connection:
             preserved = connection.execute(text("SELECT task_id,workspace_id,relative_path,intake_upload_key FROM desktop_materials WHERE material_id=:m"), {"m": legacy}).one()

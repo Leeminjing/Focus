@@ -21,7 +21,7 @@ def _import_consumers() -> None:
     """导入声明受治理键的消费者模块，使集合完整。"""
     import backend.app.desktop.agents.collaboration  # noqa: F401
     import focus.agents.commitment.middleware  # noqa: F401
-    import focus.agents.must_view  # noqa: F401
+    import focus.agents.material_inputs  # noqa: F401
     import focus.security.context  # noqa: F401
     import focus.security.policy  # noqa: F401
 
@@ -41,7 +41,7 @@ def test_governed_keys_are_the_union_of_consumer_declarations():
         "checkpoint_ns",
         "model_name",
         "allow_global_config",
-        "must_view_materials",
+        "run_image_inputs",
         "model_supports_image_input",
         "task_id",
         "swarm_depth",

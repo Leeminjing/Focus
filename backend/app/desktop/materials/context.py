@@ -1,8 +1,8 @@
 """本文件对外提供 MaterialContextProjection 与 MaterialContextProjector。
 
-输入为不可变 RunMaterialInputs 和工作区路径；输出为仅含本轮已选材料的策略文本与
-<current_uploads> 标签。具体工作流为按绑定顺序解析安全路径，为图片或普通材料生成长期策略
-描述；带 snapshot_object_id 的受保护内容明确指向 Git blob，并完全忽略未选材料；projector
+输入为不可变 RunMaterialInputs 和工作区路径；输出为仅含本轮已选材料的路径引用与
+<current_uploads> 标签。具体工作流为按绑定顺序解析安全路径；带 snapshot_object_id 的
+受保护内容明确指向 Git blob，并完全忽略未选材料；不生成阅读方式或指令遵守规则；projector
 不查询数据库也不修改运行聚合。
 
 示例：projection = MaterialContextProjector.project(inputs, workspace_path)。
@@ -35,6 +35,4 @@ class MaterialContextProjector:
         )
         if item.material_kind == "image":
             return f"- {path} | 图片材料{snapshot}"
-        reading = "优先完整阅读" if item.reading_mode == "full" else "优先粗略阅读，需要时仍可完整读取"
-        instruction = "严格遵守" if item.instruction_mode == "strict" else "仅供参考"
-        return f"- {path} | {reading} | {instruction}{snapshot}"
+        return f"- {path}{snapshot}"

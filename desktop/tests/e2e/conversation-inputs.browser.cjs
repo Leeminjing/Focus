@@ -76,13 +76,13 @@ const { chromium } = require(process.env.FOCUS_PLAYWRIGHT_MODULE || "playwright"
     await page.waitForFunction(() => document.querySelector("#mainInput").value === "输入 queued");
     assert.deepEqual(await page.evaluate(() => inputsHarness.withdrawals), ["blocked", "queued"]);
     assert.equal(await page.locator('[data-input-status="started"] button').count(), 0);
-    // 撤回编辑后，失败重试仍携带原身份、材料备注、必看、技能与权限。
+    // 撤回编辑后，失败重试仍携带原身份、材料备注、技能与权限。
     await page.evaluate(() => {
       const taskId = state.activeTaskId, detail = state.details.get(taskId);
       detail.ui_state.skills = ["original-skill"];
       detail.ui_state = accessMode.writeMode(detail.ui_state, "read-only");
       state.materials.set(taskId, [{ material_id: "image", is_image: true, size_bytes: 50, relative_path: "shot.png" }]);
-      state.materialSelections.set(taskId, { bindings: [{ materialId: "image", note: "原备注" }], requiredImageIds: ["image"] });
+      state.materialSelections.set(taskId, { bindings: [{ materialId: "image", note: "原备注" }] });
     });
     await page.locator('[data-action="send-main"]').click();
     await page.locator('[data-action="retry-main"]').waitFor();
@@ -90,7 +90,7 @@ const { chromium } = require(process.env.FOCUS_PLAYWRIGHT_MODULE || "playwright"
     assert.equal(original.body.mode, "queue");
     assert.deepEqual(original.body.run.skills, ["original-skill"]);
     assert.deepEqual(original.body.run.material_inputs, [{ material_id: "image", note: "原备注" }]);
-    assert.deepEqual(original.body.run.must_view_material_ids, ["image"]);
+    assert.equal(Object.hasOwn(original.body.run, "must_view_material_ids"), false);
     assert.equal(original.body.run.access_mode, "read-only");
     await page.evaluate(() => { state.details.get(state.activeTaskId).ui_state.skills = ["changed-skill"]; });
     await page.locator('[data-action="retry-main"]').click();

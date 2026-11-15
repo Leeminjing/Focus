@@ -60,23 +60,24 @@ class ConversationInputCreate(StrictRequest):
                 raise ValueError("补充当前轮需要指定 Run")
             if not isinstance(self.run.message, str) or not self.run.message.strip():
                 raise ValueError("补充要求不能为空")
-            if self.run.material_inputs or self.run.attached_material_ids or self.run.must_view_material_ids or self.run.skills:
+            if self.run.material_inputs or self.run.attached_material_ids or self.run.skills:
                 raise ValueError("当前轮补充仅支持文字；新增材料或技能请排队到下一轮")
         return self
 
 
 def _persisted_run_payload(payload):
     # 旧队列冻结了已移除的字段；只在持久读取边界丢弃，保留原记录和请求摘要供审计。
-    return {key: value for key, value in payload.items() if key != "spatial_focus"}
+    return {key: value for key, value in payload.items() if key not in {"spatial_focus", "must_view_material_ids"}}
 
 
 def _matches_request(row, frozen, request_hash):
     if row.request_hash == request_hash:
         return True
-    if "spatial_focus" not in row.payload:
+    retired = {key: row.payload[key] for key in ("spatial_focus", "must_view_material_ids") if key in row.payload}
+    if not retired:
         return False
     # 用旧字段还原原请求摘要；其余任意字段的变化仍会拒绝，不重写历史 hash。
-    legacy = {**frozen, "run": {**frozen["run"], "spatial_focus": row.payload["spatial_focus"]}}
+    legacy = {**frozen, "run": {**frozen["run"], **retired}}
     return row.request_hash == content_hash(legacy)
 
 
@@ -205,7 +206,7 @@ class ConversationInputs:
                         memory_ids=body.memory_ids, access_mode=body.access_mode,
                         material_inputs=[RunMaterialRequest(material_id=item.material_id, note=item.note)
                                          for item in body.material_inputs] if body.material_inputs is not None else None,
-                        attached_material_ids=body.attached_material_ids, must_view_material_ids=body.must_view_material_ids,
+                        attached_material_ids=body.attached_material_ids,
                         run_identity={"message_id": queued.input_id, "origin": "direct_user", "idempotency_key": key},
                         admit_only=True)
                 except HTTPException as error:

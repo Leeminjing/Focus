@@ -1,4 +1,4 @@
-"""Verify current material selections, persistent policies and Run-owned diffs.
+"""Verify material selections, retention settings and Run-owned diffs.
 
 Run: python desktop/tests/e2e/material-settings.browser.py [screenshot directory]
 Uses production UI with deterministic API fixtures, without model or database calls.
@@ -19,10 +19,10 @@ HARNESS = r"""
   const reply = value => new Response(JSON.stringify(value), {headers: {'Content-Type': 'application/json'}});
   window.materialHarness = {calls: [], run: 'run-material-123456789', materials: [
     {material_id:'protected',relative_path:'rules.md',material_kind:'text',size_bytes:100,
-      reading_mode:'full',instruction_mode:'strict',retention:'irreplaceable',needs_confirmation:true},
+      retention:'irreplaceable',needs_confirmation:true},
     {material_id:'image',relative_path:'diagram.png',material_kind:'image',is_image:true,size_bytes:68,retention:'irreplaceable'},
     {material_id:'optional',relative_path:'notes.txt',material_kind:'text',size_bytes:40,
-      reading_mode:'rough',instruction_mode:'reference',retention:'removable'}]};
+      retention:'removable'}]};
   window.fetch = async (url, options={}) => {
     const path = new URL(String(url), 'http://focus.test').pathname;
     const body = options.body ? JSON.parse(options.body) : null;
@@ -32,7 +32,6 @@ HARNESS = r"""
     if (path === '/desktop/api/tasks/root/materials') return reply(materialHarness.materials);
     if (path === '/desktop/api/tasks/root/material-history') return reply([
       {material_id:'protected',run_id:'previous-run',relative_path:'rules.md',note:'',current_available:true}]);
-    if (path.endsWith('/image-validity')) return reply({valid:true});
     if (path.endsWith('/image/content')) {
       const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6P3sAAAAASUVORK5CYII='), c=>c.charCodeAt(0));
       return new Response(bytes, {headers:{'Content-Type':'image/png'}});
@@ -78,27 +77,27 @@ with sync_playwright() as p:
 
         protected.get_by_role('button', name='材料设置', exact=True).click()
         rules = protected.get_by_role('group', name='长期规则', exact=True)
-        expect(rules.get_by_label('阅读方式')).to_have_value('full')
-        expect(rules.get_by_label('指令规则')).to_have_value('strict')
+        expect(rules.get_by_label('阅读方式')).to_have_count(0)
+        expect(rules.get_by_label('指令规则')).to_have_count(0)
+        expect(rules.get_by_role('combobox')).to_have_count(1)
         expect(rules.get_by_label('保留规则')).to_have_value('irreplaceable')
         expect(protected.get_by_role('button', name='删除', exact=True)).to_have_count(0)
-        rules.get_by_label('阅读方式').select_option('rough')
         page.locator('#mainInput').fill('保留这份会话草稿')
         protected.get_by_role('button', name='本轮使用', exact=False).click()
         expect(protected.locator('[data-action="toggle-run-material"]')).to_have_attribute('aria-pressed','true')
         expect(protected.locator('[data-action="toggle-run-material"]')).to_be_focused()
-        expect(rules.get_by_label('阅读方式')).to_have_value('rough')
+        expect(rules.get_by_label('保留规则')).to_have_value('irreplaceable')
         protected.get_by_role('textbox', name='本轮备注', exact=True).fill('只对本轮生效')
         protected.locator('[data-action="toggle-run-material"]').click()
         expect(protected.get_by_role('textbox', name='本轮备注', exact=True)).to_have_count(0)
-        expect(rules.get_by_label('阅读方式')).to_have_value('rough')
+        expect(rules.get_by_label('保留规则')).to_have_value('irreplaceable')
         assert not page.evaluate("materialHarness.calls.some(c=>c.method==='DELETE'||c.method==='PUT')")
         protected.locator('[data-action="toggle-run-material"]').click()
         expect(protected.get_by_role('textbox', name='本轮备注', exact=True)).to_have_value('只对本轮生效')
         protected.get_by_role('button',name='保存规则',exact=True).click()
         page.wait_for_function("() => materialHarness.calls.some(c=>c.method==='PUT')")
         assert page.evaluate("materialHarness.calls.find(c=>c.method==='PUT').body") == {
-            'reading_mode':'rough','instruction_mode':'strict','retention':'irreplaceable'}
+            'retention':'irreplaceable'}
         expect(protected.locator('[data-action="toggle-run-material"]')).to_have_attribute('aria-pressed','true')
         expect(page.locator('#mainInput')).to_have_value('保留这份会话草稿')
         expect(protected).not_to_contain_text('无备注')
@@ -117,21 +116,22 @@ with sync_playwright() as p:
         expect(protected.locator('[data-action="toggle-run-material"]')).to_be_enabled()
         assert page.evaluate("materialHarness.calls.find(c=>c.path.endsWith('/restore')).body.version_id") == 'saved-version'
 
-        # Image preview and mandatory viewing remain separate from inclusion.
+        # Image inclusion, notes and preview remain available without a declaration gate.
         image.get_by_role('button',name='材料设置',exact=True).click()
         expect(image.get_by_role('button',name='删除',exact=True)).to_have_count(0)
         expect(image.get_by_role('button',name='版本',exact=True)).to_be_visible()
-        expect(image.locator('[data-action="toggle-image-required"]')).to_be_disabled()
         image.locator('[data-action="toggle-run-material"]').click()
-        image.locator('[data-action="toggle-image-required"]').click()
-        expect(image.locator('[data-action="toggle-image-required"]')).to_have_attribute('aria-pressed','true')
-        assert page.evaluate("materialHarness.calls.some(c=>c.path.endsWith('/image-validity'))")
+        expect(image.get_by_text('必须看', exact=True)).to_have_count(0)
+        image.get_by_role('textbox', name='本轮备注', exact=True).fill('请核对图中的尺寸')
         image.locator('[data-action="preview-image-material"]').click()
         expect(page.locator('.image-lightbox')).to_be_visible()
         page.locator('.image-lightbox').get_by_role('button',name='关闭',exact=True).click()
         expect(page.locator('.image-lightbox')).to_have_count(0)
         image.locator('[data-action="toggle-run-material"]').click()
-        expect(image.locator('[data-action="toggle-image-required"]')).to_have_attribute('aria-pressed','false')
+        expect(image.get_by_role('textbox', name='本轮备注', exact=True)).to_have_count(0)
+        image.locator('[data-action="toggle-run-material"]').click()
+        expect(image.get_by_role('textbox', name='本轮备注', exact=True)).to_have_value('请核对图中的尺寸')
+        image.screenshot(path=str(OUTPUT/'image-material-note.png'))
         assert len(page.evaluate('materialHarness.materials')) == 3
 
         # File metadata shows its exact Run; expanded content still fetches pinned snapshots.

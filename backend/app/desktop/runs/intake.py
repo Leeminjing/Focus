@@ -87,7 +87,6 @@ class MainRunIntake:
             if body.material_inputs is not None
             else None,
             attached_material_ids=body.attached_material_ids,
-            must_view_material_ids=body.must_view_material_ids,
             access_mode=body.access_mode,
             run_identity={
                 "message_id": message_id,

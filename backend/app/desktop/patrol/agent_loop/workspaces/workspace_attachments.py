@@ -43,7 +43,6 @@ class WorkspaceAttachments:
             "",
             [RunMaterialRequest(item.material_id, item.note) for item in request.attachments],
             None,
-            [],
             workspace_id=loop.workspace_id,
         )
         frozen = []
@@ -60,7 +59,6 @@ class WorkspaceAttachments:
             )
             item = replace(
                 item,
-                instruction_mode="reference",
                 snapshot_object_id=version.object_id if version else None,
             )
             frozen.append({

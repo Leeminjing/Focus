@@ -1,6 +1,6 @@
 r"""本文件对外提供 PendingDecisionProjector 与 PendingDecisionContract。
 
-输入为 Commitment、Compression、must-view、access approval 或扩展 interrupt及可选现有事务；输出为统一持久
+输入为 Commitment、Compression、access approval 或扩展 interrupt及可选现有事务；输出为统一持久
 pending-decision surface。具体工作流为安全默认不可委托，只有显式 allowlist 与 grant capability 同时
 满足才标记 delegable；访问扩大永远要求用户。示例：`await projector.project(loop_id, interrupt)` 或
 `await projector.project_in_session(session, loop_id, interrupt)`。
@@ -30,7 +30,7 @@ class PendingDecisionContract(BaseModel):
 
 
 class PendingDecisionProjector:
-    SAFE_DELEGABLE = frozenset({"compression", "must_view"})
+    SAFE_DELEGABLE = frozenset({"compression"})
 
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions

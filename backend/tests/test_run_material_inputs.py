@@ -17,7 +17,7 @@ from langchain_core.messages import HumanMessage
 from backend.app.desktop.materials.context import MaterialContextProjector
 from backend.app.desktop.materials.kinds import MaterialKindClassifier
 from backend.app.desktop.materials.snapshots import MaterialSnapshotVerifier
-from backend.app.desktop.api.schemas import MainRunCreate
+from backend.app.desktop.api.schemas import MainRunCreate, MaterialCreate, MaterialUpdate
 from backend.app.desktop.conversations.inputs import ConversationInputCreate
 from backend.app.desktop.materials.limits import ImageResourceLimits
 from backend.app.desktop.runs.material_message import RunMaterialMessageProjector
@@ -33,8 +33,6 @@ def _item(material_id: str, path: str, kind: str, note: str = "") -> RunMaterial
         digest="a" * 64,
         material_kind=kind,
         delivery_mode="image" if kind == "image" else "reference",
-        reading_mode="full",
-        instruction_mode="reference",
         size_bytes=12,
         note=note,
         source_bytes=12 if kind == "image" else 0,
@@ -56,7 +54,7 @@ def test_attachment_only_requests_and_queue_allow_empty_text(message) -> None:
 
 
 @pytest.mark.parametrize("message", ["", " \n ", []])
-@pytest.mark.parametrize("attachments", [{}, {"material_inputs": []}, {"attached_material_ids": []}, {"must_view_material_ids": ["shot"]}])
+@pytest.mark.parametrize("attachments", [{}, {"material_inputs": []}, {"attached_material_ids": []}])
 def test_empty_requests_without_selected_attachments_are_rejected(message, attachments) -> None:
     with pytest.raises(ValidationError, match="文字或附件"):
         MainRunCreate(message=message, **attachments)
@@ -71,17 +69,14 @@ def test_attachment_only_message_projects_material_identity_into_human_content()
     assert '"relative_path":"shot.png"' in projected["content"]
 
 
-def test_value_object_round_trip_order_required_subset_and_immutability(tmp_path) -> None:
+def test_value_object_round_trip_order_and_immutability(tmp_path) -> None:
     items = [_item("m2", "notes.md", "text", "第三章\n引号\" 与 <tag>"), _item("m1", "shot.png", "image")]
-    inputs = RunMaterialInputs.build("r1", "msg1", items, ["m1"])
+    inputs = RunMaterialInputs.build("r1", "msg1", items)
     assert RunMaterialInputs.from_json(inputs.to_json()) == inputs
     assert [item.material_id for item in inputs.attached] == ["m2", "m1"]
     assert [item.material_id for item in inputs.images.attached] == ["m1"]
-    assert inputs.images.required_ids == ("m1",)
     with pytest.raises(FrozenInstanceError):
         inputs.origin_run_id = "changed"
-    with pytest.raises(ValueError, match="只有图片"):
-        RunMaterialInputs.build("r", "msg", items, ["m2"])
     with pytest.raises(ValueError, match="不能重复"):
         RunMaterialInputs.build("r", "msg", [items[0], items[0]])
 
@@ -112,6 +107,41 @@ def test_request_new_legacy_and_mixing_contract() -> None:
         MainRunCreate(message="x", material_inputs=[], attached_material_ids=[])
     with pytest.raises(ValidationError, match="不能重复"):
         MainRunCreate(message="x", material_inputs=[{"material_id": "m1"}, {"material_id": "m1"}])
+
+
+@pytest.mark.parametrize("field,value", [("reading_mode", "full"), ("instruction_mode", "strict")])
+def test_material_requests_reject_retired_policies(field, value) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        MaterialCreate(path="notes.md", **{field: value})
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        MaterialUpdate(retention="removable", **{field: value})
+
+
+def test_legacy_material_equipment_discards_reading_rules(tmp_path) -> None:
+    legacy = _item("m1", "notes.md", "text", "只看第三章").to_json()
+    legacy.update(reading_mode="full", instruction_mode="strict")
+    inputs = RunMaterialInputs.from_equipment({"run_material_inputs": {
+        "origin_run_id": "old-run", "origin_message_id": "old-message", "attached": [legacy],
+    }})
+    item = inputs.attached[0]
+    assert item.note == "只看第三章"
+    assert "reading_mode" not in item.to_json()
+    assert "instruction_mode" not in item.to_json()
+    projection = MaterialContextProjector.project(inputs, str(tmp_path))
+    assert projection.policy_text == f"- {tmp_path / 'notes.md'}"
+    assert "notes.md" in projection.uploads_tag
+
+
+def test_legacy_image_constraints_are_discarded_without_losing_notes() -> None:
+    item = _item("image", "shot.png", "image", "核对尺寸\n保留原文").to_json()
+    restored = RunMaterialInputs.from_json({
+        "origin_run_id": "run", "origin_message_id": "message", "attached": [item],
+        "required_image_ids": ["image"],
+    })
+    assert restored.attached[0].note == "核对尺寸\n保留原文"
+    assert restored.images.attached[0].material_id == "image"
+    assert "required_image_ids" not in restored.to_json()
+    assert "required_ids" not in restored.images.to_json()
 
 
 def test_material_note_limits_reject_without_truncation() -> None:
@@ -146,7 +176,6 @@ def test_legacy_image_equipment_is_read_only_promoted() -> None:
         }
     }
     inputs = RunMaterialInputs.from_equipment(legacy)
-    assert inputs.required_image_ids == ("m1",)
     assert set(inputs.to_equipment()) == {"run_material_inputs"}
 
 
@@ -157,7 +186,7 @@ def test_active_origin_message_is_compression_protected_only_when_requested() ->
         "decision": "apply",
         "ranges": [{"source_ids": ["msg1"], "replacement": "摘要"}],
     }
-    _ranges, error = validate_apply_decision(decision, messages, (), ("msg1",))
+    _ranges, error = validate_apply_decision(decision, messages, ("msg1",))
     assert "活动运行" in error
     ranges, error = validate_apply_decision(decision, messages)
     assert error is None

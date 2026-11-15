@@ -25,7 +25,7 @@
     let items;
     try { items = JSON.parse(match[1]); } catch { throw new Error("原提问的附件记录无法读取"); }
     if (!Array.isArray(items) || items.some(item => !item || typeof item.material_id !== "string" || !item.material_id || typeof item.relative_path !== "string" || !item.relative_path)) throw new Error("原提问的附件记录不完整");
-    return items.map((item, ordinal) => ({ ...item, ordinal, must_view_requested: Boolean(item.must_view), note: String(item.note || "") }));
+    return items.map((item, ordinal) => ({ ...item, ordinal, note: String(item.note || "") }));
   }
 
   function selectTurn(messages, messageId) {

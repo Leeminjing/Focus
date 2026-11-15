@@ -88,7 +88,6 @@ class MainRunCreate(StrictRequest):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=160)
     material_inputs: list[RunMaterialCreate] | None = None
     attached_material_ids: list[str] | None = None
-    must_view_material_ids: list[str] = Field(default_factory=list)
     model_name: str | None = None
     reasoning_effort: (
         Literal["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
@@ -124,8 +123,6 @@ class MainRunCreate(StrictRequest):
             raise ValueError("消息必须包含文字或附件")
         if len(material_ids) != len(set(material_ids)):
             raise ValueError("本轮材料不能重复")
-        if len(self.must_view_material_ids) != len(set(self.must_view_material_ids)):
-            raise ValueError("必须看图片不能重复")
         return self
 
 
@@ -198,15 +195,11 @@ class ResumeRequest(StrictRequest):
 
 class MaterialCreate(StrictRequest):
     path: str
-    reading_mode: Literal["full", "rough"] = "full"
-    instruction_mode: Literal["reference", "strict"] = "reference"
     retention: Literal["removable", "irreplaceable"] = "removable"
     confirm_git_init: bool = False
 
 
 class MaterialUpdate(StrictRequest):
-    reading_mode: Literal["full", "rough"]
-    instruction_mode: Literal["reference", "strict"]
     retention: Literal["removable", "irreplaceable"]
     confirm_git_init: bool = False
 

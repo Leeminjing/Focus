@@ -23,7 +23,6 @@ from backend.app.desktop.capabilities.prompts import assembly_system_prompt
 from backend.app.desktop.conversations.compression import compression_recovery_payload
 from backend.app.desktop.conversations.interrupts import main_pending_interrupt
 from backend.app.desktop.materials.context import MaterialContextProjector
-from backend.app.desktop.materials.policy import _must_view_prompt
 from backend.app.desktop.persistence.contracts import _MAIN_RUNTIME_EQUIPMENT_KEY
 from backend.app.desktop.persistence.ids import new_id
 from backend.app.desktop.persistence.models import (
@@ -37,10 +36,6 @@ from backend.app.desktop.runs.identity import (
     identity_from_main_run,
     latest_main_run,
     resolve_main_execution_identity,
-)
-from backend.app.desktop.runs.must_view_recovery import (
-    must_view_recovery_payload,
-    validate_must_view_resume,
 )
 from backend.app.desktop.runs.policy import _ACCESS_DECISIONS
 from backend.app.desktop.workspaces.assembly import (
@@ -130,19 +125,6 @@ class RunRecoveryService:
                     task,
                     await self._resume_workspace(session, task),
                     resume,
-                    run_identity,
-                )
-            must_view_recovery = await must_view_recovery_payload(
-                session, task, ports.checkpointer
-            )
-            if must_view_recovery is not None:
-                if must_view_recovery["status"] != "resumable":
-                    raise HTTPException(409, "必看报告中断当前不可恢复")
-                return await self._prepare_main_resume(
-                    session,
-                    task,
-                    await self._resume_workspace(session, task),
-                    validate_must_view_resume(resume),
                     run_identity,
                 )
             compression_recovery = await compression_recovery_payload(
@@ -246,8 +228,8 @@ class RunRecoveryService:
             run_materials = await ports.material_snapshots.verify(
                 session, run_materials, workspace.path
             )
-        equipment.pop("must_view_materials", None)
         equipment.pop("run_image_inputs", None)
+        equipment.pop("must_view_materials", None)
         equipment.update(run_materials.to_equipment())
         identity = dict(run_identity or {})
         if interrupted_run is not None and interrupted_run.loop_id and not identity.get("loop_id"):
@@ -320,17 +302,6 @@ class RunRecoveryService:
             if _is_assembly_thread(task.thread_id)
             else _MAIN_SYSTEM_PROMPT
         )
-        required = list(run_materials.images.required)
-        if required:
-            material_context += _must_view_prompt(
-                [
-                    {
-                        "material_id": item.material_id,
-                        "relative_path": item.relative_path,
-                    }
-                    for item in required
-                ]
-            )
         factory = ports._build_agent_factory(
             task.task_id,
             run.agent_id,

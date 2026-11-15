@@ -30,7 +30,6 @@ from backend.app.desktop.persistence.models import (
 )
 from backend.app.desktop.runs.estimates import estimate_tokens
 from backend.app.desktop.runs.identity import identity_from_main_run, latest_main_run
-from backend.app.desktop.runs.must_view_recovery import must_view_recovery_payload
 from backend.app.desktop.workspaces.assembly import (
     _ASSEMBLY_THREAD_ID,
     _is_assembly_thread,
@@ -510,9 +509,6 @@ class ConversationService:
         compression_recovery = await compression_recovery_payload(
             session, task, ports.checkpointer
         )
-        must_view_recovery = await must_view_recovery_payload(
-            session, task, ports.checkpointer
-        )
         access_recovery = await main_pending_interrupt(
             session, task, ports.checkpointer, APPROVAL_TYPE
         )
@@ -535,11 +531,6 @@ class ConversationService:
             and compression_recovery["status"] in ("resumable", "orphaned")
             else None,
             "compression_recovery": compression_recovery,
-            "pending_must_view_report": must_view_recovery["request"]
-            if must_view_recovery
-            and must_view_recovery["status"] in ("resumable", "orphaned")
-            else None,
-            "must_view_recovery": must_view_recovery,
             "pending_access_review": access_recovery["request"]
             if access_recovery
             and access_recovery["status"] in ("resumable", "orphaned")

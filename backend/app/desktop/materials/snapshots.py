@@ -144,7 +144,6 @@ class MaterialSnapshotVerifier:
             inputs.origin_run_id,
             inputs.origin_message_id,
             resolved,
-            inputs.required_image_ids,
         )
 
     @staticmethod

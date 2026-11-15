@@ -153,31 +153,36 @@ def test_steer_scoping_idempotency_and_unconsumed_receipt(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("retired_focus", [None, {"spatial_id": "old-anchor", "page": 2, "x": 0.4, "y": 0.7}])
-def test_legacy_queue_payload_resumes_without_restoring_removed_api_field(tmp_path, retired_focus):
+@pytest.mark.parametrize("retired_field,retired_value", [
+    ("spatial_focus", None),
+    ("spatial_focus", {"spatial_id": "old-anchor", "page": 2, "x": 0.4, "y": 0.7}),
+    ("must_view_material_ids", ["image"]),
+])
+def test_legacy_queue_payload_resumes_without_restoring_removed_api_field(tmp_path, retired_field, retired_value):
     async def scenario():
         engine, sessions, task, run, desktop, inputs = await setup(tmp_path)
         try:
-            body = ConversationInputCreate(mode="queue", run={"message": "queued before upgrade", "permissions": ["read"]})
+            body = ConversationInputCreate(mode="queue", run={"message": "queued before upgrade", "permissions": ["read"],
+                "material_inputs": [{"material_id": "image", "note": "保留这份图的备注"}]})
             queued = await inputs.submit(task, body, "legacy")
             frozen = body.model_dump(mode="json")
-            frozen["run"]["spatial_focus"] = retired_focus
+            frozen["run"][retired_field] = retired_value
             original_hash = content_hash(frozen)
             async with sessions.begin() as session:
                 row = await session.get(ConversationInput, queued["input_id"])
                 row.payload, row.request_hash = frozen["run"], original_hash
 
             # 新 API 仍严格拒绝旧字段，包括 null；历史队列只在读取时去除。
-            with pytest.raises(ValueError, match="spatial_focus"):
+            with pytest.raises(ValueError, match=retired_field):
                 ConversationInputCreate.model_validate(frozen)
-            assert "spatial_focus" not in (await inputs.list(task))[0]["run"]
+            assert retired_field not in (await inputs.list(task))[0]["run"]
             retried = await ConversationInputs(desktop).submit(task, body, "legacy")
             assert retried["input_id"] == queued["input_id"]
-            assert "spatial_focus" not in retried["run"]
+            assert retired_field not in retried["run"]
             for changed_body in (
                 body.model_copy(update={"run": body.run.model_copy(update={"message": "changed"})}),
                 body.model_copy(update={"run": body.run.model_copy(update={"permissions": ["read", "write"]})}),
-                ConversationInputCreate(mode="steer", target_run_id=run.run_id, run=body.run),
+                body.model_copy(update={"mode": "steer", "target_run_id": run.run_id}),
             ):
                 with pytest.raises(HTTPException) as changed:
                     await inputs.submit(task, changed_body, "legacy")
@@ -186,7 +191,8 @@ def test_legacy_queue_payload_resumes_without_restoring_removed_api_field(tmp_pa
             await settle(sessions, run.run_id)
             await ConversationInputs(desktop).drain()
             assert [item["message"] for item in desktop.started] == ["queued before upgrade"]
-            assert "spatial_focus" not in desktop.started[0]
+            assert retired_field not in desktop.started[0]
+            assert desktop.started[0]["material_inputs"][0].note == "保留这份图的备注"
             async with sessions() as session:
                 row = await session.get(ConversationInput, queued["input_id"])
                 assert row.status == "started"

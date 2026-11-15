@@ -67,6 +67,36 @@ def _upload(client: TestClient, task_id: str, name: str, data: bytes, mime: str)
     )
 
 
+def test_material_api_exposes_retention_without_reading_rules(tmp_path):
+    with _client() as client:
+        workspace, task = _workspace_and_task(client, tmp_path / "workspace", "materials")
+        response = _upload(client, task["task_id"], "notes.txt", b"reference text", "text/plain")
+        assert response.status_code == 200, response.text
+        material = response.json()
+        assert "reading_mode" not in material
+        assert "instruction_mode" not in material
+        response = client.put(f"/desktop/api/materials/{material['material_id']}",
+            headers=SESSION, json={"retention": "removable"})
+        assert response.status_code == 200, response.text
+        assert response.json()["retention"] == "removable"
+        for field, value in (("reading_mode", "full"), ("instruction_mode", "strict")):
+            response = client.put(f"/desktop/api/materials/{material['material_id']}",
+                headers=SESSION, json={"retention": "removable", field: value})
+            assert response.status_code == 422, response.text
+            response = client.post(f"/desktop/api/tasks/{task['task_id']}/materials",
+                headers=SESSION, json={"path": material["relative_path"], field: value})
+            assert response.status_code == 422, response.text
+        response = client.get(f"/desktop/api/tasks/{task['task_id']}/materials", headers=SESSION)
+        assert response.status_code == 200, response.text
+        assert all("reading_mode" not in item and "instruction_mode" not in item for item in response.json())
+        policy, uploads = client.portal.call(app.state.desktop_service._material_context, task["task_id"])
+        assert policy == f"- {Path(workspace['path']) / material['relative_path']}"
+        assert material["relative_path"] in uploads
+        image = _upload(client, task["task_id"], "shot.png", _png(), "image/png").json()
+        policy, _ = client.portal.call(app.state.desktop_service._material_context, task["task_id"])
+        assert f"- {Path(workspace['path']) / image['relative_path']} | 图片材料" in policy
+
+
 def _wait_run_status(client: TestClient, run_id: str, status: str) -> dict:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -310,14 +340,14 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                         {"material_id": text_id, "note": "结合文档"},
                         {"material_id": image_id, "note": "逐像素核对\n保留原文"},
                     ],
-                    "must_view_material_ids": [image_id],
                 },
             )
             assert accepted.status_code == 200
             _wait_run_status(client, accepted.json()["run_id"], "success")
             context = launched[-1][0].context["run_image_inputs"]
             assert [item["material_id"] for item in context["attached"]] == [image_id]
-            assert context["required_ids"] == [image_id]
+            assert "required_ids" not in context
+            assert "required_image_ids" not in launched[-1][0].context["run_material_inputs"]
             run_materials = launched[-1][0].context["run_material_inputs"]
             assert [item["material_id"] for item in run_materials["attached"]] == [text_id, image_id]
             assert [item["note"] for item in run_materials["attached"]] == ["结合文档", "逐像素核对\n保留原文"]
@@ -332,6 +362,7 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
             )
             assert history.status_code == 200
             assert history.json()[-1]["note"] == "逐像素核对\n保留原文"
+            assert "must_view_requested" not in history.json()[-1]
             assert history.json()[-1]["message_id"] == accepted.json()["message_id"]
             assert client.delete(
                 f"/desktop/api/materials/{image_id}", headers=SESSION
@@ -354,6 +385,10 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
             assert client.get(
                 f"/desktop/api/tasks/{first_id}/materials/{stale['material_id']}/image-validity",
                 headers=SESSION,
+            ).status_code == 404
+            assert client.post(
+                f"/desktop/api/tasks/{first_id}/main/runs", headers=SESSION,
+                json={"message": "检查图片", "material_inputs": [{"material_id": stale["material_id"], "note": "核对尺寸"}]},
             ).status_code == 422
             assert client.get(
                 f"/desktop/api/tasks/{first_id}/materials/{stale['material_id']}/content",

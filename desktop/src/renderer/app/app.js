@@ -13,8 +13,8 @@
  * 示例：refreshMaterialView(taskId, true) 使该任务材料变更后的检查过期并刷新当前路由；await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
- * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、Context Expansion 资源授权/状态、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
- * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。具体工作流为在任务切换时加载
+ * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、Context Expansion 资源授权/状态、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和逐材料备注
+ * 表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。具体工作流为在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
  * Loop 运行活动由 journal 增量投影到选中 Context 的当前执行区，分钟计时只刷新活动栏而不重取历史会话；任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话容器只有一个
  * 写者——DOM 写入侧：顶层重建先接管既有会话节点，随即统一经对账写入内容（写入侧分只读的"计划"与唯一
@@ -1564,16 +1564,6 @@ function renderRunMaterialNote(materialId) {
   return localize`<label class="run-material-note"><textarea data-field="run-material-note" rows="2" draggable="false" aria-label="本轮备注" placeholder="给这份材料添加本轮备注，可留空">${escapeHtml(binding.note)}</textarea></label>`;
 }
 
-function renderMustViewRecovery(detail) {
-  const report = detail?.pending_must_view_report;
-  if (!report) return "";
-  const rows = (Array.isArray(report.materials) ? report.materials : []).map(item => {
-    const reason = item.reason === "unread" ? localize("模型声明未读到") : localize("模型缺少逐图表态");
-    return `<li><strong>${escapeHtml(item.relative_path || item.material_id)}</strong><span>${reason}</span></li>`;
-  }).join("");
-  return localize`<section class="review-panel must-view-report" data-unit-key="must-view-recovery" aria-label="必看图片报告"><header><span class="review-kicker">必看图片</span><h3>需要人工处理</h3><span class="review-badge">已暂停</span></header><ul class="review-draft">${rows || localize("<li>必看图片报告不完整</li>")}</ul><div class="review-actions"><button class="primary" data-action="retry-must-view">重试</button><button class="text-button danger" data-action="cancel-must-view">取消本轮</button></div></section>`;
-}
-
 function composerFeedback(detail, projectionBlocked) {
   const recovery = taskRunOperations?.recovery(state.activeTaskId);
   if (recovery?.failure?.uncertain === false && !recovery.editing) return { kind: "danger", text: localize`发送未受理：${recovery.failure.message}` };
@@ -1586,7 +1576,6 @@ function composerFeedback(detail, projectionBlocked) {
   if (projectionBlocked) return { kind: "warning", text: localize("该 Context 需要完成执行投影决断后才能继续。") };
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: localize("当前任务正在等待 Commitment 审批，请先处理上方审批区。") };
   if (detail?.pending_compression) return { kind: "warning", text: localize("存在待确认的压缩计划，请先确认或取消。") };
-  if (detail?.pending_must_view_report) return { kind: "warning", text: localize("必看图片报告等待重试或取消。") };
   if (detail?.pending_access_review) return { kind: "warning", text: localize("存在待批准的本机资源访问请求，请先批准或拒绝。") };
   return null;
 }
@@ -1663,7 +1652,7 @@ async function withdrawQueuedMain(inputId, edit) {
     if (edit) {
       const input = typeof row.run.message === "string" ? row.run.message : JSON.stringify(row.run.message);
       const selection = { bindings: (row.run.material_inputs || (row.run.attached_material_ids || []).map(material_id => ({ material_id, note: "" })))
-        .map(item => ({ materialId: item.material_id, note: item.note })), requiredImageIds: row.run.must_view_material_ids || [] };
+        .map(item => ({ materialId: item.material_id, note: item.note })) };
       state.materialSelections.set(taskId, selection);
       taskRunOperations.freeze(taskId, crypto.randomUUID(), { input, message: input, queued_edit: true,
         body: JSON.stringify(row.run), selectionSignature: JSON.stringify(selection) });
@@ -1956,13 +1945,13 @@ function renderFocus(task = activeTask()) {
     freshConversation.replaceWith(previousConversation);
   }
   const conversation = document.querySelector("#conversation");
-  reconcileConversationMarkup(conversation, `${renderConversation(detail, task)}${renderMustViewRecovery(detail)}`);
+  reconcileConversationMarkup(conversation, `${renderConversation(detail, task)}`);
   roundChanges?.mount(document.querySelector("#roundChanges"), task.task_id, detail.active_run?.run_id);
   mountCommitmentRecovery(detail);
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
   const commitmentBlocked = activeTaskHasCommitmentLock() || projectionBlocked
-    || !!detail.pending_compression || !!detail.pending_must_view_report
+    || !!detail.pending_compression
     || !!detail.pending_access_review;
   const mainInput = document.querySelector("#mainInput");
   const sendButton = document.querySelector('[data-action="send-main"]');
@@ -2291,7 +2280,7 @@ function stripRunMaterialProtocol(text, message) {
 function renderRunMaterialCards(message) {
   const rows = messageMaterialHistory(message);
   if (!rows.length) return "";
-  return localize`<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}${item.must_view_requested ? localize('<small class="ui-badge is-warning">必须看</small>') : ""}${item.current_available === false ? localize('<small class="muted">当前内容不可用</small>') : ""}</span></article>`).join("")}</section>`;
+  return localize`<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}${item.current_available === false ? localize('<small class="muted">当前内容不可用</small>') : ""}</span></article>`).join("")}</section>`;
 }
 
 function renderContentBlock(block, message = null) {
@@ -2440,19 +2429,15 @@ async function submitMessageRetry() {
     }) });
     const context = draft.context;
     if (!["valid", "repaired", "approved"].includes(context.projection_status)) throw new Error(localize("该历史上下文需要先处理安全执行投影，请在上下文与派生中查看"));
-    const [history, materials] = await Promise.all([
-      api(`/desktop/api/tasks/${draft.task.task_id}/material-history`),
-      api(`/desktop/api/tasks/${draft.task.task_id}/materials`),
-    ]);
+    const history = await api(`/desktop/api/tasks/${draft.task.task_id}/material-history`);
     const localBindings = history.filter(item => item.message_id === (draft.turn.message.id || draft.turn.message.message_id));
     const inheritedBindings = FocusMessageRetry.materialBindings(draft.turn.message);
     const bindings = (inheritedBindings.length ? inheritedBindings.map(item => localBindings.find(local => local.material_id === item.material_id) || item) : localBindings).sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
     // Material IDs belong to a task. Re-enroll their paths in the branch and carry
-    // notes/must-view intent; never silently drop an unavailable attachment.
+    // notes; never silently drop an unavailable attachment.
     for (const binding of bindings) {
       if (binding.current_available === false) throw new Error(localize`原提问的材料已不可用：${binding.relative_path}`);
-      const original = materials.find(item => item.material_id === binding.material_id);
-      if (!draft.materials.has(binding.material_id)) draft.materials.set(binding.material_id, await api(`/desktop/api/tasks/${context.context_id}/materials`, { method: "POST", body: JSON.stringify({ path: binding.relative_path, reading_mode: original?.reading_mode || "full", instruction_mode: original?.instruction_mode || "reference" }) }));
+      if (!draft.materials.has(binding.material_id)) draft.materials.set(binding.material_id, await api(`/desktop/api/tasks/${context.context_id}/materials`, { method: "POST", body: JSON.stringify({ path: binding.relative_path }) }));
     }
     let content = FocusMessageRetry.replayContent(draft.turn.message, editedText);
     const remap = text => {
@@ -2465,12 +2450,10 @@ async function submitMessageRetry() {
     await api(`/desktop/api/tasks/${taskId}/access-mode`, { method: "PUT", body: JSON.stringify({ access_mode: draft.options.access_mode }) });
     const requestId = crypto.randomUUID();
     const replayBindings = bindings.map(item => ({ materialId: draft.materials.get(item.material_id).material_id, note: item.note || "" }));
-    const requiredImageIds = bindings.filter(item => item.must_view_requested).map(item => draft.materials.get(item.material_id).material_id);
-    taskRunOperations.freeze(taskId, requestId, { input: message, message, selectionSignature: JSON.stringify({ bindings: replayBindings, requiredImageIds, notes: Object.fromEntries(replayBindings.map(item => [item.materialId, item.note])) }), body: JSON.stringify({
+    taskRunOperations.freeze(taskId, requestId, { input: message, message, selectionSignature: JSON.stringify({ bindings: replayBindings, notes: Object.fromEntries(replayBindings.map(item => [item.materialId, item.note])) }), body: JSON.stringify({
       message: content, ...draft.options,
       ...(draft.turn.message.additional_kwargs?.message_reference ? { message_reference: draft.turn.message.additional_kwargs.message_reference } : {}),
       material_inputs: replayBindings.map(item => ({ material_id: item.materialId, note: item.note })),
-      must_view_material_ids: requiredImageIds,
     }) });
     await refreshTasks();
     await hydrateContextTrees();
@@ -2592,7 +2575,7 @@ function refreshConversation(task) {
   const conversation = document.querySelector("#conversation");
   if (!conversation) return;
   conversationView.trackScroll(conversation);
-  reconcileConversationMarkup(conversation, `${renderConversation(detail, task)}${renderMustViewRecovery(detail)}`);
+  reconcileConversationMarkup(conversation, `${renderConversation(detail, task)}`);
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
   materialContentLoader.bindAll(conversation);
@@ -2708,10 +2691,9 @@ function _snapshotCarriesStreamedText(messages, buffer) {
 function renderMaterialSelection(material) {
   const selection = materialSelection();
   const selected = selection.bindings.some(item => item.materialId === material.material_id);
-  const required = selection.requiredImageIds.includes(material.material_id);
   const unavailable = !material.size_bytes;
   return localize`<div class="material-selection" role="group" aria-label="本次选择：${escapeHtml(material.relative_path)}">
-    <div class="material-selection-row"><button type="button" class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${selected}"${unavailable ? " disabled" : ""}>${selected ? "☑" : "☐"} 本轮使用</button>${material.is_image ? localize`<button type="button" class="text-button must-view-toggle${required ? " is-required" : ""}" data-action="toggle-image-required" aria-pressed="${required}"${!selected || unavailable ? " disabled" : ""}>${required ? "☑" : "☐"} 必须看</button>` : ""}${material.retention === "irreplaceable" ? localize('<span class="ui-badge is-success">版本保护</span>') : ""}${unavailable ? localize('<span class="muted tiny">内容不可用</span>') : ""}</div>
+    <div class="material-selection-row"><button type="button" class="text-button material-selection-toggle" data-action="toggle-run-material" aria-pressed="${selected}"${unavailable ? " disabled" : ""}>${selected ? "☑" : "☐"} 本轮使用</button>${material.retention === "irreplaceable" ? localize('<span class="ui-badge is-success">版本保护</span>') : ""}${unavailable ? localize('<span class="muted tiny">内容不可用</span>') : ""}</div>
     ${renderRunMaterialNote(material.material_id)}
   </div>`;
 }
@@ -2720,8 +2702,6 @@ function renderMaterialSettings(material) {
   if (state.openMaterial !== material.material_id) return `<section id="material-settings-${escapeHtml(material.material_id)}" hidden></section>`;
   return localize`<section class="material-editor" id="material-settings-${escapeHtml(material.material_id)}" aria-label="材料设置：${escapeHtml(material.relative_path)}">
     ${!material.is_image ? localize`<fieldset class="material-rules"><legend>长期规则</legend>
-      <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
-      <label>指令规则<select data-field="instruction_mode"><option value="reference" ${material.instruction_mode === "reference" ? "selected" : ""}>仅供参考</option><option value="strict" ${material.instruction_mode === "strict" ? "selected" : ""}>严格遵守</option></select></label>
       <label>保留规则<select data-field="retention"><option value="removable" ${material.retention === "removable" ? "selected" : ""}>可移除</option><option value="irreplaceable" ${material.retention === "irreplaceable" ? "selected" : ""}>不可遗失</option></select></label>
       <button class="primary" data-action="save-material">保存规则</button>
     </fieldset>` : ""}
@@ -2749,7 +2729,7 @@ function renderMaterial(material) {
 function renderMaterialUsageHistory(materialId) {
   const rows = (state.materialHistory.get(state.activeTaskId) || []).filter(item => item.material_id === materialId);
   if (!rows.length) return "";
-  return localize`<details class="material-usage-history"><summary>线程内使用记录 · ${rows.length}</summary><ol>${rows.map(item => `<li><span>Run ${escapeHtml(String(item.run_id).slice(0, 8))}${item.must_view_requested ? localize(" · 必须看") : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}</li>`).join("")}</ol></details>`;
+  return localize`<details class="material-usage-history"><summary>线程内使用记录 · ${rows.length}</summary><ol>${rows.map(item => `<li><span>Run ${escapeHtml(String(item.run_id).slice(0, 8))}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}</li>`).join("")}</ol></details>`;
 }
 
 function renderAgentStrip(taskId) {
@@ -4936,7 +4916,6 @@ async function handleComposerAttachmentAction(button) {
     const preparing = state.mainPreparations.get(taskId)?.selection;
     if (preparing) {
       preparing.bindings = preparing.bindings.filter(item => item.materialId !== materialId);
-      preparing.requiredImageIds = preparing.requiredImageIds.filter(id => id !== materialId);
     }
     refreshComposerAttachments(taskId);
     clearAttachmentPreparationError(taskId);
@@ -4984,9 +4963,8 @@ function consumeMainAttachments(taskId, outgoing, entries) {
   const sent = new Map(outgoing.materialInputs.map(item => [item.material_id, item.note]));
   const selection = materialSelection(taskId);
   const consumed = new Set(selection.bindings.filter(item => sent.has(item.materialId)
-    && sent.get(item.materialId) === item.note
-    && selection.requiredImageIds.includes(item.materialId) === outgoing.requiredImageIds.includes(item.materialId)).map(item => item.materialId));
-  state.materialSelections.set(taskId, { ...selection, bindings: selection.bindings.filter(item => !consumed.has(item.materialId)), requiredImageIds: selection.requiredImageIds.filter(id => !consumed.has(id)) });
+    && sent.get(item.materialId) === item.note).map(item => item.materialId));
+  state.materialSelections.set(taskId, { ...selection, bindings: selection.bindings.filter(item => !consumed.has(item.materialId)) });
   for (const entry of [...(state.composerAttachments.get(taskId)?.values() || [])]) {
     if (consumed.has(entry.materialId) || entries.includes(entry)) releaseComposerAttachment(entry);
   }
@@ -4997,7 +4975,7 @@ function materialSelection(taskId = state.activeTaskId) {
   if (!state.materialSelections.has(taskId)) {
     state.materialSelections.set(taskId, runMaterialPicker.empty());
   }
-  // 未加载/刷新失败不等于材料已删除，恢复中的附件与必看标记须等权威列表就绪再清理。
+  // 未加载/刷新失败不等于材料已删除，恢复中的附件与备注须等权威列表就绪再清理。
   if (!state.materials.has(taskId) || ["loading", "error"].includes(taskResourceLoads.get(taskId)?.materials?.status)) {
     return state.materialSelections.get(taskId);
   }
@@ -5014,25 +4992,6 @@ function toggleRunMaterial(materialId) {
   state.materialSelections.set(
     state.activeTaskId,
     runMaterialPicker.toggleMaterial(selection, materialId)
-  );
-}
-
-async function toggleImageRequired(materialId) {
-  const taskId = state.activeTaskId;
-  const selection = materialSelection(taskId);
-  if (!selection.bindings.some(item => item.materialId === materialId)) {
-    return setStatus(localize("请先把图片选为本轮材料"), true);
-  }
-  if (!selection.requiredImageIds.includes(materialId)) {
-    await api(`/desktop/api/tasks/${taskId}/materials/${materialId}/image-validity`);
-  }
-  state.materialSelections.set(
-    taskId,
-    runMaterialPicker.toggleRequired(
-      materialSelection(taskId),
-      materialId,
-      state.materials.get(taskId) || []
-    )
   );
 }
 
@@ -5059,9 +5018,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   }
   if (!retry && state.details.get(taskId)?.pending_compression) {
     return setStatus(localize("存在待确认的压缩请求，请先完成压缩或取消"), true);
-  }
-  if (!retry && state.details.get(taskId)?.pending_must_view_report) {
-    return setStatus(localize("存在待处理的必看图片报告，请先重试或取消"), true);
   }
   if (!retry && state.accessReviews.panel) {
     return setStatus(localize("存在待批准的本机资源访问请求，请先批准或拒绝"), true);
@@ -5109,7 +5065,7 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const selectionSignature = retry?.selectionSignature || JSON.stringify(submittedSelection);
   const retryBody = retry ? JSON.parse(retry.body) : null;
   const original = retryBody?.run || retryBody;
-  const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
+  const outgoing = original ? { message: original.message, materialInputs: original.material_inputs }
     : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], composerFiles.compose(message, submittedFileRefs), submittedSelection);
   if (!retry && !outgoing.message.trim() && !outgoing.materialInputs.length) return;
   const messagePayload = outgoing.message;
@@ -5121,7 +5077,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
         message: messagePayload,
         ...(submittedReference ? { message_reference: submittedReference } : {}),
         material_inputs: outgoing.materialInputs,
-        must_view_material_ids: outgoing.requiredImageIds,
     };
     delete runBody.attached_material_ids;
     delete runBody.idempotency_key;
@@ -5182,7 +5137,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
       material_kind: byMaterialId.get(item.material_id)?.material_kind || "other",
       note: item.note,
       ordinal,
-      must_view_requested: outgoing.requiredImageIds.includes(item.material_id),
       current_available: true,
       run_status: run.status,
     }));
@@ -5289,8 +5243,7 @@ async function settleRunStream(run, source, ownerTaskId, terminal) {
   if (wasMainInterrupted
       && !state.commitment.review
       && !state.commitment.recovery
-      && !detail?.pending_compression
-      && !detail?.pending_must_view_report) {
+      && !detail?.pending_compression) {
     setStatus(localize("主 Agent 已中断，可继续对话"));
   } else if (terminal.status === "error" && terminal.error) {
     setStatus(terminal.error, true);
@@ -5386,16 +5339,6 @@ function listenToRun(run) {
       const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
       if (!task) return;
       openCompressionView(task, value);
-      return;
-    }
-    if (value.type === "must_view_report") {
-      const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
-      if (!task) return;
-      const detail = state.details.get(task.task_id) || {};
-      detail.pending_must_view_report = value;
-      detail.must_view_recovery = { status: "resumable", request: value };
-      state.details.set(task.task_id, detail);
-      if (state.activeTaskId === task.task_id) scheduleRender();
       return;
     }
     if (accessApproval.isAccessReview(value)) {
@@ -5917,27 +5860,6 @@ async function resumeRun(payload) {
     removeReviewPanel();
   } catch (error) { setStatus(error.message, true); }
   finally { state.commitment.busy = false; }
-}
-
-async function resumeMustView(decision) {
-  const task = activeTask();
-  if (!task) return setStatus(localize("当前没有活动任务"), true);
-  try {
-    const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
-      method: "POST",
-      body: JSON.stringify({ resume: { type: "must_view_report", decision } }),
-    });
-    const detail = state.details.get(task.task_id);
-    if (detail) {
-      detail.pending_must_view_report = null;
-      detail.must_view_recovery = null;
-      detail.active_run = run;
-    }
-    listenToRun(run);
-    render();
-  } catch (error) {
-    setStatus(error.message, true);
-  }
 }
 
 // === 本机资源访问模式 ===
@@ -6865,7 +6787,6 @@ async function handleMaterialAction(button) {
   try {
   if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return refreshMaterialView(taskId); }
   if (button.dataset.action === "toggle-run-material") { toggleRunMaterial(materialId); return refreshMaterialSelection(row, material, taskId, button.dataset.action); }
-  if (button.dataset.action === "toggle-image-required") { await toggleImageRequired(materialId); return refreshMaterialSelection(row, material, taskId, button.dataset.action); }
   if (button.dataset.action === "move-material-group") {
     const groups = state.materialGroups.get(state.activeTaskId) || [];
     if (!groups.length) return setStatus(localize("请先新建自定义分组"), true);
@@ -8492,8 +8413,6 @@ async function handleDocumentClick(event) {
   }
   if (action === "zoom-image" && button.dataset.imageUrl) return openImageLightbox(button.dataset.imageUrl, localize("图片"));
   if (action === "close-lightbox") { const root = document.querySelector("#overlayRoot"); if (root) root.innerHTML = ""; return; }
-  if (action === "retry-must-view") return resumeMustView("retry");
-  if (action === "cancel-must-view") return resumeMustView("cancel");
   if (action === "send-main") return sendMain();
   if (action === "add-composer-attachment") return document.querySelector("#fileInput")?.click();
   if (action === "open-composer-file" || action === "remove-composer-file") {
@@ -9452,7 +9371,7 @@ async function openTaskNotification(target) {
     state.inspector.open = true;
     state.inspector.tab = "run";
     render();
-    const pending = document.querySelector(".access-review-panel, .review-panel, .compression-panel, .must-view-panel");
+    const pending = document.querySelector(".access-review-panel, .review-panel, .compression-panel");
     pending?.scrollIntoView?.({ block: "center" });
   }
 }

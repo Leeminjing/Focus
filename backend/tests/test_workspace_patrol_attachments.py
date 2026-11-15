@@ -101,7 +101,7 @@ def test_accept_freezes_order_source_pixels_and_replay(tmp_path, git):
                 assert [item["material_id"] for item in frozen] == [image.material_id, text.material_id]
                 assert row.envelope["user_intents"][-1]["attachments"] == frozen
                 assert intent.content == "解释这些内容"
-                assert all(item["instruction_mode"] == "reference" for item in frozen)
+                assert all("instruction_mode" not in item and "reading_mode" not in item for item in frozen)
                 observation = LoopObservationEnvelope.model_validate(row.envelope)
                 context_id = loop.initial_context_id
             projected = await WorkspaceAttachments().project(sessions, observation, _model(), [HumanMessage(content="user instruction")])
@@ -112,7 +112,7 @@ def test_accept_freezes_order_source_pixels_and_replay(tmp_path, git):
             assert image_block["material_id"] == image.material_id
             assert any("reference_texts" in message.content and "删除文件只是引用文字" in message.content
                 for message in projected if isinstance(message.content, str))
-            assert not RunMaterialInputs.build("", "", frozen).required_image_ids
+            assert "required_image_ids" not in RunMaterialInputs.build("", "", frozen).to_json()
             with pytest.raises(ImageModelCannotReadImages):
                 await WorkspaceAttachments().project(sessions, observation, _model(False), [])
             assert (tmp_path / ".git").exists() is git
@@ -130,14 +130,14 @@ def test_accept_freezes_order_source_pixels_and_replay(tmp_path, git):
                 requests = DesktopDirectiveLaunchPort._material_inputs({}, frozen)
                 async with sessions() as session:
                     resolved = await RunMaterialResolver().resolve(session, context_id, str(tmp_path), "run", "msg",
-                        requests, None, [], execution_workspace_path=str(execution))
+                        requests, None, execution_workspace_path=str(execution))
                 second_id = uuid.uuid4().hex
                 async with sessions.begin() as session:
                     session.add(DesktopThread(task_id=second_id, workspace_id=workspace_id,
                         thread_id=uuid.uuid4().hex, title="Second authorized context"))
                 async with sessions() as session:
                     second = await RunMaterialResolver().resolve(session, second_id, str(tmp_path), "run2", "msg2",
-                        requests, None, [], execution_workspace_path=str(execution))
+                        requests, None, execution_workspace_path=str(execution))
                     count = await session.scalar(select(func.count()).select_from(DesktopMaterial).where(DesktopMaterial.workspace_id == workspace_id))
                     assert count == 2
                     assert second.attached == resolved.attached
@@ -253,7 +253,7 @@ def test_image_capacity_uses_pixels_without_base64_text_cost():
 
 def test_frozen_version_rejects_missing_source_and_execution_collision(tmp_path):
     raw = b"reference"
-    item = RunMaterialInput("m", "reference.txt", hashlib.sha256(raw).hexdigest(), "text", "reference", "full", "reference", len(raw))
+    item = RunMaterialInput("m", "reference.txt", hashlib.sha256(raw).hexdigest(), "text", "reference", len(raw))
     verifier = MaterialSnapshotVerifier()
     with pytest.raises(OSError):
         verifier.read(item, str(tmp_path))
@@ -272,8 +272,7 @@ def test_frozen_material_fits_windows_path_after_long_workspace_root(tmp_path):
     source.write_bytes(raw)
     execution = tmp_path / ("w" * max(1, 145 - len(str(tmp_path)) - 1))
     execution.mkdir()
-    item = RunMaterialInput("m" * 32, source.name, hashlib.sha256(raw).hexdigest(), "image", "image",
-        "full", "reference", len(raw))
+    item = RunMaterialInput("m" * 32, source.name, hashlib.sha256(raw).hexdigest(), "image", "image", len(raw))
     old_path = execution / ".focus" / "attachments" / f"frozen-{item.material_id}-{item.digest}.png"
     assert len(str(old_path)) >= 260
     frozen = MaterialSnapshotVerifier().materialize(item, str(tmp_path), str(execution))
@@ -346,7 +345,7 @@ def test_kernel_authorizes_frozen_input_and_dispatch_delivers_same_version(tmp_p
                 captured.update(arguments)
                 async with sessions() as session:
                     selected = await RunMaterialResolver().resolve(session, arguments["task_id"], str(tmp_path), "r", "m",
-                        arguments["material_inputs"], None, arguments["must_view_material_ids"],
+                        arguments["material_inputs"], None,
                         execution_workspace_path=arguments["execution_workspace_path"])
                 runtime = project_run_material_context({"workspace": arguments["execution_workspace_path"]}, selected, True)
                 assert project_image_messages([], runtime)[-1].content[-1]["material_id"] == image.material_id

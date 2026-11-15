@@ -19,7 +19,6 @@ import backend.app.desktop.agents.collaboration  # noqa: F401  受治理键与�
 import backend.app.desktop.composition.service  # noqa: F401
 import focus.agents.commitment.middleware  # noqa: F401
 import focus.agents.material_inputs  # noqa: F401
-import focus.agents.must_view  # noqa: F401
 import focus.security.context  # noqa: F401
 import focus.security.launch  # noqa: F401
 import focus.security.policy  # noqa: F401
@@ -44,7 +43,6 @@ REPO = Path(__file__).resolve().parents[2]
 # 而不是从上下文读取——因此没有生产者。新增的任何未生产键都会让下面的相等断言失败。
 GOVERNED_WITHOUT_PRODUCER = {
     "allow_global_config": "只在没有安全上下文的回退分支被读，缺省即最严；声明用于阻止调用方伪造工作根",
-    "must_view_materials": "已被 run_image_inputs 取代，仅作 legacy 读取兜底",
 }
 
 # 条件投影：只在执行身份档案带有该字段时才出现（模型名可选、归属在单用户桌面下常缺省）；

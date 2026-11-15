@@ -267,8 +267,7 @@ class CompressionGate(AgentMiddleware):
         ranges, error = validate_apply_decision(
             decision,
             messages,
-            run_images.required_ids,
-            (run_materials.origin_message_id,) if run_materials.origin_message_id else (),
+            protected_message_ids=(run_materials.origin_message_id,) if run_materials.origin_message_id else (),
         )
         if error:
             raise ValueError(f"压缩 apply 载荷非法: {error}")

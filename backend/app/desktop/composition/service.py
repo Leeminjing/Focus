@@ -55,7 +55,6 @@ from backend.app.desktop.persistence.state_changes import DesktopStateChanges
 from backend.app.desktop.runs.agent_factory import AgentFactory
 from backend.app.desktop.runs.assembly_service import RunAssemblyService
 from backend.app.desktop.runs.contracts import PreparedRun
-from backend.app.desktop.runs.images import RunImageResolver
 from backend.app.desktop.runs.lifecycle_service import RunLifecycleService
 from backend.app.desktop.runs.material_history import RunMaterialHistoryRepository
 from backend.app.desktop.runs.materials import RunMaterialRequest, RunMaterialResolver
@@ -103,7 +102,6 @@ class DesktopService:
         self.material_contents = MaterialContentService(
             session_factory, self.image_limits
         )
-        self.run_images = RunImageResolver(self.image_limits)
         self.run_materials = RunMaterialResolver(self.image_limits)
         self.run_material_history = RunMaterialHistoryRepository()
         self.material_groups = MaterialGroupService(session_factory)
@@ -381,7 +379,6 @@ class DesktopService:
         memory_ids: list[str] | None = None,
         material_inputs: list[RunMaterialRequest] | None = None,
         attached_material_ids: list[str] | None = None,
-        must_view_material_ids: list[str] | None = None,
         access_mode: str | None = None,
         run_identity: dict[str, Any] | None = None,
         execution_workspace_path: str | None = None,
@@ -399,7 +396,6 @@ class DesktopService:
             memory_ids,
             material_inputs,
             attached_material_ids,
-            must_view_material_ids,
             access_mode,
             run_identity,
             execution_workspace_path,
@@ -849,11 +845,6 @@ class DesktopService:
         self, task_id: str, material_id: str
     ) -> ResolvedMaterialContent:
         return await self.materials.resolve_material_content(task_id, material_id)
-
-    async def validate_image_material(
-        self, task_id: str, material_id: str
-    ) -> dict[str, Any]:
-        return await self.materials.validate_image_material(task_id, material_id)
 
     @staticmethod
     def _version_payload(version: MaterialVersion) -> dict[str, Any]:

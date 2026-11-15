@@ -1,6 +1,6 @@
 /*
  * 本文件验证旧图片引用兼容与新逐轮材料草稿纯函数。输入为任意材料、有序绑定、备注缓存和
- * 图片必看集合；输出为旧引用可读、新载荷结构、取消再勾选备注恢复及子集不变量断言。
+ * 逐材料备注；输出为旧引用可读、新载荷结构、取消再勾选备注恢复及材料消失清理断言。
  * 具体工作流独立加载两个无 DOM 模块并比较可序列化结果。示例：node --test image-material-picker.test.cjs。
  */
 const assert = require("node:assert/strict");
@@ -27,25 +27,20 @@ let selection = picker.empty();
 selection = picker.toggleMaterial(selection, "m2");
 selection = picker.setNote(selection, "m2", "只看第三章\n保留原文 <tag>");
 selection = picker.toggleMaterial(selection, "m1");
-selection = picker.toggleRequired(selection, "m1", materials);
 assert.deepEqual(plain(picker.buildOutgoing(materials, "比较", selection)), {
   message: "比较",
   materialInputs: [
     { material_id: "m2", note: "只看第三章\n保留原文 <tag>" },
     { material_id: "m1", note: "" },
   ],
-  requiredImageIds: ["m1"],
 });
 
 selection = picker.toggleMaterial(selection, "m2");
 selection = picker.toggleMaterial(selection, "m2");
 assert.equal(selection.bindings.at(-1).note, "只看第三章\n保留原文 <tag>");
-assert.deepEqual(plain(picker.toggleRequired(selection, "m2", materials).requiredImageIds), ["m1"]);
-assert.deepEqual(plain(picker.toggleRequired(selection, "empty", materials).requiredImageIds), ["m1"]);
 
 const normalized = picker.normalizeSelection(selection, [image("m1")]);
 assert.deepEqual(plain(normalized.bindings.map(item => item.materialId)), ["m1"]);
-assert.deepEqual(plain(normalized.requiredImageIds), ["m1"]);
 assert.equal(Object.hasOwn(normalized.notes, "m2"), false);
 
 console.log("run-material-picker: all assertions passed");

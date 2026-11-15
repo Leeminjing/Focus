@@ -44,8 +44,8 @@
     服务端提供，调用方无法到达该路径（网关要求运行上下文来自服务端登记的执行身份）。
 
 示例:
-    declare_governed_keys("must_view_materials")
-    declare_governed_producer("must_view_materials", "focus.agents.must_view.project_material_context")
+    declare_governed_keys("run_image_inputs")
+    declare_governed_producer("run_image_inputs", "focus.agents.material_inputs.project_run_material_context")
     payload = strip_governed(caller_supplied)
 """
 
