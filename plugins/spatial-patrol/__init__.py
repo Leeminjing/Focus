@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 _DIR = Path(__file__).parent
-_SUBMODULES = ("models", "db", "vision", "spatial", "routes")
+_SUBMODULES = ("routes",)
 
 for _name in _SUBMODULES:
     _qualified = f"plugins.spatial_patrol.{_name}"

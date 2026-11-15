@@ -15,7 +15,7 @@ const messages = [
     reasoning_content: "先检查用户给出的路径，再读取工作区文件。",
     tool_calls: [
       { id: "call-read", name: "read_file", args: { path: "docs/very/long/path/to/requirements.md" } },
-      { id: "call-list", name: "list_files", args: { path: "docs" } },
+      { id: "call-list", name: "discover_files", args: { path: "docs" } },
     ],
   },
   {
@@ -91,7 +91,7 @@ assert.match(historicalDetail, /read-only/, "恢复后的历史结果显示调�
 assert.doesNotMatch(historicalDetail, new RegExp(currentSessionMode), "当前常驻模式不改写历史执行事实");
 
 const pendingHtml = events.renderEvent(normalized[1]);
-assert.match(pendingHtml, /list_files/, "摘要行保留工具名");
+assert.match(pendingHtml, /discover_files/, "摘要行保留工具名");
 assert.match(pendingHtml, /docs/, "摘要行保留参数摘要");
 assert.doesNotMatch(pendingHtml, /tool_call_id|<pre/, "摘要行不写原始载荷");
 

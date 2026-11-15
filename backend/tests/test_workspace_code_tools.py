@@ -25,7 +25,7 @@ from focus.security.effects import effect_of, resolve_fs_effect
 from focus.security.middleware import AccessPolicyMiddleware, _admit
 from focus.security.policy import AccessMode
 from focus.tools.builtins import workspace_search, workspace_text
-from focus.tools.builtins.workspace_tools import edit_file, read_file_lines, search_files, search_text
+from focus.tools.builtins.workspace_tools import edit_file, read_file, discover_files
 
 
 def runtime(root, permissions=("read", "write"), **kwargs):
@@ -44,26 +44,84 @@ def call(tool, root, **args):
 def test_read_pages_and_version_guard(tmp_path):
     target = tmp_path / "code.py"
     target.write_bytes("第一行\r\nsecond\nthird".encode())
-    first = call(read_file_lines, tmp_path, path="code.py", max_lines=2)
+    first = call(read_file, tmp_path, path="code.py", max_lines=2)
     assert first["lines"] == [{"line": 1, "column": 1, "text": "第一行", "line_ending": "\r\n"},
                               {"line": 2, "column": 1, "text": "second", "line_ending": "\n"}]
     assert first["next_line"] == 3 and first["next_column"] == 1
     assert first["sha256"] == sha256(target.read_bytes()).hexdigest()
-    last = call(read_file_lines, tmp_path, path="code.py", start_line=3,
+    last = call(read_file, tmp_path, path="code.py", start_line=3,
                 expected_sha256=first["sha256"])
     assert last["lines"][0]["text"] == "third"
     assert not last["truncated"] and last["next_line"] is None
     target.write_text("changed", encoding="utf-8")
     with pytest.raises(ToolException, match="版本不匹配"):
-        read_file_lines.func(path="code.py", runtime=runtime(tmp_path), expected_sha256=first["sha256"])
+        read_file.func(path="code.py", runtime=runtime(tmp_path), expected_sha256=first["sha256"])
+
+
+def test_full_read_keeps_text_and_version_and_rejects_mixed_paging(tmp_path):
+    target = tmp_path / "full.txt"
+    target.write_bytes("\ufefffirst\r\nsecond".encode())
+    full = call(read_file, tmp_path, path="full.txt", mode="full")
+    assert full["format"] == "utf-8"
+    assert full["text"] == "\ufefffirst\r\nsecond"
+    assert full["sha256"] == sha256(target.read_bytes()).hexdigest()
+    with pytest.raises(ToolException, match="分页参数"):
+        read_file.func(path="full.txt", mode="full", start_line=2, runtime=runtime(tmp_path))
+    with pytest.raises(ToolException, match="版本不匹配"):
+        read_file.func(path="full.txt", mode="full", expected_sha256="stale", runtime=runtime(tmp_path))
+
+
+def test_explicit_full_read_keeps_large_file_support_without_relaxing_edit_limits(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspace_text, "MAX_FILE_BYTES", 8)
+    (tmp_path / "large.txt").write_text("larger than eight bytes")
+    assert call(read_file, tmp_path, path="large.txt", mode="full")["text"] == "larger than eight bytes"
+    with pytest.raises(ToolException, match="上限"):
+        read_file.func(path="large.txt", runtime=runtime(tmp_path))
+    with pytest.raises(ToolException, match="上限"):
+        edit_file.func(path="large.txt", edits=[{"old_text": "larger", "new_text": "small"}],
+                       runtime=runtime(tmp_path))
+
+
+@pytest.mark.parametrize("suffix", [".pdf", ".docx", ".doc"])
+def test_document_extraction_supports_paging_full_text_and_version(tmp_path, monkeypatch, suffix):
+    import focus.readers as readers
+
+    target = tmp_path / ("document" + suffix)
+    target.write_bytes(b"document version 1")
+    monkeypatch.setattr(readers, "_read_" + suffix[1:], lambda _: "first\nsecond\nthird")
+    first = call(read_file, tmp_path, path=target.name, max_lines=1)
+    assert first["format"] == suffix[1:] and first["lines"][0]["text"] == "first"
+    last = call(read_file, tmp_path, path=target.name, start_line=first["next_line"],
+                expected_sha256=first["sha256"])
+    assert [line["text"] for line in last["lines"]] == ["second", "third"]
+    full = call(read_file, tmp_path, path=target.name, mode="full", expected_sha256=first["sha256"])
+    assert full["text"] == "first\nsecond\nthird"
+    target.write_bytes(b"document version 2")
+    with pytest.raises(ToolException, match="版本不匹配"):
+        read_file.func(path=target.name, expected_sha256=first["sha256"], runtime=runtime(tmp_path))
+
+
+def test_document_changed_during_extraction_does_not_return_a_mismatched_page(tmp_path, monkeypatch):
+    import focus.readers as readers
+
+    target = tmp_path / "document.pdf"
+    target.write_bytes(b"version 1")
+
+    def extract(_):
+        target.write_bytes(b"version 2")
+        return "text of version 2"
+
+    monkeypatch.setattr(readers, "_read_pdf", extract)
+    with pytest.raises(ToolException, match="解析期间变化"):
+        read_file.func(path=target.name, runtime=runtime(tmp_path))
 
 
 def test_long_line_can_be_continued_without_losing_content(tmp_path):
     text = "长" * (workspace_text.MAX_OUTPUT_CHARS + 10) + "\nend\n"
     (tmp_path / "long.txt").write_bytes(text.encode())
-    first = call(read_file_lines, tmp_path, path="long.txt")
+    first = call(read_file, tmp_path, path="long.txt")
     assert first["next_line"] == 1
-    second = call(read_file_lines, tmp_path, path="long.txt", start_line=first["next_line"],
+    second = call(read_file, tmp_path, path="long.txt", start_line=first["next_line"],
                   start_column=first["next_column"], expected_sha256=first["sha256"])
     assert first["lines"][0]["text"] + second["lines"][0]["text"] == text.splitlines()[0]
     assert second["lines"][-1]["text"] == "end" and not second["truncated"]
@@ -73,11 +131,11 @@ def test_physical_lines_round_trip_into_multiline_edit(tmp_path):
     target = tmp_path / "a"
     original = "\ufeffone\r\ntwo\x0c\u2028same\rthree\nlast".encode()
     target.write_bytes(original)
-    page = call(read_file_lines, tmp_path, path="a")
+    page = call(read_file, tmp_path, path="a")
     assert page["utf8_bom"] and page["total_lines"] == 4
     block = "".join(line["text"] + line["line_ending"] for line in page["lines"])
     assert block.encode() == original[3:]
-    hit = call(search_text, tmp_path, path="a", query="same")["matches"][0]
+    hit = call(discover_files, tmp_path, path="a", query="same")["matches"][0]
     assert hit["line"] == 2 and hit["column"] == 6
     result = call(edit_file, tmp_path, path="a", expected_sha256=page["sha256"],
                   edits=[{"old_text": block, "new_text": block.replace("three", "new")}])
@@ -88,7 +146,7 @@ def test_physical_lines_round_trip_into_multiline_edit(tmp_path):
 @pytest.mark.parametrize("raw", [b"", b"\n", b"a\n", b"a"])
 def test_eof_page_is_explicit(tmp_path, raw):
     (tmp_path / "a").write_bytes(raw)
-    page = call(read_file_lines, tmp_path, path="a", start_line=len(raw.decode().splitlines()) + 1)
+    page = call(read_file, tmp_path, path="a", start_line=len(raw.decode().splitlines()) + 1)
     assert page["lines"] == [] and page["next_line"] is None and not page["truncated"]
 
 
@@ -96,7 +154,7 @@ def test_eof_page_is_explicit(tmp_path, raw):
                                  {"start_line": 99}, {"start_column": 99}])
 def test_invalid_read_range_is_recoverable(tmp_path, args):
     (tmp_path / "a").write_text("hello")
-    result = read_file_lines.invoke({"type": "tool_call", "id": "bad", "name": "read_file_lines",
+    result = read_file.invoke({"type": "tool_call", "id": "bad", "name": "read_file",
                                     "args": {"path": "a", "runtime": runtime(tmp_path), **args}})
     assert isinstance(result, ToolMessage) and result.status == "error"
 
@@ -107,7 +165,7 @@ def test_unsupported_text_rejected_without_modification(tmp_path, raw):
     target = tmp_path / "a"
     target.write_bytes(raw)
     with pytest.raises(ToolException):
-        read_file_lines.func(path="a", runtime=runtime(tmp_path))
+        read_file.func(path="a", runtime=runtime(tmp_path))
     with pytest.raises(ToolException):
         edit_file.func(path="a", edits=[{"old_text": "x", "new_text": "y"}], runtime=runtime(tmp_path))
     assert target.read_bytes() == raw
@@ -257,38 +315,67 @@ def test_nested_ignore_rules_negation_and_subdirectory_root(tmp_path):
         (tmp_path / name).write_text("needle\n")
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "generated.py").write_text("needle")
-    result = call(search_files, tmp_path)
+    result = call(discover_files, tmp_path)
     assert {m["path"] for m in result["matches"]} == {"main.py", "keep.log", "src/ok.py", "src/keep.log"}
     assert not result["incomplete"]
-    nested = call(search_text, tmp_path, path="src", query="needle", file_pattern="*.py")
+    nested = call(discover_files, tmp_path, path="src", query="needle", pattern="*.py")
     assert [m["path"] for m in nested["matches"]] == ["ok.py"]
-    recursive_glob = call(search_files, tmp_path, pattern="**/*.py")
+    recursive_glob = call(discover_files, tmp_path, pattern="**/*.py")
     assert {m["path"] for m in recursive_glob["matches"]} == {"main.py", "src/ok.py"}
+
+
+def test_discovery_lists_direct_children_and_can_recurse_into_directories(tmp_path):
+    (tmp_path / ".gitignore").write_text("ignored/\n")
+    for name in ("src", "empty", "ignored", ".hidden"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "root.txt").write_text("root needle")
+    (tmp_path / "src" / "nested.txt").write_text("nested needle")
+    direct = call(discover_files, tmp_path, recursive=False, include_directories=True)
+    assert {(m["path"], m["kind"]) for m in direct["matches"]} == {
+        ("src", "directory"), ("empty", "directory"), ("root.txt", "file")}
+    assert not direct["incomplete"]
+    recursive = call(discover_files, tmp_path, include_directories=True)
+    assert {m["path"] for m in recursive["matches"]} == {"src", "empty", "root.txt", "src/nested.txt"}
+    text = call(discover_files, tmp_path, recursive=False, query="needle")
+    assert [m["path"] for m in text["matches"]] == ["root.txt"]
+    hidden = call(discover_files, tmp_path, recursive=False, include_directories=True, include_hidden=True)
+    assert ".hidden" in {m["path"] for m in hidden["matches"]}
+    with pytest.raises(ToolException, match="include_directories"):
+        discover_files.func(query="needle", include_directories=True, runtime=runtime(tmp_path))
+
+
+def test_nonrecursive_discovery_does_not_read_descendant_ignore_files(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / ".gitignore").write_bytes(b"\xff")
+    assert call(discover_files, tmp_path, recursive=False, include_directories=True)["matches"] == [
+        {"path": "sub", "kind": "directory"}]
+    with pytest.raises(ToolException, match="忽略规则无效"):
+        discover_files.func(runtime=runtime(tmp_path))
 
 
 def test_search_returns_literal_matches_line_column_context_and_hidden_option(tmp_path):
     (tmp_path / "a.py").write_bytes("before\r\nİ a.*b\nAFTER\n".encode())
     (tmp_path / ".hidden.py").write_text("a.*b")
-    result = call(search_text, tmp_path, query="A.*B", case_sensitive=False, file_pattern="*.py", context_lines=1)
+    result = call(discover_files, tmp_path, query="A.*B", case_sensitive=False, pattern="*.py", context_lines=1)
     match = result["matches"][0]
     assert match["path"] == "a.py" and match["line"] == 2 and match["column"] == 3
     assert [c["text"] for c in match["context"]] == ["before", "İ a.*b", "AFTER"]
-    hidden = call(search_files, tmp_path, pattern="*.py", include_hidden=True)
+    hidden = call(discover_files, tmp_path, pattern="*.py", include_hidden=True)
     assert {m["path"] for m in hidden["matches"]} == {"a.py", ".hidden.py"}
-    assert call(search_text, tmp_path, path="a.py", query="before")["matches"][0]["line"] == 1
+    assert call(discover_files, tmp_path, path="a.py", query="before")["matches"][0]["line"] == 1
 
 
 def test_search_limits_and_skips_are_explicit(tmp_path, monkeypatch):
     for name in ["a.py", "b.py", "c.py"]:
         (tmp_path / name).write_text("needle")
-    limited = call(search_text, tmp_path, query="needle", max_results=1)
+    limited = call(discover_files, tmp_path, query="needle", max_results=1)
     assert len(limited["matches"]) == 1 and limited["limit_reasons"] == ["result_limit"]
     (tmp_path / "binary").write_bytes(b"needle\0")
     (tmp_path / "invalid").write_bytes(b"\xffneedle")
-    result = call(search_text, tmp_path, query="needle")
+    result = call(discover_files, tmp_path, query="needle")
     assert result["skipped"] == {"binary": 1, "non_utf8": 1} and result["incomplete"]
     monkeypatch.setattr(workspace_search, "MAX_ENTRIES", 2)
-    assert "entry_limit" in call(search_files, tmp_path)["limit_reasons"]
+    assert "entry_limit" in call(discover_files, tmp_path)["limit_reasons"]
 
 
 def test_search_byte_time_and_depth_limits(tmp_path, monkeypatch):
@@ -296,18 +383,18 @@ def test_search_byte_time_and_depth_limits(tmp_path, monkeypatch):
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "b").write_text("needle")
     monkeypatch.setattr(workspace_search, "MAX_TOTAL_BYTES", 3)
-    assert "byte_limit" in call(search_text, tmp_path, query="needle")["limit_reasons"]
+    assert "byte_limit" in call(discover_files, tmp_path, query="needle")["limit_reasons"]
     monkeypatch.setattr(workspace_search, "MAX_SECONDS", 0)
-    assert "time_limit" in call(search_files, tmp_path)["limit_reasons"]
+    assert "time_limit" in call(discover_files, tmp_path)["limit_reasons"]
     monkeypatch.setattr(workspace_search, "MAX_SECONDS", 5)
     monkeypatch.setattr(workspace_search, "MAX_DEPTH", 0)
-    assert "depth_limit" in call(search_files, tmp_path)["limit_reasons"]
+    assert "depth_limit" in call(discover_files, tmp_path)["limit_reasons"]
 
 
 @pytest.mark.parametrize("args", [{"query": ""}, {"query": "a\nb"}, {"query": "a", "max_results": 201},
-                                 {"query": "a", "context_lines": 6}, {"query": "a", "file_pattern": ""}])
+                                 {"query": "a", "context_lines": 6}, {"query": "a", "pattern": ""}])
 def test_invalid_search_is_recoverable(tmp_path, args):
-    result = search_text.invoke({"type": "tool_call", "id": "bad-search", "name": "search_text",
+    result = discover_files.invoke({"type": "tool_call", "id": "bad-search", "name": "discover_files",
                                  "args": {**args, "runtime": runtime(tmp_path)}})
     assert result.status == "error"
 
@@ -324,12 +411,12 @@ def test_search_does_not_follow_directory_links(tmp_path):
             pytest.skip("symlink creation not available")
         subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(link), str(outside)],
                        check=True, capture_output=True)
-    result = call(search_text, tmp_path, query="needle")
+    result = call(discover_files, tmp_path, query="needle")
     assert result["matches"] == [] and result["skipped"]["linked_or_special"] == 1
 
 
-@pytest.mark.parametrize("tool,args", [(read_file_lines, {"path": "a"}), (search_files, {}),
-    (search_text, {"query": "a"}), (edit_file, {"path": "a", "edits": [{"old_text": "a", "new_text": "b"}]})])
+@pytest.mark.parametrize("tool,args", [(read_file, {"path": "a"}), (discover_files, {}),
+    (discover_files, {"query": "a"}), (edit_file, {"path": "a", "edits": [{"old_text": "a", "new_text": "b"}]})])
 def test_tools_enforce_capabilities_and_export_model_schema(tmp_path, tool, args):
     with pytest.raises(PermissionError, match="read"):
         tool.func(runtime=runtime(tmp_path, ()), **args)
@@ -337,7 +424,7 @@ def test_tools_enforce_capabilities_and_export_model_schema(tmp_path, tool, args
     assert "runtime" not in schema["properties"]
     effect = resolve_fs_effect(effect_of(tool), args, runtime(tmp_path).context)
     target = (tmp_path / args.get("path", ".")).resolve()
-    if tool in (search_files, search_text):
+    if tool is discover_files:
         assert effect.read_trees == (target,)
     else:
         assert effect.reads == (target,)
@@ -363,7 +450,7 @@ def test_recursive_search_admission_checks_sensitive_descendants(tmp_path, monke
     secret = tmp_path / "nested" / "credentials"
     surface = AuthoritySurface(AuthorityKind.CREDENTIALS, secret, readable=False)
     monkeypatch.setattr(middleware, "policy_from_context", lambda _: replace(policy, authority=(surface,)))
-    request = ToolCallRequest(tool_call={"name": "search_text", "id": "search", "args": {"query": "secret"}},
-                              tool=search_text, state={}, runtime=runtime(tmp_path))
+    request = ToolCallRequest(tool_call={"name": "discover_files", "id": "search", "args": {"query": "secret"}},
+                              tool=discover_files, state={}, runtime=runtime(tmp_path))
     admission = _admit(request)
     assert admission.asked and secret in admission.reads and admission.args["path"] == str(tmp_path)

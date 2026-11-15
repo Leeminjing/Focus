@@ -247,35 +247,26 @@ def test_spawn_agent_source_holds_no_manual_context_assembly():
 
 
 def test_launch_points_derive_the_governed_context():
-    """两个启动面（桌面服务与空间插件）都改走统一组装入口：不再手工拼装受治理字段或执行命名空间。"""
+    """桌面启动点使用统一组装入口，不手工拼装受治理字段或执行命名空间。"""
     import ast
 
     root = Path(__file__).parents[2]
     desktop = "\n".join((root / path).read_text(encoding="utf-8") for path in ("backend/app/desktop/runs/assembly_service.py", "backend/app/desktop/runs/recovery_service.py", "backend/app/desktop/agents/service.py", "backend/app/desktop/runs/service.py"))
-    spatial = (root / "plugins/spatial-patrol/routes.py").read_text(encoding="utf-8")
 
     assert "langgraph_context = {" not in desktop
     assert desktop.count("ports._governed_context(") == 2
     role_guard = ast.parse('execution.get("agent_role") not in {"main", "patrol", "teammate", "worker"}', mode="eval").body
     assert any(ast.dump(node) == ast.dump(role_guard) for node in ast.walk(ast.parse(desktop)))
     assert "prepared = await ports._prepare(" in desktop
-    # 插件启动点同样经统一组装入口 + 自己的服务端生产者写回，不再铺开身份投影
-    assert "assemble_run_context(" in spatial
-    assert "project_spatial_context(" in spatial
-    assert "**derive_security_context(" not in spatial
-    assert '"permissions": permissions,' not in spatial
 
 
 def test_execution_namespace_comes_from_the_durable_record():
     """执行命名空间以持久化身份为准：启动点不再临时拼接。"""
     root = Path(__file__).parents[2]
     desktop = "\n".join((root / path).read_text(encoding="utf-8") for path in ("backend/app/desktop/runs/assembly_service.py", "backend/app/desktop/runs/recovery_service.py", "backend/app/desktop/agents/service.py", "backend/app/desktop/runs/service.py"))
-    spatial = (root / "plugins/spatial-patrol/routes.py").read_text(encoding="utf-8")
 
     assert 'f"swarm:{agent_id}"' not in desktop
     assert "agent_row.checkpoint_ns" in desktop
-    assert 'f"patrol:{anchor.spatial_id}"' not in spatial
-    assert "anchor.checkpoint_ns" in spatial
 
 
 def test_swarm_agent_namespace_is_persisted_and_unique():
@@ -292,16 +283,6 @@ def test_swarm_agent_namespace_is_persisted_and_unique():
     assert '"checkpoint_ns"' in migration
     assert "unique=True" in migration
     assert 'op.create_index("ix_swarm_agents_task_id"' in migration
-
-
-def test_spatial_anchor_namespace_is_derived_from_persisted_identity():
-    """空间载体的命名空间由持久化主键派生，属于锚点身份而非运行期临时拼接。"""
-    from plugins.spatial_patrol.models import SpatialAnchor
-
-    anchor = SpatialAnchor(
-        spatial_id="abc123", task_id="task-1", content_ref="page.pdf", x=0.1, y=0.2
-    )
-    assert anchor.checkpoint_ns == "patrol:abc123"
 
 
 def test_owner_comes_from_the_execution_profile_only():

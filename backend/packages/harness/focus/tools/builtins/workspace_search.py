@@ -1,4 +1,4 @@
-"""不依赖 Shell 的有界文件/字面文本搜索，遵守分层忽略规则且不跟随目录链接。
+"""不依赖 Shell 的有界文件/目录发现及字面文本搜索，遵守分层忽略规则且不跟随目录链接。
 
 输入为已准入的搜索根及工作区；输出包含相对路径、行列、上下文和不完整原因。
 扫描条目、总读取量、单文件、时间与展示量均有限额，跳过项不会伪装成完整无匹配。
@@ -90,9 +90,9 @@ class SearchScan:
                 raise ToolException(f"忽略规则无效: {path}") from error
         return tuple(rules)
 
-    def files(self):
+    def paths(self, *, recursive: bool, include_directories: bool):
         if self.root.is_file():
-            yield self.root
+            yield self.root, False
             return
         if not self.root.is_dir():
             raise ToolException(f"搜索路径不存在或不是文件/目录: {self.root}")
@@ -137,12 +137,16 @@ class SearchScan:
                     if ignored:
                         continue
                     if is_dir:
+                        if include_directories:
+                            yield path, True
+                        if not recursive:
+                            continue
                         if depth >= MAX_DEPTH:
                             self.limits.add("depth_limit")
                         else:
                             pending.append((path, rules, depth + 1))
                     elif path.is_file():
-                        yield path
+                        yield path, False
                 if "entry_limit" in self.limits:
                     return
             except OSError:
@@ -165,25 +169,28 @@ def search(
     root: Path, workspace: Path, *, pattern: str, query: str | None,
     max_results: int, context_lines: int = 0, case_sensitive: bool = True,
     include_hidden: bool = False,
+    recursive: bool = True, include_directories: bool = False,
 ) -> dict:
     if not 1 <= max_results <= 200 or not 0 <= context_lines <= 5:
         raise ToolException("max_results 必须在 1..200，context_lines 必须在 0..5")
     if not pattern or len(pattern) > 512 or (query is not None and not 1 <= len(query) <= 2048):
         raise ToolException("pattern 必须包含 1..512 个字符，query 必须包含 1..2048 个字符")
     if query is not None and ("\n" in query or "\r" in query):
-        raise ToolException("query 必须为单行字面文本；多行内容请用 read_file_lines 定位")
+        raise ToolException("query 必须为单行字面文本；多行内容请用 read_file 定位")
+    if query is not None and include_directories:
+        raise ToolException("文本搜索不支持 include_directories，请仅在列目录或查找路径时使用")
     scan = SearchScan(root, workspace, include_hidden)
     results: list[dict] = []
     shown = 0
     needle = None if query is None else re.compile(re.escape(query), 0 if case_sensitive else re.IGNORECASE)
-    for path in scan.files():
+    for path, is_directory in scan.paths(recursive=recursive, include_directories=include_directories):
         if scan.expired() or "byte_limit" in scan.limits:
             break
         relative = path.relative_to(root).as_posix() if root.is_dir() else path.name
         if not _matches_glob(relative, pattern):
             continue
         if query is None:
-            candidates = iter([{"path": relative}])
+            candidates = iter([{"path": relative, "kind": "directory" if is_directory else "file"}])
         else:
             raw = scan.read(path, MAX_FILE_BYTES)
             if raw is None:

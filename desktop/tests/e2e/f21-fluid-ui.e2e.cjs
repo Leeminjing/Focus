@@ -53,7 +53,7 @@ async function run() {
       { id: 'short', role: 'human', content: 'readme是不是也要改改' },
       { id: 'long', role: 'human', content: '请检查 C:/workspace/a/very/long/path/that/must/wrap/without/creating/page/overflow/README.md，并说明需要修改的内容。' },
       { role: 'ai', content: '', reasoning_content: '先读取中文和英文 README，再比较当前实现与文档描述。', tool_calls: [
-        { id: 'pending', name: 'list_files', args: { path: 'docs' } },
+        { id: 'pending', name: 'discover_files', args: { path: 'docs' } },
         { id: 'success', name: 'read_file', args: { path: 'README.md' } },
         { id: 'error', name: 'edit_file', args: { path: 'C:/outside/README.md' } },
       ] },

@@ -1,6 +1,5 @@
 """普通会话补充、结算后队列、撤回和启动回执恢复的真实 PostgreSQL/Graph 回归。"""
 
-import backend.app.desktop.capabilities.service as _desktop_capabilities_service
 import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 import backend.app.desktop.runs.lifecycle_service as _desktop_runs_lifecycle_service
@@ -29,6 +28,7 @@ from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, De
 from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
 from focus.agents.lead_agent_state import LeadAgentState
 from focus.context.middleware import WorldStateMiddleware
+from focus.history import content_hash
 from focus.history.middleware import TypedHistoryMiddleware
 from focus.security.context import AuthorizationIdentity, RoutingIdentity, SecurityContext
 from focus.security.policy import AccessMode
@@ -153,6 +153,51 @@ def test_steer_scoping_idempotency_and_unconsumed_receipt(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("retired_focus", [None, {"spatial_id": "old-anchor", "page": 2, "x": 0.4, "y": 0.7}])
+def test_legacy_queue_payload_resumes_without_restoring_removed_api_field(tmp_path, retired_focus):
+    async def scenario():
+        engine, sessions, task, run, desktop, inputs = await setup(tmp_path)
+        try:
+            body = ConversationInputCreate(mode="queue", run={"message": "queued before upgrade", "permissions": ["read"]})
+            queued = await inputs.submit(task, body, "legacy")
+            frozen = body.model_dump(mode="json")
+            frozen["run"]["spatial_focus"] = retired_focus
+            original_hash = content_hash(frozen)
+            async with sessions.begin() as session:
+                row = await session.get(ConversationInput, queued["input_id"])
+                row.payload, row.request_hash = frozen["run"], original_hash
+
+            # 新 API 仍严格拒绝旧字段，包括 null；历史队列只在读取时去除。
+            with pytest.raises(ValueError, match="spatial_focus"):
+                ConversationInputCreate.model_validate(frozen)
+            assert "spatial_focus" not in (await inputs.list(task))[0]["run"]
+            retried = await ConversationInputs(desktop).submit(task, body, "legacy")
+            assert retried["input_id"] == queued["input_id"]
+            assert "spatial_focus" not in retried["run"]
+            for changed_body in (
+                body.model_copy(update={"run": body.run.model_copy(update={"message": "changed"})}),
+                body.model_copy(update={"run": body.run.model_copy(update={"permissions": ["read", "write"]})}),
+                ConversationInputCreate(mode="steer", target_run_id=run.run_id, run=body.run),
+            ):
+                with pytest.raises(HTTPException) as changed:
+                    await inputs.submit(task, changed_body, "legacy")
+                assert changed.value.status_code == 409
+
+            await settle(sessions, run.run_id)
+            await ConversationInputs(desktop).drain()
+            assert [item["message"] for item in desktop.started] == ["queued before upgrade"]
+            assert "spatial_focus" not in desktop.started[0]
+            async with sessions() as session:
+                row = await session.get(ConversationInput, queued["input_id"])
+                assert row.status == "started"
+                assert row.request_hash == original_hash
+                assert row.payload == frozen["run"]
+            assert (await inputs.submit(task, body, "legacy"))["status"] == "started"
+        finally:
+            await engine.dispose()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("timing", ["before_model", "during_final", "before_tool", "checkpoint_failure"])
 def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_path, timing, monkeypatch):
     async def scenario():
@@ -251,7 +296,7 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
                 WorldStateMiddleware([], "base", frozenset(), "test", "v1"), TypedHistoryMiddleware()],
             state_schema=LeadAgentState, context_schema=dict)
 
-    monkeypatch.setattr(_desktop_capabilities_service, 'get_available_tools', empty_tools)
+    monkeypatch.setattr("focus.tools.tools.get_available_tools", empty_tools)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', empty_tools)
     monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_agent)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_agent)

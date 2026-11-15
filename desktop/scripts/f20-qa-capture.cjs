@@ -82,20 +82,20 @@ async function capture(size, outputDir) {
     } else if (target === 'plugins') {
       state.inspector.open = false;
       state.plugins = {
-        filter: 'all', selectedName: 'spatial-patrol',
+        filter: 'all', selectedName: 'demo',
         plugins: [
           { name: 'demo', version: '1.0.0', status: 'active', injected: ['tool', 'hook.before_model'], requires: [] },
-          { name: 'spatial-patrol', version: '0.1.0', status: 'active', injected: ['service.spatial'], requires: [] },
+          { name: 'spatial-patrol', version: '0.1.0', status: 'active', injected: [], requires: [] },
           { name: 'broken-extension', version: '0.2.0', status: 'rejected', injected: [], requires: [], conflict: { interface: 'tool', current: 'demo', new: 'broken-extension' } }
         ],
         interfaces: {
           tool: { plugins: ['demo'], cardinality: 'multiple' },
           'hook.before_model': { plugins: ['demo'], cardinality: 'multiple' },
-          'service.spatial': { plugins: ['spatial-patrol'], cardinality: 'single', read_only: true }
+          'hook.after_model': { plugins: ['demo'], cardinality: 'multiple' }
         },
         traces: [
-          { interface: 'service.spatial', plugin: 'spatial-patrol', status: 'success', duration_ms: 12 },
-          { interface: 'service.spatial', plugin: 'spatial-patrol', status: 'failed', duration_ms: 4, error: '示例：文件暂时被占用' }
+          { interface: 'hook.after_model', plugin: 'demo', status: 'success', duration_ms: 12 },
+          { interface: 'hook.after_model', plugin: 'demo', status: 'failed', duration_ms: 4, error: '示例：文件暂时被占用' }
         ]
       };
       state.view = 'plugins';

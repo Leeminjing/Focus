@@ -87,9 +87,8 @@ window.fetch = async (input, options = {}) => {
   }
   if (/\/desktop\/api\/tasks\/[^/]+\/(materials|agents)$/.test(path)) return json([]);
   if (/\/desktop\/api\/tasks\/[^/]+\/(material-groups|material-history)$/.test(path)) return json([]);
-  if (/\/desktop\/api\/plugin\/spatial-patrol\/tasks\/[^/]+\/anchors$/.test(path)) return json([]);
   if (path === "/desktop/api/plugin/spatial-patrol/metadata") return json({ page_count: 1 });
-  if (path === "/desktop/api/plugin/spatial-patrol/text") return json({ content: "# 文件工作台\n\n这是一份用于视觉验收的 Markdown 材料。\n\n- 支持字符锚点\n- 保持重排和滚动坐标\n- 权限只在 DOCX 操作时显式选择\n\n## 说明\n\n文件工作台与任务记录并存，不会替换当前对话。" });
+  if (path === "/desktop/api/plugin/spatial-patrol/text") return json({ content: "# 文件工作台\n\n这是一份用于视觉验收的 Markdown 材料。\n\n- 支持文本引用\n- 支持文件预览\n- DOCX 编辑权限显式选择\n\n## 说明\n\n文件工作台与任务记录并存，不会替换当前对话。" });
   if (/\/desktop\/api\/tasks\/[^/]+\/skills$/.test(path)) return json({ skills: [] });
   if (/\/desktop\/api\/contexts\/[^/]+\/snapshot$/.test(path)) return json({ checkpoint_id: "checkpoint", messages: snapshotMessages });
   return json({ detail: `Unhandled test route: ${path}` }, 404);

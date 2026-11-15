@@ -80,8 +80,7 @@ class AgentFactory:
                 from backend.app.desktop.browser.tools import build_browser_tools
 
                 tools = [*tools, *build_browser_tools()]
-            if agent_role != "patrol":
-                tools = [*tools, web_search, web_fetch]
+            tools = [*tools, web_search, web_fetch]
             if agent_role == "main":
                 pooled = await get_available_tools(workspace=workspace_path)
                 pool_tools = execution_pool_tools(pooled, include_builtin=False)

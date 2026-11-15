@@ -176,7 +176,6 @@ class RunService:
         model_name: str | None,
         permissions: list[str],
         skills: list[str],
-        spatial_focus: dict[str, Any] | None = None,
         memory_ids: list[str] | None = None,
         material_inputs: list[RunMaterialRequest] | None = None,
         attached_material_ids: list[str] | None = None,
@@ -359,7 +358,6 @@ class RunService:
                 "skill_snapshots": snapshots,
                 "permissions": permissions,
                 "access_mode": str(_resolve_access_mode(access_mode)),
-                "spatial_focus": spatial_focus,
                 **run_materials.to_equipment(),
             }
             history = await ports.get_checkpoint_messages(

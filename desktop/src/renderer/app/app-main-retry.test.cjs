@@ -195,7 +195,7 @@ test("再次失败仍保留原消息、材料、必看、权限与身份", async
   assert.equal(h.evaluate('materialSelection("task").bindings.length'), 1);
 });
 
-test("原请求重试不混入变化后的材料、技能、权限、空间目标或执行审批", async () => {
+test("原请求重试不混入变化后的材料、技能、权限或执行审批", async () => {
   const h = setup();
   await h.evaluate("sendMain()");
   h.input.value = "下一条消息";
@@ -205,7 +205,6 @@ test("原请求重试不混入变化后的材料、技能、权限、空间目�
     state.details.get("task").ui_state.skills = ["changed-skill"];
     state.details.get("task").ui_state.access_mode = "danger-full-access";
     state.details.get("task").pending_compression = { id: "new-gate" };
-    currentSpatialTarget = () => { throw new Error("重试不应读取新空间目标"); };
   `);
   await h.evaluate("sendMain()");
   assert.equal(h.requests.length, 2);

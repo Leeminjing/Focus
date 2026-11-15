@@ -95,7 +95,6 @@ class MainRunCreate(StrictRequest):
         | None
     ) = None
     skills: list[str] = Field(default_factory=list)
-    spatial_focus: dict[str, Any] | None = None
     memory_ids: list[str] | None = None
     permissions: list[Literal["read", "write", "host_command"]] = Field(
         default_factory=lambda: ["read", "write", "host_command"]

@@ -6,8 +6,8 @@ web_tools.api_key 声明，默认引用 DEEPSEEK_API_KEY，与 Run 选择的模�
 
 工作流：校验参数 → 异步 POST DeepSeek JSON API → 转换结果。缺少凭据、HTTP / 网络
 错误及无效响应统一抛 ToolException，由现有工具错误处理闭合调用，不中断 Agent。
-两个工具仅访问网络并返回内存文本，无受治理的本地副作用；main / teammate / worker
-继续装配，patrol 与承诺层内部 Worker/Evaluator 不直接装配。
+两个工具仅访问网络并返回内存文本，无受治理的本地副作用；main / teammate / worker / patrol
+均可使用，Portfolio Patrol 经结构化认知请求复用；承诺层内部 Worker/Evaluator 不直接装配。
 
 示例：await web_search.ainvoke({"query": "python asyncio", "max_results": 5})。
 """

@@ -10,7 +10,7 @@
 
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
-import backend.app.desktop.capabilities.service as _desktop_capabilities_service
+import focus.tools.tools as _discovery_tools
 import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 
 
@@ -81,10 +81,10 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
         return []
 
     original = _desktop_conversations_compression_service.make_lead_agent
-    original_tools = _desktop_capabilities_service.get_available_tools
+    original_tools = _discovery_tools.get_available_tools
     _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
     _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
-    _desktop_capabilities_service.get_available_tools = fake_get_available_tools
+    _discovery_tools.get_available_tools = fake_get_available_tools
     _desktop_runs_agent_factory.get_available_tools = fake_get_available_tools
     try:
         with _client() as client:
@@ -98,6 +98,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
                 headers=SESSION, json={"title": "t"},
             ).json()
             service = app.state.desktop_service
+            browser_middlewares = ["BrowserControlMiddleware"] if os.name == "nt" and hasattr(service, "browsers") else []
             task_id = task["task_id"]
             model = service.app_config.get_model("deepseek-v4-flash")
             monkeypatch.setattr(model, "use", "focus.models.responses:FocusResponsesChatModel")
@@ -166,7 +167,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
                     "read_swarm_agent_history",
                     "report_must_view_images"} <= main_names
             assert main_cfg["middlewares"] is None
-            assert len(main_cfg["additional_middlewares"]) == 4
+            assert len(main_cfg["additional_middlewares"]) == 4 + len(browser_middlewares)
             names = [
                 middleware.__class__.__name__
                 for middleware in main_cfg["additional_middlewares"]
@@ -202,7 +203,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
             empty_cfg = captured[-1]
             assert [
                 item.__class__.__name__ for item in empty_cfg["additional_middlewares"]
-            ] == ["handle_tool_errors", "ImageAttachmentProjectionMiddleware", "CompressionGate"]
+            ] == ["handle_tool_errors", *browser_middlewares, "ImageAttachmentProjectionMiddleware", "CompressionGate"]
             assert "response_format" not in empty_cfg
             assert "report_must_view_images" not in {
                 item.name for item in empty_cfg["tools"]
@@ -232,7 +233,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
             attached_cfg = captured[-1]
             assert [
                 item.__class__.__name__ for item in attached_cfg["additional_middlewares"]
-            ] == ["handle_tool_errors", "ImageAttachmentProjectionMiddleware", "CompressionGate"]
+            ] == ["handle_tool_errors", *browser_middlewares, "ImageAttachmentProjectionMiddleware", "CompressionGate"]
             assert "response_format" not in attached_cfg
             assert "report_must_view_images" not in {
                 item.name for item in attached_cfg["tools"]
@@ -261,15 +262,21 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
             wait_until(lambda: captured, timeout=15, message="小兵装配未被捕获")
             patrol_cfg = captured[-1]
             patrol_names = {tool.name for tool in patrol_cfg["tools"]}
-            # 小兵机制纯净：仅工作区工具，无任何协作工具与消息注入
-            assert patrol_names <= {"read_file", "read_file_lines", "list_files", "search_files", "search_text", "write_file", "edit_file",
-                                    "bash", "powershell", "cmd", "sh"}
+            # 小兵拥有工作区、联网和受支持的浏览器工具，无协作工具与消息注入。
+            browser_names = set()
+            if browser_middlewares:
+                from backend.app.desktop.browser.tools import build_browser_tools
+
+                browser_names = {item.name for item in build_browser_tools()}
+            assert patrol_names <= {"read_file", "discover_files", "write_file", "edit_file",
+                                    "bash", "powershell", "cmd", "sh", "web_search", "web_fetch"} | browser_names
+            assert {"web_search", "web_fetch"} <= patrol_names
             assert "send_message" not in patrol_names
             assert "spawn_agent" not in patrol_names
             assert "claim_task" not in patrol_names
             assert "<agent_messages>" not in patrol_cfg["system_prompt"]
             assert patrol_cfg["middlewares"] == []
-            assert len(patrol_cfg["additional_middlewares"]) == 1
+            assert [item.__class__.__name__ for item in patrol_cfg["additional_middlewares"]] == ["handle_tool_errors", *browser_middlewares]
             wait_until(lambda: client.portal.call(run_settled, run2["run_id"]), timeout=15,
                 message="小兵执行未完成耐久结算")
 
@@ -402,5 +409,5 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
     finally:
         _desktop_conversations_compression_service.make_lead_agent = original
         _desktop_runs_agent_factory.make_lead_agent = original
-        _desktop_capabilities_service.get_available_tools = original_tools
+        _discovery_tools.get_available_tools = original_tools
         _desktop_runs_agent_factory.get_available_tools = original_tools

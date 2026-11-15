@@ -29,14 +29,14 @@ class TextEdit(BaseModel):
     new_text: StrictStr
 
 
-def read_utf8(target: Path) -> tuple[bytes, str]:
-    """限制单文件输入，并拒绝会破坏精确匹配的二进制/解码替换。"""
+def read_utf8(target: Path, *, bounded: bool = True) -> tuple[bytes, str]:
+    """默认限制单文件输入；显式全文读取仍拒绝二进制与解码替换。"""
     try:
         if not target.is_file():
             raise ToolException(f"目标不是现有文件: {target}")
         with target.open("rb") as stream:
-            raw = stream.read(MAX_FILE_BYTES + 1)
-        if len(raw) > MAX_FILE_BYTES:
+            raw = stream.read(MAX_FILE_BYTES + 1 if bounded else -1)
+        if bounded and len(raw) > MAX_FILE_BYTES:
             raise ToolException(f"文件超过 {MAX_FILE_BYTES} 字节上限，请缩小文件或使用专用工具: {target}")
         if b"\0" in raw:
             raise ToolException(f"二进制文件不能按 UTF-8 文本处理: {target}")
@@ -63,13 +63,13 @@ def text_lines(text: str) -> list[tuple[str, str]]:
     return lines
 
 
-def read_lines(
-    target: Path, start_line: int, max_lines: int, start_column: int,
-    expected_sha256: str | None,
+def text_page(
+    target: Path, raw: bytes, text: str, start_line: int, max_lines: int,
+    start_column: int, expected_sha256: str | None,
 ) -> dict:
+    """对原始文本或文档提取文本分页，版本始终绑定原文件字节。"""
     if start_line < 1 or not 1 <= max_lines <= 500 or start_column < 1:
         raise ToolException("start_line/start_column 必须 >= 1，max_lines 必须在 1..500")
-    raw, text = read_utf8(target)
     digest = check_version(raw, expected_sha256)
     lines = text_lines(text.removeprefix("\ufeff"))
     if start_line > len(lines) + 1:

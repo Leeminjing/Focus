@@ -10,7 +10,7 @@ SSE、持久 Run、宿主输入来源、恢复、投放、权限装配和精确�
 import backend.app.desktop.api.launch as _desktop_api_launch
 import backend.app.desktop.api.runs as _desktop_api_runs
 
-import backend.app.desktop.capabilities.service as _desktop_capabilities_service
+import focus.tools.tools as _focus_tools
 import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
@@ -75,7 +75,7 @@ def _isolated_external_tool_pool(monkeypatch):
     async def empty_tools(*, workspace=None):
         return []
 
-    monkeypatch.setattr(_desktop_capabilities_service, 'get_available_tools', empty_tools)
+    monkeypatch.setattr(_focus_tools, 'get_available_tools', empty_tools)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', empty_tools)
 
 
@@ -969,10 +969,10 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until, mo
         ).json()["status"] in {"interrupted", "success"}
 
         assert {t.name for t in select_workspace_tools(["read"])} == {
-            "read_file", "read_file_lines", "list_files", "search_files", "search_text"}
+            "read_file", "discover_files"}
         assert select_workspace_tools([]) == []
         assert {t.name for t in select_workspace_tools(["read", "write", "host_command"])} == {
-            "read_file", "read_file_lines", "list_files", "search_files", "search_text",
+            "read_file", "discover_files",
             "write_file", "edit_file", "bash", "powershell", "cmd", "sh"
         }
 

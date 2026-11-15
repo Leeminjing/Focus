@@ -1,9 +1,4 @@
-"""可选 DOCX 编辑插件的 Focus 鉴权控制面。
-
-输入为工作区文件会话、保存命令和 iframe 视口点击点；输出为隔离的编辑器配置、
-会话证据与持久化语义锚点。锚点工作流先让 Bridge 把真实点击解析为页面 placement
-和唯一目标，再在同一请求内提交数据库，绝不复用按钮点击前的旧光标。
-"""
+"""Focus-authenticated manual DOCX editing sessions, save and close routes."""
 
 from __future__ import annotations
 
@@ -13,7 +8,6 @@ from urllib.parse import urlencode
 import jwt
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 
 from plugins.spatial_patrol.docx_broker import BridgeContext, BrokerError, broker
 from plugins.spatial_patrol.docx_bridge import BridgeUnavailable, bridge_server
@@ -24,8 +18,6 @@ from plugins.spatial_patrol.docx_sessions import (
     SessionError,
     session_manager,
 )
-from plugins.spatial_patrol.docx_semantic import DocxSemanticRegion, serialize_semantic_region
-from plugins.spatial_patrol.models import SpatialAnchor
 
 
 router = APIRouter(prefix="/docx", tags=["spatial-patrol-docx"])
@@ -46,66 +38,19 @@ class CloseSession(_Strict):
     discard_unsaved: bool = False
 
 
-class CreateAnchor(_Strict):
-    viewport_x: float = Field(ge=0)
-    viewport_y: float = Field(ge=0)
-
-
 def _bridge_url(origin: str, path: str, token: str) -> str:
     return f"{origin}{path}?{urlencode({'access_token': token})}"
 
 
-async def _observe_anchor_target(
-    command_broker, session_id: str, document_version: int, target_id: str | None,
-) -> dict[str, Any]:
-    if target_id:
-        return command_broker.observe(session_id, target_id)
-    result = await command_broker.issue(
-        session_id,
-        action="observe",
-        expected_version=document_version,
-        timeout=10,
-    )
-    observed = result.get("observation")
-    if not isinstance(observed, dict) or not observed.get("target_id"):
-        raise BrokerError("编辑器没有返回当前语义目标")
-    projection = result.get("projection")
-    return {**observed, "projection": projection}
-
-
-async def _resolve_anchor_point(
-    command_broker,
-    session_id: str,
-    document_version: int,
-    *,
-    viewport_x: float,
-    viewport_y: float,
-) -> dict[str, Any]:
-    result = await command_broker.issue(
-        session_id,
-        action="resolve_anchor_point",
-        arguments={"viewport_x": viewport_x, "viewport_y": viewport_y},
-        expected_version=document_version,
-        timeout=10,
-    )
-    observed = result.get("observation")
-    projection = result.get("projection")
-    if not isinstance(observed, dict) or not observed.get("target_id"):
-        raise BrokerError("编辑器没有返回点击位置的语义结果")
-    if not isinstance(projection, dict) or not isinstance(projection.get("point"), dict):
-        raise BrokerError("编辑器没有返回点击位置的页面坐标")
-    return {**observed, "projection": projection}
-
-
 @router.get("/runtime")
 async def runtime_status() -> dict[str, Any]:
-    """Read-only state inspection; deliberately does not start Docker."""
+    """Inspect state without starting Docker."""
     return runtime.snapshot.payload()
 
 
 @router.post("/sessions")
 async def create_session(body: CreateSession, request: Request) -> dict[str, Any]:
-    """First DOCX open is the only path that prepares Docker and the bridge."""
+    """Prepare the optional runtime when the user first opens a DOCX document."""
     try:
         await runtime.prepare()
         await bridge_server.prepare()
@@ -138,7 +83,7 @@ async def create_session(body: CreateSession, request: Request) -> dict[str, Any
     )
     plugin_token = signer.issue(
         **common,
-        scopes={"command:poll", "command:result", "event:write", "projection:write"},
+        scopes={"command:poll", "command:result", "event:write"},
     )
     focus_origin = str(request.base_url).rstrip("/")
     plugin_query = urlencode({
@@ -234,113 +179,6 @@ async def force_save(session_id: str) -> dict[str, Any]:
         return {"accepted": True, "result": result}
     except (SessionError, BrokerError) as exc:
         raise HTTPException(409, str(exc)) from exc
-
-
-@router.get("/sessions/{session_id}/anchors")
-async def session_anchors(session_id: str) -> list[dict[str, Any]]:
-    try:
-        record = await session_manager.get(session_id)
-    except SessionError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    from focus.persistence.engine import get_session_factory
-
-    async with get_session_factory()() as session:
-        anchors = list((await session.scalars(
-            select(SpatialAnchor).where(
-                SpatialAnchor.task_id == record.task_id,
-                SpatialAnchor.content_ref == record.content_ref,
-                SpatialAnchor.status != "dismissed",
-            )
-        )).all())
-    payloads = [anchor.to_payload() for anchor in anchors]
-    tracked = [
-        {"spatial_id": item["spatial_id"], "region": item["region"]}
-        for item in payloads
-        if isinstance(item.get("region"), dict)
-        and item["region"].get("coordinate_space") == "docx-semantic-v1"
-    ]
-    try:
-        result = await broker.issue(
-            session_id, action="subscribe_anchors", arguments={"anchors": tracked},
-            expected_version=record.document_version, timeout=10,
-        )
-        projections = {
-            item["spatial_id"]: item
-            for item in result.get("evidence", {}).get("projections", [])
-        }
-    except BrokerError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    for item in payloads:
-        item["viewport_projection"] = projections.get(item["spatial_id"])
-    return payloads
-
-
-@router.post("/sessions/{session_id}/anchors")
-async def create_semantic_anchor(session_id: str, body: CreateAnchor) -> dict[str, Any]:
-    try:
-        record = await session_manager.get(session_id)
-        observed = await _resolve_anchor_point(
-            broker,
-            session_id,
-            record.document_version,
-            viewport_x=body.viewport_x,
-            viewport_y=body.viewport_y,
-        )
-        projection = observed.get("projection") or {}
-        point = projection["point"]
-        target = {
-            "target_id": observed["target_id"],
-            "kind": observed["kind"],
-            "stable_id": observed.get("stable_id"),
-            "structure_path": observed.get("structure_path") or [],
-            "fingerprint": observed.get("fingerprint") or {
-                "exact": str(observed.get("content") or "")[:1024],
-                "prefix": "",
-                "suffix": "",
-            },
-        }
-        semantic = DocxSemanticRegion.model_validate({
-            "document_id": record.document_id,
-            "document_version": record.document_version,
-            "placement": {
-                "page": projection["page"],
-                "x": point["x"],
-                "y": point["y"],
-            },
-            "attachment": projection.get("attachment"),
-            "target": target,
-            "projection": {
-                "page": projection["page"],
-                "rect": projection.get("rect"),
-                "projection_unavailable": projection.get("projection_unavailable", False),
-            },
-        })
-    except (SessionError, BrokerError, KeyError, ValueError) as exc:
-        raise HTTPException(409, f"无法建立 Word 语义锚点: {exc}") from exc
-    x = semantic.placement.x
-    y = semantic.placement.y
-    import uuid
-    from focus.persistence.engine import get_session_factory
-
-    anchor = SpatialAnchor(
-        spatial_id=uuid.uuid4().hex,
-        task_id=record.task_id,
-        kind="anchor",
-        content_ref=record.content_ref,
-        page=semantic.projection.page,
-        x=x,
-        y=y,
-        region=serialize_semantic_region(semantic),
-        status="active",
-        task_instruction="",
-    )
-    async with get_session_factory()() as session:
-        session.add(anchor)
-        await session.commit()
-        await session.refresh(anchor)
-    payload = anchor.to_payload()
-    payload["viewport_projection"] = projection
-    return payload
 
 
 @router.post("/sessions/{session_id}/close")

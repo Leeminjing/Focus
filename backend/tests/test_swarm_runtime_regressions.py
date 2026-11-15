@@ -239,7 +239,7 @@ def test_swarm_run_recovers_from_latest_invalid_checkpoint(monkeypatch):
                 return {"messages": [AIMessage(
                     content="",
                     tool_calls=[{
-                        "name": "list_files",
+                        "name": "discover_files",
                         "args": {"path": "solution.slnx"},
                         "id": "call-unclosed",
                         "type": "tool_call",

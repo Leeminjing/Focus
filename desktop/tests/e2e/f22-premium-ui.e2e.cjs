@@ -59,12 +59,12 @@ async function run() {
       { id: 'human', role: 'human', content: '从工具清单中选出四个代表性工具。' },
       { role: 'ai', content: '', reasoning_content: '先覆盖文件、搜索、终端和通用工具，再比较结果。', tool_calls: [
         { id: 'a', name: 'demo_echo', args: { text: 'Hello' } },
-        { id: 'b', name: 'list_files', args: { path: '.' } },
+        { id: 'b', name: 'discover_files', args: { path: '.' } },
         { id: 'c', name: 'web_search', args: { query: 'Focus agent framework' } },
         { id: 'd', name: 'bash', args: { command: 'pwd' } },
       ] },
       { role: 'tool', name: 'demo_echo', tool_call_id: 'a', status: 'success', content: 'Hello' },
-      { role: 'tool', name: 'list_files', tool_call_id: 'b', status: 'success', content: '2 files' },
+      { role: 'tool', name: 'discover_files', tool_call_id: 'b', status: 'success', content: '2 files' },
       { role: 'tool', name: 'web_search', tool_call_id: 'c', status: 'error', content: '暂时无法连接搜索服务' },
       { role: 'ai', content: '前三项已经形成可比较结果，终端调用仍在进行。' },
     ];

@@ -101,7 +101,7 @@ def test_projection_only_reads_main_namespace():
 def test_background_pending_does_not_block_main_run():
     """后台执行主体存在未决时，主执行的未决集合仍为空。"""
     checkpointer = _Checkpointer(
-        {MAIN_CHECKPOINT_NAMESPACE: _Checkpoint(), "patrol:spatial-1": _Checkpoint(_ACCESS)}
+        {MAIN_CHECKPOINT_NAMESPACE: _Checkpoint(), "patrol:agent-1": _Checkpoint(_ACCESS)}
     )
     kinds = asyncio.run(
         main_pending_kinds(_Session(), _task(), checkpointer, (_OTHER_TYPE, APPROVAL_TYPE))

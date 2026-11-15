@@ -109,7 +109,7 @@ macOS 使用工作台窗口。图片输入需要配置支持图像的模型。
 
 Shell 的平台能力有差异：Windows 提供只读、工作区写入和完全访问三档执行；macOS 目前仅提供完全访问 Shell，受限模式会明确返回不可用，不会自动放宽权限。需要执行时，可由用户单次批准完全访问，或继续使用文件工具。macOS 的取消与超时会停止本次进程组，确认退出后采集工作区文件变化；完全访问不限制程序主动脱离进程组，因此不提供 Windows Job 等价的进程树隔离保证。macOS 尚不具备完整的受限编程体验。
 
-默认代码工具无需 Shell 权限：`search_files` 按 glob 定位文件，`search_text` 搜索单行字面文本并返回路径、行列与上下文；两者遵守分层 `.gitignore`、`.ignore`、`.rgignore`，默认跳过隐藏项且不跟随目录链接。`read_file_lines` 返回带行号、SHA-256 与续读游标的文本页。`edit_file` 在原文件中校验一组唯一、不重叠的旧内容，再一次提交替换，返回实际 diff 并记录文件版本；可通过 `expected_sha256` 拒绝过期编辑，失败后应重读。
+默认文件工具无需 Shell 权限：`discover_files` 按 glob 定位文件，提供 `query` 时搜索单行字面文本并返回路径、行列与上下文；使用 `recursive=false, include_directories=true` 列出直属文件和目录。它遵守分层 `.gitignore`、`.ignore`、`.rgignore`，默认跳过隐藏项且不跟随目录链接。`read_file` 统一读取 UTF-8 代码及 PDF/DOCX/DOC 提取文本，默认返回带行号、SHA-256 与续读游标的文本页；明确需要全文时使用 `mode="full"`。`edit_file` 在 UTF-8 原文件中校验一组唯一、不重叠的旧内容，再一次提交替换，返回实际 diff 并记录文件版本；可通过 `expected_sha256` 拒绝过期编辑，失败后应重读。
 
 行读取与编辑仅支持最多 4 MiB 的 UTF-8 文件；每页默认 200 行，最多 500 行及 20000 个内容字符，超长行可按列续读。搜索默认最多 100 个匹配行/路径，可调至 200，同时限制扫描量与输出；返回的 `truncated`、`incomplete`、`limit_reasons`、`skipped` 会明确说明未完整搜索的情况。`read_file` 保留完整材料读取接口，`write_file` 用于新建或有意整文件写入。
 

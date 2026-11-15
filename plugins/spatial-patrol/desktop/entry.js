@@ -1,4 +1,4 @@
-/* spatial-patrol 插件前端入口:注册视图与材料打开器到系统宿主。
+/* 文件查看器插件入口：注册视图与材料打开器到系统宿主。
    app.js 按启用清单注入本脚本后,经 window.__focusPluginViews 注册表接入。 */
 (function (root) {
   "use strict";
@@ -12,7 +12,5 @@
     openMaterial: (material, appState) => viewer.openMaterial(material, appState),
     supportsMaterial: material => viewer.supportsMaterial(material),
     mountPanel: (container, material, appState, options) => viewer.mountPanel(container, material, appState, options),
-    getFocus: () => viewer.getFocus(),
-    sendFocusedMessage: message => viewer.sendFocusedMessage(message),
   };
 })(typeof globalThis === "object" ? globalThis : this);

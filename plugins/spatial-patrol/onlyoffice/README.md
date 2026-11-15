@@ -1,4 +1,4 @@
-# Focus spatial-patrol DOCX runtime
+# Focus optional DOCX editor runtime
 
 This directory owns the optional ONLYOFFICE Docs Community Edition runtime used by
 the `spatial-patrol` plugin. Focus itself never depends on this Compose project.
@@ -12,8 +12,8 @@ Edition is distributed under GNU AGPL v3.0. The corresponding upstream source is
 - https://github.com/ONLYOFFICE/sdkjs/tree/v9.4.0
 
 Focus Bridge plugin sources are shipped in `desktop/onlyoffice-focus-bridge/`.
-Any spatial bridge patch is shipped as source in `source-patch/`; no proprietary
-Document Server binary or font is included in this repository.
+The bridge only coordinates save commands and document change events. No
+proprietary Document Server binary or font is included in this repository.
 
 To inspect the resolved configuration without starting anything:
 

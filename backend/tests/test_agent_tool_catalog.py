@@ -100,8 +100,8 @@ def test_role_factory_preserves_ordinary_tools_and_plugin_hooks(monkeypatch, tmp
             assert len(names) == len(set(names)) and names.count("plugin_probe") == 1
             assert ("custom_probe" in names) == (role == "main")
             assert ("mcp_probe" in names) == (role == "main")
-            assert ("web_search" in names) == (role != "patrol")
-            assert ("web_fetch" in names) == (role != "patrol")
+            assert names.count("web_search") == 1
+            assert names.count("web_fetch") == 1
             assert ("send_message" in names) == (role != "patrol")
             assert "read_file" in names and hooks == ["before"]
             equipment = await service._equipment_tools()

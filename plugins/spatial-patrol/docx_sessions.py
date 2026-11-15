@@ -42,6 +42,7 @@ from focus.security import (
     AccessOperation,
     canonical_target,
     decide_path_access,
+    is_within,
     restrictive_policy,
 )
 from plugins.spatial_patrol import docx_db
@@ -71,6 +72,8 @@ def resolve_workspace_docx(workspace: str | Path, content_ref: str) -> Path:
         raise SessionError("DOCX 路径必须是工作区内相对路径")
     root = Path(workspace).resolve()
     candidate = canonical_target(root, content_ref)
+    if not is_within(root, candidate):
+        raise SessionError("DOCX 路径越出工作区")
     policy = restrictive_policy(root)
     if decide_path_access(policy, candidate, AccessOperation.READ) is not AccessDecision.ALLOW:
         raise SessionError("DOCX 路径越出工作区")
@@ -242,20 +245,6 @@ class DocxSessionManager:
             session_id, status="closed", dirty=False,
             recovery_url=None if discard_unsaved else record.recovery_url,
         )
-
-    async def has_active_writer(self, *, task_id: str, content_ref: str) -> bool:
-        doc_id = document_id(task_id, content_ref)
-        factory = self._factory()
-        async with factory() as session:
-            record = await session.scalar(
-                select(DocxEditorSession.session_id).where(
-                    DocxEditorSession.document_id == doc_id,
-                    DocxEditorSession.mode == "edit",
-                    DocxEditorSession.status.in_(ACTIVE_STATUSES),
-                    DocxEditorSession.expires_at > utcnow(),
-                ).limit(1)
-            )
-        return record is not None
 
     async def find_active(
         self, *, task_id: str, content_ref: str, require_edit: bool = False

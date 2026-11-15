@@ -1,25 +1,25 @@
 """本文件对外提供正式只读 Lane 及五类缺失资源的工具效果回归。
 
 输入为隔离 PostgreSQL 的 Loop/Lane、真实工具和临时插件项目；输出为可读、拒写且无命令效果，以及缺失后合法创建恢复的证据。
-具体工作流为从正式 membership 和明确的 Patrol Directive 来源解析角色装备，通过生产上下文组装调用真实文件和 Shell 工具；缺失资源保留错误配对，授权创建后重读。
+具体工作流为从正式 membership 解析角色装备，通过生产上下文组装调用真实文件和 Shell 工具；缺失资源保留错误配对，授权创建后重读。
 示例：pytest backend/tests/test_loop_tool_boundaries.py；不操作真实 Vault、不把 fixture 声称为已安装 Obsidian。
 """
 
 import asyncio
+import json
 from datetime import UTC, datetime
 import os
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_directive_equipment
+from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_context_equipment
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopContextMembership, LoopDelegationGrant
 from backend.app.desktop.contexts.curation.models import CurationLane
 from backend.tests.runtime_context_support import tool_runtime
 from focus.security.policy import AccessMode
-from focus.tools.builtins.workspace_tools import read_file, list_files, write_file, powershell, select_workspace_tools
+from focus.tools.builtins.workspace_tools import read_file, discover_files, write_file, powershell, select_workspace_tools
 from test_agent_loop_round_liveness import _seed_loop, _stop
 
 
@@ -39,21 +39,20 @@ def test_formal_read_only_lane_rejects_write_and_shell_even_with_full_user_mode(
                 member = await session.scalar(select(LoopContextMembership).where(LoopContextMembership.loop_id == loop.loop_id))
                 lane = await session.get(CurationLane, member.lane_id)
                 lane.lane_policy = {}
-                directive = SimpleNamespace(target_context_id=member.context_id, origin_kind="patrol")
-                primary = await resolve_directive_equipment(session, loop, directive)
+                primary = await resolve_context_equipment(session, loop, member.context_id)
                 assert member.role == "primary" and primary["permissions"] == ["read", "write", "host_command"]
                 assert primary["access_mode"] == "danger-full-access"
                 member.role = "derived"
-                derived = await resolve_directive_equipment(session, loop, directive)
+                derived = await resolve_context_equipment(session, loop, member.context_id)
                 assert derived["permissions"] == ["read"] and derived["access_mode"] == "read-only"
                 member.role = "primary"
                 lane.lane_policy = {**(lane.lane_policy or {}), "workspace_mode": "read_only"}
-                equipment = await resolve_directive_equipment(session, loop, directive)
+                equipment = await resolve_context_equipment(session, loop, member.context_id)
             assert equipment["permissions"] == ["read"] and equipment["access_mode"] == "read-only"
             runtime = tool_runtime(agent_id="readonly-reviewer", task_id=fixture["context_id"], workspace=str(tmp_path), permissions=tuple(equipment["permissions"]), access_mode=AccessMode(equipment["access_mode"]))
             existing = tmp_path / "note.md"
             existing.write_text("original", encoding="utf-8")
-            assert read_file.func(path=str(existing), runtime=runtime) == "original"
+            assert json.loads(read_file.func(path=str(existing), runtime=runtime))["lines"][0]["text"] == "original"
             marker = tmp_path / "forbidden" / "result.md"
             with pytest.raises(PermissionError, match="write"):
                 write_file.func(path=str(marker), content="escaped", runtime=runtime)
@@ -61,7 +60,7 @@ def test_formal_read_only_lane_rejects_write_and_shell_even_with_full_user_mode(
                 powershell.func(command=f"[IO.File]::WriteAllText('{marker}', 'escaped')", runtime=runtime)
             assert not marker.parent.exists() and existing.read_text(encoding="utf-8") == "original"
             assert {item.name for item in select_workspace_tools(equipment["permissions"])} == {
-                "read_file", "read_file_lines", "list_files", "search_files", "search_text"}
+                "read_file", "discover_files"}
         finally:
             if fixture:
                 await _stop(fixture["service"], fixture["loop_id"])
@@ -74,7 +73,7 @@ def test_formal_read_only_lane_rejects_write_and_shell_even_with_full_user_mode(
 def test_missing_resource_is_paired_failure_then_authorized_creation_recovers(tmp_path, resource, directory):
     async def run():
         runtime = tool_runtime(agent_id="resource-recovery", task_id="resource-fixture", workspace=str(tmp_path), permissions=("read", "write"), access_mode=AccessMode.DANGER_FULL_ACCESS)
-        tool = list_files if directory else read_file
+        tool = discover_files if directory else read_file
         for index in range(2):
             result = await tool.ainvoke({"type": "tool_call", "id": f"missing-{index}", "name": tool.name,
                 "args": {"path": resource, "runtime": runtime}})

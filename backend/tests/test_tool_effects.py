@@ -161,8 +161,12 @@ def test_file_tools_are_structured_with_path_targets(tmp_path):
     assert read_effect.reads == ((tmp_path / "a.txt").resolve(),)
     assert read_effect.writes == ()
 
-    list_effect = resolve_fs_effect(effect_of(by_name["list_files"]), {"path": "sub"}, context)
-    assert list_effect.reads == ((tmp_path / "sub").resolve(),)
+    discovery_effect = resolve_fs_effect(effect_of(by_name["discover_files"]), {"path": "sub"}, context)
+    assert discovery_effect.read_trees == ((tmp_path / "sub").resolve(),)
+    listing_effect = resolve_fs_effect(effect_of(by_name["discover_files"]),
+                                       {"path": "sub", "recursive": False, "include_directories": True}, context)
+    assert listing_effect.reads[0] == (tmp_path / "sub").resolve()
+    assert listing_effect.read_trees == ()
 
     write_effect = resolve_fs_effect(effect_of(by_name["write_file"]), {"path": "b.txt"}, context)
     assert write_effect.writes == ((tmp_path / "b.txt").resolve(),)
@@ -226,49 +230,3 @@ def test_desktop_reader_tools_have_no_local_effect():
     service = DesktopService.__new__(DesktopService)
     tools = [*service._build_patrol_reader_tools("task-1"), *service._build_swarm_reader_tools("task-1")]
     _assert_all_declared(tools, ToolEffectKind.NO_LOCAL_EFFECT)
-
-
-def test_spatial_observation_tools_are_structured_on_the_carrier(tmp_path):
-    from plugins.spatial_patrol.spatial import ObservationService, build_observation_tools
-
-    carrier = tmp_path / "page.pdf"
-    carrier.write_bytes(b"%PDF-1.4\n")
-    tools = build_observation_tools(ObservationService({}, None))
-    _assert_all_declared(tools, ToolEffectKind.STRUCTURED_FS)
-
-    context = {"workspace": str(tmp_path), "content_ref": "page.pdf"}
-    for item in tools:
-        resolved = resolve_fs_effect(effect_of(item), {"radius": 0.1}, context)
-        assert resolved.reads == (carrier.resolve(),)
-
-
-def test_docx_tools_are_structured_on_the_carrier(tmp_path):
-    from plugins.spatial_patrol.docx_edit import (
-        delete_docx_paragraph,
-        observe_docx_delete_candidate,
-    )
-    from plugins.spatial_patrol.docx_tools import apply_docx_edit, observe_docx_target
-
-    carrier = tmp_path / "doc.docx"
-    carrier.write_bytes(b"placeholder")
-    context = {"workspace": str(tmp_path), "content_ref": "doc.docx"}
-
-    readers = [observe_docx_target, observe_docx_delete_candidate]
-    writers = [apply_docx_edit, delete_docx_paragraph]
-    _assert_all_declared(readers, ToolEffectKind.STRUCTURED_FS)
-    _assert_all_declared(writers, ToolEffectKind.STRUCTURED_FS)
-
-    for item in readers:
-        resolved = resolve_fs_effect(effect_of(item), {}, context)
-        assert resolved.reads == (carrier.resolve(),)
-        assert resolved.writes == ()
-    for item in writers:
-        resolved = resolve_fs_effect(effect_of(item), {}, context)
-        assert resolved.writes == (carrier.resolve(),)
-
-
-def test_structured_resolver_fails_loudly_without_governed_context(tmp_path):
-    from plugins.spatial_patrol.docx_tools import observe_docx_target
-
-    with pytest.raises(RuntimeError, match="载体上下文"):
-        resolve_fs_effect(effect_of(observe_docx_target), {}, {})

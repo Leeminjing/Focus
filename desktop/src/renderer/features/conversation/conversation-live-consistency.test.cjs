@@ -29,9 +29,9 @@ const LIVE = [
     role: "ai",
     content: "我先勘察工作区",
     reasoning_content: "Let me explore the workspace",
-    tool_calls: [{ id: "call-1", name: "list_files", args: { path: "." } }],
+    tool_calls: [{ id: "call-1", name: "discover_files", args: { path: "." } }],
   },
-  { id: "m-5", role: "tool", tool_call_id: "call-1", name: "list_files", status: "success", content: "a.go\nb.go" },
+  { id: "m-5", role: "tool", tool_call_id: "call-1", name: "discover_files", status: "success", content: "a.go\nb.go" },
 ];
 
 function newHarness() {

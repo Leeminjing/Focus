@@ -95,7 +95,7 @@ def test_spawn_agent_inherits_permissions_and_returns_final_text():
         assert result == "子 Agent 完成结果"
         # 权限继承：read 只装配读工具，无 write/shell
         names = {t.name for t in captured["tools"]}
-        assert "read_file" in names and "list_files" in names
+        assert "read_file" in names and "discover_files" in names
         assert "write_file" not in names and "powershell" not in names
         # 子 Agent 不携带 spawn_agent（防递归）
         assert "spawn_agent" not in names

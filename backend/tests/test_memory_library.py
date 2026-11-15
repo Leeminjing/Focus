@@ -162,7 +162,7 @@ def test_memory_crud_and_injection(monkeypatch):
 
             # start_main_run 持久化 memory_ids → ui_state
             prepared = await service.start_main_run(
-                task_id, "请开始", None, ["read"], [], None, [mem["memory_id"]],
+                task_id, "请开始", None, ["read"], [], memory_ids=[mem["memory_id"]],
             )
             async with service.session_factory() as session:
                 task = await session.get(DesktopThread, task_id)
@@ -186,7 +186,7 @@ def test_memory_crud_and_injection(monkeypatch):
             _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
             try:
                 prepared2 = await service.start_main_run(
-                    task_id, "请再开始", None, ["read"], [], None, [mem["memory_id"]],
+                    task_id, "请再开始", None, ["read"], [], memory_ids=[mem["memory_id"]],
                 )
                 graph = await prepared2.agent_factory()
                 assert "编辑后的最终内容" not in captured["system_prompt"]

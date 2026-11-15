@@ -79,7 +79,6 @@ class MainRunIntake:
             else None,
             permissions=body.permissions,
             skills=body.skills,
-            spatial_focus=body.spatial_focus,
             memory_ids=body.memory_ids,
             material_inputs=[
                 RunMaterialRequest(material_id=item.material_id, note=item.note)

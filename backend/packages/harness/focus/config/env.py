@@ -10,7 +10,7 @@
         值不是引用则原样返回；是引用但变量未设置时，抛出带 context 的 ValueError，
         指出缺哪个变量、谁需要它。
 
-失败类型选用 ValueError 而非 KeyError: 插件装配链（如 spatial-patrol 的 vision）
+失败类型选用 ValueError 而非 KeyError: 插件装配链
 以 ValueError 判定「依赖缺失」，据此把插件标记为不可用，从而完成降级而不是崩溃。
 
 对外提供:

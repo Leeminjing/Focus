@@ -11,8 +11,8 @@
     提供，由执行层在运行起点派生，工具自身不接受扁平字段充当授权。
 
 输出:
-    read_file/list_files → 兼容的文件文本/目录列表
-    read_file_lines/search_files/search_text/edit_file → 有界 JSON 页、搜索匹配或实际 diff
+    read_file → 代码或文档的有界 JSON 页，显式 full 模式返回全文及版本摘要
+    discover_files/edit_file → 有界文件发现结果或实际 diff
     write_file → 整文件写入结果说明
     bash/powershell/cmd/sh → 含实际模式、受限状态、退出状态、截断标记与独立清理告警的执行事实
 
@@ -44,7 +44,7 @@ import shutil
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import ToolException, tool
@@ -66,11 +66,11 @@ from focus.security.effects import (
 )
 from focus.tools.builtins.workspace_search import search
 from focus.tools.builtins.workspace_text import (
-    TextEdit, atomic_replace, check_version, edit_feedback, read_lines, read_utf8, replace_text,
+    TextEdit, atomic_replace, check_version, edit_feedback, read_utf8, replace_text, text_page,
 )
 
 WORKSPACE_TOOL_NAMES = frozenset({
-    "read_file", "read_file_lines", "list_files", "search_files", "search_text",
+    "read_file", "discover_files",
     "write_file", "edit_file", "bash", "powershell", "cmd", "sh",
 })
 _EDIT_LOCK = threading.Lock()
@@ -79,7 +79,7 @@ _POSIX_SHELL_BACKEND = PosixShellBackend()
 atexit.register(_SHELL_BACKEND.close)
 
 TOOL_NAMES_BY_PERMISSION: dict[str, list[str]] = {
-    "read": ["read_file", "read_file_lines", "list_files", "search_files", "search_text"],
+    "read": ["read_file", "discover_files"],
     "write": ["write_file", "edit_file"],
     "host_command": ["bash", "powershell", "cmd", "sh"],
 }
@@ -129,7 +129,7 @@ def _edit_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> Resolv
     return ResolvedFsEffect(reads=(target,), writes=(target,), args=_stamped_args(args, target))
 
 
-def _search_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+def _discovery_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
     policy = policy_from_context(context)
     target = canonical_target(policy.workspace, str(args.get("path") or "."))
     # 子目录搜索要读取工作区祖先的忽略文件；这些具体文件也经过同一个准入点。
@@ -137,61 +137,85 @@ def _search_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> Reso
                     if parent == policy.workspace or parent.is_relative_to(policy.workspace))
     ignores = tuple(parent / name for parent in parents
                     for name in (".gitignore", ".ignore", ".rgignore"))
+    if args.get("recursive", True) is False and args.get("query") is None:
+        return ResolvedFsEffect(reads=(target, *ignores, *(target / name for name in
+                                (".gitignore", ".ignore", ".rgignore"))),
+                                args=_stamped_args(args, target))
     return ResolvedFsEffect(reads=ignores, read_trees=(target,), args=_stamped_args(args, target))
 
 
 @tool
-def read_file_lines(
+def read_file(
     path: str, runtime: ToolRuntime[dict], start_line: int = 1, max_lines: int = 200,
     start_column: int = 1, expected_sha256: str | None = None,
+    mode: Literal["paged", "full"] = "paged",
 ) -> str:
-    """优先用此工具读取代码：UTF-8 文件最多 4 MiB，返回行号、SHA-256 和有界 JSON 页。
+    """读取 UTF-8 代码或 PDF/DOCX/DOC 文档，默认返回行号、SHA-256 和有界 JSON 页。
 
     行/列从 1 开始，每页最多 500 行/20000 字符。按 next_line/next_column 继续读取，
     可传 expected_sha256 防止分页期间版本漂移。每行 line_ending 保留原换行，供多行精确编辑；
-    UTF-8 BOM 由 utf8_bom 标记，不计入首列。文档材料请用 read_file。
+    UTF-8 分页读取最多 4 MiB，BOM 不计入首列。文档先提取文本再分页，其 sha256 绑定原文件。
+    明确需要全文时用 mode="full"，返回 text 与 sha256；不要同时提供分页参数。
+    format 为 utf-8/pdf/docx/doc；只有 utf-8 原文可用于 edit_file 的精确替换。
     """
     policy, permissions = _runtime_values(runtime)
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
-    return json.dumps(read_lines(_interpret_target(policy, path), start_line, max_lines,
-                                start_column, expected_sha256), ensure_ascii=False)
+    if mode not in {"paged", "full"}:
+        raise ToolException("mode 必须是 paged 或 full")
+    if mode == "full" and (start_line != 1 or start_column != 1 or max_lines != 200):
+        raise ToolException("full 模式不能同时提供分页参数")
+    target = _interpret_target(policy, path)
+    if target.is_dir():
+        raise ToolException(f"目标是目录，请改用 discover_files: {target}")
+    if not target.is_file():
+        raise ToolException(f"文件不存在: {target}")
+    if is_image_name(target.name):
+        raise ToolException(
+            f"{target.name} 是图片材料，无法按文本读取；其内容只能由具备图像输入能力的模型处理"
+        )
+    suffix = target.suffix.lower()
+    if suffix in {".pdf", ".docx", ".doc"}:
+        from focus.readers import _read_doc, _read_docx, _read_pdf
+
+        raw = target.read_bytes()
+        check_version(raw, expected_sha256)
+        text = {".pdf": _read_pdf, ".docx": _read_docx, ".doc": _read_doc}[suffix](str(target))
+        if target.read_bytes() != raw:
+            raise ToolException("文件在文档解析期间变化；请重新读取")
+        content_format = suffix[1:]
+    else:
+        raw, text = read_utf8(target, bounded=mode != "full")
+        content_format = "utf-8"
+    if mode == "full":
+        result = {"path": str(target), "sha256": check_version(raw, expected_sha256), "text": text}
+    else:
+        result = text_page(target, raw, text, start_line, max_lines, start_column, expected_sha256)
+    return json.dumps({**result, "format": content_format}, ensure_ascii=False)
 
 
 @tool
-def search_files(
-    runtime: ToolRuntime[dict], pattern: str = "*", path: str = ".",
-    max_results: int = 100, include_hidden: bool = False,
+def discover_files(
+    runtime: ToolRuntime[dict], path: str = ".", pattern: str = "*", query: str | None = None,
+    recursive: bool = True, include_directories: bool = False,
+    max_results: int = 100, context_lines: int = 2, case_sensitive: bool = True,
+    include_hidden: bool = False,
 ) -> str:
-    """递归按 glob 搜索文件路径（如 *.py），返回有界 JSON；需要 read，不依赖 Shell。
+    """统一列目录、按 glob 查找文件和搜索字面文本；仅需 read，不依赖 Shell。
 
+    默认递归查找文件，可用 pattern="*.py" 过滤。列直属文件和目录时使用
+    recursive=false、include_directories=true。提供 query 时搜索 UTF-8 文件中的
+    单行字面文本（非正则），返回路径、行列及上下文；此时不能 include_directories。
     遵守工作区和子目录的 .gitignore/.ignore/.rgignore；默认跳过隐藏项，始终跳过 .git
-    和目录链接。最多 200 个结果；truncated/incomplete 表示应缩小路径或条件后重试。
+    和目录链接。path 可为目录或显式文件；每文件最多 4 MiB，最多 200 个结果，
+    context_lines 为 0..5。返回有界 JSON；truncated/incomplete 表示结果不完整，需缩小范围。
     """
     policy, permissions = _runtime_values(runtime)
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
     return json.dumps(search(_interpret_target(policy, path), policy.workspace, pattern=pattern,
-                             query=None, max_results=max_results, include_hidden=include_hidden),
-                      ensure_ascii=False)
-
-
-@tool
-def search_text(
-    query: str, runtime: ToolRuntime[dict], path: str = ".", file_pattern: str = "*",
-    max_results: int = 100, context_lines: int = 2, case_sensitive: bool = True,
-    include_hidden: bool = False,
-) -> str:
-    """搜索 UTF-8 文件中的字面文本（非正则），按匹配行返回路径、行列及有界上下文 JSON。
-
-    忽略规则同 search_files；path 可为目录或显式文件。每文件最多 4 MiB，默认最多 100
-    个匹配行，可调至 200；context_lines 为 0..5。超限/不可读会明确标记 incomplete。
-    """
-    policy, permissions = _runtime_values(runtime)
-    if "read" not in permissions:
-        raise PermissionError("当前运行未授权 read")
-    return json.dumps(search(_interpret_target(policy, path), policy.workspace, pattern=file_pattern,
-                             query=query, max_results=max_results, context_lines=context_lines,
+                             query=query, recursive=recursive, include_directories=include_directories,
+                             max_results=max_results, context_lines=context_lines,
                              case_sensitive=case_sensitive, include_hidden=include_hidden),
                       ensure_ascii=False)
 
@@ -205,7 +229,7 @@ def edit_file(
     """局部编辑现有 UTF-8 文件，需要 read/write。edits 为 old_text/new_text 精确替换列表。
 
     所有 old_text 都必须在原文件中唯一匹配，区间不得重叠；全部验证后一次提交。
-    不做换行或空白归一化。建议传 read_file_lines 的 sha256 作为 expected_sha256；
+    不做换行或空白归一化。建议传 read_file 的 sha256 作为 expected_sha256；
     版本/内容不匹配时不写入，重新读取后重试。返回实际 diff（有界）、前后 SHA-256。
     """
     policy, permissions = _runtime_values(runtime)
@@ -231,63 +255,11 @@ def edit_file(
     return json.dumps(feedback, ensure_ascii=False)
 
 
-@tool
-def read_file(path: str, runtime: ToolRuntime[dict]) -> str:
-    """读取完整文本或 .pdf/.docx/.doc 材料；代码优先用 read_file_lines，减少整文件输出。"""
-    policy, permissions = _runtime_values(runtime)
-    if "read" not in permissions:
-        raise PermissionError("当前运行未授权 read")
-    target = _interpret_target(policy, path)
-    if target.is_dir():
-        raise ToolException(f"目标是目录，请改用 list_files: {target}")
-    if not target.is_file():
-        raise ToolException(f"文件不存在: {target}")
-    suffix = target.suffix.lower()
-    if suffix in {".pdf", ".docx", ".doc"}:
-        from focus.readers import _read_doc, _read_docx, _read_pdf
-
-        if suffix == ".pdf":
-            return _read_pdf(str(target))
-        if suffix == ".docx":
-            return _read_docx(str(target))
-        return _read_doc(str(target))
-    raw = target.read_bytes()
-    if is_image_name(target.name):
-        raise ToolException(
-            f"{target.name} 是图片材料，无法按文本读取；其内容只能由具备图像输入能力的模型处理"
-        )
-    if _looks_binary(raw):
-        raise ToolException(
-            f"{target.name} 是二进制文件，无法按文本读取；请改用能解析该格式的工具"
-        )
-    return raw.decode("utf-8", errors="replace")
-
-
-def _looks_binary(raw: bytes) -> bool:
-    return b"\x00" in raw[:8192]
-
-
-@tool
-def list_files(path: str, runtime: ToolRuntime[dict]) -> str:
-    """列出当前工作区内目录；path 可以是绝对路径或相对工作区路径。"""
-    policy, permissions = _runtime_values(runtime)
-    if "read" not in permissions:
-        raise PermissionError("当前运行未授权 read")
-    target = _interpret_target(policy, path)
-    if target.is_file():
-        raise ToolException(f"目标是文件，请改用 read_file: {target}")
-    if not target.is_dir():
-        raise ToolException(f"目录不存在: {target}")
-    return "\n".join(str(item) for item in sorted(target.iterdir()))
-
-
 def _recoverable_path_error(error: ToolException) -> str:
     return f"工作区工具调用失败：{error}"
 
 
-read_file.handle_tool_error = _recoverable_path_error
-list_files.handle_tool_error = _recoverable_path_error
-for _text_tool in (read_file_lines, search_files, search_text, edit_file):
+for _text_tool in (read_file, discover_files, edit_file):
     _text_tool.handle_tool_error = _recoverable_path_error
 
 
@@ -429,7 +401,7 @@ def powershell(
 
 
 WORKSPACE_TOOLS: list[Any] = [
-    read_file, read_file_lines, list_files, search_files, search_text,
+    read_file, discover_files,
     write_file, edit_file, bash, powershell, cmd, sh,
 ]
 
@@ -458,9 +430,7 @@ READ_TARGET_EFFECT = structured_fs(_read_targets)
 WRITE_TARGET_EFFECT = structured_fs(_write_targets)
 
 declare_effect(read_file, READ_TARGET_EFFECT)
-declare_effect(read_file_lines, READ_TARGET_EFFECT)
-declare_effect(list_files, READ_TARGET_EFFECT)
-declare_all_effects([search_files, search_text], structured_fs(_search_targets))
+declare_effect(discover_files, structured_fs(_discovery_targets))
 declare_effect(write_file, WRITE_TARGET_EFFECT)
 declare_effect(edit_file, structured_fs(_edit_targets))
 declare_all_effects([bash, powershell, cmd, sh], SANDBOXED_SHELL_EFFECT)

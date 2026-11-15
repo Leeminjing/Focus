@@ -212,7 +212,6 @@ async function testAttachmentCommitBoundary() {
       material_inputs: [{ material_id: "m1", note: "重点" }],
       must_view_material_ids: ["m1"],
       skills: [],
-      spatial_focus: null,
       access_mode: "workspace-write",
     },
   });

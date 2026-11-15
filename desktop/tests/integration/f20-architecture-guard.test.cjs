@@ -104,10 +104,10 @@ assert.match(mediumLayout, /\.app-inspector\s*\{[^}]*position:\s*absolute/);
 assert.match(mediumLayout, /\.app-inspector\s*\{[^}]*flex:\s*none/);
 assert.match(mediumLayout, /\.shell-resizer\.shell-resizer-inspector\s*\{[^}]*display:\s*none/);
 
-const spatialStyle = read("plugins/spatial-patrol/desktop/style.css");
-assert.doesNotMatch(spatialStyle, /\n\.(?:rail-wrap|rail-resizer|message-file-cards|file-card|panel-resizer)\b/);
-assert.doesNotMatch(spatialStyle, /var\(--(?!focus-plugin)/);
-assert.match(spatialStyle, /\.file-panel[\s\S]*\.spatial-viewer/);
+const viewerStyle = read("plugins/spatial-patrol/desktop/style.css");
+assert.doesNotMatch(viewerStyle, /\n\.(?:rail-wrap|rail-resizer|message-file-cards|file-card|panel-resizer)\b/);
+assert.doesNotMatch(viewerStyle, /var\(--(?!focus-plugin)/);
+assert.match(viewerStyle, /\.file-panel \.file-viewer-content/);
 
 const main = read("desktop/src/main/main.cjs");
 assert.match(main, /const apiBase = `http:\/\/127\.0\.0\.1:\$\{port\}`/);

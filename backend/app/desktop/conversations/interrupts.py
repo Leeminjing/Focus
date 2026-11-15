@@ -19,7 +19,7 @@
 
 具体工作流:
     (1) 从最近主 Run 还原 execution_thread_id 与 checkpoint_ns；历史 Run 缺字段时回退任务根身份。
-        后台执行主体（swarm / patrol / spatial）的身份不同，不属于主执行，因此不会阻塞主运行
+        后台执行主体（swarm / patrol）的身份不同，不属于主执行，因此不会阻塞主运行
     (2) 在 pending_writes 的 __interrupt__ 通道上倒序取最新一条匹配类型的载荷
     (3) 用主执行最近一次运行的状态把未决归一为 processing / resumable / orphaned，
         使「正在处理」与「父图已无法恢复」在调用方是两种不同的拒绝

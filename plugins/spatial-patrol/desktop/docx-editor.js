@@ -1,8 +1,4 @@
-/* spatial-patrol DOCX editor adapter. Inputs are one plugin-owned panel, material and
-   Focus task state; outputs are an isolated ONLYOFFICE session and semantic overlays.
-   Anchor creation is a one-shot page pick: the toolbar only arms a transparent layer,
-   then the next iframe-relative click is resolved and persisted before a spatial-id
-   marker appears. Every continuation remains owned by its originating mount. */
+/* DOCX editor adapter: opens isolated ONLYOFFICE sessions and saves document changes. */
 (function (root) {
   "use strict";
 
@@ -57,25 +53,12 @@
     node.dataset.tone = tone;
   }
 
-  function status(message, tone = "neutral") {
-    statusFor(active, message, tone);
-  }
-
-  function editorFrame(instance = active) {
-    if (!instance?.container) return null;
-    if (!instance.frame) {
-      instance.frame = instance.container.querySelector('iframe[name="frameEditor"]');
-    }
-    return instance.frame;
-  }
-
   function shell(name) {
     return `
       <section class="focus-docx-editor">
         <header class="focus-docx-toolbar">
           <span class="focus-docx-title"><span class="workspace-kicker">FILE WORKBENCH · DOCX</span><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong></span>
           <span class="focus-docx-status" data-docx-status>选择打开方式</span>
-          <button type="button" class="text-button" data-docx-anchor>建立锚点</button>
           <button type="button" class="text-button" data-docx-save hidden>保存</button>
           <button type="button" class="text-button" data-docx-close>关闭</button>
         </header>
@@ -91,10 +74,8 @@
             </section>
           </div>
           <div class="focus-docx-host" data-docx-host hidden></div>
-          <div class="focus-docx-overlay-layer" data-docx-overlays></div>
-          <button type="button" class="focus-docx-anchor-picker" data-docx-anchor-picker hidden aria-label="在文档中选择锚点位置"></button>
         </div>
-        <footer class="focus-docx-footer">编辑器属于 spatial-patrol 插件；不可用时不会影响 Focus。</footer>
+        <footer class="focus-docx-footer">文档修改通过编辑器保存到工作区文件。</footer>
       </section>`;
   }
 
@@ -103,67 +84,6 @@
     const stage = instance.container?.querySelector("[data-docx-stage]");
     if (stage) stage.innerHTML = `<div class="focus-docx-error"><strong>DOCX 编辑插件不可用</strong><p>${escapeHtml(error.message || error)}</p></div>`;
     statusFor(instance, "插件不可用", "danger");
-  }
-
-  function projectionMessage(event) {
-    const data = event.data;
-    if (active && data?.type === "focus-docx-target" && data.session_id === active.sessionId) {
-      active.latestTargetId = data.target?.target_id || null;
-      return;
-    }
-    if (!active || data?.type !== "focus-docx-anchors" || data.session_id !== active.sessionId) return;
-    for (const projection of data.projections || []) {
-      if (!projection?.spatial_id) continue;
-      active.projections.set(projection.spatial_id, projection);
-    }
-    renderOverlays();
-  }
-
-  function renderOverlays() {
-    const layer = active?.container?.querySelector("[data-docx-overlays]");
-    if (!layer) return;
-    layer.innerHTML = "";
-    for (const projection of active.projections.values()) {
-      const rect = projection.viewport_rect;
-      if (!rect || projection.projection_unavailable) continue;
-      const clip = projection.viewport_clip;
-      if (clip && (rect.x < clip.left || rect.x > clip.right || rect.y < clip.top || rect.y > clip.bottom)) continue;
-      const marker = document.createElement("span");
-      const isPoint = projection.point || rect.width === 0 || rect.height === 0;
-      marker.className = `focus-docx-overlay${isPoint ? " is-point" : ""}`;
-      marker.dataset.targetId = projection.target_id;
-      if (projection.spatial_id) marker.dataset.spatialId = projection.spatial_id;
-      {
-        const frame = editorFrame(active);
-        const frameRect = frame?.getBoundingClientRect();
-        const layerRect = layer.getBoundingClientRect();
-        const offsetX = frameRect ? frameRect.left - layerRect.left : 0;
-        const offsetY = frameRect ? frameRect.top - layerRect.top : 0;
-        marker.style.left = `${offsetX + rect.x}px`;
-        marker.style.top = `${offsetY + rect.y}px`;
-        marker.style.width = `${Math.max(rect.width, 14)}px`;
-        marker.style.height = `${Math.max(rect.height, 14)}px`;
-      }
-      layer.append(marker);
-    }
-  }
-
-  async function loadAnchors(instance = active) {
-    if (!isCurrent(instance) || !instance.sessionId) return;
-    const anchors = await api(`/sessions/${encodeURIComponent(instance.sessionId)}/anchors`);
-    if (!isCurrent(instance)) return;
-    for (const anchor of anchors) {
-      const targetId = anchor?.region?.target?.target_id;
-      const projection = anchor?.viewport_projection;
-      if (!anchor?.spatial_id || !targetId || !projection) continue;
-      instance.projections.set(anchor.spatial_id, {
-        spatial_id: anchor.spatial_id,
-        target_id: targetId,
-        point: anchor.region.placement,
-        ...projection,
-      });
-    }
-    renderOverlays();
   }
 
   async function openEditor(mode, instance = active) {
@@ -207,10 +127,8 @@
         onRequestClose: () => closeEditor(instance),
       };
       instance.editor = new root.DocsAPI.DocEditor(host.id, config);
-      instance.frame = instance.container.querySelector('iframe[name="frameEditor"]');
       instance.container.querySelector("[data-docx-save]").hidden = mode !== "edit";
       instance.pollTimer = setInterval(() => pollSession(instance), 2000);
-      loadAnchors(instance).catch(error => statusFor(instance, `锚点加载未完成：${error.message}`, "warning"));
     } catch (error) {
       await handleOpenError(instance, error);
     } finally {
@@ -223,10 +141,9 @@
     if (instance.mode !== "view" || !root.FocusFilePreview) { renderErrorFor(instance, error); return; }
     clearInterval(instance.pollTimer);
     try { instance.editor?.destroyEditor?.(); } catch {}
-    instance.editor = null; instance.frame = null;
+    instance.editor = null;
     const stage = instance.container.querySelector("[data-docx-stage]");
     stage.innerHTML = '<div data-generic-file></div>';
-    instance.container.querySelector("[data-docx-anchor]").hidden = true;
     statusFor(instance, "编辑服务不可用，已回退只读文本", "warning");
     await root.FocusFilePreview.mount(stage.querySelector("[data-generic-file]"), {
       name: instance.material.relative_path,
@@ -299,64 +216,6 @@
     }
   }
 
-  function setAnchorPicking(instance, enabled) {
-    if (!isCurrent(instance)) return;
-    instance.pickingAnchor = enabled;
-    const picker = instance.container.querySelector("[data-docx-anchor-picker]");
-    const button = instance.container.querySelector("[data-docx-anchor]");
-    if (picker) picker.hidden = !enabled;
-    if (button) {
-      button.textContent = enabled ? "取消选点" : "建立锚点";
-      button.setAttribute?.("aria-pressed", String(enabled));
-    }
-  }
-
-  function createAnchor(instance = active) {
-    if (!isCurrent(instance) || !instance.sessionId) {
-      statusFor(instance, "请先打开文档", "warning");
-      return;
-    }
-    const enabled = !instance.pickingAnchor;
-    setAnchorPicking(instance, enabled);
-    statusFor(instance, enabled ? "请点击文档中的锚点位置" : "已取消锚点选点", enabled ? "warning" : "neutral");
-  }
-
-  async function submitAnchorPoint(event, instance = active) {
-    if (!isCurrent(instance) || !instance.sessionId || !instance.pickingAnchor) return;
-    setAnchorPicking(instance, false);
-    try {
-      const frame = editorFrame(instance);
-      const frameRect = frame?.getBoundingClientRect?.();
-      if (!frameRect) throw new Error("编辑器页面尚未就绪");
-      const viewportX = Number(event.clientX) - frameRect.left;
-      const viewportY = Number(event.clientY) - frameRect.top;
-      if (
-        !Number.isFinite(viewportX) || !Number.isFinite(viewportY)
-        || viewportX < 0 || viewportY < 0
-        || Number(event.clientX) > frameRect.right || Number(event.clientY) > frameRect.bottom
-      ) throw new Error("点击位置不在编辑器内");
-      statusFor(instance, "正在建立空间锚点…", "warning");
-      const anchor = await api(`/sessions/${encodeURIComponent(instance.sessionId)}/anchors`, {
-        method: "POST",
-        body: JSON.stringify({ viewport_x: viewportX, viewport_y: viewportY }),
-      });
-      if (!isCurrent(instance)) return;
-      const projection = anchor.viewport_projection || anchor.region?.projection;
-      const targetId = anchor.region?.target?.target_id;
-      if (!anchor.spatial_id || !projection || !targetId) throw new Error("锚点持久化结果缺少空间投影");
-      instance.projections.set(anchor.spatial_id, {
-        spatial_id: anchor.spatial_id,
-        target_id: targetId,
-        ...projection,
-      });
-      renderOverlays();
-      statusFor(instance, `已建立空间锚点 ${anchor.spatial_id.slice(0, 5)}`, "success");
-      loadAnchors(instance).catch(error => statusFor(instance, `锚点已保存，投影订阅失败：${error.message}`, "warning"));
-    } catch (error) {
-      statusFor(instance, `锚点未建立：${error.message}`, "danger");
-    }
-  }
-
   async function closeEditor(instance = active) {
     if (!isCurrent(instance)) return;
     let discard = false;
@@ -385,11 +244,7 @@
   function destroy(instance = active) {
     if (!isCurrent(instance)) return;
     clearInterval(instance.pollTimer);
-    root.removeEventListener("message", projectionMessage);
-    root.removeEventListener("resize", renderOverlays);
-    instance.resizeObserver?.disconnect?.();
     try { instance.editor?.destroyEditor?.(); } catch (error) { console.warn("DOCX editor destroy failed", error); }
-    instance.frame = null;
     instance.container.innerHTML = "";
     active = null;
   }
@@ -399,9 +254,8 @@
     const task = appState.tasks.find(item => item.task_id === appState.activeTaskId);
     container.innerHTML = shell(material.relative_path);
     const instance = {
-      container, material, task, mode: null, sessionId: null, editor: null, frame: null,
-      dirty: false, opening: false, saving: false, saved: false, pollTimer: null, projections: new Map(),
-      latestTargetId: null, pickingAnchor: false, resizeObserver: null,
+      container, material, task, mode: null, sessionId: null, editor: null,
+      dirty: false, opening: false, saving: false, saved: false, pollTimer: null,
       onClose: options.onClose,
     };
     active = instance;
@@ -412,16 +266,8 @@
       container.querySelector(".focus-docx-toolbar").after(exits);
       root.FocusFilePreview.bindActions(exits, target, material.relative_path);
     }
-    root.addEventListener("message", projectionMessage);
-    root.addEventListener("resize", renderOverlays);
-    if (typeof root.ResizeObserver === "function") {
-      instance.resizeObserver = new root.ResizeObserver(renderOverlays);
-      instance.resizeObserver.observe(container);
-    }
     container.querySelectorAll("[data-docx-open]").forEach(button => button.addEventListener("click", () => openEditor(button.dataset.docxOpen, instance)));
     container.querySelector("[data-docx-save]").addEventListener("click", () => forceSave(instance));
-    container.querySelector("[data-docx-anchor]").addEventListener("click", () => createAnchor(instance));
-    container.querySelector("[data-docx-anchor-picker]").addEventListener("click", event => submitAnchorPoint(event, instance));
     container.querySelector("[data-docx-close]").addEventListener("click", () => closeEditor(instance));
     return true;
   }
@@ -432,6 +278,6 @@
     forceSave,
     close: closeEditor,
     hasUnsavedChanges: () => !!active?.dirty,
-    _test: { createAnchor, submitAnchorPoint, loadDocsApi, loadAnchors, projectionMessage, renderOverlays, responseError, saveEvidenceAdvanced, sessionPresentation },
+    _test: { loadDocsApi, responseError, saveEvidenceAdvanced, sessionPresentation },
   };
 })(typeof globalThis === "object" ? globalThis : this);

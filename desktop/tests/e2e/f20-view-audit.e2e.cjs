@@ -128,13 +128,14 @@ async function run() {
         state.view = 'focus'; state.inspector.open = true; state.inspector.tab = 'materials'; render();
       } else if (target === 'plugins') {
         state.plugins = {
-          filter: 'all', selectedName: 'spatial-patrol',
+          filter: 'all', selectedName: 'demo',
           plugins: [
-            { name: 'spatial-patrol', version: '0.1.0', status: 'active', injected: ['service.spatial'], requires: [] },
+            { name: 'demo', version: '1.0.0', status: 'active', injected: ['hook.after_model'], requires: [] },
+            { name: 'spatial-patrol', version: '0.1.0', status: 'active', injected: [], requires: [] },
             { name: 'broken', version: '0.1.0', status: 'rejected', injected: [], requires: [], conflict: { interface: 'tool', current: 'demo', new: 'broken' } },
           ],
-          interfaces: { 'service.spatial': { plugins: ['spatial-patrol'], cardinality: 'single', read_only: true } },
-          traces: [{ interface: 'service.spatial', plugin: 'spatial-patrol', status: 'failed', duration_ms: 4, error: '文件被占用' }],
+          interfaces: { 'hook.after_model': { plugins: ['demo'], cardinality: 'multiple' } },
+          traces: [{ interface: 'hook.after_model', plugin: 'demo', status: 'failed', duration_ms: 4, error: '文件被占用' }],
         };
         state.view = 'plugins'; render();
       } else if (target === 'file') {

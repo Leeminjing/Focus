@@ -128,6 +128,7 @@ test("expandForConversation 保留策展总结，只隐藏协议占位", () => {
 });
 
 test("degradedParts 解析后端降级包装为工具结果", () => {
+  // Historical tool results remain readable after the file discovery tools merge.
   const parts = panel.degradedParts({ role: "human", content: '<focus-degraded-message role="tool" name="list_files">\nC:\path\a.md\nC:\path\b.md\n</focus-degraded-message>' });
   assert.deepEqual(parts, { name: "list_files", content: "C:\path\a.md\nC:\path\b.md" });
   assert.equal(panel.degradedParts({ role: "human", content: "普通消息" }), null);

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -24,7 +23,6 @@ import focus.agents.must_view  # noqa: F401
 import focus.security.context  # noqa: F401
 import focus.security.launch  # noqa: F401
 import focus.security.policy  # noqa: F401
-import plugins.spatial_patrol.spatial_context  # noqa: F401
 from focus.security.context import (
     AuthorizationIdentity,
     ExecutionProfile,
@@ -152,28 +150,9 @@ def test_material_producer_writes_the_keys_it_declares():
     assert inputs.uploads_tag == "<current_uploads>\nnotes.md\n</current_uploads>"
 
 
-def test_spatial_producer_writes_the_keys_it_declares():
-    """空间上下文生产者必须真的写出它声明生产的键（插件启动点与用例共用它）。"""
-    from plugins.spatial_patrol.spatial_context import SPATIAL_CONTEXT_KEYS, project_spatial_context
-
-    declared = {
-        key for key, producer in governed_producers().items()
-        if producer == "plugins.spatial_patrol.spatial_context.project_spatial_context"
-    }
-    assert declared == set(SPATIAL_CONTEXT_KEYS)
-    anchor = SimpleNamespace(
-        spatial_id="spatial-1", task_id="t-1", content_ref="sample.docx", page=1, x=0.5, y=3.0,
-    )
-    context = project_spatial_context({}, anchor, change_evidence={"changed": True})
-    assert declared <= set(context)
-    with pytest.raises(RuntimeError, match="空间锚点缺少字段"):
-        project_spatial_context({}, SimpleNamespace(spatial_id="s", content_ref="c", page=1, x=0.5))
-
-
-def test_launch_shapes_cover_every_governed_key_together():
-    """每种启动形态覆盖自己负责的受治理键，且各形态并集覆盖全部非豁免键。"""
+def test_desktop_launch_covers_every_governed_key():
+    """桌面启动形态产出全部非豁免的受治理键。"""
     from focus.agents.material_inputs import RunMaterialInputs, project_run_material_context
-    from plugins.spatial_patrol.spatial_context import project_spatial_context
 
     materials = RunMaterialInputs.build(
         "run-1", "msg-1",
@@ -185,27 +164,14 @@ def test_launch_shapes_cover_every_governed_key_together():
     desktop = assemble_run_context(_profile(), {"skills": []}, dispatch_hints={"swarm_depth": 1})
     project_run_material_context(desktop, materials, True)
 
-    anchor = SimpleNamespace(
-        spatial_id="spatial-1", task_id="t-1", content_ref="notes.docx", page=1, x=0.5, y=3.0,
-    )
-    spatial = assemble_run_context(
-        _profile(agent_id="spatial-1"), {}, dispatch_hints={"swarm_depth": 0}
-    )
-    project_spatial_context(spatial, anchor)
-
-    spatial_keys = {
-        key for key, producer in governed_producers().items()
-        if producer == "plugins.spatial_patrol.spatial_context.project_spatial_context"
-    }
     material_keys = {
         key for key, producer in governed_producers().items()
         if producer == "focus.agents.material_inputs.project_run_material_context"
     }
     assert material_keys <= set(desktop), f"桌面形态缺: {sorted(material_keys - set(desktop))}"
-    assert spatial_keys <= set(spatial), f"空间形态缺: {sorted(spatial_keys - set(spatial))}"
 
     required = governed_keys() - set(GOVERNED_WITHOUT_PRODUCER) - set(CONDITIONAL_CONTEXT_KEYS)
-    covered = set(desktop) | set(spatial)
+    covered = set(desktop)
     assert required <= covered, f"没有任何启动形态产出的受治理键: {sorted(required - covered)}"
 
 

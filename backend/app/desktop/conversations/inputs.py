@@ -65,9 +65,24 @@ class ConversationInputCreate(StrictRequest):
         return self
 
 
+def _persisted_run_payload(payload):
+    # 旧队列冻结了已移除的字段；只在持久读取边界丢弃，保留原记录和请求摘要供审计。
+    return {key: value for key, value in payload.items() if key != "spatial_focus"}
+
+
+def _matches_request(row, frozen, request_hash):
+    if row.request_hash == request_hash:
+        return True
+    if "spatial_focus" not in row.payload:
+        return False
+    # 用旧字段还原原请求摘要；其余任意字段的变化仍会拒绝，不重写历史 hash。
+    legacy = {**frozen, "run": {**frozen["run"], "spatial_focus": row.payload["spatial_focus"]}}
+    return row.request_hash == content_hash(legacy)
+
+
 def input_payload(row):
     return {"input_id": row.input_id, "task_id": row.task_id, "mode": row.mode, "status": row.status,
-            "target_run_id": row.target_run_id, "run_id": row.run_id, "run": row.payload,
+            "target_run_id": row.target_run_id, "run_id": row.run_id, "run": _persisted_run_payload(row.payload),
             "error": row.error, "checkpoint_id": row.checkpoint_id}
 
 
@@ -98,7 +113,7 @@ class ConversationInputs:
                 raise HTTPException(404, "任务不存在")
             existing = await session.get(ConversationInput, identity)
             if existing is not None:
-                if existing.request_hash != request_hash:
+                if not _matches_request(existing, frozen, request_hash):
                     raise HTTPException(409, "同一请求身份不能更改消息内容")
                 return input_payload(existing)
             if not await self.ordinary_session(session, task_id):
@@ -181,13 +196,13 @@ class ConversationInputs:
                 if latest is not None and latest.status != "success":
                     queued.status, queued.error = "blocked", "上一轮未成功结束，请撤回编辑或删除后再继续"
                     continue
-                body = MainRunCreate.model_validate(queued.payload)
+                body = MainRunCreate.model_validate(_persisted_run_payload(queued.payload))
                 try:
                     prepared = await self.desktop.start_main_run(task_id=task_id, message=body.message,
                         message_reference=body.message_reference.model_dump() if body.message_reference else None,
                         model_name=body.model_name, permissions=body.permissions, skills=body.skills,
                         reasoning_effort=body.reasoning_effort,
-                        spatial_focus=body.spatial_focus, memory_ids=body.memory_ids, access_mode=body.access_mode,
+                        memory_ids=body.memory_ids, access_mode=body.access_mode,
                         material_inputs=[RunMaterialRequest(material_id=item.material_id, note=item.note)
                                          for item in body.material_inputs] if body.material_inputs is not None else None,
                         attached_material_ids=body.attached_material_ids, must_view_material_ids=body.must_view_material_ids,

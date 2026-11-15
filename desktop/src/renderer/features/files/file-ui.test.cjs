@@ -1,6 +1,6 @@
 /*
- * 本文件验证 F20 材料与文件工作台结构。输入为宿主渲染源码和 spatial-patrol 查看器源码，
- * 输出为策略/版本入口、统一载体工具栏、DOCX 邻近授权、模式重置和锚点反馈断言。
+ * 本文件验证材料与文件工作台结构。输入为宿主渲染源码和文件查看器源码，
+ * 输出为策略/版本入口、统一载体工具栏和文件面板骨架断言。
  */
 "use strict";
 
@@ -18,16 +18,8 @@ assert.match(app, /检测到外部删除/);
 assert.match(app, /data-action="load-versions"/);
 assert.match(app, /data-action="restore-version"/);
 
-assert.match(viewer, /FILE WORKBENCH · \$\{typeLabel\}/);
-assert.match(viewer, /data-carrier=/);
-assert.match(viewer, /本次操作权限（必选）/);
-assert.match(viewer, /只读观察/);
-assert.match(viewer, /修改文档/);
-assert.ok((viewer.match(/state\.docxRunMode = null/g) || []).length >= 3, "打开新文件、关闭和切换内容必须清空 DOCX 模式");
-assert.match(viewer, /text-character-v1/);
-assert.match(viewer, /旧 DOCX 锚点不具备字符坐标语义/);
-assert.match(viewer, /需要处理/);
-assert.match(viewer, /锚点失效/);
+assert.match(viewer, /FILE WORKBENCH/);
+assert.match(viewer, /FocusFilePreview\.mount/);
 assert.match(views, /宿主文件工作台骨架不依赖任何插件样式/);
 assert.match(views, /\.file-panel-head/);
 

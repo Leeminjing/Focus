@@ -762,15 +762,6 @@ function pluginViewForMaterial(material) {
   } : null);
 }
 
-function currentSpatialTarget() {
-  for (const view of Object.values(pluginViews)) {
-    if (typeof view.getFocus !== "function") continue;
-    const focus = view.getFocus();
-    if (focus && focus.task_id === state.activeTaskId) return { view, focus };
-  }
-  return null;
-}
-
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 }
@@ -4935,7 +4926,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
     skills: selectedSkills("main"),
     ...accessMode.requestBody(accessModeOf("main")),
   };
-  const spatialTarget = retry ? null : currentSpatialTarget();
   if (attachments.length) {
     try { submittedSelection = await prepareMainAttachments(taskId, submittedSelection, attachments); }
     catch (error) {
@@ -4946,25 +4936,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   }
   // 等待期间可能移除了最后一个附件；只使用本次冻结的正文与附件判断，不能发送空消息。
   if (!retry && !message && !submittedFileRefs.length && !submittedSelection.bindings.length) return;
-  if (!delivery && !retry && !submittedFileRefs.length && !submittedReference && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
-      && typeof spatialTarget.view.sendFocusedMessage === "function") {
-    try {
-      if (await spatialTarget.view.sendFocusedMessage(message)) {
-        input.value = "";
-        composerDraft.release(taskId);
-        updateAtHighlight(input);
-        const focusedDetail = state.details.get(taskId);
-        focusedDetail.ui_state = { ...(focusedDetail.ui_state || {}), input: "" };
-        persistFocusState();
-        setStatus(localize("后续指令已交给当前空间小兵"));
-        return;
-      }
-    } catch (error) {
-      setStatus(error.message, true);
-      setComposerError(error.message);
-      return;
-    }
-  }
   const selectionSignature = retry?.selectionSignature || JSON.stringify(submittedSelection);
   const retryBody = retry ? JSON.parse(retry.body) : null;
   const original = retryBody?.run || retryBody;
@@ -4981,7 +4952,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
         ...(submittedReference ? { message_reference: submittedReference } : {}),
         material_inputs: outgoing.materialInputs,
         must_view_material_ids: outgoing.requiredImageIds,
-        spatial_focus: spatialTarget?.focus || null,
     };
     delete runBody.attached_material_ids;
     delete runBody.idempotency_key;

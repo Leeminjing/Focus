@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import json
 import os
 import shutil
 from pathlib import Path
@@ -20,7 +21,7 @@ from langchain_core.tools import ToolException
 from focus.tools.builtins.workspace_tools import (
     WORKSPACE_TOOLS,
     bash,
-    list_files,
+    discover_files,
     read_file,
     select_workspace_tools,
     write_file,
@@ -37,7 +38,7 @@ def _runtime(workspace, permissions):
 
 
 def test_select_workspace_tools_by_permission(tmp_path):
-    read_names = ["read_file", "read_file_lines", "list_files", "search_files", "search_text"]
+    read_names = ["read_file", "discover_files"]
     assert [t.name for t in select_workspace_tools(["read"])] == read_names
     assert [t.name for t in select_workspace_tools(["read", "write"])] == [*read_names, "write_file", "edit_file"]
     full = {t.name for t in select_workspace_tools(["read", "write", "host_command"])}
@@ -50,8 +51,8 @@ def test_read_file_within_workspace(tmp_path):
     target = tmp_path / "hello.txt"
     target.write_text("内容", encoding="utf-8")
     runtime = _runtime(tmp_path, ["read"])
-    assert read_file.func(path="hello.txt", runtime=runtime) == "内容"
-    assert read_file.func(path=str(target), runtime=runtime) == "内容"
+    assert json.loads(read_file.func(path="hello.txt", runtime=runtime))["lines"][0]["text"] == "内容"
+    assert json.loads(read_file.func(path=str(target), runtime=runtime))["lines"][0]["text"] == "内容"
 
 
 def test_read_file_tool_accepts_dict_runtime_context_without_serializer_warning(tmp_path):
@@ -62,7 +63,7 @@ def test_read_file_tool_accepts_dict_runtime_context_without_serializer_warning(
         warnings.filterwarnings("error", message="Pydantic serializer warnings:.*")
         result = read_file.invoke({"path": "hello.txt", "runtime": _runtime(tmp_path, ["read"])})
 
-    assert result == "内容"
+    assert json.loads(result)["lines"][0]["text"] == "内容"
 
 
 def test_workspace_path_type_errors_are_recoverable_tool_messages(tmp_path):
@@ -79,18 +80,18 @@ def test_workspace_path_type_errors_are_recoverable_tool_messages(tmp_path):
     assert isinstance(read_result, ToolMessage)
     assert read_result.status == "error"
     assert read_result.tool_call_id == "read-directory"
-    assert "list_files" in read_result.content
+    assert "discover_files" in read_result.content
 
-    list_result = asyncio.run(list_files.ainvoke({
+    list_result = asyncio.run(discover_files.ainvoke({
         "type": "tool_call",
-        "id": "list-file",
-        "name": "list_files",
-        "args": {"path": "hello.txt", "runtime": runtime},
+        "id": "missing-directory",
+        "name": "discover_files",
+        "args": {"path": "missing", "runtime": runtime},
     }))
     assert isinstance(list_result, ToolMessage)
     assert list_result.status == "error"
-    assert list_result.tool_call_id == "list-file"
-    assert "read_file" in list_result.content
+    assert list_result.tool_call_id == "missing-directory"
+    assert "不存在" in list_result.content
 
 
 def test_read_file_denied_without_read(tmp_path):
@@ -108,7 +109,7 @@ def test_read_file_does_not_decide_path_access(tmp_path):
     """
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
-    assert read_file.func(path=str(outside), runtime=_runtime(tmp_path, ["read"])) == "secret"
+    assert json.loads(read_file.func(path=str(outside), runtime=_runtime(tmp_path, ["read"])))["lines"][0]["text"] == "secret"
 
 
 def test_write_file_permission_gate(tmp_path):
@@ -189,11 +190,11 @@ def test_read_file_unknown_extension_falls_back_to_utf8(tmp_path):
     target = tmp_path / "data.txt"
     target.write_text("普通文本", encoding="utf-8")
     result = read_file.func(path="data.txt", runtime=_runtime(tmp_path, ["read"]))
-    assert result == "普通文本"
+    assert json.loads(result)["lines"][0]["text"] == "普通文本"
 
 
 def test_all_tools_registered():
     assert [t.name for t in WORKSPACE_TOOLS] == [
-        "read_file", "read_file_lines", "list_files", "search_files", "search_text",
+        "read_file", "discover_files",
         "write_file", "edit_file", "bash", "powershell", "cmd", "sh",
     ]

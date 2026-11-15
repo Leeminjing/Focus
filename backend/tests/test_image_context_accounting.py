@@ -1,7 +1,7 @@
 """图片上下文核算与视觉能力判定的回归测试。
 
 覆盖:图片内容块不再计为零、纯文本口径逐位不变、编码体积不作为文本长度计入、
-压缩触发判定与窗口校验共用同一图片口径、模型条目显式声明取代模型名前缀推断。
+压缩触发判定与窗口校验共用同一图片口径，以及默认模型的视觉能力声明。
 """
 
 import base64
@@ -10,8 +10,6 @@ import io
 import pytest
 
 from backend.app.desktop.runs.estimates import estimate_tokens
-from focus.config.app_config import AppConfig
-from config_helpers import app_config_for as _app_config
 from focus.messages import (
     estimate_image_tokens,
     estimate_images_tokens,
@@ -101,37 +99,6 @@ def test_window_estimate_does_not_count_base64_as_text():
 def test_window_estimate_grows_with_image():
     messages = [_image_message(512, 512)]
     assert estimate_tokens("", messages, "") > estimate_tokens("", [TEXT_MESSAGE], "")
-
-
-# === 1.2 视觉能力判定只依据显式声明 ===
-
-
-def test_vision_named_model_without_declaration_is_text_only(monkeypatch):
-    monkeypatch.delenv("FOCUS_MODEL", raising=False)
-    from plugins.spatial_patrol.spatial import _main_model_text_only
-
-    assert _main_model_text_only(_app_config("deepseek-v4-flash-vision-exp", None)) is True
-
-
-def test_plain_named_model_with_declaration_is_not_text_only(monkeypatch):
-    monkeypatch.delenv("FOCUS_MODEL", raising=False)
-    from plugins.spatial_patrol.spatial import _main_model_text_only
-
-    assert _main_model_text_only(_app_config("some-text-model", True)) is False
-
-
-def test_missing_declaration_defaults_to_text_only(monkeypatch):
-    monkeypatch.delenv("FOCUS_MODEL", raising=False)
-    from plugins.spatial_patrol.spatial import _main_model_text_only
-
-    assert _main_model_text_only(_app_config("deepseek-v4-flash", None)) is True
-
-
-def test_unavailable_config_is_text_only(monkeypatch):
-    monkeypatch.setenv("FOCUS_MODEL", "不存在的模型")
-    from plugins.spatial_patrol.spatial import _main_model_text_only
-
-    assert _main_model_text_only(_app_config("deepseek-v4-flash", True)) is True
 
 
 # === 随本变更声明的默认模型 ===

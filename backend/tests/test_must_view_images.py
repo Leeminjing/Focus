@@ -10,6 +10,7 @@
 import asyncio
 import base64
 import io
+import json
 import shutil
 from types import SimpleNamespace
 import uuid
@@ -22,7 +23,6 @@ from backend.app.desktop.materials.files import (
     MATERIAL_ATTACHMENTS_SUBDIR,
     resolve_material_path,
 )
-from config_helpers import app_config_for as _app_config
 from focus.agents.compression.schemas import validate_apply_decision
 from focus.agents.image_attachment import (
     ImageAttachmentProjectionMiddleware,
@@ -344,7 +344,7 @@ def test_read_file_still_reads_text(scratch):
     (scratch / "notes.md").write_text("你好", encoding="utf-8")
     from focus.tools.builtins.workspace_tools import read_file
 
-    assert read_file.func("notes.md", _ToolRuntime(scratch)) == "你好"
+    assert json.loads(read_file.func("notes.md", _ToolRuntime(scratch)))["lines"][0]["text"] == "你好"
 
 
 # === 随本变更确定的图像计量边界 ===
@@ -452,30 +452,6 @@ def test_compression_gate_triggers_on_image_usage():
     text_calls: list = []
     _run_graph(_gate_agent(text_calls), [HumanMessage(content="看这张")], {}, "gate-text")
     assert text_calls, "同样窗口下的纯文本短消息不应触发压缩门"
-
-
-# === W6 依赖视觉的插件可用性随模型声明而变 ===
-
-
-def test_spatial_plugin_unavailable_when_model_is_text_only(monkeypatch):
-    monkeypatch.delenv("FOCUS_MODEL", raising=False)
-    import plugins.spatial_patrol.spatial as spatial
-
-    monkeypatch.setattr(
-        spatial, "get_app_config", lambda _path: _app_config("deepseek-v4-flash", None)
-    )
-    with pytest.raises(RuntimeError, match="纯文本模型且无视觉插件"):
-        spatial.init_service({"vision_model": ""}, registry=None)
-
-
-def test_spatial_plugin_available_when_model_declares_vision(monkeypatch):
-    monkeypatch.delenv("FOCUS_MODEL", raising=False)
-    import plugins.spatial_patrol.spatial as spatial
-
-    monkeypatch.setattr(
-        spatial, "get_app_config", lambda _path: _app_config("some-vision-model", True)
-    )
-    assert spatial.init_service({"vision_model": ""}, registry=None) is not None
 
 
 # === N2 材料清单按类型分流 ===

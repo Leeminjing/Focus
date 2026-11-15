@@ -703,7 +703,6 @@
   "存在待确认的压缩请求，请先完成压缩或取消": "Complete or cancel the pending compression request first",
   "存在待处理的必看图片报告，请先重试或取消": "Retry or cancel the pending required-image report first",
   "存在待批准的本机资源访问请求，请先批准或拒绝": "Approve or deny the pending local resource access request first",
-  "后续指令已交给当前空间小兵": "Follow-up instructions sent to the agent in this space",
   "未收到有效受理回执": "No valid acceptance receipt received",
   "消息已受理，交付与执行以实际工作状态为准": "Message accepted. Follow actual work status for delivery and execution.",
   "消息已受理，但本地状态更新失败：": "Message accepted, but local status update failed:",

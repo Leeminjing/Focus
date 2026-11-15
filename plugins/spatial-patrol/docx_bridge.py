@@ -1,6 +1,6 @@
 """本文件提供 Document Server 与浏览器插件可达的 scope-token 桥接应用。
 
-输入为绑定会话的签名文档请求、保存回调、编辑器命令结果与投影；输出为会话限定的
+输入为绑定会话的签名文档请求、保存回调、编辑器保存命令结果；输出为会话限定的
 DOCX、签名 ONLYOFFICE 插件目录及命令事件。插件目录分别把加载凭证和命令凭证
 保留在路径中，使 SDK 追加语言或主题 query、二次请求 ``./config.json`` 后仍可验证；
 终态会话确认但吸收迟到回调；工作流不接收 ``X-Focus-Session``，也不在请求或响应中
@@ -58,10 +58,6 @@ class _Strict(BaseModel):
 class CommandResultBody(_Strict):
     changed: bool
     document_version: int = Field(ge=1)
-    target_id: str | None = None
-    operation: str | None = None
-    observation: dict[str, Any] | None = None
-    projection: dict[str, Any] | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
 
@@ -69,16 +65,7 @@ class CommandResultBody(_Strict):
 class EventBody(_Strict):
     event: str
     document_version: int = Field(ge=1)
-    target: dict[str, Any] | None = None
     data: dict[str, Any] = Field(default_factory=dict)
-
-
-class ProjectionBody(_Strict):
-    target_id: str
-    page: int = Field(ge=1)
-    rect: dict[str, float] | None = None
-    zoom: float | None = Field(default=None, gt=0)
-    projection_unavailable: bool = False
 
 
 def _http_404() -> HTTPException:
@@ -207,7 +194,7 @@ def create_bridge_app(
             "guid": "asc.{8F6F5C83-24D7-4DB3-9338-07384F50C764}",
             "baseUrl": base_url,
             "variations": [{
-                "description": "Focus semantic target and command bridge",
+                "description": "Focus document save bridge",
                 "url": f"{command_token}/index.html",
                 "icons": [],
                 "isViewer": True,
@@ -216,8 +203,7 @@ def create_bridge_app(
                 "isModal": False,
                 "isInsideMode": True,
                 "initDataType": "none",
-                "initOnSelectionChanged": True,
-                "events": ["onDocumentContentChanged", "onTargetPositionChanged"],
+                "events": ["onDocumentContentChanged"],
             }],
         }
 
@@ -325,25 +311,10 @@ def create_bridge_app(
         try:
             context = commands.context(session_id)
             _verify(signer, access_token, "event:write", session_id, context.document_id)
-            commands.publish_event(session_id, body.model_dump(exclude_none=True))
             if body.event in {"documentChanged", "contentChanged"}:
                 await sessions.update(session_id, dirty=True, status="dirty")
             return {"ok": True}
         except (BrokerError, SessionError) as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-    @app.post("/bridge/projections/{session_id}")
-    async def projection(
-        session_id: str,
-        body: ProjectionBody,
-        access_token: str = Query(...),
-    ) -> dict[str, bool]:
-        try:
-            context = commands.context(session_id)
-            _verify(signer, access_token, "projection:write", session_id, context.document_id)
-            commands.publish_projection(session_id, body.model_dump(exclude_none=True))
-            return {"ok": True}
-        except BrokerError as exc:
             raise HTTPException(409, str(exc)) from exc
 
     @app.post("/bridge/callback/{session_id}")
