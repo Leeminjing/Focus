@@ -25,7 +25,6 @@ function fixture(api) {
     FocusLoopWaitRequestView: { createDraftStore: () => new Map() },
     FocusArtifactDrawer: { create: () => ({ update() {}, dispose() {} }) },
     FocusPatrolInputReferences: { create: () => ({ bind() { work.bindings++; }, dispose() {} }) },
-    FocusWorkspacePatrolBudget: { create: () => ({ syncDraft() {}, update() {}, dispose() {} }) },
     FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusContextInspector: { create: () => ({ mount() {}, dispose() {} }) },
     FocusSurfaceTransition: { visible: async (node, show) => { node.hidden = !show; }, finish() {} },

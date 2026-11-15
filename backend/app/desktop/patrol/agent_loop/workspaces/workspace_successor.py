@@ -1,7 +1,7 @@
 """本文件对外提供 create_workspace_successor 的显式工作区重新授权端口。
 
 输入为已锁工作区、终态 predecessor 及原有 Context/Progress/Mission/grant；输出为有独立身份的后继 Loop。
-具体工作流为核对真实执行结算与记忆就绪，复用 ownership 接管既有 Context，继承有限授权和预算，
+具体工作流为核对真实执行结算与记忆就绪，复用 ownership 接管既有 Context，继承有限权限并建立固定无上限预算，
 以既有 Portfolio/P0 初始化端口登记当前已发布来源；旧 Loop、Run、用户输入和历史均不改写。
 示例：await create_workspace_successor(session, workspace, prior)。
 有限旧授权内的 active/retained 隔离 Slot 只转移当前 Loop/Lane 所有权并追加审计，版本、指纹、保留期限和旧 Run/Anchor/Observation 不变。
@@ -44,6 +44,7 @@ from backend.app.desktop.contexts.evolution.repository import ContextRevisionRep
 from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 from focus.history import content_hash
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
 
 
 async def create_workspace_successor(session, workspace, prior):
@@ -102,7 +103,7 @@ async def create_workspace_successor(session, workspace, prior):
                 capabilities=deepcopy(grant.capabilities),
                 context_scope=deepcopy(grant.context_scope),
                 permission_scope=deepcopy(grant.permission_scope),
-                budgets=deepcopy(grant.budgets),
+                budgets=unlimited_loop_budgets(),
                 delegable_gates=deepcopy(grant.delegable_gates),
                 compression_policy=deepcopy(grant.compression_policy),
                 expires_at=grant.expires_at,

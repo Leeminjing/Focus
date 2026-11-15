@@ -28,6 +28,7 @@ from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProje
 from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
 from backend.app.desktop.patrol.agent_loop.models import (
     LoopBudgetUsage,
+    LoopDelegationGrant,
     LoopDirective,
     LoopObservation,
     LoopRound,
@@ -39,7 +40,8 @@ from backend.app.desktop.patrol.agent_loop.execution.run_activity_writer import 
     LoopRunActivityWriteError,
     LoopRunActivityWriter,
 )
-from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest
+from backend.app.desktop.patrol.agent_loop.schemas import NarrowLoopGrantRequest
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
 from backend.app.desktop.patrol.agent_loop.task_progress.consolidation import (
     TaskProgressConsolidator,
 )
@@ -761,7 +763,7 @@ def test_new_mission_rechecks_obligations_and_retains_achievements():
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
-def test_explicit_retry_uses_new_budget_without_rewriting_frozen_inputs(tmp_path):
+def test_explicit_retry_after_legacy_budget_upgrade_keeps_frozen_inputs(tmp_path):
     async def exercise():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -851,11 +853,18 @@ def test_explicit_retry_uses_new_budget_without_rewriting_frozen_inputs(tmp_path
                 assert (
                     await session.get(LoopProgressWork, work_id)
                 ).state == "blocked"
+            async with sessions.begin() as session:
+                grant = await session.scalar(select(LoopDelegationGrant).where(
+                    LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.status == "active"))
+                # Model the upgrade of a historical finite grant; this is not a public mutation.
+                grant.budgets = unlimited_loop_budgets()
+                capabilities, context_scope, permission_scope = (
+                    tuple(grant.capabilities), tuple(grant.context_scope), tuple(grant.permission_scope))
             adjusted = await LoopAuthorityService(sessions).mutate(
                 loop_id,
-                AdjustLoopBudgetsRequest(
-                    command="adjust_budgets",
-                    budgets={"max_model_calls": call_limit + 2},
+                NarrowLoopGrantRequest(
+                    command="narrow", capabilities=capabilities,
+                    context_scope=context_scope, permission_scope=permission_scope,
                 ),
             )
             await runtime.retry(work_id, loop_id=loop_id)

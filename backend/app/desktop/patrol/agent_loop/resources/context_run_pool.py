@@ -143,7 +143,8 @@ class ContextRunPool:
                 ).all()
             )
             return tuple(
-                (str(loop_id), str(round_id), max(1, int((budgets or {}).get("max_concurrent_runs") or self._concurrency)), int(queued), bool(priority))
+                (str(loop_id), str(round_id), self._concurrency if (budgets or {}).get("max_concurrent_runs") is None
+                 else int(budgets["max_concurrent_runs"]), int(queued), bool(priority))
                 for loop_id, round_id, budgets, queued, priority in rows
                 if str(round_id) not in self._tasks
             )

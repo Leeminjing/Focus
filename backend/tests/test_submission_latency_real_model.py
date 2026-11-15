@@ -6,7 +6,6 @@ The supervisor is started after intake to keep preparation outside measurement;
 its startup/recovery overhead is included in downstream milestone upper bounds.
 """
 
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -22,7 +21,7 @@ from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUs
 from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
 from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
 from backend.app.desktop.patrol.agent_loop.diagnostics.submission_latency import (
-    CommittedSubmissionProbe, SCENARIOS, SubmissionSample, measure_submission, summarize,
+    CommittedSubmissionProbe, SCENARIOS, SubmissionSample, measure_submission,
 )
 from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextDerivationArtifact
 from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
@@ -65,7 +64,7 @@ def test_real_submission_to_execution(tmp_path, monkeypatch, runtime_postgres_da
     output.mkdir(parents=True, exist_ok=True)
     timeout = float(os.environ.get("FOCUS_SUBMISSION_BENCHMARK_TIMEOUT", "300"))
     metadata = {"scenario": scenario, "repeat": repeat, "model": selected.name,
-                "budget_preset": "normal", "curation_max_output_tokens": selected.curation_max_output_tokens,
+                "curation_max_output_tokens": selected.curation_max_output_tokens,
                 "host_curation_max_output_tokens": host_cap, "cap_source": "product default, test only",
                 "derivation_max_output_tokens": selected.derivation_max_output_tokens,
                 "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
@@ -90,7 +89,7 @@ def test_real_submission_to_execution(tmp_path, monkeypatch, runtime_postgres_da
             async with sessions.begin() as session:
                 session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(workspace_path), display_name="latency"))
             receipt = await app.state.workspace_patrol.submit(workspace_id, PatrolInputRequest(
-                submission_id=uuid.uuid4().hex, content="历史资料准备阶段，请等待下一条用户任务。", budget_preset="normal"))
+                submission_id=uuid.uuid4().hex, content="历史资料准备阶段，请等待下一条用户任务。"))
             loop_id = receipt["loop_id"]
             try:
                 await WorkspacePatrolBootstrap(sessions, service.contexts.evolution).prepare(loop_id)
@@ -131,7 +130,7 @@ def test_real_submission_to_execution(tmp_path, monkeypatch, runtime_postgres_da
                                             headers={"X-Focus-Session": "focus-dev-session"}) as http:
                     async def submit():
                         response = await http.post(f"/desktop/api/agent-loops/workspace/{workspace_id}/inputs", json={
-                            "submission_id": uuid.uuid4().hex, "input_type": "information", "budget_preset": "normal",
+                            "submission_id": uuid.uuid4().hex, "input_type": "information",
                             "content": "请基于已有历史并行推进两个独立工作线：一条实现离线库存读写，一条撰写使用文档。请派生独立 Context 分工推进，现在开始，首条输出说明具体步骤。只读权限，给出内容即可。",
                         })
                         response.raise_for_status()

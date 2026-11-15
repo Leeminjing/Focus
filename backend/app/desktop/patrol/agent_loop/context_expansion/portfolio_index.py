@@ -883,9 +883,8 @@ class PortfolioSemanticIndexService:
         # A denied build must not wait for another owner's in-flight model call.
         authorization_key = stable_expansion_hash(
             authority.get("loop_id"), authority.get("grant_revision"),
-            {name: limits.get(name, default) for name, default in (
-                ("max_model_calls", 200), ("max_input_tokens", 2_000_000),
-                ("max_output_tokens", 500_000), ("max_retries", None),
+            {name: limits.get(name) for name in (
+                "max_model_calls", "max_input_tokens", "max_output_tokens", "max_retries",
             )},
             state.budget.resources.policy.model_dump(mode="json"),
         )

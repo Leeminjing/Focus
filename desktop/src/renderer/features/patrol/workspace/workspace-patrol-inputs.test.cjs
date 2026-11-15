@@ -47,7 +47,7 @@ test("12000 Unicode code points are accepted without truncation", () => {
 
 test("plain text validation rejection restores the unchanged draft for editing", () => {
   const store = create(() => "rejected");
-  store.edit({ content: "需修改的正文", input_type: "outcome", budget_preset: "long" });
+  store.edit({ content: "需修改的正文", input_type: "outcome" });
   const draft = store.get().draft;
   const row = store.submit();
   store.failed(row.submission_id, Object.assign(new Error("内容校验失败"), { status: 422 }));

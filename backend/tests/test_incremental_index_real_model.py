@@ -16,7 +16,7 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index imp
     PortfolioSemanticIndexService,
 )
 from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.patrol.agent_loop.resources.budget_presets import initial_budgets
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
 from backend.tests.incremental_index_support import Checkpoints, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 
@@ -84,7 +84,7 @@ def observed_model_factory(config, role, calls, usage):
 
 
 def test_real_provider_locality_support_and_cache(tmp_path):
-    budgets = initial_budgets()
+    budgets = unlimited_loop_budgets()
 
     async def run(sessions, seed):
         config = normal_budget_config()
@@ -142,7 +142,7 @@ def test_real_provider_locality_support_and_cache(tmp_path):
         assert c.indexes[0] == b.indexes[0] and calls == []
         evidence = {
             "provider": "configured real model",
-            "budget_preset": "normal",
+            "budget_policy": "fixed-unlimited",
             "budgets": budgets,
             "max_output_tokens_per_request": config.get_model(config.resolve_default_model_name()).curation_max_output_tokens,
             "first_quality": a.indexes[0].quality_state,
@@ -164,7 +164,7 @@ def test_real_provider_locality_support_and_cache(tmp_path):
 
 
 def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_path):
-    budgets = initial_budgets()
+    budgets = unlimited_loop_budgets()
 
     async def run(sessions, seed):
         from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
@@ -231,7 +231,7 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
         ] == index and not calls
         evidence = {
             "provider": "configured real model",
-            "budget_preset": "normal",
+            "budget_policy": "fixed-unlimited",
             "budgets": budgets,
             "max_output_tokens_per_request": config.get_model(config.resolve_default_model_name()).curation_max_output_tokens,
             "joint_statements": [u.statement for u in joint],

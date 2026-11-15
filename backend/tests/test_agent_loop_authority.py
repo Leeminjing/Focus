@@ -1,8 +1,8 @@
-r"""本文件对外提供用户作为根权力对 Agent Loop delegation 的收窄、预算调整与撤销测试。
+r"""本文件对外提供用户作为根权力对 Agent Loop delegation 的收窄、预算修改拒绝与撤销测试。
 
 输入为真实 PostgreSQL Loop、活动 grant、用量账本与活动 Main Run；输出为单调 authority revision、
 旧执行中断、权限不可放大、预算即时阻断以及撤销后不可恢复的断言。具体工作流为绑定初始用户 Run，
-依次提交 narrow、adjust_budgets 和 revoke。示例：`pytest test_agent_loop_authority.py`。
+依次提交 narrow、拒绝已退役预算命令和 revoke。示例：`pytest test_agent_loop_authority.py`。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from fastapi import HTTPException
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence.registry
+import backend.app.desktop.persistence.registry  # noqa: F401
 from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopAuthorityService
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopRound
 from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest, NarrowLoopGrantRequest, RevokeLoopGrantRequest
@@ -38,7 +38,7 @@ class _RunManager:
         return True
 
 
-def test_root_user_can_narrow_adjust_and_revoke_delegation(tmp_path) -> None:
+def test_root_user_can_narrow_and_revoke_but_cannot_adjust_budgets(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -104,16 +104,13 @@ def test_root_user_can_narrow_adjust_and_revoke_delegation(tmp_path) -> None:
             async with sessions.begin() as session:
                 usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
                 usage.output_tokens = 50
-            exhausted = await authority.mutate(loop_id, AdjustLoopBudgetsRequest(command="adjust_budgets", budgets={"max_output_tokens": 40}))
-            assert exhausted["authority_revision"] == 3
-            snapshot = await service.get(loop_id)
-            assert snapshot["status"] == "waiting_user"
-            assert "output_tokens_budget" in snapshot["waiting_reason"]
-
-            await authority.mutate(loop_id, AdjustLoopBudgetsRequest(command="adjust_budgets", budgets={"max_output_tokens": 100}))
+            with pytest.raises(HTTPException) as rejected_budget:
+                await authority.mutate(loop_id, AdjustLoopBudgetsRequest(command="adjust_budgets", budgets={"max_output_tokens": 40}))
+            assert rejected_budget.value.status_code == 422
             snapshot = await service.get(loop_id)
             assert snapshot["status"] == "running"
-            assert snapshot["authority_revision"] == 4
+            assert snapshot["authority_revision"] == 2
+            assert snapshot["usage"]["output_tokens"] == 50
 
             await authority.mutate(loop_id, RevokeLoopGrantRequest(command="revoke"))
             snapshot = await service.get(loop_id)

@@ -9,7 +9,7 @@ function surface(locale = "en-US") {
   const document = { documentElement: { dataset: {} }, dispatchEvent() {}, querySelectorAll: () => [] };
   const context = vm.createContext({ document, localStorage: { getItem: () => locale, setItem() {} }, CustomEvent: class {} });
   context.window = context;
-  for (const file of ["../../src/renderer/shared/i18n/i18n-catalog.js", "../../src/renderer/shared/i18n/i18n.js", "../../src/renderer/features/plugins/plugin-view.js", "../../src/renderer/features/memory/memory.js", "../../src/renderer/features/settings/session-controls.js", "../../src/renderer/features/patrol/workspace/workspace-patrol-feedback.js", "../../src/renderer/features/patrol/workspace/patrol-input-references.js", "../../src/renderer/features/patrol/workspace/workspace-patrol-view.js", "../../src/renderer/features/loop/loop-expansion-budget.js", "../../src/renderer/features/loop/loop-facts-view.js", "../../src/renderer/features/loop/loop-grant-view.js", "../../src/renderer/features/patrol/workspace/workspace-patrol-budget.js"]) {
+  for (const file of ["../../src/renderer/shared/i18n/i18n-catalog.js", "../../src/renderer/shared/i18n/i18n.js", "../../src/renderer/features/plugins/plugin-view.js", "../../src/renderer/features/memory/memory.js", "../../src/renderer/features/settings/session-controls.js", "../../src/renderer/features/patrol/workspace/workspace-patrol-feedback.js", "../../src/renderer/features/patrol/workspace/patrol-input-references.js", "../../src/renderer/features/patrol/workspace/workspace-patrol-view.js", "../../src/renderer/features/loop/loop-expansion-budget.js", "../../src/renderer/features/loop/loop-facts-view.js", "../../src/renderer/features/loop/loop-grant-view.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, file), "utf8"), context, { filename: file });
   }
   return context;
@@ -134,17 +134,15 @@ test("language changes refresh generated labels and preserve user content", () =
 test("budget and fact labels follow repeated language switches after modules have loaded", () => {
   const c = surface("zh-CN");
   const render = () => [
-    c.FocusLoopExpansionBudget.renderLoopInputs(),
     c.FocusLoopGrantView.grantControls({ status: "running", grant: { budgets: {} } }),
     c.FocusLoopFactsView.statusOptions.map(row => row[1]).join(" "),
     c.FocusLoopFactsView.outcomeOptions.map(row => row[1]).join(" "),
-    c.FocusWorkspacePatrolBudget.markup(),
   ].join("\n");
-  assert.match(render(), /最大轮次/);
+  assert.match(render(), /预算：无上限（固定）/);
   c.FocusI18n.setLocale("en-US");
   assert.doesNotMatch(render(), /\p{Script=Han}/u);
   c.FocusI18n.setLocale("zh-CN");
-  assert.match(render(), /最大轮次/);
+  assert.match(render(), /预算：无上限（固定）/);
 });
 
 test("native chrome follows the saved language and leaves unknown content intact", () => {

@@ -1,4 +1,4 @@
-/* 本文件对外提供任务三栏、材料检查器、插件/记忆卡片、对话、Composer、Loop 授权预算与其它工作流视图的布局样式。输入为 app.js
+/* 本文件对外提供任务三栏、材料检查器、插件/记忆卡片、对话、Composer、Loop 授权与其它工作流视图的布局样式。输入为 app.js
    输出的语义 class 和公共设计 token，输出为可滚动工作区、职责分离的 Mission 编辑器、可折叠材料组、材料项内逐轮备注框
    与历史材料卡片及全图连续关系区域；全图仅定位共享玻璃图控件，保持图内滚动和原检查抽屉；Composer 输入与操作分行，控制层消费共用玻璃材质、正文采用高不透明度阅读底，反馈仅在有内容时占位，文件模式菜单显示清楚的选择层级。工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
    .run-material-note 把本轮备注输入框就近排在其所属材料条目内。 */
@@ -1442,12 +1442,6 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
   .memory-list { border-right: 0; }
   .memory-detail { overflow: visible; }
 }
-.loop-start-budget label {
-  display: grid;
-  gap: var(--space-2);
-  color: var(--text-secondary);
-}
-
 .context-first-parent-tree li {
   margin-inline-start: calc(var(--context-depth, 0) * var(--space-4));
 }
@@ -1455,12 +1449,6 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .evolution-graph li.is-adopted {
   border-inline-start: 3px solid var(--border-accent);
   padding-inline-start: var(--space-2);
-}
-
-.loop-start-budget {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-3);
 }
 
 .file-panel-inner.file-link-panel { grid-template-rows: auto auto minmax(0, 1fr); }
@@ -1475,9 +1463,6 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .file-link-content img { max-width: 100%; height: auto; }
 .file-link-content iframe { width: 100%; height: 100%; min-height: 60vh; border: 0; }
 
-@media (max-width: 720px) {
-  .loop-start-budget { grid-template-columns: 1fr; }
-}
 /* Storage maintenance shares the data pane's spacing and form controls. */
 #storageSettingsHost { display: grid; gap: var(--space-3); padding: var(--space-3); }
 #storageSettingsHost > header { margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-3)) 0; }

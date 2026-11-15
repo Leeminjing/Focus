@@ -63,7 +63,7 @@ def resolve_expansion_resources(
         policy=policy,
         source=source,
         grant_revision=grant_revision,
-        global_model_calls_remaining=remaining_capacity(budgets.get("max_model_calls", 200), int(usage.get("model_calls", 0))),
-        global_input_tokens_remaining=remaining_capacity(budgets.get("max_input_tokens", 2_000_000), int(usage.get("input_tokens", 0))),
-        global_output_tokens_remaining=remaining_capacity(budgets.get("max_output_tokens", 500_000), int(usage.get("output_tokens", 0))),
+        global_model_calls_remaining=remaining_capacity(budgets.get("max_model_calls"), int(usage.get("model_calls", 0))),
+        global_input_tokens_remaining=remaining_capacity(budgets.get("max_input_tokens"), int(usage.get("input_tokens", 0))),
+        global_output_tokens_remaining=remaining_capacity(budgets.get("max_output_tokens"), int(usage.get("output_tokens", 0))),
     )

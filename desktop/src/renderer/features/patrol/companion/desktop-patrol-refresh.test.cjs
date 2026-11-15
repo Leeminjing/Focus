@@ -67,7 +67,6 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
     FocusLoopLiveConnection: { create: () => ({ start: async id => { starts.push(id); }, stop() {} }) },
     FocusWorkspacePatrolIntake: { create: options => { intakeOptions = options; return intake; } }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
-    FocusWorkspacePatrolBudget: { markup: () => "", create: () => ({ update() {}, syncDraft() {}, dispose() {} }) },
     FocusAccessMode: { readNewSessionDefault: () => "workspace-write" }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "./desktop-patrol-references.js"), "utf8"), context);

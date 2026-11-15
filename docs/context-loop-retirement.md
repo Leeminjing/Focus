@@ -7,7 +7,7 @@
 自动 Loop 统一使用 Workspace Patrol：
 
 1. 绑定有效的本地工作区。
-2. 通过 `POST /desktop/api/agent-loops/workspace/{workspace_id}/inputs` 提交输入，首次发送同时确定访问模式与任务预算。
+2. 通过 `POST /desktop/api/agent-loops/workspace/{workspace_id}/inputs` 提交输入，首次发送确定访问模式；Loop 预算固定无上限，不接受预算预设或调整。
 3. 服务端持久受理首输入，建立工作区 Loop、Context、授权、预算账本和首轮观察；Patrol 根据输入与执行事实继续组织工作。
 4. 后续输入仍走同一工作区入口。目标、工作边界和完成检查由统一输入处理。
 5. Loop 终态后，需要继续工作时显式调用 `POST /desktop/api/agent-loops/workspace/{workspace_id}/restart` 创建工作区后继。
@@ -34,7 +34,7 @@
 - 普通 Context 的创建、编辑、派生、查看和 Main Run，以及 Session Patrol。
 - Workspace Patrol 的统一输入、首线程准备、工作线组织和终态后继。
 - Mission 的工作区输入处理、任务进度、观察、执行事实和完成验证。
-- 权限、预算、授权收窄及撤销、暂停/继续/停止、人工 gate 和等待恢复。
+- 权限、固定无上限预算与用量统计、授权收窄及撤销、暂停/继续/停止、人工 gate 和等待恢复。
 - Run 调度、工作区结果采用、上下文压缩、Live 状态、诊断和历史查询。
 
 共享模块是否保留，以 Workspace Patrol 及上述现行调用方为依据。移除 `POST missions` 不代表删除 Mission 领域或只读 Mission 历史；移除旧 intervention 接口也不代表删除工作区输入使用的受理与生命周期记录。

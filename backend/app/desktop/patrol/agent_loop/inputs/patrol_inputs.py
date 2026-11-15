@@ -74,7 +74,6 @@ class PatrolInputRequest(BaseModel):
     visible_context: VisibleContext | None = None
     file_refs: tuple[FileReference, ...] = Field(default=(), max_length=32)
     attachments: tuple[WorkspaceAttachmentReference, ...] = Field(default=(), max_length=32)
-    budget_preset: Literal["normal", "long"] | None = None
 
     @model_validator(mode="after")
     def _validate_input(self):
@@ -127,8 +126,6 @@ def request_document(request: PatrolInputRequest) -> dict:
         exclude.add("file_refs")
     if not request.attachments:
         exclude.add("attachments")
-    if request.budget_preset is None:
-        exclude.add("budget_preset")
     return request.model_dump(mode="json", exclude=exclude)
 
 
@@ -141,9 +138,19 @@ class PatrolInputRepository:
         if row is None:
             return None
         expected = content_hash([workspace_id, request_document(request)])
+        stored_request = row.request_payload.get("request") or {}
+        historical_preset_replay = False
+        if "budget_preset" in stored_request:
+            # A lost pre-upgrade receipt may be retried without the retired field.
+            # Verify the original hash first so this cannot replay across workspaces.
+            historical_preset_replay = (
+                row.request_payload.get("request_hash") == content_hash([workspace_id, stored_request])
+                and content_hash([workspace_id, {name: value for name, value in stored_request.items()
+                                                if name != "budget_preset"}]) == expected
+            )
         if (
             row.intent_kind != "workspace_input"
-            or row.request_payload.get("request_hash") != expected
+            or (row.request_payload.get("request_hash") != expected and not historical_preset_replay)
         ):
             raise HTTPException(409, "提交身份已用于不同工作区、类型、原文或回答目标")
         return self.view(row)

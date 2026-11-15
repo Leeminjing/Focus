@@ -1,8 +1,13 @@
-"""通过真实工作区输入和根授权事务验证预算追加、等待及并发点击。"""
+"""本文件对外提供固定无上限预算与历史受理重放的真实 PostgreSQL 回归。
+
+输入为隔离工作区、用户输入及历史预算档位文档；输出为授权、用量和稳定受理身份断言。
+具体工作流为首次受理、收窄权限、重放当前或旧回执，核对用量及历史文档保持不变。
+示例：python -m pytest backend/tests/test_workspace_budget_lifecycle.py -q。
+"""
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import uuid
+from copy import deepcopy
 
 import pytest
 from fastapi import HTTPException
@@ -10,96 +15,84 @@ from sqlalchemy import select
 
 from backend.tests.test_workspace_patrol import _setup
 from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
-from backend.app.desktop.patrol.agent_loop.resources.budget_presets import initial_budgets
-from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant
 from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.patrol.agent_loop.schemas import IncreaseLoopBudgetRequest
-from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
-from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
+from backend.app.desktop.patrol.agent_loop.schemas import NarrowLoopGrantRequest
+from focus.history import content_hash
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
-@pytest.mark.parametrize("preset", [None, "long"])
-def test_workspace_first_input_uses_preset_and_retry_never_resets_budget(tmp_path, preset):
+def test_first_input_and_replay_use_unlimited_budget_without_resetting_consumption(tmp_path):
     async def run():
         engine, sessions, workspace_id, service = await _setup(tmp_path)
         try:
-            request = PatrolInputRequest(submission_id=uuid.uuid4().hex, content="任务", budget_preset=preset)
+            request = PatrolInputRequest(submission_id=uuid.uuid4().hex, content="任务")
             receipt = await service.submit(workspace_id, request)
-            authority = LoopAuthorityService(sessions)
-            await authority.mutate(receipt["loop_id"], IncreaseLoopBudgetRequest(
-                command="increase_budget", preset="normal", expected_authority_revision=1))
+            loop_id = receipt["loop_id"]
+            async with sessions.begin() as session:
+                grant = await session.scalar(select(LoopDelegationGrant).where(
+                    LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.status == "active"))
+                assert grant.budgets == unlimited_loop_budgets()
+                context_scope = tuple(grant.context_scope)
+                capabilities = tuple(grant.capabilities)
+                usage = await session.get(LoopBudgetUsage, loop_id)
+                usage.model_calls, usage.input_tokens, usage.output_tokens = 500, 3_000_000, 400_000
+            await LoopAuthorityService(sessions).mutate(loop_id, NarrowLoopGrantRequest(
+                command="narrow", capabilities=capabilities, context_scope=context_scope, permission_scope=("read",)))
             assert await service.submit(workspace_id, request) == receipt
             async with sessions() as session:
                 grant = await session.scalar(select(LoopDelegationGrant).where(
-                    LoopDelegationGrant.loop_id == receipt["loop_id"], LoopDelegationGrant.status == "active"))
-                assert grant.budgets["max_model_calls"] == initial_budgets(preset)["max_model_calls"] + 100
-                assert grant.budgets["max_concurrent_runs"] == initial_budgets(preset)["max_concurrent_runs"]
-        finally:
-            await engine.dispose()
-    asyncio.run(run())
-
-
-def test_increase_keeps_consumption_pause_and_rejects_duplicate_version(tmp_path):
-    async def run():
-        engine, sessions, workspace_id, service = await _setup(tmp_path)
-        try:
-            receipt = await service.submit(workspace_id, PatrolInputRequest(submission_id=uuid.uuid4().hex, content="任务"))
-            loop_id = receipt["loop_id"]
-            async with sessions.begin() as session:
-                loop = await session.get(AgentLoop, loop_id)
-                loop.status = "paused"
-                loop.created_at = datetime.now(UTC) - timedelta(hours=3)
-                usage = await session.get(LoopBudgetUsage, loop_id)
-                usage.model_calls = 100
-                session.add(LoopIndexBudgetReservation(reservation_id=uuid.uuid4().hex,
-                    loop_id=loop_id, grant_revision=1, model_calls=50, input_tokens=0, output_tokens=0))
-            request = IncreaseLoopBudgetRequest(command="increase_budget", preset="normal", expected_authority_revision=1)
-            authority = LoopAuthorityService(sessions)
-            result = await asyncio.gather(authority.mutate(loop_id, request), authority.mutate(loop_id, request), return_exceptions=True)
-            assert sum(isinstance(item, dict) for item in result) == 1
-            failure = next(item for item in result if isinstance(item, HTTPException))
-            assert failure.status_code == 409
-            async with sessions() as session:
-                loop = await session.get(AgentLoop, loop_id)
-                grant = await session.scalar(select(LoopDelegationGrant).where(
                     LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.status == "active"))
-                assert loop.status == "paused"
-                assert grant.budgets["max_model_calls"] == 250
-                assert grant.budgets["max_duration_seconds"] >= 12600
-                assert (await session.get(LoopBudgetUsage, loop_id)).model_calls == 100
+                usage = await session.get(LoopBudgetUsage, loop_id)
+                assert grant.budgets == unlimited_loop_budgets()
+                assert grant.permission_scope == ["read"]
+                assert (usage.model_calls, usage.input_tokens, usage.output_tokens) == (500, 3_000_000, 400_000)
+                assert (await session.get(AgentLoop, loop_id)).authority_revision == 2
         finally:
             await engine.dispose()
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("budget_wait", [True, False])
-def test_increase_only_resolves_budget_wait(tmp_path, budget_wait):
+@pytest.mark.parametrize("preset", ["normal", "long"])
+def test_replay_of_durable_pre_upgrade_input_ignores_only_its_retired_preset(tmp_path, preset):
     async def run():
         engine, sessions, workspace_id, service = await _setup(tmp_path)
         try:
-            receipt = await service.submit(workspace_id, PatrolInputRequest(submission_id=uuid.uuid4().hex, content="任务"))
-            loop_id = receipt["loop_id"]
+            request = PatrolInputRequest(submission_id=uuid.uuid4().hex, input_type="outcome", content="完成任务")
+            receipt = await service.submit(workspace_id, request)
+            # Freeze the record exactly as the older server persisted it before losing its reply.
             async with sessions.begin() as session:
-                loop = await session.get(AgentLoop, loop_id)
-                draft = LoopWaitRequestFactory.budget_action("用尽", initial_budgets()) if budget_wait else LoopWaitRequestFactory.retry_or_stop("失败需要决策")
-                wait = await LoopWaitRequestService().open(session, loop, draft, created_by="test", correlation_id=uuid.uuid4().hex)
-                wait_id, revision = wait.request_id, loop.authority_revision
-            operation = LoopAuthorityService(sessions).mutate(loop_id, IncreaseLoopBudgetRequest(
-                command="increase_budget", preset="normal", expected_authority_revision=revision))
-            if budget_wait:
-                await operation
-            else:
-                with pytest.raises(HTTPException) as rejected:
-                    await operation
-                assert rejected.value.status_code == 409
+                row = await session.get(LoopUserIntent, receipt["intent_id"])
+                document = {**row.request_payload["request"], "budget_preset": preset}
+                historical = {**row.request_payload, "request": document,
+                              "request_hash": content_hash([workspace_id, document])}
+                row.request_payload = deepcopy(historical)
+            assert await service.submit(workspace_id, request) == receipt
             async with sessions() as session:
-                loop = await session.get(AgentLoop, loop_id)
-                wait = await session.get(LoopWaitRequest, wait_id)
-                assert loop.status == ("running" if budget_wait else "waiting_user")
-                assert wait.status == ("superseded" if budget_wait else "open")
+                row = await session.get(LoopUserIntent, receipt["intent_id"])
+                assert row.request_payload == historical
+                loop = await session.get(AgentLoop, receipt["loop_id"])
+                assert loop.authority_revision == 1
+            for changed in (
+                request.model_copy(update={"content": "另一任务"}),
+                request.model_copy(update={"input_type": "boundary"}),
+                request.model_copy(update={"access_mode": "read-only"}),
+                request.model_copy(update={"request_id": "other", "request_revision": 1}),
+            ):
+                with pytest.raises(HTTPException) as rejected:
+                    await service.submit(workspace_id, changed)
+                assert rejected.value.status_code == 409
+            # A real second workspace must not replay the globally stable submission identity.
+            from backend.app.desktop.persistence.models import DesktopWorkspace
+            other_workspace_id = uuid.uuid4().hex
+            async with sessions.begin() as session:
+                session.add(DesktopWorkspace(workspace_id=other_workspace_id, path=str(tmp_path / "other"), display_name="other"))
+            (tmp_path / "other").mkdir()
+            with pytest.raises(HTTPException) as rejected:
+                await service.submit(other_workspace_id, request)
+            assert rejected.value.status_code == 409
         finally:
             await engine.dispose()
     asyncio.run(run())

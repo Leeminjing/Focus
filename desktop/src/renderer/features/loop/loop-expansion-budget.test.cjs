@@ -1,7 +1,7 @@
 /*
- * 本文件对外提供 Context Expansion 预算表单与状态呈现的自动化断言。
- * 输入为有效 API 策略快照、表单字段与阻断 session；输出为默认/显式值一致、数字 payload、真实阶段及逐项用量可见的测试结果。
- * 具体工作流为用公开 UI 模块渲染、读取并比对同一策略，不依赖真实 Vault 或模型。
+ * 本文件对外提供 Context Expansion 只读用量与固定预算授权展示的自动化断言。
+ * 输入为有效 API 策略快照与阻断 session；输出为固定预算、真实阶段及逐项用量可见的测试结果。
+ * 具体工作流为用公开 UI 模块核对只读预算和真实用量，不依赖真实 Vault 或模型。
  * 示例：`node --test desktop/src/renderer/features/loop/loop-expansion-budget.test.cjs`。
  */
 const assert = require("node:assert/strict");
@@ -9,20 +9,20 @@ const test = require("node:test");
 const Budget = require("./loop-expansion-budget.js");
 const GrantView = require("./loop-grant-view.js");
 
-test("grant UI exposes every effective expansion resource", () => {
-  const start = GrantView.grantControls({ status: "running", grant: { budgets: Budget.LOOP_DEFAULTS } });
-  for (const key of Object.keys(Budget.DEFAULTS).filter(key => key !== "version")) {
-    assert.match(start, new RegExp(`name="expansion_${key}"`));
-  }
-  const values = new Map(Object.entries(Budget.DEFAULTS).filter(([key]) => key !== "version").map(([key, value]) => [`expansion_${key}`, String(value ?? "")]));
-  assert.deepEqual(Budget.read(values), Budget.DEFAULTS);
-  assert.deepEqual(Budget.submission(values, true), {});
-  assert.deepEqual(Budget.submission(values), { expansion_resources: Budget.DEFAULTS });
-  assert.match(Budget.renderInputs({ ...Budget.DEFAULTS, max_queries: 24 }), /value="24"/);
-  values.set("expansion_max_queries", "24");
-  assert.equal(Budget.submission(values, true).expansion_resources.max_queries, 24);
-  values.delete("expansion_max_queries");
-  assert.throws(() => Budget.read(values), /max_queries/);
+test("grant controls keep fixed unlimited budgets read-only and report actual usage", () => {
+  const html = GrantView.grantControls({ status: "running", usage: { rounds: 7, model_calls: 99, input_tokens: 1200, output_tokens: 80, retries: 2 },
+    accounting: { consumption: { actual: { model_calls: 90 }, unreported_reservations: { model_calls: 9 } } },
+    grant: { capabilities: ["read"], context_scope: ["c1"], budgets: {} } });
+  assert.match(html, /预算：无上限（固定）/);
+  assert.match(html, /模型调用：已结算 90，预留／待确认 9/);
+  assert.match(html, /输入 Token：已结算 1200/);
+  assert.match(html, /输出 Token：已结算 80/);
+  assert.match(html, /轮次：已结算 7/);
+  assert.match(html, /id="agentLoopGrantForm"/);
+  assert.doesNotMatch(html, /agentLoopBudgetForm|type="number"|追加|更新预算/);
+  assert.equal(Budget.readLoop, undefined);
+  assert.equal(Budget.read, undefined);
+  assert.equal(Budget.renderLoopInputs, undefined);
 });
 
 test("running status uses API limits and identifies causal blocker", () => {
@@ -46,20 +46,6 @@ test("running status uses API limits and identifies causal blocker", () => {
   assert.match(html, /全局剩余：模型调用 20 · 输入 Token 100000/);
   assert.match(html, /Grant R4/);
   assert.match(html, /连续 2 轮 Context Expansion 阻断/);
-});
-
-test("grant settings submit maxima or no extra limit", () => {
-  const html = GrantView.grantControls({ status: "running", grant: { budgets: Budget.LOOP_DEFAULTS } });
-  assert.match(html, /name="expansion_output_token_reserve"[^>]*placeholder="按模型配置"/);
-  const values = new Map([...html.matchAll(/<input name="([^"]+)" type="number"[^>]*value="([^"]*)"/g)].map(([, name, value]) => [name, value]));
-  assert.deepEqual(Budget.readLoop(values, true), Budget.LOOP_DEFAULTS);
-  values.set("maxModelCalls", "10");
-  values.set("expansion_output_token_reserve", "1024");
-  const explicit = Budget.readLoop(values, true);
-  assert.equal(explicit.max_model_calls, 10);
-  assert.equal(explicit.expansion_resources.output_token_reserve, 1024);
-  values.set("maxRounds", "1001");
-  assert.throws(() => Budget.readLoop(values), /maxRounds/);
 });
 
 test("narrowing a grant revokes compression without expanding remaining scopes", () => {

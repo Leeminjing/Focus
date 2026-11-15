@@ -378,11 +378,11 @@
     }
     async function openGrant() {
       const owner = token;
-      showDialog("grant", localize("工作区授权与预算"), localize('正在读取当前授权 <button data-patrol-grant-open>重试</button>'));
+      showDialog("grant", localize("工作区授权"), localize('正在读取当前授权 <button data-patrol-grant-open>重试</button>'));
       const value = await api.get(loopId);
       if (owner !== token || dialogKind !== "grant") return;
       grantInspection = value;
-      showDialog("grant", localize("工作区授权与预算"), root.FocusLoopGrantView.grantControls(value) || localize("当前没有可修改的有效授权。历史工作仍可检查。"));
+      showDialog("grant", localize("工作区授权"), root.FocusLoopGrantView.grantControls(value) || localize("当前没有可修改的有效授权。历史工作仍可检查。"));
     }
     function patchRequests() {
       if (!host || !projection) return;
@@ -871,7 +871,6 @@
           const card = button.closest("[data-wait-request-id]");
           const request = liveStore.get().projection.wait_requests[card?.dataset.waitRequestId];
           const answer = { action: button.dataset.waitAction };
-          if (answer.action === "revise_budget") answer.budgets = Object.fromEntries([...card.querySelectorAll('[name^="budget:"]')].map(input => [input.name.slice(7), Number(input.value)]));
           if (request) await respondWait(request, answer);
         }
         else if (button.dataset.action === "loop-resume-current-mission") {
@@ -981,13 +980,13 @@
       host.addEventListener("change", saveWaitDraft, options);
       host.addEventListener("submit", async event => {
         const form = event.target;
-        if (!["agentLoopGrantForm", "agentLoopBudgetForm"].includes(form.id)) return;
+        if (form.id !== "agentLoopGrantForm") return;
         event.preventDefault(); event.stopPropagation();
         const owner = token;
         const submit = event.submitter;
         if (submit) submit.disabled = true;
         try {
-          const body = form.id === "agentLoopGrantForm" ? root.FocusLoopGrantView.readNarrowGrant(form, grantInspection?.grant) : { command: "adjust_budgets", budgets: root.FocusLoopExpansionBudget.readLoop(new FormData(form)) };
+          const body = root.FocusLoopGrantView.readNarrowGrant(form, grantInspection?.grant);
           await api.mutateGrant(loopId, body);
           if (owner === token) await openGrant();
         } catch (failure) {
