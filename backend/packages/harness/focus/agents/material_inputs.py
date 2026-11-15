@@ -4,7 +4,8 @@
 不可变运行材料聚合、单向兼容读取的 equipment JSON、派生 RunImageInputs、<current_uploads> 标签
 及 runtime context。具体工作流为保留用户顺序和备注原文，拒绝重复材料，新写入只使用
 run_material_inputs（并在此声明它作为 run_image_inputs / model_supports_image_input 两个受治理键的
-服务端生产者）；旧 run_image_inputs 仅在读取时提升为通用结构。
+服务端生产者）；旧 run_image_inputs 或 must_view_materials 中的图片描述仅在读取时
+提升为通用附件结构，不恢复必看声明语义。
 
 示例：inputs = RunMaterialInputs.build("r1", "msg1", materials)。
 """

@@ -9,7 +9,8 @@ RunImageInputs、可持久化 equipment JSON
 
 具体工作流为：按输入顺序去重附件并聚合送模预算；
 通用 RunMaterialInputs 从中派生图片视图，新运行只把该视图投影到 runtime context，旧
-run_image_inputs 则由通用聚合兼容读取；图片 middleware 不查询材料 ID。
+run_image_inputs 与 must_view_materials 中的图片描述则由通用聚合兼容读取为普通附件，
+不恢复必看声明语义；图片 middleware 不查询材料 ID。
 
 示例：inputs = RunImageInputs.build(materials); equipment.update(inputs.to_equipment())。
 """
@@ -101,16 +102,15 @@ class RunImageInputs:
         current = equipment.get(RUN_IMAGE_INPUTS_EQUIPMENT_KEY)
         if isinstance(current, Mapping):
             return cls.from_json(current)
+        # 早期运行把图片描述存在此字段中；只迁移附件，不恢复声明约束。
+        legacy = equipment.get("must_view_materials")
+        if isinstance(legacy, list):
+            return cls.build(item for item in legacy if isinstance(item, Mapping))
         return cls.empty()
 
     @classmethod
     def from_context(cls, context: Any) -> "RunImageInputs":
-        if not isinstance(context, Mapping):
-            return cls.empty()
-        current = context.get(RUN_IMAGE_INPUTS_CONTEXT_KEY)
-        if isinstance(current, Mapping):
-            return cls.from_json(current)
-        return cls.empty()
+        return cls.from_equipment(context)
 
     @property
     def total_model_bytes(self) -> int:

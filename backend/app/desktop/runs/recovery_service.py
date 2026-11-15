@@ -229,6 +229,7 @@ class RunRecoveryService:
                 session, run_materials, workspace.path
             )
         equipment.pop("run_image_inputs", None)
+        equipment.pop("must_view_materials", None)
         equipment.update(run_materials.to_equipment())
         identity = dict(run_identity or {})
         if interrupted_run is not None and interrupted_run.loop_id and not identity.get("loop_id"):

@@ -6,6 +6,7 @@
 示例：python -m pytest backend/tests/test_run_image_inputs.py。
 """
 
+import pytest
 from langchain_core.messages import HumanMessage
 
 from focus.agents.image_inputs import (
@@ -37,6 +38,34 @@ def test_empty_and_json_round_trip() -> None:
     assert RunImageInputs.from_json(None) == RunImageInputs.empty()
     original = RunImageInputs.build([material("m1", 22, 44)])
     assert RunImageInputs.from_json(original.to_json()) == original
+
+
+@pytest.mark.parametrize("reader", [RunImageInputs.from_equipment, RunImageInputs.from_context])
+def test_legacy_descriptions_become_plain_attachments(reader) -> None:
+    image = {
+        **material("m1", 22, 44),
+        "source_bytes": 80,
+        "digest": "a" * 64,
+        "snapshot_object_id": "b" * 40,
+    }
+    inputs = reader({"must_view_materials": [None, image, image, "m1"]})
+    assert [item.to_json() for item in inputs.attached] == [image]
+    assert inputs.total_model_tokens == 22
+    assert inputs.total_model_bytes == 44
+    assert set(inputs.to_equipment()) == {"run_image_inputs"}
+    assert "required_ids" not in inputs.to_json()
+    assert reader(inputs.to_equipment()) == inputs
+
+
+@pytest.mark.parametrize("reader", [RunImageInputs.from_equipment, RunImageInputs.from_context])
+@pytest.mark.parametrize("attached", [[], [material("current")]])
+def test_current_image_inputs_take_precedence_over_legacy(reader, attached) -> None:
+    inputs = reader({
+        "run_image_inputs": {"attached": attached, "required_ids": ["retired"]},
+        "must_view_materials": [material("legacy")],
+    })
+    assert inputs == RunImageInputs.build(attached)
+    assert "required_ids" not in inputs.to_json()
 
 
 def test_context_projection_is_complete() -> None:

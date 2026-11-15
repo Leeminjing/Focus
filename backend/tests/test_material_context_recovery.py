@@ -3,7 +3,8 @@
 输入为最近主运行状态、旧/新 equipment 与压缩恢复载荷；输出为初始运行和主运行恢复使用完全相同的
 材料投影并保留被中断 Revision 的执行身份。具体工作流为通过同源准备接口，
 验证顺序/备注、图片、模型能力、execution thread/namespace 与 revision id，
-同时断言普通主运行不启用 Patrol 准备观察器；不启动模型或后台 worker。
+同时断言普通主运行不启用 Patrol 准备观察器；旧图片描述在压缩恢复和写回后仍交付像素，
+不恢复必看声明；不启动模型或后台 worker。
 
 示例：python -m pytest backend/tests/test_material_context_recovery.py。
 """
@@ -11,9 +12,13 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+from langchain_core.messages import HumanMessage
+from PIL import Image
 
-from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.persistence.models import DesktopRun
+from focus.agents.image_attachment import project_image_messages
 from focus.agents.material_inputs import RunMaterialInputs
 
 
@@ -133,3 +138,61 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
     assert resumed.thread_id == "shadow:task:revision"
     assert resumed.body.context["checkpoint_ns"] == "context-revision-shadow"
     assert resumed.payload["context_revision_id"] == "revision"
+
+
+@pytest.mark.parametrize("equipment_source", ["run", "task"])
+def test_legacy_image_survives_compression_resume_and_equipment_rewrite(tmp_path, equipment_source) -> None:
+    Image.new("RGB", (8, 8), "red").save(tmp_path / "shot.png")
+    image = {
+        "material_id": "old-image",
+        "relative_path": "shot.png",
+        "source_bytes": (tmp_path / "shot.png").stat().st_size,
+        "model_bytes": 64,
+        "model_tokens": 7,
+    }
+    equipment = {
+        "model_name": "vision-model",
+        "skills": [],
+        "skill_snapshots": [],
+        "permissions": ["read"],
+        "must_view_materials": [image],
+    }
+    service = object.__new__(DesktopService)
+    service.agent_factory._build_agent_factory = lambda *_args: lambda: None
+    service.capabilities._model_supports_image_input = lambda _name: True
+    interrupted = DesktopRun(
+        run_id="interrupted",
+        task_id="task",
+        agent_id="main:task",
+        kind="main",
+        status="interrupted",
+        input_messages=[],
+        model_name="vision-model",
+        equipment=equipment if equipment_source == "run" else None,
+    )
+    task = SimpleNamespace(
+        task_id="task",
+        thread_id="thread",
+        ui_state={"_main_run_equipment": equipment if equipment_source == "task" else {}},
+    )
+    workspace = SimpleNamespace(workspace_id="workspace", path=str(tmp_path))
+    session = CommitSession(interrupted)
+    resumed = asyncio.run(DesktopService._prepare_main_resume(
+        service, session, task, workspace, {"type": "compression", "decision": "retry"},
+    ))
+
+    context = resumed.body.context
+    assert [item["material_id"] for item in context["run_image_inputs"]["attached"]] == ["old-image"]
+    stored = session.added[-1].equipment
+    assert stored["run_material_inputs"] == context["run_material_inputs"]
+    assert "must_view_materials" not in stored
+    assert "must_view_materials" not in context
+    assert "required_ids" not in context["run_image_inputs"]
+    assert "required_image_ids" not in stored["run_material_inputs"]
+    assert RunMaterialInputs.from_equipment(stored).images.to_json() == context["run_image_inputs"]
+
+    messages = project_image_messages([HumanMessage(content="look")], context)
+    blocks = [block for block in messages[-1].content if block["type"] == "image_url"]
+    assert len(blocks) == 1
+    assert blocks[0]["material_id"] == "old-image"
+    assert blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
