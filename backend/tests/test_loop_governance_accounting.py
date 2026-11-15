@@ -29,7 +29,8 @@ from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinaliz
 from backend.app.desktop.runs.execution_attempts.usage_receipts import ModelUsageReceipts
 from backend.app.desktop.runs.execution_attempts.model import ModelAttemptJournal
 from test_agent_loop_round_liveness import _seed_loop, _stop
-from test_loop_mission_bootstrap import _seed_greeting_loop
+from backend.tests.workspace_loop_support import _seed_greeting_loop
+from backend.app.desktop.patrol.agent_loop.governance.activation_models import LoopActivation
 from test_loop_execution_ownership import _seed_launching_directive, _admit_run
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -104,7 +105,7 @@ def test_owned_descendants_reserve_live_budget_and_settle_after_pause(tmp_path):
                 assert view["unknown_model_attempts"] == 1 and view["cleanup_pending_runs"] == 0
                 assert view["consumption"]["actual"] == {"model_calls": 2, "input_tokens": 80, "output_tokens": 20}
                 assert view["consumption"]["unreported_reservations"] == {"model_calls": 1, "input_tokens": 100, "output_tokens": 0}
-                assert view["initial_evidence"]["round_id"] is None and view["completed_rounds"] == 0
+                assert view["initial_evidence"] is None and view["completed_rounds"] == 0
                 assert (await session.get(AgentLoop, fixture["loop_id"])).status == "paused"
                 from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
 
@@ -127,6 +128,7 @@ def test_production_index_attempts_keep_reported_failure_and_cancelled_reservati
     from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
     from backend.tests.incremental_index_support import Checkpoints
     from backend.tests.config_helpers import app_config_for
+    from focus.models.deepseek import DeepSeekChatOpenAI
 
     class Result(BaseModel):
         answer: str
@@ -138,7 +140,7 @@ def test_production_index_attempts_keep_reported_failure_and_cancelled_reservati
         sent = asyncio.Event()
         calls = 0
 
-        class Provider:
+        class Provider(DeepSeekChatOpenAI):
             async def ainvoke(self, messages, config):
                 nonlocal calls
                 calls += 1
@@ -149,7 +151,7 @@ def test_production_index_attempts_keep_reported_failure_and_cancelled_reservati
                 sent.set()
                 await asyncio.Event().wait()
 
-        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider())
+        monkeypatch.setattr("backend.app.desktop.patrol.agent_loop.workers.structured_worker.create_chat_model", lambda **kwargs: Provider(model="receipt-test", api_key="sk-test", base_url="https://example.invalid"))
         task = None
         try:
             fixture = await _seed_loop(sessions, tmp_path, label="index-receipt", started_at=datetime.now(UTC))
@@ -197,40 +199,6 @@ def test_production_index_attempts_keep_reported_failure_and_cancelled_reservati
     asyncio.run(run())
 
 
-def test_baseline_audits_fill_missing_run_counters_without_claiming_task_ownership(tmp_path):
-    async def run():
-        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        fixture = None
-        try:
-            fixture = await _seed_greeting_loop(sessions, tmp_path)
-            async with sessions.begin() as session:
-                loop = await session.get(AgentLoop, fixture["loop_id"])
-                initial_id = fixture["run_id"]
-                initial = await session.get(DesktopRun, initial_id)
-                for index in range(2):
-                    session.add(ModelAttemptAudit(attempt_id=uuid.uuid4().hex, run_id=initial_id,
-                        execution_thread_id=initial.execution_thread_id, checkpoint_ns="", checkpoint_id="baseline",
-                        source_manifest={}, status="completed", usage={"input_tokens": 40, "output_tokens": 10}))
-                from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-                session.add(LoopIndexBudgetReservation(reservation_id=uuid.uuid4().hex, loop_id=loop.loop_id,
-                    grant_revision=loop.authority_revision, model_calls=1, input_tokens=100, output_tokens=10,
-                    actual_usage=None))
-            async with sessions() as session:
-                first = await LoopAccountingQuery().read(session, fixture["loop_id"])
-                assert first == await LoopAccountingQuery().read(session, fixture["loop_id"])
-                assert first["initial_evidence"]["model_calls"] == 2
-                assert first["initial_evidence"]["input_tokens"] == 80
-                assert first["initial_evidence"]["output_tokens"] == 20
-                assert first["initial_evidence"]["round_id"] is None
-                assert first["unknown_model_attempts"] == 1
-                assert first["consumption"]["actual"]["model_calls"] == 0
-                assert first["historical_reconciliation"]["owned_completed_attempts"] == 0
-        finally:
-            if fixture:
-                await _stop(fixture["service"], fixture["loop_id"])
-            await engine.dispose()
-    asyncio.run(run())
 
 
 def test_historical_executed_round_without_decision_is_diagnosed_without_rewriting(tmp_path):
@@ -255,5 +223,44 @@ def test_historical_executed_round_without_decision_is_diagnosed_without_rewriti
                 assert row.status == "superseded" and row.observation_id is None and row.decision_id is None
         finally:
             await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
+    asyncio.run(run())
+
+
+def test_retired_context_baseline_audits_remain_readable_without_claiming_task_ownership(tmp_path):
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        fixture = None
+        try:
+            fixture = await _seed_greeting_loop(sessions, tmp_path)
+            async with sessions.begin() as session:
+                loop = await session.get(AgentLoop, fixture["loop_id"])
+                loop.interaction_mode, loop.status = "context_loop", "stopped"
+                initial_id = fixture["run_id"]
+                session.add(LoopActivation(activation_id=uuid.uuid4().hex, loop_id=loop.loop_id,
+                    selected_run_id=initial_id, readiness_token="a" * 64, activation_key=f"historical:{loop.loop_id}"))
+                initial = await session.get(DesktopRun, initial_id)
+                for index in range(2):
+                    session.add(ModelAttemptAudit(attempt_id=uuid.uuid4().hex, run_id=initial_id,
+                        execution_thread_id=initial.execution_thread_id, checkpoint_ns="", checkpoint_id="baseline",
+                        source_manifest={}, status="completed", usage={"input_tokens": 40, "output_tokens": 10}))
+                from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+                session.add(LoopIndexBudgetReservation(reservation_id=uuid.uuid4().hex, loop_id=loop.loop_id,
+                    grant_revision=loop.authority_revision, model_calls=1, input_tokens=100, output_tokens=10,
+                    actual_usage=None))
+            async with sessions() as session:
+                first = await LoopAccountingQuery().read(session, fixture["loop_id"])
+                assert first == await LoopAccountingQuery().read(session, fixture["loop_id"])
+                assert first["initial_evidence"]["model_calls"] == 2
+                assert first["initial_evidence"]["input_tokens"] == 80
+                assert first["initial_evidence"]["output_tokens"] == 20
+                assert first["initial_evidence"]["round_id"] is None
+                assert first["unknown_model_attempts"] == 1
+                assert first["consumption"]["actual"]["model_calls"] == 0
+                assert first["historical_reconciliation"]["owned_completed_attempts"] == 0
+        finally:
+            if fixture:
+                await _stop(fixture["service"], fixture["loop_id"])
             await engine.dispose()
     asyncio.run(run())

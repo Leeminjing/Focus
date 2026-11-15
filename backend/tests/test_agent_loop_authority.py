@@ -7,6 +7,8 @@ r"""本文件对外提供用户作为根权力对 Agent Loop delegation 的收�
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+
 import asyncio
 from datetime import UTC, datetime
 import os
@@ -17,7 +19,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import backend.app.desktop.persistence.registry
-from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopAuthorityService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopAuthorityService
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopRound
 from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest, NarrowLoopGrantRequest, RevokeLoopGrantRequest
 from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
@@ -61,7 +63,7 @@ def test_root_user_can_narrow_adjust_and_revoke_delegation(tmp_path) -> None:
                 session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, model_call_count=3, prompt_input_tokens=10, prompt_output_tokens=5, settled_at=datetime.now(UTC)))
 
             service = AgentLoopService(sessions, run_manager)
-            started = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id=f"patrol-{suffix}", goal="Ship safely", task_contract="Stay in scope", acceptance_criteria=({"criterion_id": "done", "text": "done"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "write")))
+            started = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id=f"patrol-{suffix}", goal="Ship safely", task_contract="Stay in scope", acceptance_criteria=({"criterion_id": "done", "text": "done"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "write"))
             async with sessions() as session:
                 initial = await session.get(DesktopRun, f"initial-{suffix}")
                 first_round = await session.get(LoopRound, started["current_round_id"])

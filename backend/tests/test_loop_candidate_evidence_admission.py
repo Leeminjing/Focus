@@ -24,7 +24,7 @@ from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
 from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
 from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopRoundOrchestrator
 from backend.tests.config_helpers import app_config_for
-from backend.tests.test_loop_mission_bootstrap import _seed_greeting_loop, _FrozenCheckpointer, _script_first_patrol
+from backend.tests.workspace_loop_support import _seed_greeting_loop, _FrozenCheckpointer, _script_first_patrol
 from backend.app.desktop.contexts.evolution import ContextRevisionRef
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -167,6 +167,5 @@ def test_invalid_candidate_does_not_replace_patrol_or_block_first_mission(tmp_pa
                     LoopPatrolAttempt.round_id == claim.round_id)) == 1
                 directive = await session.scalar(select(LoopDirective).where(LoopDirective.round_id == claim.round_id))
                 assert directive.origin_kind == "patrol"
-                assert fixture["mission"].outcome in directive.content
-                assert "[build]" in directive.content and "[vault]" in directive.content
+                assert directive.content == "执行并验证所有必要检查"
     asyncio.run(run())

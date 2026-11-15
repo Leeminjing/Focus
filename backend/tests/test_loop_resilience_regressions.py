@@ -1,7 +1,7 @@
 r"""本文件对外提供 Loop 交互、持久化与恢复缺陷的回归测试。
 
-输入为含 NUL 的嵌套载荷、WaitRequest factory、Loop 激活候选与投影失败；输出为安全载荷、类型化等待、
-最新直接用户 Run 决策和局部失败结果。具体工作流为先验证纯领域合同，再用隔离 PostgreSQL 验证事务边界。
+输入为含 NUL 的嵌套载荷、WaitRequest factory 与投影失败；输出为安全载荷、类型化等待和局部失败结果。
+具体工作流为先验证纯领域合同，再用隔离 PostgreSQL 验证 Workspace Patrol 事务边界。
 历史迁移在独立临时数据库反射旧表后写入，避免新 ORM 列穿越旧 schema 或共享测试数据库被降级。
 示例：`pytest backend/tests/test_loop_resilience_regressions.py`。
 工具 journal 活动不冒充领域 ToolFact；等待恢复发布真实观察轮状态，冻结和 Decision 仍由后续权威管线产生。
@@ -17,7 +17,6 @@ import uuid
 
 from alembic import command
 from alembic.config import Config
-from fastapi import HTTPException
 import pytest
 from sqlalchemy import create_engine, func, select, MetaData, Table, text
 from sqlalchemy.engine import make_url
@@ -25,8 +24,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
 import backend.app.desktop.persistence.registry
-from backend.app.desktop.patrol.agent_loop.governance.activation_eligibility import LoopActivationEligibilityResolver
-from backend.app.desktop.patrol.agent_loop.governance.activation_models import LoopActivation
 from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
 from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
@@ -40,14 +37,11 @@ from backend.app.desktop.patrol.agent_loop.projections.projection_models import 
 from backend.app.desktop.patrol.agent_loop.recovery.projection_recovery import ProjectionRecoveryRepository
 from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest, LoopWaitResponse
 from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService, WaitRequestConflict
-from backend.app.desktop.patrol.agent_loop.schemas import LoopCreateRequest, LoopWaitResponseRequest
+from backend.app.desktop.patrol.agent_loop.schemas import LoopWaitResponseRequest
 from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
-from backend.app.desktop.contexts.curation.models import CurationLane, CurationProgram
-from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
 from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
 from backend.app.desktop.runs.orchestration.models import RunDispatch
-from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -104,7 +98,7 @@ def test_fact_reconciliation_is_supervised_without_blocking_startup() -> None:
     asyncio.run(run())
 
 
-def test_postgres_wait_journal_activation_and_projection_recovery(tmp_path: Path) -> None:
+def test_postgres_wait_journal_and_projection_recovery(tmp_path: Path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -123,13 +117,7 @@ def test_postgres_wait_journal_activation_and_projection_recovery(tmp_path: Path
                     DesktopRun(run_id=first_run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", input_messages=[{"role": "user", "content": "old"}], created_at=datetime.now(UTC) - timedelta(minutes=1)),
                     DesktopRun(run_id=newest_run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", input_messages=[{"role": "user", "content": "new"}], created_at=datetime.now(UTC)),
                 ])
-                session.add(AgentLoop(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, holder_id="patrol", status="running", health="observing"))
-
-            resolver = LoopActivationEligibilityResolver()
-            async with sessions() as session:
-                eligibility = await resolver.resolve(session, context_id)
-            assert eligibility.candidate_run_id == newest_run_id
-            assert eligibility.reason == "nonterminal_predecessor"
+                session.add(AgentLoop(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, holder_id="patrol", status="running", health="observing", interaction_mode="workspace_patrol"))
 
             waits = LoopWaitRequestService()
             async with sessions.begin() as session:
@@ -213,8 +201,7 @@ def test_migration_backfills_legacy_wait_and_classifies_runs(tmp_path: Path, mon
     pending_run_id = uuid.uuid4().hex
     running_run_id = uuid.uuid4().hex
     try:
-        command.upgrade(config, "head")
-        command.downgrade(config, "0a1b2c3d4e5f")
+        command.upgrade(config, "0a1b2c3d4e5f")
         metadata = MetaData()
         tables = {name: Table(name, metadata, autoload_with=engine) for name in
                   ("desktop_workspaces", "desktop_threads", "agent_loops", "desktop_runs")}
@@ -256,22 +243,28 @@ def test_projector_quarantines_one_unit_continues_and_repairs(tmp_path: Path) ->
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         workspace_id = uuid.uuid4().hex
+        healthy_workspace_id = uuid.uuid4().hex
         context_id = uuid.uuid4().hex
         healthy_context_id = uuid.uuid4().hex
         loop_id = uuid.uuid4().hex
         healthy_loop_id = uuid.uuid4().hex
         try:
             async with sessions.begin() as session:
-                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="projection"))
-                await session.flush()
+                healthy_path = tmp_path / "healthy-workspace"
+                healthy_path.mkdir()
                 session.add_all([
-                    DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="degraded"),
-                    DesktopThread(task_id=healthy_context_id, workspace_id=workspace_id, thread_id=f"thread-{healthy_context_id}", title="healthy"),
+                    DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="projection"),
+                    DesktopWorkspace(workspace_id=healthy_workspace_id, path=str(healthy_path), display_name="healthy projection"),
                 ])
                 await session.flush()
                 session.add_all([
-                    AgentLoop(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, holder_id="patrol", status="running", health="observing"),
-                    AgentLoop(loop_id=healthy_loop_id, workspace_id=workspace_id, initial_context_id=healthy_context_id, holder_id="patrol", status="running", health="observing"),
+                    DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="degraded"),
+                    DesktopThread(task_id=healthy_context_id, workspace_id=healthy_workspace_id, thread_id=f"thread-{healthy_context_id}", title="healthy"),
+                ])
+                await session.flush()
+                session.add_all([
+                    AgentLoop(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, holder_id="patrol", status="running", health="observing", interaction_mode="workspace_patrol"),
+                    AgentLoop(loop_id=healthy_loop_id, workspace_id=healthy_workspace_id, initial_context_id=healthy_context_id, holder_id="patrol", status="running", health="observing", interaction_mode="workspace_patrol"),
                 ])
             journal = LoopEventJournal()
             async with sessions.begin() as session:
@@ -313,76 +306,6 @@ def test_projector_quarantines_one_unit_continues_and_repairs(tmp_path: Path) ->
     asyncio.run(run())
 
 
-def test_activation_uses_newest_direct_run_and_terminal_predecessor_policy(tmp_path: Path) -> None:
-    async def run() -> None:
-        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id = uuid.uuid4().hex
-        context_id = uuid.uuid4().hex
-        direct_old = uuid.uuid4().hex
-        delegated_newer = uuid.uuid4().hex
-        direct_new = uuid.uuid4().hex
-        predecessor_id = uuid.uuid4().hex
-        resolver = LoopActivationEligibilityResolver()
-        try:
-            base = datetime.now(UTC)
-            async with sessions.begin() as session:
-                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="activation"))
-                await session.flush()
-                session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="activation"))
-                await session.flush()
-                session.add_all([
-                    DesktopRun(run_id=direct_old, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", created_at=base - timedelta(minutes=3)),
-                    DesktopRun(run_id=delegated_newer, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="delegated_patrol", created_at=base - timedelta(minutes=2)),
-                    DesktopRun(run_id=direct_new, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="pending", origin="direct_user", created_at=base - timedelta(minutes=1)),
-                    AgentLoop(loop_id=predecessor_id, workspace_id=workspace_id, initial_context_id=context_id, holder_id="patrol", status="stopped", health="idle", created_at=base),
-                ])
-            async with sessions() as session:
-                eligible = await resolver.resolve(session, context_id)
-            assert eligible.eligible is True
-            assert eligible.candidate_run_id == direct_new
-            assert eligible.predecessor_loop_id == predecessor_id
-            readiness_token = eligible.consistency_token
-
-            for status in ("running", "paused", "waiting_user"):
-                async with sessions.begin() as session:
-                    predecessor = await session.get(AgentLoop, predecessor_id, with_for_update=True)
-                    predecessor.status = status
-                async with sessions() as session:
-                    blocked = await resolver.resolve(session, context_id)
-                assert blocked.reason == "nonterminal_predecessor"
-
-            for status in ("stopped", "completed", "failed"):
-                async with sessions.begin() as session:
-                    predecessor = await session.get(AgentLoop, predecessor_id, with_for_update=True)
-                    predecessor.status = status
-                async with sessions() as session:
-                    terminal = await resolver.resolve(session, context_id)
-                assert terminal.eligible is True
-
-            async with sessions.begin() as session:
-                predecessor = await session.get(AgentLoop, predecessor_id, with_for_update=True)
-                predecessor.status = "failed"
-                newest = await session.get(DesktopRun, direct_new, with_for_update=True)
-                newest.loop_id = predecessor_id
-            async with sessions() as session:
-                bound = await resolver.resolve(session, context_id)
-            assert bound.reason == "newest_run_already_bound"
-            assert bound.candidate_run_id == direct_new
-
-            newest_direct = uuid.uuid4().hex
-            async with sessions.begin() as session:
-                session.add(DesktopRun(run_id=newest_direct, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="pending", origin="direct_user", created_at=base + timedelta(minutes=1)))
-            async with sessions() as session:
-                refreshed = await resolver.resolve(session, context_id)
-            assert refreshed.candidate_run_id == newest_direct
-            assert refreshed.consistency_token != readiness_token
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
 def test_wait_response_resumes_once_while_unrelated_task_admits(tmp_path: Path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -403,14 +326,13 @@ def test_wait_response_resumes_once_while_unrelated_task_admits(tmp_path: Path) 
                     DesktopThread(task_id=other_context, workspace_id=workspace_id, thread_id=f"thread-{other_context}", title="other"),
                 ])
                 await session.flush()
-                loop = AgentLoop(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=waiting_context, holder_id="patrol", status="running", health="observing")
+                loop = AgentLoop(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=waiting_context, holder_id="patrol", status="running", health="observing", interaction_mode="workspace_patrol")
                 session.add(loop)
                 await session.flush()
                 session.add(LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop_id, revision=1, holder_id="patrol", status="active", capabilities=[], context_scope=[], permission_scope=[], budgets={"max_input_tokens": 10}, delegable_gates=[]))
                 request = await waits.open(session, loop, LoopWaitRequestFactory.retry_or_stop("需要用户选择"), created_by="recovery", correlation_id="wait-e2e")
                 request_id = request.request_id
 
-            assert await service.user_message(other_context, "另一个会话仍可发送") is None
             async with sessions.begin() as session:
                 open_request = await waits.active(session, loop_id)
                 assert open_request.request_id == request_id
@@ -460,219 +382,6 @@ def test_wait_response_resumes_once_while_unrelated_task_admits(tmp_path: Path) 
                 assert created_round.payload["number"] == 1
                 assert created_round.payload["observation_id"] is None and created_round.payload["decision_id"] is None
         finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_successor_retires_terminal_predecessor_lane_before_acquiring_context(tmp_path: Path) -> None:
-    async def run() -> None:
-        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id = uuid.uuid4().hex
-        context_id = uuid.uuid4().hex
-        predecessor_id = uuid.uuid4().hex
-        predecessor_program_id = uuid.uuid4().hex
-        predecessor_lane_id = uuid.uuid4().hex
-        run_id = uuid.uuid4().hex
-        revision_id = uuid.uuid4().hex
-        service = AgentLoopService(sessions)
-        try:
-            async with sessions.begin() as session:
-                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="successor-ownership"))
-                await session.flush()
-                session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="successor-ownership"))
-                await session.flush()
-                ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1, execution_thread_id=f"thread-{context_id}", checkpoint_ns="", checkpoint_id=f"checkpoint-{context_id}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
-                await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="b" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=run_id, created_at=datetime.now(UTC)))
-                await ContextRevisionRepository().switch_current(session, ref, None)
-                session.add_all([
-                    DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{context_id}", context_revision_id=revision_id, final_checkpoint_id=ref.checkpoint_id, settled_at=datetime.now(UTC)),
-                    CurationProgram(program_id=predecessor_program_id, workspace_id=workspace_id, control_state="stopped", policy={"owner_loop_id": predecessor_id}, revision=1),
-                    WorkspaceSlot(slot_id=uuid.uuid4().hex, workspace_id=workspace_id, kind="authoritative", root_path=str(tmp_path), provider="local", current_fingerprint="c" * 64, revision=1),
-                ])
-                await session.flush()
-                session.add_all([
-                    AgentLoop(loop_id=predecessor_id, workspace_id=workspace_id, initial_context_id=context_id, program_id=predecessor_program_id, holder_id="patrol", status="stopped", health="idle", completed_at=datetime.now(UTC)),
-                    CurationLane(lane_id=predecessor_lane_id, program_id=predecessor_program_id, managed_context_id=context_id, purpose="Primary execution", normalized_purpose="primary execution", lane_policy={}, lifecycle="active", publisher_epoch=1, current_source_frontier_hash="d" * 64, current_semantic_fingerprint="b" * 64),
-                ])
-            async with sessions() as session:
-                readiness = await LoopActivationEligibilityResolver().resolve(session, context_id)
-            successor_id = uuid.uuid4().hex
-            snapshot = await service.start(LoopCreateRequest(
-                loop_id=successor_id,
-                workspace_id=workspace_id,
-                initial_context_id=context_id,
-                initial_run_id=run_id,
-                readiness_token=readiness.consistency_token,
-                activation_key=f"successor:{run_id}",
-                holder_id=f"patrol:{successor_id}",
-                goal="Finish successor work",
-                task_contract="Keep history",
-                acceptance_criteria=({"criterion_id": "done", "text": "done"},),
-                capabilities=("request_completion",),
-                context_scope=(context_id,),
-                permission_scope=("read",),
-            ))
-            assert snapshot["loop_id"] == successor_id
-            async with sessions() as session:
-                predecessor_lane = await session.get(CurationLane, predecessor_lane_id)
-                live_lanes = tuple((await session.scalars(select(CurationLane).where(CurationLane.managed_context_id == context_id, CurationLane.lifecycle != "retired"))).all())
-                assert predecessor_lane.lifecycle == "retired"
-                assert len(live_lanes) == 1
-                assert live_lanes[0].program_id == snapshot["program_id"]
-        finally:
-            current = await service.active_for_context(context_id)
-            if current is not None:
-                await service.control(current["loop_id"], "stop")
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_successor_reports_structured_nonterminal_lane_owner_conflict(tmp_path: Path) -> None:
-    async def run() -> None:
-        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id = uuid.uuid4().hex
-        context_id = uuid.uuid4().hex
-        owner_id = uuid.uuid4().hex
-        program_id = uuid.uuid4().hex
-        lane_id = uuid.uuid4().hex
-        run_id = uuid.uuid4().hex
-        revision_id = uuid.uuid4().hex
-        service = AgentLoopService(sessions)
-        try:
-            async with sessions.begin() as session:
-                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="ownership-conflict"))
-                await session.flush()
-                session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="ownership-conflict"))
-                await session.flush()
-                ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1, execution_thread_id=f"thread-{context_id}", checkpoint_ns="", checkpoint_id=f"checkpoint-{context_id}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
-                await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="e" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=run_id, created_at=datetime.now(UTC)))
-                await ContextRevisionRepository().switch_current(session, ref, None)
-                session.add_all([
-                    DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{context_id}", context_revision_id=revision_id, final_checkpoint_id=ref.checkpoint_id, settled_at=datetime.now(UTC)),
-                    CurationProgram(program_id=program_id, workspace_id=workspace_id, policy={"owner_loop_id": owner_id}, revision=1),
-                    WorkspaceSlot(slot_id=uuid.uuid4().hex, workspace_id=workspace_id, kind="authoritative", root_path=str(tmp_path), provider="local", current_fingerprint="f" * 64, revision=1),
-                ])
-                await session.flush()
-                session.add_all([
-                    AgentLoop(loop_id=owner_id, workspace_id=workspace_id, initial_context_id=context_id, program_id=program_id, holder_id="patrol", status="waiting_user", health="idle"),
-                    CurationLane(lane_id=lane_id, program_id=program_id, managed_context_id=context_id, purpose="Primary execution", normalized_purpose="primary execution", lane_policy={}),
-                ])
-            async with sessions() as session:
-                readiness = await LoopActivationEligibilityResolver().resolve(session, context_id)
-            with pytest.raises(HTTPException) as captured:
-                await service.start(LoopCreateRequest(
-                    loop_id=uuid.uuid4().hex,
-                    workspace_id=workspace_id,
-                    initial_context_id=context_id,
-                    initial_run_id=run_id,
-                    readiness_token=readiness.consistency_token,
-                    activation_key=f"conflict:{run_id}",
-                    holder_id="patrol:new",
-                    goal="Should conflict",
-                    task_contract="Keep owner",
-                    acceptance_criteria=({"criterion_id": "done", "text": "done"},),
-                    capabilities=("request_completion",),
-                    context_scope=(context_id,),
-                    permission_scope=("read",),
-                ))
-            assert captured.value.status_code == 409
-            assert captured.value.detail["code"] == "curation_ownership_conflict"
-            assert captured.value.detail["context_id"] == context_id
-            assert captured.value.detail["owner_loop_id"] == owner_id
-            assert captured.value.detail["lane_id"] == lane_id
-            assert "uq_curation_lane" not in str(captured.value.detail)
-            assert "INSERT" not in str(captured.value.detail)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_concurrent_equivalent_loop_authorization_creates_one_successor(tmp_path: Path) -> None:
-    async def run() -> None:
-        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id = uuid.uuid4().hex
-        context_id = uuid.uuid4().hex
-        run_id = uuid.uuid4().hex
-        revision_id = uuid.uuid4().hex
-        service = AgentLoopService(sessions)
-        try:
-            async with sessions.begin() as session:
-                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="activation-race"))
-                await session.flush()
-                session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="activation-race"))
-                await session.flush()
-                ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1, execution_thread_id=f"thread-{context_id}", checkpoint_ns="", checkpoint_id=f"checkpoint-{context_id}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
-                await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="a" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=run_id, created_at=datetime.now(UTC)))
-                await ContextRevisionRepository().switch_current(session, ref, None)
-                session.add(DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{context_id}", context_revision_id=revision_id, final_checkpoint_id=ref.checkpoint_id, settled_at=datetime.now(UTC)))
-            async with sessions() as session:
-                readiness = await LoopActivationEligibilityResolver().resolve(session, context_id)
-            base = dict(workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=run_id, readiness_token=readiness.consistency_token, activation_key="same-authorization", holder_id="patrol", goal="Finish", task_contract="Keep scope", acceptance_criteria=({"criterion_id": "done", "text": "done"},), capabilities=("request_completion",), context_scope=(context_id,), permission_scope=("read",))
-            first, second = await asyncio.gather(
-                service.start(LoopCreateRequest(loop_id=uuid.uuid4().hex, **base)),
-                service.start(LoopCreateRequest(loop_id=uuid.uuid4().hex, **base)),
-            )
-            assert first["loop_id"] == second["loop_id"]
-            async with sessions() as session:
-                assert await session.scalar(select(func.count()).select_from(LoopActivation).where(LoopActivation.selected_run_id == run_id)) == 1
-                assert await session.scalar(select(func.count()).select_from(AgentLoop).where(AgentLoop.initial_context_id == context_id)) == 1
-                bound = await session.get(DesktopRun, run_id)
-                assert bound.loop_id == first["loop_id"]
-        finally:
-            current = await service.active_for_context(context_id)
-            if current is not None:
-                await service.control(current["loop_id"], "stop")
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_concurrent_non_equivalent_loop_authorization_reports_committed_winner(tmp_path: Path) -> None:
-    async def run() -> None:
-        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id = uuid.uuid4().hex
-        context_id = uuid.uuid4().hex
-        run_id = uuid.uuid4().hex
-        revision_id = uuid.uuid4().hex
-        service = AgentLoopService(sessions)
-        try:
-            async with sessions.begin() as session:
-                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="activation-race-conflict"))
-                await session.flush()
-                session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="activation-race-conflict"))
-                await session.flush()
-                ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1, execution_thread_id=f"thread-{context_id}", checkpoint_ns="", checkpoint_id=f"checkpoint-{context_id}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
-                await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="9" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=run_id, created_at=datetime.now(UTC)))
-                await ContextRevisionRepository().switch_current(session, ref, None)
-                session.add(DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{context_id}", context_revision_id=revision_id, final_checkpoint_id=ref.checkpoint_id, settled_at=datetime.now(UTC)))
-            async with sessions() as session:
-                readiness = await LoopActivationEligibilityResolver().resolve(session, context_id)
-            base = dict(workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=run_id, readiness_token=readiness.consistency_token, holder_id="patrol", goal="Finish", task_contract="Keep scope", acceptance_criteria=({"criterion_id": "done", "text": "done"},), capabilities=("request_completion",), context_scope=(context_id,), permission_scope=("read",))
-            results = await asyncio.gather(
-                service.start(LoopCreateRequest(loop_id=uuid.uuid4().hex, activation_key="authorization-a", **base)),
-                service.start(LoopCreateRequest(loop_id=uuid.uuid4().hex, activation_key="authorization-b", **base)),
-                return_exceptions=True,
-            )
-            snapshots = [item for item in results if isinstance(item, dict)]
-            conflicts = [item for item in results if isinstance(item, HTTPException)]
-            assert len(snapshots) == len(conflicts) == 1
-            assert conflicts[0].status_code == 409
-            assert conflicts[0].detail["code"] == "loop_activation_conflict"
-            assert conflicts[0].detail["owner_loop_id"] == snapshots[0]["loop_id"]
-            async with sessions() as session:
-                assert await session.scalar(select(func.count()).select_from(LoopActivation).where(LoopActivation.selected_run_id == run_id)) == 1
-                assert await session.scalar(select(func.count()).select_from(CurationLane).where(CurationLane.managed_context_id == context_id, CurationLane.lifecycle != "retired")) == 1
-        finally:
-            current = await service.active_for_context(context_id)
-            if current is not None:
-                await service.control(current["loop_id"], "stop")
             await engine.dispose()
 
     asyncio.run(run())

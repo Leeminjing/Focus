@@ -21,7 +21,7 @@ from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy i
 )
 from backend.app.desktop.patrol.agent_loop.resources.expansion_usage import ExpansionUsageCharge, ExpansionUsageLedger
 from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_projection import expansion_resource_view, planning_session_view, repeated_expansion_blocker
-from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest, LoopBudgetContract, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest, LoopBudgetContract
 
 from backend.app.desktop.patrol.agent_loop.context_expansion.retrieval_planner import (
     LaneAdviceProposal,
@@ -109,15 +109,11 @@ def test_budget_revision_preserves_previous_expansion_policy_for_legacy_clients(
     assert LoopBudgetContract(max_rounds=100).as_grant_budgets()["expansion_resources_source"] == "default"
 
 
-def test_start_and_revision_api_contracts_expose_and_validate_expansion_resources() -> None:
-    request = LoopCreateRequest.model_validate({
-        "loop_id": "loop-1", "workspace_id": "workspace-1", "initial_context_id": "context-1",
-        "initial_run_id": "run-1", "holder_id": "holder-1", "goal": "Build the plugin",
-        "task_contract": "Complete all required checks", "acceptance_criteria": ({"check_id": "build"},),
-        "capabilities": ("read",), "context_scope": ("context-1",), "permission_scope": (),
-        "budgets": {"max_rounds": 75, "expansion_resources": {"max_queries": 24}},
+def test_budget_and_revision_contracts_expose_and_validate_expansion_resources() -> None:
+    budget = LoopBudgetContract.model_validate({
+        "max_rounds": 75, "expansion_resources": {"max_queries": 24},
     })
-    initial = request.budgets.as_grant_budgets()
+    initial = budget.as_grant_budgets()
     assert initial["max_rounds"] == 75
     assert initial["expansion_resources"]["max_queries"] == 24
     assert initial["expansion_resources_source"] == "explicit"
@@ -127,9 +123,8 @@ def test_start_and_revision_api_contracts_expose_and_validate_expansion_resource
     assert revision["max_rounds"] == 100
     assert revision["expansion_resources"]["max_queries"] == 24
     with pytest.raises(ValidationError):
-        LoopCreateRequest.model_validate({
-            **request.model_dump(mode="json"),
-            "budgets": {"expansion_resources": {"max_queries": 24, "unrecognized": 1}},
+        LoopBudgetContract.model_validate({
+            "expansion_resources": {"max_queries": 24, "unrecognized": 1},
         })
     with pytest.raises(ValidationError):
         AdjustLoopBudgetsRequest.model_validate({

@@ -7,6 +7,8 @@ expansion。示例：`pytest backend/tests/test_context_expansion_repository.py`
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+
 import asyncio
 import os
 import uuid
@@ -16,7 +18,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop import AgentLoopService
 from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     DerivationStageRecord,
     EvidenceRequirement,
@@ -165,8 +167,7 @@ async def _create_loop(sessions, tmp_path):
         await revisions.switch_current(session, source, None)
         session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
     service = AgentLoopService(sessions)
-    snapshot = await service.start(
-        LoopCreateRequest(
+    snapshot = await seed_workspace_patrol_loop(sessions,
             loop_id=loop_id,
             workspace_id=workspace_id,
             initial_context_id=context_id,
@@ -179,5 +180,4 @@ async def _create_loop(sessions, tmp_path):
             context_scope=(context_id,),
             permission_scope=("read",),
         )
-    )
     return service, snapshot, source

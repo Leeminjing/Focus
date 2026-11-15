@@ -9,6 +9,8 @@ r"""本文件对外提供发布队列、Context Run 排队、Curator 重试与 p
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+
 import asyncio
 import os
 import uuid
@@ -22,7 +24,6 @@ from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
     ContextRunPool,
     LoopCoordinator,
-    LoopCreateRequest,
     PatrolDecisionIntent,
 )
 from backend.app.desktop.patrol.agent_loop.models import (
@@ -291,7 +292,7 @@ async def _create_loop(sessions, tmp_path, *, git=False):
         await repository.switch_current(session, ref, None)
         session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
     service = AgentLoopService(sessions)
-    snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-pool", goal="Exercise pools", task_contract="Stay bounded", acceptance_criteria=({"criterion_id": "done", "text": "work settled"},), capabilities=("continue_context", "request_lane_curator", "request_completion"), context_scope=(context_id,), permission_scope=("read", "write")))
+    snapshot = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-pool", goal="Exercise pools", task_contract="Stay bounded", acceptance_criteria=({"criterion_id": "done", "text": "work settled"},), capabilities=("continue_context", "request_lane_curator", "request_completion"), context_scope=(context_id,), permission_scope=("read", "write"))
     return service, snapshot, context_id, revision_id
 
 

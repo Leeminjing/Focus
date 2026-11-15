@@ -4,7 +4,7 @@ r"""本文件对外提供 DirectiveLifecycleRepository 与 DirectiveTransitionRe
 不可变 transition 与含 Mission revision/来源的规范 journal event。具体工作流为 register 记录 proposed，transition 验证 authorized、delivery、
 Run 与 terminal 单向状态，再把 current row、history、event 原子提交；当前尝试身份只在交付与启动类转换上记录，
 终态转换即使携带外来 Run 也不改写它（该次转换携带的 Run 仍写入不可变 history 供审计）；取消涵盖已启动但未结算的 Directive。
-规范事件携带同事务共享Mission交付评估，保持Patrol权威来源与既有Run身份；不重新授权、执行或改写旧事件。
+规范事件保留 Mission revision、Patrol 权威来源与既有 Run 身份，不重新授权、执行或改写旧事件。
 示例：`await repository.authorize(session, directive)`。
 """
 
@@ -17,8 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound, LoopDirective, LoopDirectiveTransition
-from backend.app.desktop.patrol.agent_loop.missions.mission_bootstrap import MissionBootstrapStage
+from backend.app.desktop.patrol.agent_loop.models import LoopDirective, LoopDirectiveTransition
 
 
 class DirectiveTransitionRejected(ValueError):
@@ -159,7 +158,6 @@ class DirectiveLifecycleRepository:
                     "decision_id": directive.decision_id,
                     "origin": directive.origin_kind,
                     "mission_revision": directive.goal_revision,
-                    "mission_delivery": await self._mission_delivery(session, directive.loop_id),
                     "actor_id": directive.actor_id,
                     "target_context_id": directive.target_context_id,
                     "state": target,
@@ -169,11 +167,3 @@ class DirectiveLifecycleRepository:
                 idempotency_key=f"directive:{directive.directive_id}:revision:{directive.revision}",
             ),
         )
-
-    @staticmethod
-    async def _mission_delivery(session: AsyncSession, loop_id: str) -> dict | None:
-        loop = await session.get(AgentLoop, loop_id)
-        current = await session.get(LoopRound, loop.current_round_id) if loop and loop.current_round_id else None
-        if current is None:
-            return None
-        return (await MissionBootstrapStage().assess(session, loop, current)).to_payload()

@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import backend.app.desktop.persistence.registry
 from backend.app.desktop.composition import service as desktop_service_module
-from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop import AgentLoopService
 from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
 from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
 from backend.app.desktop.patrol.agent_loop.live.live_api import LoopLiveEventFeed, LoopLiveSnapshotService

@@ -13,10 +13,8 @@ LanePlan；编译 blocker 挂起未决 round 并持久化 Patrol 失败结果，
 和全部版本，PortfolioPatrol 记录 attempt；决策合同（mission 引用取值与 required 派生出口）由
 patrol_contract.PatrolDecisionContract 校验，形状或合同不合法时在同一冻结观察上携带仅有界公开错误的反馈重试、
 违例有界原始输出与已解析动作的脱敏结构仅留既有审计，后者不因长理由丢失等待 cause/证据种类，
-用尽才收敛为 waiting_user，最后 Kernel 校验并提交。首轮 Mission renderer 只补全 Patrol 已决定的 Primary continuation，
-不独立提交权威决策；旧 Context Loop 的初始证据 Run 完成前不开展首轮认知。
+用尽才收敛为 waiting_user，最后 Kernel 校验并提交。首线程从已受理的工作区输入准备，后续工作均由 Patrol 决策。
 临时 429、5xx、连接与超时在单次未提交模型请求内最多退避重试两次，冻结输入不变；每次重新核验原 owner、授权与共享预算并保留用量回执。
-真实 Patrol 只对直接用户消息选择 intent_id；普通 Portfolio 意见不注入执行 Agent。
 质量编译阻断同时投影安全失败维度与耐久修订次数；材料修订由 compiler 的专责模块执行，不由本编排扩张权限。
 模型读面保留完整来源目录及同政策合法等待身份，Worker 与 Oi 正文按精确 hash 按需分页；因果链默认呈现受理时冻结的变化和引用事实，不自动重复装入完整快照。
 完成输入等价的候选由共享冻结准入反馈有界纠错；用尽以 completion_evidence_unchanged 一致收敛，不创建拒绝后继轮。
@@ -44,7 +42,7 @@ from focus.models.structured_metrics import StructuredRequestMetrics, structured
 from focus.models.response_output import ResponseAttemptError
 from focus.runtime.runs.usage import ModelUsage, callback_usage
 from langchain_core.callbacks import UsageMetadataCallbackHandler
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from openai import APIConnectionError, APIStatusError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
@@ -78,15 +76,11 @@ from backend.app.desktop.patrol.agent_loop.decisions.decision_context import (
 from backend.app.desktop.patrol.agent_loop.decisions.evidence import PatrolEvidenceNeeds, PatrolEvidencePolicy
 from backend.app.desktop.patrol.agent_loop.decisions.evidence_queue import PatrolEvidenceQueue
 from backend.app.desktop.patrol.agent_loop.kernel import KernelCommitResult, LoopKernel
-from backend.app.desktop.patrol.agent_loop.missions.mission_bootstrap import MissionBootstrapStage
-from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDecision,
-    LoopObservation,
     LoopRound,
 )
-from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.patrol.agent_loop.observations.builder import (
     observation_hash,
 )
@@ -141,11 +135,7 @@ previous_task_progress 是上一轮任务记忆，task_delta 是本轮 Observati
 committed_lineage 是冻结时真实已提交 Context 来源 DAG；候选、选择或授权均不改变它。本轮不改读后台新版本。
 Observation 还包含预算、授权、活跃 Run 等控制状态，它们不等于任务成果；记忆不能代替完成验证或 Kernel 权力检查。
 你负责观察 Context Portfolio、判断下一步、决定是否复用或派生 Context，并生成代表用户控制域的下一条指令。
-observation.user_intents 是用户在系统审计层直接交给你的新意见：context scope 只约束目标 Context，
-portfolio scope 约束整体分工；普通 patrol_opinion 优先于此前未提交判断，但不注入执行 Agent。
-intent_kind=direct_message 是已受理的用户原始消息；只能用 {"action":"deliver_user_message","intent_id":精确身份}
-授权交付，不能改写正文、目标或装备。没有活动 Run 时优先交付；同一轮同一 Context 至多一条，其他留待后继观察。
-未处理直接消息阻止完成；不要用 continue_context 代替或重写用户消息。
+observation.user_intents 是工作区统一入口已受理的用户原文；通过 apply_user_inputs 记录每条输入的处置，再按更新后的要求安排工作。
 正常情况由你直接判断；只有并行策展多个 Lane 或独立完成验证确有必要时才请求 Worker。
 当 observation 中存在已授权 compression pending decision 时，先以空 source_message_ids 请求
 compression_candidate 获取无正文 manifest，再以 manifest 中的精确 message id 请求候选；最后以
@@ -656,7 +646,6 @@ class LoopRoundOrchestrator:
         self._outcomes = PatrolOutcomeStage(self._patrol_sessions)
         self._expansions = ContextExpansionStage(sessions, checkpointer, app_config)
         self._recoveries = ContextRecoveryStage(sessions)
-        self._mission_bootstrap = MissionBootstrapStage()
         self._supplements = DecisionSupplementRepository()
         self._request_admission = None
         self._preparation_admission = None
@@ -733,7 +722,7 @@ class LoopRoundOrchestrator:
         async with self._sessions() as session:
             loop = await session.get(AgentLoop, claim.loop_id)
             round_row = await session.get(LoopRound, claim.round_id)
-            if loop is None or round_row is None:
+            if loop is None or loop.interaction_mode != "workspace_patrol" or round_row is None:
                 return None
             if round_row.status in TERMINAL_ROUND_STATUSES:
                 return None
@@ -766,13 +755,6 @@ class LoopRoundOrchestrator:
                 return result
             except KernelFencingRejected:
                 return None
-        async with self._sessions() as session:
-            initial_active = await session.scalar(select(DesktopRun.run_id).where(
-                DesktopRun.loop_id == claim.loop_id, DesktopRun.round_id.is_(None),
-                DesktopRun.status.in_(("pending", "running")),
-            ).limit(1))
-            if initial_active is not None:
-                return None
         async with self._sessions.begin() as session:
             from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import current_frontier_hash
             from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
@@ -797,12 +779,6 @@ class LoopRoundOrchestrator:
                 await self._require_current(session, claim, frozen.observation_id or frozen.decision_inputs_ref)
             except KernelFencingRejected:
                 return None
-        async with self._sessions() as session:
-            loop = await session.get(AgentLoop, claim.loop_id)
-            round_row = await session.get(LoopRound, claim.round_id)
-            bootstrap = await self._mission_bootstrap.assess(session, loop, round_row) if loop is not None and round_row is not None else None
-        if bootstrap is not None and bootstrap.intent is None and bootstrap.state in {"blocked", "pending"}:
-            return None
         patrol_session = await self._patrol_sessions.begin(claim)
         try:
             observation = await self._prepare(self._prepare_observation, claim, patrol_session.session_id, round_status or "observed")
@@ -841,8 +817,6 @@ class LoopRoundOrchestrator:
             await self._evidence_queue().enqueue(claim, patrol_session.session_id, observation, step)
             return None
         intent = self._bind_fencing(step, claim)
-        if bootstrap is not None and bootstrap.intent is not None:
-            intent = self._mission_bootstrap.complete_patrol_delivery(intent, bootstrap)
         recovery_resolution = await self._prepare(self._recoveries.resolve, observation, intent)
         if recovery_resolution.waiting_reason is not None:
             intent = intent.model_copy(

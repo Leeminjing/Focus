@@ -30,6 +30,8 @@ class WorkerAttemptAuthority:
         return loop, row
 
     async def require_authorized(self, session, loop, row):
+        if loop is not None and loop.interaction_mode != "workspace_patrol":
+            raise WorkerAttemptRejected("旧 Context Loop 已退役")
         round_row = await session.get(LoopRound, row.round_id)
         if (loop.status != "running"
             or round_row is None or round_row.loop_id != loop.loop_id

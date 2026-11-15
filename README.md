@@ -77,6 +77,8 @@ The resulting context network records how the project was understood, implemente
 
 Focus models a person working within one workspace: organizing several lines of work, responding to changing goals, and moving between discussion, action, and feedback.
 
+Select a workspace and send the first input to create its Workspace Patrol Loop; restart it explicitly after a terminal state. Starting a Loop from an existing Context and initial Run has been retired. Ordinary task Contexts and Main Runs remain available. See the [retirement scope and shared capabilities](docs/context-loop-retirement.md) (Chinese).
+
 Each round revisits the questions: **What should we do now? What has changed? Which work should continue? Which results support the next step?**
 
 1. **Observe the current situation.** Bring together user input, task progress, contexts, and actual execution results.

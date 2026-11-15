@@ -13,6 +13,8 @@ comparison artifact、持久计划、来源边与终态历史。
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import advance_workspace_mission
+
 import asyncio
 import os
 import uuid
@@ -1122,7 +1124,7 @@ def test_stale_source_supersedes_compiled_expansion_before_authorization(
             )
 
             if stale_boundary == "mission":
-                await seeded["service"].override(
+                await advance_workspace_mission(sessions,
                     seeded["loop_id"],
                     "Deliver the revised goal",
                     "Do not execute work derived from the previous Mission revision",

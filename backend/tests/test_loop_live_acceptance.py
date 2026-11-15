@@ -10,6 +10,11 @@ Portfolio event producer；输出为三路同时运行、授权 Directive 改变
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+from backend.tests.loop_run_boundary_support import commit_patrol
+from backend.tests.test_round_task_progress import _Checkpointer
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+
 import asyncio
 import os
 import uuid
@@ -24,8 +29,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
-    LoopCreateRequest,
-    LoopKernel,
     PatrolDecisionIntent,
 )
 from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
@@ -50,6 +53,7 @@ from backend.app.desktop.patrol.agent_loop.models import (
     LoopDirective,
     LoopRound,
     LoopWorkerRequest,
+    LoopObservation,
 )
 from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
     CuratorCoordinationStage,
@@ -63,7 +67,6 @@ from backend.app.desktop.patrol.agent_loop.journal.portfolio_events import (
     PortfolioPublicationEventRecorder,
 )
 from backend.app.desktop.patrol.agent_loop.execution.run_activity_bridge import LoopRunActivityBridge
-from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -92,8 +95,7 @@ def test_production_components_drive_the_complete_live_multi_context_story(tmp_p
         started = False
         try:
             await _seed_contexts(sessions, tmp_path, workspace_id, context_ids, revision_ids, initial_run_id, suffix)
-            snapshot = await service.start(
-                LoopCreateRequest(
+            snapshot = await seed_workspace_patrol_loop(sessions,
                     loop_id=loop_id,
                     workspace_id=workspace_id,
                     initial_context_id=context_ids[0],
@@ -107,10 +109,12 @@ def test_production_components_drive_the_complete_live_multi_context_story(tmp_p
                     permission_scope=("read", "view_evidence"),
                     equipment={"permissions": ["read"]},
                 )
-            )
             started = True
             await _seed_memberships(sessions, loop_id, snapshot["current_round_id"], context_ids, roles)
             patrol = await _fan_out_curators(sessions, snapshot, context_ids, revision_ids, roles)
+            async with sessions() as session:
+                round_row = await session.get(LoopRound, snapshot["current_round_id"])
+                observation = await session.get(LoopObservation, round_row.observation_id)
             messages = (
                 "实现目标变更并持续报告工具活动。",
                 "请改为复现 Windows 路径失败并运行精确测试。",
@@ -128,11 +132,13 @@ def test_production_components_drive_the_complete_live_multi_context_story(tmp_p
                 goal_revision=snapshot["goal_revision"],
                 observed_frontier_hash=await _round_frontier(sessions, snapshot["current_round_id"]),
                 observed_workspace_revision=1,
+                observed_projection_sequence=observation.projection_sequence,
+                base_entity_revisions=observation.base_entity_revisions,
                 rationale="三个 Context 可以并行收集互补证据。",
                 actions=tuple({"action": "continue_context", "context_id": context_id, "context_revision_id": revision_id, "message": message} for context_id, revision_id, message in zip(context_ids, revision_ids, messages, strict=True)),
             )
-            committed = await LoopKernel(sessions).commit(intent)
-            assert committed.status == "committed"
+            committed = await commit_patrol(sessions, intent)
+            assert committed.status == "committed", committed.reason
             assert len(committed.directive_ids) == 3
             launched = await LoopWaveDispatcher(sessions, _RunningRunLauncher(sessions)).dispatch(loop_id, snapshot["current_round_id"], 3)
             assert len(launched) == 3
@@ -210,12 +216,13 @@ async def _seed_memberships(sessions, loop_id, round_id, context_ids, roles):
 
 
 async def _fan_out_curators(sessions, snapshot, context_ids, revision_ids, roles):
+    observation = await LoopObservationService(sessions, _Checkpointer()).capture(
+        snapshot["loop_id"], snapshot["current_round_id"])
     claim = CoordinatorClaim("acceptance-lease", snapshot["loop_id"], snapshot["current_round_id"], "1")
     lifecycle = PatrolSessionLifecycle(sessions)
     patrol = await lifecycle.begin(claim)
     patrol = await lifecycle.transition(patrol.session_id, PatrolPhase.OBSERVING, PatrolActivity(summary="发现 3 个活动 Context"))
     patrol = await lifecycle.transition(patrol.session_id, PatrolPhase.DISPATCHING_CURATORS, PatrolActivity(summary="向 3 个 Curator 分派证据检查"))
-    observation = LoopObservationEnvelope(loop_id=snapshot["loop_id"], loop_revision=snapshot["revision"], round_id=snapshot["current_round_id"], goal_revision=snapshot["goal_revision"], authority_revision=snapshot["authority_revision"], observed_frontier_hash=await _round_frontier(sessions, snapshot["current_round_id"]), mission={"outcome": "Expose simultaneous Context work"}, grant={}, portfolio_frontier=tuple({"lane_id": role, "context_id": context_id, "revision_id": revision_id, "role": role} for role, context_id, revision_id in zip(roles, context_ids, revision_ids, strict=True)), workspace={"revision": 1}, budget={})
     class Catalog:
         @staticmethod
         def model_dump(mode="json"):
@@ -228,7 +235,7 @@ async def _fan_out_curators(sessions, snapshot, context_ids, revision_ids, roles
 
     class IndexService:
         @staticmethod
-        async def build(frozen_observation):
+        async def build(frozen_observation, **options):
             return SimpleNamespace(
                 catalog=Catalog(),
                 indexes=(),

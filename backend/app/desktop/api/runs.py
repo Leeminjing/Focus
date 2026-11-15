@@ -39,10 +39,10 @@ async def start_main_run(
     request: Request,
     idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
-    intake = MainRunIntake(
-        request.app.state.desktop_service,
-        getattr(request.app.state, "agent_loop_service", None),
-    )
+    loop_service = getattr(request.app.state, "agent_loop_service", None)
+    if loop_service is not None:
+        await loop_service.ensure_context_main_input_allowed(task_id)
+    intake = MainRunIntake(request.app.state.desktop_service)
     return await intake.submit(task_id, body, idempotency_header)
 
 

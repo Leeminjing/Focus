@@ -1,4 +1,4 @@
-r"""本文件对外提供 Context-governed Agent Loop 领域的稳定公共入口。
+r"""本文件对外提供 Workspace Patrol Agent Loop 领域的稳定公共入口。
 
 输入为用户 goal/grant、bounded observation、Patrol decision 和 completion evidence；输出为持久 Loop、
 唯一 Kernel commit、可审计用户意图、纯 HumanMessage directive、独立发布/Curator/Context 池与可恢复 coordinator。
@@ -24,15 +24,14 @@ from backend.app.desktop.patrol.agent_loop.curation.portfolio_publication import
 from backend.app.desktop.patrol.agent_loop.curation.publication_queue import LoopPortfolioPublicationQueue
 from backend.app.desktop.patrol.agent_loop.resources.context_run_pool import ContextRunPool
 from backend.app.desktop.patrol.agent_loop.workspaces.workspace_adoption import LoopWorkspaceAdoptionService
-from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract, CriterionVerification, LoopBudgetContract, LoopCreateRequest, LoopObservationEnvelope, PatrolAction, PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract, CriterionVerification, LoopBudgetContract, LoopObservationEnvelope, PatrolAction, PatrolDecisionIntent
 from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
-from backend.app.desktop.patrol.agent_loop.governance.interventions import LoopInterventionService
 
 __all__ = [
-    "AgentLoopService", "LoopInterventionService", "LoopAuthorityService", "AuthorityViolation", "CompletionEvidenceService", "CompletionGuard", "CompletionGuardResult",
+    "AgentLoopService", "LoopAuthorityService", "AuthorityViolation", "CompletionEvidenceService", "CompletionGuard", "CompletionGuardResult",
     "CompletionVerificationContract", "CompletionVerifierPort", "CoordinatorClaim", "CriterionVerification",
     "DelegatedAuthorityGuard", "DelegatedDirectiveFactory", "KernelCommitResult", "KernelRejected",
-    "DesktopDirectiveLaunchPort", "DirectiveLaunchPort", "LoopRunWorkspaceBinder", "LoopBudgetContract", "LoopCoordinator", "LoopCoordinatorRuntime", "LoopCreateRequest", "LoopKernel", "LoopObservationBuilder",
+    "DesktopDirectiveLaunchPort", "DirectiveLaunchPort", "LoopRunWorkspaceBinder", "LoopBudgetContract", "LoopCoordinator", "LoopCoordinatorRuntime", "LoopKernel", "LoopObservationBuilder",
     "LoopObservationEnvelope", "MessageHistoryProjector", "PatrolAction", "PatrolDecisionIntent", "observation_hash",
     "PatrolDecisionModel", "PortfolioPatrol", "PatrolContractViolation", "LoopWaveDispatcher",
     "BoundaryReference", "CompletionCheckReference", "MissionReference", "OutcomeReference", "PatrolDecisionContract",

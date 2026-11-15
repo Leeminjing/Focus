@@ -283,6 +283,7 @@ class LoopWorkerRuntime:
                     LoopWorkerRequest.status == "pending",
                     LoopWorkerRequest.attempt <= LoopWorkerRequest.max_attempts,
                     AgentLoop.status == "running",
+                    AgentLoop.interaction_mode == "workspace_patrol",
                 )
                 .order_by(LoopWorkerRequest.loop_id)
             )
@@ -292,7 +293,7 @@ class LoopWorkerRuntime:
             for candidate_loop_id in await session.scalars(statement):
                 loop = await session.scalar(select(AgentLoop).where(AgentLoop.loop_id == candidate_loop_id)
                     .with_for_update(skip_locked=True))
-                if loop is None or loop.status != "running":
+                if loop is None or loop.interaction_mode != "workspace_patrol" or loop.status != "running":
                     continue
                 candidates = await session.scalars(select(LoopWorkerRequest).where(
                     LoopWorkerRequest.loop_id == loop.loop_id,

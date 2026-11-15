@@ -7,6 +7,8 @@ token 增长及规范 interrupted 事件断言。具体工作流为创建最小 
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 import os
@@ -17,7 +19,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import backend.app.desktop.persistence.registry
-from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCoordinator, LoopCreateRequest, LoopKernel, PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCoordinator, LoopKernel, PatrolDecisionIntent
 from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopCoordinatorLease, LoopRound
 from backend.app.desktop.patrol.agent_loop.governance.ownership import KernelFencingRejected, LoopFencingGuard
@@ -170,7 +172,7 @@ async def _create_loop(sessions, tmp_path):
         await repository.switch_current(session, ref, None)
         session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
     service = AgentLoopService(sessions)
-    snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-fence", goal="Fence stale work", task_contract="Only current owner commits", acceptance_criteria=({"criterion_id": "done", "text": "current owner committed"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "write")))
+    snapshot = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-fence", goal="Fence stale work", task_contract="Only current owner commits", acceptance_criteria=({"criterion_id": "done", "text": "current owner committed"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "write"))
     return service, snapshot, context_id, revision_id
 
 

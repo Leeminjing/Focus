@@ -51,10 +51,6 @@ async def validate_context_permissions(session, loop, observation, proposal):
         resolved[context_id] = {**equipment, "access_mode": mode}
     for action in proposal.actions:
         target = getattr(action, "context_id", None) if action.action == "continue_context" else None
-        if action.action == "deliver_user_message":
-            from backend.app.desktop.patrol.agent_loop.models import LoopUserIntent
-            user = await session.get(LoopUserIntent, action.intent_id)
-            target = user.target_context_id if user else None
         if target is not None and selected.get(target) is None:
             raise ValueError("执行目标本轮未获授文件权限")
     if any(selected[key] is None for key in derived):
@@ -90,15 +86,7 @@ def _context_equipment(loop, membership, lane, grant, *, overrides=None):
 
 
 async def resolve_directive_equipment(session, loop, directive):
-    overrides = None
-    if directive.origin_kind == "direct_user":
-        from backend.app.desktop.patrol.agent_loop.models import LoopUserIntent
-
-        intent = await session.get(LoopUserIntent, directive.correlation_id)
-        if intent is None or intent.intent_kind != "direct_message":
-            raise ValueError("用户 Directive 缺少原始请求")
-        overrides = intent.request_payload.get("request") or {}
-    equipment = await resolve_context_equipment(session, loop, directive.target_context_id, overrides=overrides)
+    equipment = await resolve_context_equipment(session, loop, directive.target_context_id)
     decision = await session.get(LoopDecision, directive.decision_id)
     action = await session.get(LoopAction, directive.action_id)
     if (decision is None or decision.authority_committed_at is None
@@ -173,7 +161,7 @@ def _round_permission_state(run, binding, loop, round_row, directive, grant, dec
     selected = {row["context_id"]: row["access_mode"]
                 for row in (decision.intent.get("context_permissions", ()) if decision else ())}
     mode = binding.get("access_mode")
-    valid = bool(loop and round_row and grant and directive and loop.status == "running"
+    valid = bool(loop and loop.interaction_mode == "workspace_patrol" and round_row and grant and directive and loop.status == "running"
         and decision and action and action.decision_id == decision.decision_id
         and decision.authority_committed_at is not None and round_row.decision_id == decision.decision_id
         and round_row.loop_id == loop.loop_id and directive.round_id == round_row.round_id

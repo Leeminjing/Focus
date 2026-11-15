@@ -34,7 +34,7 @@ pytestmark = pytest.mark.usefixtures('runtime_postgres_database')
 
 
 @asynccontextmanager
-async def _lab(tmp_path, *, stale=True, complete=False, mode='context_loop', required=True,
+async def _lab(tmp_path, *, stale=True, complete=False, mode='workspace_patrol', required=True,
                optional_status=None, optional_unresolved=False, conclusion=None):
     engine = create_async_engine(os.environ['FOCUS_DATABASE_URL'])
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -176,7 +176,8 @@ def test_credible_complete_verification_passes_candidate_stage_and_kernel(tmp_pa
             result = await LoopKernel(sessions).commit(resolved.intent)
             assert result.status == 'committed', result.reason
             async with sessions() as session:
-                assert (await session.get(AgentLoop, fixture['loop_id'])).status == 'completed'
+                loop = await session.get(AgentLoop, fixture['loop_id'])
+                assert loop.status == 'waiting_user' and loop.waiting_reason == 'awaiting_input'
     asyncio.run(run())
 
 
@@ -201,7 +202,7 @@ def test_optional_checks_pass_candidate_stage_and_kernel_with_final_explanation(
             assert result.status == 'committed', result.reason
             async with sessions() as session:
                 loop = await session.get(AgentLoop, fixture['loop_id'])
-                assert loop.status == 'completed'
+                assert loop.status == 'waiting_user' and loop.waiting_reason == 'awaiting_input'
                 verification = loop.final_result['verification']
                 optional = next(c for c in verification['criteria'] if c['check_id'] == 'polish')
                 assert optional['status'] == optional_status and optional['explanation'] == '可选外观优化未完成'
@@ -226,7 +227,7 @@ def test_all_optional_unknown_checks_can_complete_after_independent_satisfied_co
             assert result.status == 'committed', result.reason
             async with sessions() as session:
                 loop = await session.get(AgentLoop, fixture['loop_id'])
-                assert loop.status == 'completed'
+                assert loop.status == 'waiting_user' and loop.waiting_reason == 'awaiting_input'
                 assert loop.final_result['verification']['criteria'][0]['status'] == 'unknown'
                 assert loop.final_result['verification']['unresolved'] == ['tests']
     asyncio.run(run())

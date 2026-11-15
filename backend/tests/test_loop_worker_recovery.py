@@ -6,6 +6,8 @@
 示例：pytest backend/tests/test_loop_worker_recovery.py；不访问真实 Vault。
 """
 
+from backend.tests.workspace_loop_support import advance_workspace_mission
+
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -33,6 +35,7 @@ from backend.tests.config_helpers import app_config_for
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_round_task_progress import _Checkpointer
 from focus.history import content_hash
+from focus.models.deepseek import DeepSeekChatOpenAI
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -41,6 +44,10 @@ class Provider:
     def __init__(self):
         self.valid = False
         self.inputs = []
+        self._request_model = DeepSeekChatOpenAI(model="worker-retry", api_key="sk-test", base_url="https://example.invalid")
+
+    def _get_request_payload(self, messages, **kwargs):
+        return self._request_model._get_request_payload(messages, **kwargs)
 
     async def ainvoke(self, messages, config):
         self.inputs.append(messages[-1].content)
@@ -171,7 +178,7 @@ def test_retry_rejects_control_or_scope_change_and_rolls_back_response(tmp_path,
             if change == "stop":
                 await fixture["service"].control(fixture["loop_id"], "stop")
             elif change == "mission":
-                await fixture["service"].override(fixture["loop_id"], "当前授权 Mission 已修改", "保持模块边界",
+                await advance_workspace_mission(sessions,fixture["loop_id"], "当前授权 Mission 已修改", "保持模块边界",
                     [{"criterion_id": "tests", "text": "实际测试通过", "required": True}])
             else:
                 async with sessions.begin() as session:
@@ -262,7 +269,7 @@ def test_actual_old_model_result_and_task_cleanup_leave_replacement_running(tmp_
             release = [asyncio.Event(), asyncio.Event()]
             invocations = []
 
-            class DelayedProvider:
+            class DelayedProvider(Provider):
                 async def ainvoke(self, messages, config):
                     index = len(invocations)
                     invocations.append(messages)

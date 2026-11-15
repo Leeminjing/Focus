@@ -53,6 +53,7 @@ async def _prepare(sessions, loop_id):
 
 async def _decision(sessions, loop_id, actions):
     from backend.app.desktop.patrol.agent_loop.task_progress.models import LoopProgressWork
+    from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_context_equipment
     from backend.tests.test_loop_round_progress_admission import _publish_memory
 
     async with sessions() as session:
@@ -88,6 +89,13 @@ async def _decision(sessions, loop_id, actions):
             loop_id=loop_id,
             loop_revision=loop.revision,
             round_id=loop.current_round_id,
+            observation_id=observation.observation_id,
+            observation_generation=observation.generation,
+            context_permissions=[
+                {"context_id": row["context_id"],
+                 "access_mode": (await resolve_context_equipment(session, loop, row["context_id"]))["access_mode"]}
+                for row in observation.portfolio_frontier
+            ],
             holder_id=loop.holder_id,
             grant_id=grant.grant_id,
             grant_revision=grant.revision,
@@ -145,6 +153,11 @@ def test_mission_partitions_and_late_input_are_exact(tmp_path):
                 ),
             )
             result = await LoopKernel(sessions).commit(intent)
+            assert result.status == "superseded" and result.reason == "observation_superseded"
+            # The later input replaces the observation; a fresh decision may still
+            # select only the boundary and leave the new outcome pending.
+            fresh_actions = [{**actions[0], "inputs": [_use(first), _use(late, "deferred")]}]
+            result = await LoopKernel(sessions).commit(await _decision(sessions, first["loop_id"], fresh_actions))
             assert result.status == "committed", result.reason
             async with sessions() as session:
                 loop = await session.get(AgentLoop, first["loop_id"])
@@ -253,7 +266,7 @@ def test_information_request_survives_proactive_input_and_targeted_answer(tmp_pa
                 [
                     {
                         "action": "apply_user_inputs",
-                        "inputs": [_use(answer)],
+                        "inputs": [_use(answer), _use(proactive, "deferred")],
                         "resolved_request_ids": [request.request_id],
                     }
                 ],
@@ -264,7 +277,7 @@ def test_information_request_survives_proactive_input_and_targeted_answer(tmp_pa
                 assert (await session.get(LoopWaitRequest, request.request_id)).status == "resolved"
                 assert (
                     await session.get(LoopUserIntent, proactive["intent_id"])
-                ).status == "observed"
+                ).status == "pending"
         finally:
             await engine.dispose()
 
@@ -544,7 +557,9 @@ def test_rejected_application_preserves_mission_and_input(tmp_path, monkeypatch,
 
                 monkeypatch.setattr(MissionRevisionService, "record", reject)
             result = await LoopKernel(sessions).commit(intent)
-            assert result.status == "rejected", result.reason
+            assert result.status == ("superseded" if failure == "late" else "rejected"), result.reason
+            if failure == "late":
+                assert result.reason == "observation_superseded"
             async with sessions() as session:
                 loop = await session.get(AgentLoop, first["loop_id"])
                 assert loop.goal_revision == 1

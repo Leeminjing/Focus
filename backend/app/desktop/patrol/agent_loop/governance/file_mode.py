@@ -6,6 +6,7 @@ Changing mode never approves an outstanding tool request or resumes a pause.
 """
 
 from datetime import UTC, datetime
+import uuid
 from fastapi import HTTPException
 from sqlalchemy import select
 
@@ -16,7 +17,6 @@ from focus.security.policy import AccessMode
 
 async def apply_workspace_file_mode(session, loop, mode):
     from backend.app.desktop.patrol.agent_loop.compression_authority.repository import CompressionAuthorityRepository
-    from backend.app.desktop.patrol.agent_loop.inputs.user_messages import LoopUserMessageAdmission
     from backend.app.desktop.patrol.agent_loop.journal.lifecycle_events import LoopLifecycleEventRecorder
     from backend.app.desktop.patrol.agent_loop.journal.round_events import RoundStateEventRecorder
     from backend.app.desktop.patrol.agent_loop.lifecycle.runtime_convergence import LoopRuntimeConvergence
@@ -46,7 +46,13 @@ async def apply_workspace_file_mode(session, loop, mode):
     loop.authority_revision += 1
     grant.status, grant.revoked_at = "revoked", datetime.now(UTC)
     await session.flush()
-    session.add(LoopUserMessageAdmission._renewed_grant(loop, grant))
+    session.add(LoopDelegationGrant(
+        grant_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=loop.authority_revision,
+        holder_id=grant.holder_id, capabilities=grant.capabilities, context_scope=grant.context_scope,
+        permission_scope=grant.permission_scope, budgets=grant.budgets,
+        delegable_gates=grant.delegable_gates, compression_policy=grant.compression_policy,
+        expires_at=grant.expires_at,
+    ))
     cancelled = await LoopRuntimeConvergence().converge(
         session, loop, "file_mode_changed", preserve_waits=True)
     await CompressionAuthorityRepository().supersede(session, loop.loop_id, "file_mode_changed")

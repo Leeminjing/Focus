@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import advance_workspace_mission
+
 import asyncio
 import json
 import os
@@ -345,7 +347,7 @@ async def _takeover(sessions, fixture, capture, run_id):
     async with asyncio.timeout(5):
         await _settle_run(sessions, run_id)
         good = await _test_event(sessions, fixture, passed=43, failed=0, run_id=run_id)
-        revised = await fixture["service"].override(
+        revised = await advance_workspace_mission(sessions,
             loop_id,
             goal="Revised E2E delivery",
             task_contract="Use the revised acceptance",

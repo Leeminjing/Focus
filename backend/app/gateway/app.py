@@ -119,7 +119,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
         from backend.app.desktop.patrol.agent_loop.feature_flags import LoopFeatureFlags
-        from backend.app.desktop.patrol.agent_loop.governance.interventions import LoopInterventionService
         from backend.app.desktop.runs.orchestration import RunOutboxConsumer
 
         app.state.loop_feature_flags = LoopFeatureFlags.from_env()
@@ -130,7 +129,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolService
         app.state.workspace_patrol = WorkspacePatrolService(sessions, service)
-        app.state.agent_loop_interventions = LoopInterventionService(sessions)
         app.state.agent_loop_authority = LoopAuthorityService(sessions, app.state.run_manager)
         app.state.agent_loop_workspace = LoopRunWorkspaceBinder(sessions)
         app.state.agent_loop_gates = PendingDecisionProjector(sessions)
@@ -211,6 +209,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.agent_loop_ownership_repair_task = None
         if not update_check:
+            from backend.app.desktop.patrol.agent_loop.lifecycle.retirement import retire_context_loops
+
+            await retire_context_loops(sessions)
             await service.start()
             app.state.agent_loop_ownership_repair_task = asyncio.create_task(
                 CurationOwnershipRecovery(sessions).reconcile(),

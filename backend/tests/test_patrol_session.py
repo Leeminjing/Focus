@@ -10,6 +10,8 @@ Curator 派发使用真实 Coordinator claim/lease 验证准备 fencing，不以
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+
 import asyncio
 import os
 import uuid
@@ -23,7 +25,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.patrol.agent_loop import (
     AgentLoopService,
-    LoopCreateRequest,
     LoopKernel,
     PatrolDecisionIntent,
 )
@@ -557,5 +558,5 @@ async def _create_loop(sessions, tmp_path):
         await repository.switch_current(session, ref, None)
         session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
     service = AgentLoopService(sessions)
-    snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-session", goal="Observe the round", task_contract="Expose safe activity only", acceptance_criteria=({"criterion_id": "done", "text": "round audited"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read",)))
+    snapshot = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-session", goal="Observe the round", task_contract="Expose safe activity only", acceptance_criteria=({"criterion_id": "done", "text": "round audited"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read",))
     return service, snapshot

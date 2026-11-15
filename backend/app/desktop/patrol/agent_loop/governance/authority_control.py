@@ -45,6 +45,8 @@ class LoopAuthorityService:
             loop = await session.scalar(select(AgentLoop).where(AgentLoop.loop_id == loop_id).with_for_update())
             if loop is None:
                 raise HTTPException(404, "Agent Loop 不存在")
+            if loop.interaction_mode != "workspace_patrol":
+                raise HTTPException(409, "旧 Context Loop 已退役，请使用工作区 Patrol")
             if loop.status in {"completed", "stopped", "failed"}:
                 raise HTTPException(409, f"Loop 状态 {loop.status} 不允许修改授权")
             grant = await session.scalar(

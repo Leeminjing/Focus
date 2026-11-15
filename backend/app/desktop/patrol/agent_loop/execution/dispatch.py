@@ -28,7 +28,6 @@ from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import 
 )
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopDecision, LoopDelegationGrant, LoopDirective, LoopObservation, LoopRound
 from backend.app.desktop.patrol.agent_loop.governance.provenance import DelegatedDirectiveFactory
-from backend.app.desktop.patrol.agent_loop.inputs.user_message_delivery import LoopUserMessageDelivery
 from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository
 from backend.app.desktop.patrol.agent_loop.workspaces.workspace_planning import WorkspaceRunPlanner
 from backend.app.desktop.persistence.models import DesktopRun
@@ -74,8 +73,7 @@ class LoopWaveDispatcher:
         for plan in plans:
             directive = by_directive[plan.directive_id]
             try:
-                async with self._sessions() as session:
-                    message = await LoopUserMessageDelivery.model_message(session, directive) if directive.origin_kind == "direct_user" else DelegatedDirectiveFactory.to_model_message(directive)
+                message = DelegatedDirectiveFactory.to_model_message(directive)
                 run_id = await self._launcher(
                     directive,
                     message,
@@ -127,7 +125,7 @@ class LoopWaveDispatcher:
         async with self._sessions.begin() as session:
             loop = await session.get(AgentLoop, loop_id, with_for_update=True)
             round_row = await session.get(LoopRound, round_id)
-            if (loop is None or loop.status != "running"
+            if (loop is None or loop.interaction_mode != "workspace_patrol" or loop.status != "running"
                     or round_row is None or round_row.loop_id != loop_id
                     or round_row.status not in {"ready", "running"}):
                 return ()
@@ -222,7 +220,7 @@ class LoopRunWorkspaceBinder:
         async with self._sessions() as session:
             loop = await session.get(AgentLoop, loop_id)
             run = await session.get(DesktopRun, run_id)
-            if loop is None or run is None or run.loop_id != loop_id:
+            if loop is None or loop.interaction_mode != "workspace_patrol" or run is None or run.loop_id != loop_id:
                 raise LookupError("Loop Run 执行身份不存在")
             slot = await self._slot(session, loop, slot_id)
             intent = WorkspaceIntentDeriver.derive(run.equipment or {})

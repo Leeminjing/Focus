@@ -7,7 +7,6 @@ ContextLineageResolver 从权威 revision 来源解析，作为客户端在快�
 示例：`await overlay.apply(session, projection, boundary)`。
 interventions 从耐久用户消息表补齐类型、来源、交付状态和 Run 身份，快照重启不丢失接受提交后的状态。
 Round/Observation/Session 按身份读取有界近期窗口并保留未完成工作，当前视图由观察指针派生；快照公开真实提交凭据及批量读取的 Run 所属轮权限，accounting 历史诊断不回写旧事务。
-Mission交付调用与兼容快照/Directive事件相同的只读评估；重连使用当前事实，旧journal不被补写。
 task_progress 从既有持久 head 读取并独立补齐；Loop 显式提供交互模式，用户受理不构造任务结果。
 """
 
@@ -30,7 +29,6 @@ from backend.app.desktop.patrol.agent_loop.facts.materialized_fact_query import 
     MaterializedFactQueryService,
 )
 from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
-from backend.app.desktop.patrol.agent_loop.missions.mission_bootstrap import MissionBootstrapStage
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
@@ -117,7 +115,6 @@ class LoopLiveProjectionOverlay:
         usage = await session.get(LoopBudgetUsage, projection.loop_id)
         portfolio = await session.get(PortfolioRevision, loop.current_portfolio_revision_id) if loop.current_portfolio_revision_id else None
         accounting = await LoopAccountingQuery().read(session, loop.loop_id, include_round_history=False)
-        delivery = await MissionBootstrapStage().assess(session, loop, round_row) if round_row is not None else None
         lineage = await self._lineage.resolve(
             session,
             {row.task_id: row.current_revision_id for row in contexts if row.current_revision_id},
@@ -130,7 +127,7 @@ class LoopLiveProjectionOverlay:
                  "content_hash": progress.content_hash, "document": progress.document}),
             "accounting": self._entity(loop.loop_id, projection.accounting.revision if projection.accounting else 1,
                 sequence, {"accounting": accounting, "usage": {**self._usage(usage, len(contexts)), "rounds": accounting["completed_rounds"]}}),
-            "loop": self._entity(loop.loop_id, projection.loop.revision if projection.loop is not None else 1, sequence, {"loop_id": loop.loop_id, "created_at": loop.created_at.isoformat(), "completed_at": loop.completed_at.isoformat() if loop.completed_at else None, "workspace_id": loop.workspace_id, "interaction_mode": loop.interaction_mode, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "authority_revision": loop.authority_revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "equipment": loop.equipment, "final_result": loop.final_result, "grant": self._grant(grant), "usage": {**self._usage(usage, len(contexts)), "rounds": accounting["completed_rounds"]}, "accounting": accounting, "mission_delivery": None if delivery is None else delivery.to_payload()}),
+            "loop": self._entity(loop.loop_id, projection.loop.revision if projection.loop is not None else 1, sequence, {"loop_id": loop.loop_id, "created_at": loop.created_at.isoformat(), "completed_at": loop.completed_at.isoformat() if loop.completed_at else None, "workspace_id": loop.workspace_id, "interaction_mode": loop.interaction_mode, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "authority_revision": loop.authority_revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "equipment": loop.equipment, "final_result": loop.final_result, "grant": self._grant(grant), "usage": {**self._usage(usage, len(contexts)), "rounds": accounting["completed_rounds"]}, "accounting": accounting}),
             "mission": None if mission is None else self._entity(mission.mission_revision_id, mission.revision, sequence, {"outcome": mission.outcome, "boundaries": mission.boundaries, "completion_checks": mission.completion_checks, "authored_by": mission.authored_by}),
             "rounds": {row.round_id: self._round_entity(row, observation_by_id.get(row.observation_id), decisions.get(row.decision_id), sequence, projection.rounds.get(row.round_id), strategy_inputs.get(row.observation_id)) for row in rounds},
             "observations": {row.observation_id: self._entity(row.observation_id, 1, sequence, {"round_id": row.round_id, "generation": getattr(row, "generation", 1), "observation_hash": row.envelope_hash, "frozen_at": row.created_at.isoformat()}) for row in observations},

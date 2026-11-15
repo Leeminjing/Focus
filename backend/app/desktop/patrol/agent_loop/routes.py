@@ -1,7 +1,7 @@
-r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、类型化等待响应、沿用当前 Mission 的显式恢复确认、用户介入、Kernel decision、控制与事件 HTTP 边界。
+r"""本文件对外提供 agent_loop_router，作为工作区 Patrol 受理、授权、类型化等待响应、沿用当前 Mission 的显式恢复确认、Kernel decision、控制与事件 HTTP 边界。
 
-输入为已通过 Desktop 会话认证的结构化 Mission 或兼容旧字段及其它严格 schema；输出为 Loop snapshot、
-持久用户意图、Kernel result 或 cursor event。具体工作流为路由解析 Mission 后从 app.state 取得专用
+输入为已通过 Desktop 会话认证的工作区输入及其它严格 schema；输出为 Loop snapshot、
+持久用户意图、Kernel result 或 cursor event。具体工作流为路由解析请求后从 app.state 取得专用
 service/Kernel，不在 HTTP 边界写领域状态或运行模型。
 示例：`app.include_router(agent_loop_router)`。
 task-progress/{work_id}/retry 只恢复本 Loop 的 blocked 记忆工作，不启动 Run 或改变 Context。
@@ -12,23 +12,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+)
 
 from backend.app.desktop.patrol.agent_loop.kernel import KernelRejected
 from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
-    LegacyMissionAdapter,
-    LoopMissionContract,
-)
 from backend.app.desktop.patrol.agent_loop.schemas import (
     CompletionVerificationContract,
-    LoopCreateRequest,
     LoopGrantMutationRequest,
-    LoopInterventionRequest,
     LoopWaitResponseRequest,
     PatrolDecisionIntent,
     ResumeWithCurrentMissionRequest,
@@ -72,52 +68,10 @@ class LoopControlRequest(BaseModel):
     command: str
 
 
-class LoopOverrideRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    mission: LoopMissionContract | None = None
-    goal: str | None = Field(default=None, min_length=1)
-    task_contract: str | None = Field(default=None, min_length=1)
-    acceptance_criteria: list[dict[str, Any]] | None = Field(default=None, min_length=1)
-
-    def resolved_mission(self) -> LoopMissionContract:
-        if self.mission is not None:
-            if any(value is not None for value in (self.goal, self.task_contract, self.acceptance_criteria)):
-                raise ValueError("mission 与旧覆盖字段不能同时提交")
-            return self.mission
-        if self.goal is None or self.task_contract is None or self.acceptance_criteria is None:
-            raise ValueError("必须提交 mission 或完整旧覆盖字段")
-        return LegacyMissionAdapter.convert(
-            goal=self.goal,
-            task_contract=self.task_contract,
-            acceptance_criteria=self.acceptance_criteria,
-        )
-
-
-class LoopMissionRevisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    confirmation: Literal["activate"]
-    mission: LoopMissionContract
-
-
 class CompletionEvidenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     worker_request_id: str
     verification: CompletionVerificationContract
-
-
-@agent_loop_router.post("")
-async def start_loop(body: LoopCreateRequest, request: Request) -> dict:
-    return await request.app.state.agent_loop_service.start(body)
-
-
-@agent_loop_router.get("/by-context/{context_id}")
-async def get_active_loop_for_context(context_id: str, request: Request) -> dict | None:
-    return await request.app.state.agent_loop_service.active_for_context(context_id)
-
-
-@agent_loop_router.get("/activation-eligibility/by-context/{context_id}")
-async def get_loop_activation_eligibility(context_id: str, request: Request) -> dict:
-    return await request.app.state.agent_loop_service.activation_eligibility(context_id)
 
 
 @agent_loop_router.get("/{loop_id}")
@@ -179,33 +133,6 @@ async def control_loop(loop_id: str, body: LoopControlRequest, request: Request)
 async def mutate_loop_grant(loop_id: str, body: LoopGrantMutationRequest, request: Request) -> dict:
     await request.app.state.agent_loop_authority.mutate(loop_id, body)
     return await request.app.state.agent_loop_service.get(loop_id)
-
-
-@agent_loop_router.post("/{loop_id}/override")
-async def override_loop(loop_id: str, body: LoopOverrideRequest, request: Request) -> dict:
-    try:
-        mission = body.resolved_mission()
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return await request.app.state.agent_loop_service.override(loop_id, mission=mission)
-
-
-@agent_loop_router.post("/{loop_id}/missions")
-async def activate_loop_mission(
-    loop_id: str,
-    body: LoopMissionRevisionRequest,
-    request: Request,
-) -> dict:
-    return await request.app.state.agent_loop_service.override(loop_id, mission=body.mission)
-
-
-@agent_loop_router.post("/{loop_id}/interventions")
-async def submit_loop_intervention(
-    loop_id: str,
-    body: LoopInterventionRequest,
-    request: Request,
-) -> dict:
-    return await request.app.state.agent_loop_interventions.submit(loop_id, body)
 
 
 @agent_loop_router.post("/{loop_id}/decisions")

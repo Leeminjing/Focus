@@ -17,7 +17,7 @@ from backend.app.desktop.patrol.agent_loop.completion.completion_sources import 
 from backend.app.desktop.patrol.agent_loop.missions.mission_contract import LegacyMissionAdapter
 from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
 from backend.app.desktop.patrol.agent_loop.models import (CompletionVerification, LoopContextMembership,
-    LoopDelegationGrant, LoopDirective, LoopGoalRevision, LoopObservation, LoopPendingDecision, LoopUserIntent)
+    LoopDelegationGrant, LoopDirective, LoopGoalRevision, LoopObservation, LoopPendingDecision)
 from backend.app.desktop.patrol.agent_loop.schemas import CompletionVerificationContract
 from backend.app.desktop.contexts.curation.models import CurationProgram, PortfolioLaneCandidate, PortfolioRevision
 from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
@@ -129,10 +129,6 @@ class CompletionEligibilityPolicy:
             blockers.append('completion_control_changed')
         if await self._frontier_changed(session, round_row, memberships):
             blockers.append('verification_stale')
-        if await self._count(session, LoopUserIntent, LoopUserIntent.loop_id == loop.loop_id,
-            LoopUserIntent.intent_kind == 'direct_message', LoopUserIntent.delivery_state.not_in(
-                ('settled', 'failed', 'cancelled', 'rejected', 'delivery_failed'))):
-            blockers.append('user_message_pending')
         runs = await self._count(session, DesktopRun, DesktopRun.loop_id == loop.loop_id,
             (DesktopRun.status.in_(['pending', 'running'])) | ((DesktopRun.round_id.is_not(None)) & DesktopRun.settled_at.is_(None)))
         runs += await self._count(session, LoopDirective, LoopDirective.loop_id == loop.loop_id,

@@ -7,6 +7,7 @@ Repository/Service 事务行为。示例：`pytest backend/tests/test_loop_missi
 """
 
 import os
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,7 @@ from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
 from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
@@ -27,11 +28,11 @@ from backend.app.desktop.patrol.agent_loop.completion.completion_policy import C
 from backend.app.desktop.patrol.agent_loop.missions.mission_service import MissionRevisionService
 from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog, MissionSectionMismatch
-from backend.app.desktop.patrol.agent_loop.schemas import CriterionVerification, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop.schemas import CriterionVerification
 from backend.app.desktop.contexts.curation.contracts import MissionEvidenceRef, evidence_ref_key
 
 
-def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres_database) -> None:
+def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres_database, monkeypatch) -> None:
     migrations = (
         Path(__file__).parents[1]
         / "packages"
@@ -43,12 +44,23 @@ def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres
     )
     config = Config(str(migrations))
     database_url = make_url(os.environ["FOCUS_DATABASE_URL"]).set(drivername="postgresql+psycopg")
-    engine = create_engine(database_url)
+    database = "focus_mission_migration_" + uuid.uuid4().hex[:12]
+    admin = create_engine(database_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        connection.execute(text(f'CREATE DATABASE "{database}"'))
+    monkeypatch.setenv("FOCUS_DATABASE_URL", database_url.set(drivername="postgresql+asyncpg", database=database).render_as_string(hide_password=False))
+    engine = create_engine(database_url.set(database=database))
     try:
-        command.downgrade(config, "f3a4b5c6d7e8")
+        command.upgrade(config, "f3a4b5c6d7e8")
         schema = inspect(engine)
         assert "loop_mission_revisions" not in schema.get_table_names()
         assert "loop_goal_revisions" in schema.get_table_names()
+
+        command.upgrade(config, "a4b5c6d7e8f9")
+        assert "loop_mission_revisions" in inspect(engine).get_table_names()
+        command.downgrade(config, "f3a4b5c6d7e8")
+        assert "loop_mission_revisions" not in inspect(engine).get_table_names()
+        assert "loop_goal_revisions" in inspect(engine).get_table_names()
 
         command.upgrade(config, "head")
         schema = inspect(engine)
@@ -67,8 +79,10 @@ def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres
             "input_sources",
         } == columns
     finally:
-        command.upgrade(config, "head")
         engine.dispose()
+        with admin.connect() as connection:
+            connection.execute(text(f'DROP DATABASE "{database}" WITH (FORCE)'))
+        admin.dispose()
 
 
 def test_legacy_contract_is_lossless_and_check_ids_are_stable() -> None:
@@ -210,67 +224,3 @@ def test_only_user_can_record_mission_revision() -> None:
         assert "必须由用户显式确认" in str(exc)
     else:
         raise AssertionError("Patrol 不得创建 Mission revision")
-
-
-def test_create_request_accepts_structured_mission_and_legacy_payloads() -> None:
-    common = {
-        "loop_id": "loop-1",
-        "workspace_id": "workspace-1",
-        "initial_context_id": "context-1",
-        "initial_run_id": "run-1",
-        "holder_id": "patrol-1",
-        "capabilities": ("request_completion",),
-        "context_scope": ("context-1",),
-        "permission_scope": ("read",),
-    }
-    mission = LoopMissionContract(
-        outcome="交付 Live Loop",
-        boundaries=ExecutionBoundaries(required_invariants=("保留 Kernel",)),
-        completion_checks=(
-            CompletionCheckDefinition(
-                check_id="tests",
-                claim="测试通过",
-                expected_evidence_kinds=("test",),
-            ),
-        ),
-    )
-    structured = LoopCreateRequest(**common, mission=mission)
-    legacy = LoopCreateRequest(
-        **common,
-        goal="交付 Live Loop",
-        task_contract="保留 Kernel",
-        acceptance_criteria=({"criterion_id": "tests", "text": "测试通过"},),
-    )
-
-    assert structured.resolved_mission() == mission
-    assert legacy.resolved_mission().boundaries.legacy_text == "保留 Kernel"
-
-
-def test_create_request_rejects_mixed_mission_shapes() -> None:
-    mission = LoopMissionContract(
-        outcome="交付 Live Loop",
-        completion_checks=(
-            CompletionCheckDefinition(
-                check_id="tests",
-                claim="测试通过",
-                expected_evidence_kinds=("test",),
-            ),
-        ),
-    )
-    try:
-        LoopCreateRequest(
-            loop_id="loop-1",
-            workspace_id="workspace-1",
-            initial_context_id="context-1",
-            initial_run_id="run-1",
-            holder_id="patrol-1",
-            mission=mission,
-            goal="重复目标",
-            capabilities=("request_completion",),
-            context_scope=("context-1",),
-            permission_scope=("read",),
-        )
-    except ValidationError as exc:
-        assert "不能同时提交" in str(exc)
-    else:
-        raise AssertionError("结构化 Mission 与旧字段不得混用")
