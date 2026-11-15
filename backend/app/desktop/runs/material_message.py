@@ -2,7 +2,7 @@
 
 输入为字符串或内容块正文以及带稳定 origin_message_id 的 RunMaterialInputs；输出为 LangChain
 兼容的 human 消息字典。具体工作流为保留正文原结构，在同一 user role 中追加确定性协议块，
-其中逐项携带身份、快照路径、类型、备注和必看意图；空材料只增加稳定消息 ID。
+其中逐项携带身份、快照路径、类型和备注；空材料只增加稳定消息 ID。
 
 示例：message = RunMaterialMessageProjector.project("比较", inputs)。
 """
@@ -33,14 +33,12 @@ class RunMaterialMessageProjector:
     def _material_block(inputs: RunMaterialInputs) -> str:
         if not inputs.attached:
             return ""
-        required = set(inputs.required_image_ids)
         payload = [
             {
                 "material_id": item.material_id,
                 "relative_path": item.relative_path,
                 "material_kind": item.material_kind,
                 "note": item.note,
-                "must_view": item.material_id in required,
             }
             for item in inputs.attached
         ]

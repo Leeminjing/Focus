@@ -361,7 +361,6 @@ class DesktopDirectiveLaunchPort:
             message_reference=user_request.get("message_reference"),
             material_inputs=self._material_inputs(user_request, frozen_attachments),
             attached_material_ids=user_request.get("attached_material_ids"),
-            must_view_material_ids=user_request.get("must_view_material_ids") or [],
             run_identity={
                 "run_id": run_id,
                 "message_id": directive.message_id,

@@ -148,6 +148,38 @@ def test_user_message_real_observation_patrol_directive_dispatch_and_settlement(
     asyncio.run(run())
 
 
+def test_legacy_image_gate_retry_preserves_notes_and_original_receipt(tmp_path):
+    from backend.app.desktop.patrol.agent_loop.inputs.user_messages import message_request_hash
+
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        fixture = await _seed_loop(sessions, tmp_path, label="gate-old", started_at=datetime.now(UTC))
+        service = fixture["service"]
+        request_id = uuid.uuid4().hex
+        payload = {"message": "核对尺寸", "material_inputs": [{"material_id": "image", "note": "保留备注\n原文"}]}
+        try:
+            accepted = await service.user_message(fixture["context_id"], payload["message"], request_id=request_id, payload=payload)
+            legacy = {**payload, "must_view_material_ids": ["image"]}
+            digest = message_request_hash(fixture["context_id"], legacy)
+            async with sessions.begin() as session:
+                intent = await session.get(LoopUserIntent, accepted["intent_id"])
+                intent.request_payload = {**intent.request_payload, "request": legacy, "request_hash": digest}
+            assert await service.user_message(fixture["context_id"], payload["message"], request_id=request_id, payload=payload) == accepted
+            changed = {**payload, "material_inputs": [{"material_id": "image", "note": "改写备注"}]}
+            with pytest.raises(HTTPException) as conflict:
+                await service.user_message(fixture["context_id"], payload["message"], request_id=request_id, payload=changed)
+            assert conflict.value.status_code == 409
+            async with sessions() as session:
+                intent = await session.get(LoopUserIntent, accepted["intent_id"])
+                assert intent.request_payload["request"] == legacy
+                assert intent.request_payload["request_hash"] == digest
+        finally:
+            await _stop(service, fixture["loop_id"])
+            await engine.dispose()
+    asyncio.run(run())
+
+
 def test_server_equipment_and_message_lifecycle_are_role_and_type_bound(tmp_path):
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

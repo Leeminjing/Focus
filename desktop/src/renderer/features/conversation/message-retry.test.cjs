@@ -155,11 +155,11 @@ test("a failed derive leaves edits available, and cancellation creates no branch
   assert.ok(requests.every(request => !request.url.endsWith("/main/runs")));
 });
 
-test("replay rebinds attachments with notes and must-view intent without retired policies", async () => {
+test("replay rebinds attachments with notes without retired policies or image gate", async () => {
   const { context, run, button, requests } = setup();
   const originalApi = context.api;
   context.api = async (url, options) => {
-    if (url === '/desktop/api/tasks/source/material-history') return [{ message_id: 'q2', material_id: 'old-image', current_available: true, relative_path: 'image.png', ordinal: 0, note: 'read the labels', must_view_requested: true }];
+    if (url === '/desktop/api/tasks/source/material-history') return [{ message_id: 'q2', material_id: 'old-image', current_available: true, relative_path: 'image.png', ordinal: 0, note: 'read the labels' }];
     if (url === '/desktop/api/tasks/branch/materials') { requests.push({ url, ...options }); return { material_id: 'branch-image' }; }
     return originalApi(url, options);
   };
@@ -170,7 +170,7 @@ test("replay rebinds attachments with notes and must-view intent without retired
   assert.deepEqual(material, { path: 'image.png' });
   const main = JSON.parse(requests.find(request => request.url.endsWith('/main/runs')).body);
   assert.deepEqual(main.material_inputs, [{ material_id: 'branch-image', note: 'read the labels' }]);
-  assert.deepEqual(main.must_view_material_ids, ['branch-image']);
+  assert.equal(Object.hasOwn(main, "must_view_material_ids"), false);
 });
 
 test("unavailable original attachments stop replay; retrying preparation reuses the created branch", async () => {
@@ -217,14 +217,14 @@ test("inherited question manifests preserve attachments when the current task ha
   };
   context.inherited = inherited;
   const html = run('renderMessage(inherited[1], { historyActions: true })');
-  assert.match(html, /figure\.png/); assert.match(html, /read diagram/); assert.match(html, /必须看/);
+  assert.match(html, /figure\.png/); assert.match(html, /read diagram/); assert.doesNotMatch(html, /必须看/);
   assert.doesNotMatch(html, /focus_run_materials|当前内容不可用/);
   context.button = button('a1');
   await run('openMessageRetry(button, false)');
   const main = JSON.parse(requests.find(request => request.url.endsWith('/main/runs')).body);
   assert.equal(main.message, 'first');
   assert.deepEqual(main.material_inputs, [{ material_id: 'new-image', note: 'read diagram' }]);
-  assert.deepEqual(main.must_view_material_ids, ['new-image']);
+  assert.equal(Object.hasOwn(main, "must_view_material_ids"), false);
   assert.throws(() => retry.materialBindings({ content: '<focus_run_materials>\ninvalid\n</focus_run_materials>' }), /附件记录/);
 });
 

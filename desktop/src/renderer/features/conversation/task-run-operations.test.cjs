@@ -16,6 +16,19 @@ vm.createContext(context);
 vm.runInContext(readFileSync(path.join(__dirname, "./task-run-operations.js"), "utf8"), context);
 const Operations = context.window.FocusTaskRunOperations;
 
+for (const queued of [false, true]) test(`legacy ${queued ? "queued" : "direct"} retry keeps notes and identity without the image gate`, () => {
+  const run = { message: "核对尺寸", material_inputs: [{ material_id: "image", note: "保留备注\n原文" }], must_view_material_ids: ["image"] };
+  const original = { version: 1, request_id: "original", body: JSON.stringify(queued ? { mode: "queue", run } : run) };
+  const data = new Map([["focus-main-request:task", JSON.stringify(original)]]);
+  const storage = { getItem: key => data.get(key), setItem: (key, value) => data.set(key, value) };
+  const recovered = Operations.create({ storage }).recovery("task");
+  const body = JSON.parse(recovered.body), restored = body.run || body;
+  assert.equal(recovered.request_id, "original");
+  assert.equal(Object.hasOwn(restored, "must_view_material_ids"), false);
+  assert.deepEqual(restored.material_inputs, [{ material_id: "image", note: "保留备注\n原文" }]);
+  assert.equal(JSON.parse(data.get("focus-main-request:task")).body, recovered.body);
+});
+
 test("submission state is isolated by task and request", () => {
   const store = Operations.create();
   store.begin("task-a", "request-a");

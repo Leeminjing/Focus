@@ -12,7 +12,6 @@ from langgraph.graph.state import CompiledStateGraph
 
 from backend.app.desktop.capabilities.equipment import _resolve_access_mode
 from backend.app.desktop.materials.context import MaterialContextProjector
-from backend.app.desktop.materials.policy import _must_view_prompt
 from backend.app.desktop.persistence.models import (
     DesktopRun,
     DesktopThread,
@@ -249,18 +248,6 @@ class RunAssemblyService:
             material_context = equipment["_patrol_material_policy"]
         else:
             material_context, _ = await ports._material_context(run.task_id)
-        image_inputs = run_materials.images
-        required = list(image_inputs.required)
-        if required:
-            material_context = material_context + _must_view_prompt(
-                [
-                    {
-                        "material_id": item.material_id,
-                        "relative_path": item.relative_path,
-                    }
-                    for item in required
-                ]
-            )
         factory = ports._build_agent_factory(
             run.task_id,
             run.agent_id,

@@ -24,7 +24,6 @@ class RunMaterialHistoryRepository:
         run: DesktopRun,
         inputs: RunMaterialInputs,
     ) -> list[RunMaterialBinding]:
-        required = set(inputs.required_image_ids)
         rows = [
             RunMaterialBinding(
                 binding_id=uuid.uuid4().hex,
@@ -37,7 +36,6 @@ class RunMaterialHistoryRepository:
                 material_kind_snapshot=item.material_kind,
                 note=item.note,
                 ordinal=ordinal,
-                must_view_requested=item.material_id in required,
             )
             for ordinal, item in enumerate(inputs.attached)
         ]
@@ -80,7 +78,6 @@ class RunMaterialHistoryRepository:
             "material_kind": binding.material_kind_snapshot,
             "note": binding.note,
             "ordinal": binding.ordinal,
-            "must_view_requested": binding.must_view_requested,
             "created_at": binding.created_at.isoformat() if binding.created_at else None,
             "run_status": run.status,
             "current_available": current_available,

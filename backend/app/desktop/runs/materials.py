@@ -1,12 +1,12 @@
 """本文件对外提供 RunMaterialRequest 与 RunMaterialResolver，建立权威逐轮材料聚合。
 
-输入为数据库会话、任务/工作区、origin 身份、有序材料 ID/备注和独立必看图片 ID；输出为
+输入为数据库会话、任务/工作区、origin 身份、有序材料 ID 和备注；输出为
 不可变 RunMaterialInputs。具体工作流为统一规范化新旧请求、一次查询任务材料、校验路径、文件
 存在性、摘要和备注预算，再仅把图片子集交给 RunImageResolver 做真实字节与送模预算验证，
 最后按原顺序合并为唯一运行材料事实。
 工作区入口显式指定 owner；授权执行只接收服务端冻结快照，核验 task 的工作区后将精确字节投影到执行目录。
 
-示例：inputs = await resolver.resolve(session, task, workspace, run_id, message_id, requests, required)。
+示例：inputs = await resolver.resolve(session, task, workspace, run_id, message_id, requests, legacy_ids)。
 """
 
 from __future__ import annotations
@@ -49,18 +49,15 @@ class RunMaterialResolver:
         origin_message_id: str,
         material_inputs: list[RunMaterialRequest] | None,
         legacy_material_ids: list[str] | None,
-        required_image_ids: list[str],
         *, workspace_id: str | None = None, execution_workspace_path: str | None = None,
     ) -> RunMaterialInputs:
         requests = self._normalize_requests(material_inputs, legacy_material_ids)
         self._validate_request_limits(requests)
         if not requests:
-            if required_image_ids:
-                raise HTTPException(422, "必须看图片必须先选择为本轮材料")
             return RunMaterialInputs.build(origin_run_id, origin_message_id, ())
         if any(item.frozen_snapshot is not None for item in requests):
-            if not all(item.frozen_snapshot is not None for item in requests) or required_image_ids:
-                raise HTTPException(422, "冻结工作区附件不能混合未授权材料或新增必看约束")
+            if not all(item.frozen_snapshot is not None for item in requests):
+                raise HTTPException(422, "冻结工作区附件不能混合未授权材料")
             return await self._resolve_frozen(session, task_id, workspace_path, execution_workspace_path or workspace_path,
                 origin_run_id, origin_message_id, requests)
         ids = [item.material_id for item in requests]
@@ -78,10 +75,7 @@ class RunMaterialResolver:
             for request in requests
         ]
         image_ids = [item.material_id for item in snapshots if item.material_kind == "image"]
-        detached = [value for value in required_image_ids if value not in image_ids]
-        if detached:
-            raise HTTPException(422, f"只有本轮已选有效图片可以标记为必须看: {', '.join(detached)}")
-        images = await self._images.resolve(session, task_id, workspace_path, image_ids, required_image_ids, workspace_id=workspace_id)
+        images = await self._images.resolve(session, task_id, workspace_path, image_ids, workspace_id=workspace_id)
         image_by_id = {item.material_id: item for item in images.attached}
         merged = [
             RunMaterialInput(
@@ -98,7 +92,7 @@ class RunMaterialResolver:
             for item in snapshots
         ]
         return RunMaterialInputs.build(
-            origin_run_id, origin_message_id, merged, required_image_ids
+            origin_run_id, origin_message_id, merged
         )
 
     async def _resolve_frozen(self, session, task_id, source_root, execution_root, run_id, message_id, requests):

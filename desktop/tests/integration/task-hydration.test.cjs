@@ -219,7 +219,7 @@ test("switching away before first details cannot mask a saved draft with the loa
   assert.equal(h.input().value, "saved-a");
 });
 
-test("late history keeps the must-view recovery controls and the input blocked", async () => {
+test("late history does not revive retired image gate controls", async () => {
   const h = harness(), history = deferred();
   h.respond(path => {
     if (path === "/desktop/api/tasks/a") return {
@@ -229,19 +229,19 @@ test("late history keeps the must-view recovery controls and the input blocked",
     return fallback(path);
   });
   await h.run("switchTask('a')");
-  assert.match(h.messages(), /data-action="retry-must-view"/);
-  assert.equal(h.input().disabled, true);
+  assert.doesNotMatch(h.messages(), /data-action="retry-must-view"/);
+  assert.equal(h.input().disabled, false);
   history.resolve([]);
   await settle();
-  assert.match(h.messages(), /data-action="retry-must-view"/);
-  assert.match(h.messages(), /data-action="cancel-must-view"/);
-  assert.equal(h.input().disabled, true);
+  assert.doesNotMatch(h.messages(), /data-action="retry-must-view"/);
+  assert.doesNotMatch(h.messages(), /data-action="cancel-must-view"/);
+  assert.equal(h.input().disabled, false);
 });
 
-test("recovered attachments, image requirements and notes survive slow or failed materials", async () => {
+test("recovered attachments and notes survive slow or failed materials", async () => {
   const h = harness(), materials = deferred();
   h.run(`taskRunOperations.freeze('a', 'request-a', {body:'{}', input:'restored input', selectionSignature:JSON.stringify({
-    bindings:[{materialId:'image',note:'look here'}], requiredImageIds:['image'], notes:{image:'look here'}
+    bindings:[{materialId:'image',note:'look here'}], notes:{image:'look here'}
   })});`);
   h.respond(path => {
     if (path === "/desktop/api/tasks/a") return detail("a");
@@ -250,7 +250,6 @@ test("recovered attachments, image requirements and notes survive slow or failed
   });
   await h.run("switchTask('a')");
   assert.equal(h.run("materialSelection('a').bindings[0].note"), "look here");
-  assert.deepEqual(Array.from(h.run("materialSelection('a').requiredImageIds")), ["image"]);
   assert.match(h.app.innerHTML, /本次附件 · 1/);
   materials.reject(new Error("materials offline"));
   await settle();
@@ -259,7 +258,6 @@ test("recovered attachments, image requirements and notes survive slow or failed
   const input = h.input();
   await h.run("hydrateTaskResource('a', 'materials')");
   assert.match(h.attachments.innerHTML, /recovered.png/);
-  assert.deepEqual(Array.from(h.run("materialSelection('a').requiredImageIds")), ["image"]);
   assert.equal(h.run("materialSelection('a').notes.image"), "look here");
   assert.equal(h.input(), input);
 });

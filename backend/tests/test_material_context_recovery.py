@@ -1,46 +1,20 @@
-"""本文件对外提供必看报告恢复探测、载荷校验和统一运行材料上下文投影测试。
+"""本文件对外提供统一运行材料上下文恢复投影测试。
 
-输入为内存 checkpoint tuple、最近主运行状态、旧/新 equipment 与 retry/cancel 载荷；输出为
-processing/resumable/orphaned 状态、非法载荷拒绝，以及初始运行和任意主运行恢复使用完全相同的
+输入为最近主运行状态、旧/新 equipment 与压缩恢复载荷；输出为初始运行和主运行恢复使用完全相同的
 材料投影并保留被中断 Revision 的执行身份。具体工作流为通过同源准备接口，
-验证顺序/备注、图片、required、模型能力、execution thread/namespace 与 revision id，
+验证顺序/备注、图片、模型能力、execution thread/namespace 与 revision id，
 同时断言普通主运行不启用 Patrol 准备观察器；不启动模型或后台 worker。
 
-示例：python -m pytest backend/tests/test_must_view_recovery.py。
+示例：python -m pytest backend/tests/test_material_context_recovery.py。
 """
 
 import asyncio
 from types import SimpleNamespace
 
-from fastapi import HTTPException
-import pytest
 
 from backend.app.desktop.persistence.models import DesktopRun
-from backend.app.desktop.runs.must_view_recovery import (
-    must_view_recovery_payload,
-    validate_must_view_resume,
-)
 from backend.app.desktop.composition.service import DesktopService
 from focus.agents.material_inputs import RunMaterialInputs
-
-
-class Checkpointer:
-    def __init__(self, payload):
-        self.payload = payload
-
-    async def aget_tuple(self, _config):
-        if self.payload is None:
-            return None
-        interrupt = SimpleNamespace(value=self.payload)
-        return SimpleNamespace(pending_writes=[("task", "__interrupt__", [interrupt])])
-
-
-class ScalarSession:
-    def __init__(self, latest):
-        self.latest = latest
-
-    async def scalar(self, _query):
-        return self.latest
 
 
 class CommitSession:
@@ -56,50 +30,6 @@ class CommitSession:
 
     async def commit(self):
         return None
-
-
-def _payload():
-    return {
-        "type": "must_view_report",
-        "missing": ["m1"],
-        "unread": [],
-        "materials": [{"material_id": "m1", "relative_path": "shot.png", "reason": "missing"}],
-        "actions": ["retry", "cancel"],
-    }
-
-
-@pytest.mark.parametrize(
-    ("latest", "expected"),
-    [
-        (SimpleNamespace(status="running"), "processing"),
-        (SimpleNamespace(status="interrupted"), "resumable"),
-        (SimpleNamespace(status="error"), "orphaned"),
-        (None, "orphaned"),
-    ],
-)
-def test_recovery_status_follows_latest_main_run(latest, expected) -> None:
-    task = SimpleNamespace(thread_id="thread", task_id="task")
-    result = asyncio.run(
-        must_view_recovery_payload(ScalarSession(latest), task, Checkpointer(_payload()))
-    )
-    assert result["status"] == expected
-    assert result["request"] == _payload()
-
-
-def test_recovery_ignores_other_interrupts_and_validates_decisions() -> None:
-    task = SimpleNamespace(thread_id="thread", task_id="task")
-    assert asyncio.run(
-        must_view_recovery_payload(
-            ScalarSession(None), task, Checkpointer({"type": "compression_request"})
-        )
-    ) is None
-    assert validate_must_view_resume(
-        {"type": "must_view_report", "decision": "retry"}
-    ) == {"type": "must_view_report", "decision": "retry"}
-    with pytest.raises(HTTPException):
-        validate_must_view_resume({"type": "must_view_report", "decision": "ignore"})
-    with pytest.raises(HTTPException):
-        validate_must_view_resume({"type": "compression_request", "decision": "cancel"})
 
 
 def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -> None:
@@ -136,7 +66,6 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
             "model_bytes": 64,
             "model_tokens": 7,
         }],
-        ["m1"],
     )
     equipment = {
         "model_name": "vision-model",
@@ -193,7 +122,7 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
             CommitSession(interrupted),
             task,
             workspace,
-            {"type": "must_view_report", "decision": "retry"},
+            {"type": "compression", "decision": "retry"},
         )
     )
     assert initial.body.context["run_image_inputs"] == resumed.body.context["run_image_inputs"]

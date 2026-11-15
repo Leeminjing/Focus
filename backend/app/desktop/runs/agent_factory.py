@@ -7,11 +7,6 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from focus.agents.image_attachment import build_image_attachment_middleware
 from focus.agents.lead import make_lead_agent
-from focus.agents.material_inputs import RunMaterialInputs
-from focus.agents.must_view import (
-    build_must_view_completion_middleware,
-    report_must_view_images,
-)
 from focus.tools import get_available_tools
 from focus.tools.builtins.describe_skill_tool import build_describe_skill_tool
 from focus.tools.builtins.spawn_agent_tool import build_spawn_agent_tool
@@ -130,13 +125,7 @@ class AgentFactory:
                     ports.session_factory, ports.checkpointer
                 )
             if agent_role == "main":
-                image_inputs = RunMaterialInputs.from_equipment(equipment).images
                 additional_middlewares.append(build_image_attachment_middleware())
-                if image_inputs.required_ids:
-                    additional_middlewares.append(
-                        build_must_view_completion_middleware()
-                    )
-                    tools = [*tools, report_must_view_images]
             if agent_role == "main" and ports.app_config.compression.enabled:
                 from focus.agents.compression.gate import build_compression_gate
 

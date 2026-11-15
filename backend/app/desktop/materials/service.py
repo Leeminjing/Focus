@@ -54,7 +54,6 @@ class MaterialServicePorts(Protocol):
     material_groups: Any
     material_snapshots: Any
     material_uploads: Any
-    run_images: Any
     run_material_history: Any
     session_factory: Any
     state_changes: Any
@@ -595,17 +594,6 @@ class MaterialService:
     ) -> ResolvedMaterialContent:
         ports = self._ports
         return await ports.material_contents.resolve(task_id, material_id)
-
-    async def validate_image_material(
-        self, task_id: str, material_id: str
-    ) -> dict[str, Any]:
-        ports = self._ports
-        async with ports.session_factory() as session:
-            _, workspace = await ports._get_task_entities(session, task_id)
-            inputs = await ports.run_images.resolve(
-                session, task_id, workspace.path, [material_id], []
-            )
-        return inputs.attached[0].to_json()
 
     @staticmethod
     def _version_payload(version: MaterialVersion) -> dict[str, Any]:

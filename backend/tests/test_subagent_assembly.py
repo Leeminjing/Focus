@@ -141,22 +141,21 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
                     "message": "继续",
                     "permissions": ["read"],
                     "attached_material_ids": [image["material_id"]],
-                    "must_view_material_ids": [image["material_id"]],
                 },
             ).json()
             assert run["status"] == "pending"
             wait_until(
                 lambda: any(
-                    "report_must_view_images" in {tool.name for tool in config["tools"]}
+                    any(type(item).__name__ == "ImageAttachmentProjectionMiddleware" for item in config["additional_middlewares"])
                     for config in captured
                 ),
                 timeout=15,
-                message="主 Agent 必看图片装配未被捕获",
+                message="主 Agent 图片装配未被捕获",
             )
             main_cfg = next(
                 config
                 for config in reversed(captured)
-                if "report_must_view_images" in {tool.name for tool in config["tools"]}
+                if any(type(item).__name__ == "ImageAttachmentProjectionMiddleware" for item in config["additional_middlewares"])
             )
             main_names = {tool.name for tool in main_cfg["tools"]}
             assert {"spawn_agent", "spawn_teammate", "spawn_worker", "wake_agent",
@@ -164,19 +163,18 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
                     "publish_task", "list_board_tasks", "send_message",
                     "approve_plan", "respond_shutdown",
                     "list_patrol_agents", "read_patrol_agent_history",
-                    "read_swarm_agent_history",
-                    "report_must_view_images"} <= main_names
+                    "read_swarm_agent_history"} <= main_names
             assert main_cfg["middlewares"] is None
-            assert len(main_cfg["additional_middlewares"]) == 4 + len(browser_middlewares)
+            assert len(main_cfg["additional_middlewares"]) == 3 + len(browser_middlewares)
             names = [
                 middleware.__class__.__name__
                 for middleware in main_cfg["additional_middlewares"]
             ]
             assert "ImageAttachmentProjectionMiddleware" in names
-            assert "MustViewCompletionMiddleware" in names
+            assert "MustViewCompletionMiddleware" not in names
+            assert "report_must_view_images" not in main_names
             assert "CompressionGate" in names
             assert names.index("ImageAttachmentProjectionMiddleware") < names.index("CompressionGate")
-            assert names.index("MustViewCompletionMiddleware") < names.index("CompressionGate")
             assert "response_format" not in main_cfg, (
                 "主运行 MUST NOT 绑定 provider 结构化输出：有必需图片时 LangChain 会回落 "
                 "ToolStrategy 并强制 tool_choice=required，与 thinking 模型互斥"
@@ -222,7 +220,6 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
                         "model_bytes": 1,
                         "model_tokens": 1,
                     }],
-                    "required_ids": [],
                 },
             }
             attached_factory = service._build_agent_factory(

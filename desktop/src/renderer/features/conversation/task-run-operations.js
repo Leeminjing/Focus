@@ -40,6 +40,13 @@
         if (value && (value.version !== 1 || typeof value.request_id !== "string" || typeof value.body !== "string")) {
           throw new Error(localize("普通任务恢复数据无法读取，请保留原请求后重试"));
         }
+        // Retired completion constraints cannot be resent; preserve attachments, notes and request identity.
+        if (value?.body.includes('"must_view_material_ids"')) {
+          const body = JSON.parse(value.body);
+          delete (body.run || body).must_view_material_ids;
+          value.body = JSON.stringify(body);
+          storage.setItem(key, JSON.stringify(value));
+        }
         if (saved && legacy) legacy.removeItem(key);
         recoveries.set(taskId, value);
       }

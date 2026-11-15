@@ -190,7 +190,7 @@ async function testAttachmentCommitBoundary() {
     state.details.set('task-a', { messages: [], ui_state: { input: '带图消息', skills: [] }, active_run: null });
     state.contextTrees.set('workspace', []);
     state.materials.set('task-a', [{ material_id: 'm1', relative_path: '.focus/attachments/a.png', is_image: true, size_bytes: 10 }]);
-    state.materialSelections.set('task-a', { bindings: [{ materialId: 'm1', note: '重点' }], requiredImageIds: ['m1'], notes: { m1: '重点' } });
+    state.materialSelections.set('task-a', { bindings: [{ materialId: 'm1', note: '重点' }], notes: { m1: '重点' } });
     renderFocus = () => {};
     persistFocusState = () => {};
     listenToRun = () => {};
@@ -210,7 +210,6 @@ async function testAttachmentCommitBoundary() {
     sentBody: {
       message: "带图消息",
       material_inputs: [{ material_id: "m1", note: "重点" }],
-      must_view_material_ids: ["m1"],
       skills: [],
       access_mode: "workspace-write",
     },

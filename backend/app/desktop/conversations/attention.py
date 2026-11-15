@@ -21,7 +21,6 @@ async def read_task_attention(checkpointer: Any, run: Any, task: Any, checkpoint
     for payload_type, kind in (
         ("access_review", "access_approval"),
         ("compression_request", "compression"),
-        ("must_view_report", "must_view"),
     ):
         if pending_interrupt_payload(checkpoint, payload_type) is not None:
             items.append({"id": f"{run.run_id}:{kind}", "kind": kind, "run_id": run.run_id})

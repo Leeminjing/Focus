@@ -23,7 +23,7 @@ function setup(options = {}) {
     state.details.set("task", { messages: [], ui_state: { input: "检查这份附件" } });
     composerDraft.claim("task", "检查这份附件");
     state.materials.set("task", [{ material_id: "image", is_image: true, size_bytes: 50, relative_path: "image.png" }]);
-    state.materialSelections.set("task", { bindings: [{ materialId: "image", note: "原始备注" }], requiredImageIds: ["image"], notes: { image: "原始备注" } });
+    state.materialSelections.set("task", { bindings: [{ materialId: "image", note: "原始备注" }], notes: { image: "原始备注" } });
     state.details.get("task").ui_state.skills = ["original-skill"];
   `);
   const requests = [];
@@ -179,7 +179,7 @@ test("回执丢失后再次发送沿用身份和完整请求，只受理一次",
   assert.equal(h.evaluate('composerDraft.value("task")'), "");
 });
 
-test("再次失败仍保留原消息、材料、必看、权限与身份", async () => {
+test("再次失败仍保留原消息、材料、备注、权限与身份", async () => {
   const h = setup();
   await h.evaluate("sendMain()");
   await h.evaluate("sendMain()");
@@ -189,7 +189,7 @@ test("再次失败仍保留原消息、材料、必看、权限与身份", async
   assert.match(h.statusNode.textContent, /尚未确认是否受理/);
   const payload = JSON.parse(h.requests[0].options.body);
   assert.deepEqual(payload.material_inputs, [{ material_id: "image", note: "原始备注" }]);
-  assert.deepEqual(payload.must_view_material_ids, ["image"]);
+  assert.equal(Object.hasOwn(payload, "must_view_material_ids"), false);
   assert.deepEqual(payload.skills, ["original-skill"]);
   assert.equal(h.input.value, "检查这份附件");
   assert.equal(h.evaluate('materialSelection("task").bindings.length'), 1);

@@ -1,17 +1,17 @@
 """本文件对外提供 RunImageInput、RunImageInputs 与统一的 run 图片上下文投影函数。
 
-输入为服务端已验证的图片材料描述、必看材料标识和模型图像能力；材料描述中的
+输入为服务端已验证的图片材料描述和模型图像能力；材料描述中的
 material_id 是稳定身份，relative_path 是工作区相对路径，model_bytes/model_tokens 是
 该图片实际送模副本的资源估算，source_bytes 是本轮解析时的原文件边界，snapshot_object_id
 是当前路径变化后可用的受保护 Git blob。输出为不可变的
 RunImageInputs、可持久化 equipment JSON
 以及供 middleware 读取的 runtime context。
 
-具体工作流为：按输入顺序去重附件，校验 required 是 attached 的子集并聚合送模预算；
+具体工作流为：按输入顺序去重附件并聚合送模预算；
 通用 RunMaterialInputs 从中派生图片视图，新运行只把该视图投影到 runtime context，旧
-run_image_inputs 与 must_view_materials 则由通用聚合兼容读取；图片 middleware 不查询材料 ID。
+run_image_inputs 则由通用聚合兼容读取；图片 middleware 不查询材料 ID。
 
-示例：inputs = RunImageInputs.build(materials, ["m1"]); equipment.update(inputs.to_equipment())。
+示例：inputs = RunImageInputs.build(materials); equipment.update(inputs.to_equipment())。
 """
 
 from __future__ import annotations
@@ -65,7 +65,6 @@ class RunImageInput:
 @dataclass(frozen=True, slots=True)
 class RunImageInputs:
     attached: tuple[RunImageInput, ...] = ()
-    required_ids: tuple[str, ...] = ()
 
     @classmethod
     def empty(cls) -> "RunImageInputs":
@@ -75,7 +74,6 @@ class RunImageInputs:
     def build(
         cls,
         attached: Iterable[RunImageInput | Mapping[str, Any]],
-        required_ids: Iterable[str] = (),
     ) -> "RunImageInputs":
         unique: list[RunImageInput] = []
         seen: set[str] = set()
@@ -85,21 +83,15 @@ class RunImageInputs:
                 continue
             seen.add(item.material_id)
             unique.append(item)
-        required = tuple(dict.fromkeys(str(value) for value in required_ids if str(value)))
-        detached = [material_id for material_id in required if material_id not in seen]
-        if detached:
-            raise ValueError(f"必须看图片必须先附加: {', '.join(detached)}")
-        return cls(attached=tuple(unique), required_ids=required)
+        return cls(attached=tuple(unique))
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any] | None) -> "RunImageInputs":
         if not isinstance(value, Mapping):
             return cls.empty()
         attached = value.get("attached")
-        required = value.get("required_ids")
         return cls.build(
             attached if isinstance(attached, list) else (),
-            required if isinstance(required, list) else (),
         )
 
     @classmethod
@@ -109,10 +101,6 @@ class RunImageInputs:
         current = equipment.get(RUN_IMAGE_INPUTS_EQUIPMENT_KEY)
         if isinstance(current, Mapping):
             return cls.from_json(current)
-        legacy = equipment.get("must_view_materials")
-        if isinstance(legacy, list):
-            items = [item for item in legacy if isinstance(item, Mapping)]
-            return cls.build(items, [str(item.get("material_id") or "") for item in items])
         return cls.empty()
 
     @classmethod
@@ -122,16 +110,7 @@ class RunImageInputs:
         current = context.get(RUN_IMAGE_INPUTS_CONTEXT_KEY)
         if isinstance(current, Mapping):
             return cls.from_json(current)
-        legacy = context.get("must_view_materials")
-        if isinstance(legacy, list):
-            items = [item for item in legacy if isinstance(item, Mapping)]
-            return cls.build(items, [str(item.get("material_id") or "") for item in items])
         return cls.empty()
-
-    @property
-    def required(self) -> tuple[RunImageInput, ...]:
-        required = set(self.required_ids)
-        return tuple(item for item in self.attached if item.material_id in required)
 
     @property
     def total_model_bytes(self) -> int:
@@ -144,7 +123,6 @@ class RunImageInputs:
     def to_json(self) -> dict[str, Any]:
         return {
             "attached": [item.to_json() for item in self.attached],
-            "required_ids": list(self.required_ids),
             "total_model_bytes": self.total_model_bytes,
             "total_model_tokens": self.total_model_tokens,
         }

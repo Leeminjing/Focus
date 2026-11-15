@@ -35,7 +35,6 @@ from backend.app.desktop.runs.estimates import estimate_tokens
 from backend.app.desktop.runs.identity import latest_main_run
 from backend.app.desktop.runs.material_message import RunMaterialMessageProjector
 from backend.app.desktop.runs.materials import RunMaterialRequest
-from backend.app.desktop.runs.must_view_recovery import must_view_recovery_payload
 from backend.app.desktop.runs.orchestration import (
     RunAdmissionConflict,
     RunAdmissionService,
@@ -179,7 +178,6 @@ class RunService:
         memory_ids: list[str] | None = None,
         material_inputs: list[RunMaterialRequest] | None = None,
         attached_material_ids: list[str] | None = None,
-        must_view_material_ids: list[str] | None = None,
         access_mode: str | None = None,
         run_identity: dict[str, Any] | None = None,
         execution_workspace_path: str | None = None,
@@ -280,22 +278,6 @@ class RunService:
                         "message": "存在待确认的压缩请求，请先完成压缩或取消后继续",
                     },
                 )
-            must_view_recovery = await must_view_recovery_payload(
-                session, task_row, ports.checkpointer
-            )
-            if must_view_recovery is not None:
-                await self._project_loop_pending_decision(
-                    identity, "must_view", must_view_recovery
-                )
-                raise HTTPException(
-                    409,
-                    {
-                        "code": "must_view_report_pending",
-                        "recovery": must_view_recovery["status"],
-                        "request": must_view_recovery["request"],
-                        "message": "存在待处理的必看报告，请先重试或取消当前运行",
-                    },
-                )
             access_recovery = await main_pending_interrupt(
                 session, task_row, ports.checkpointer, APPROVAL_TYPE
             )
@@ -333,7 +315,6 @@ class RunService:
                 message_id,
                 material_inputs,
                 attached_material_ids,
-                must_view_material_ids or [],
                 execution_workspace_path=execution_path,
             )
             if run_materials.images.attached and (

@@ -122,15 +122,6 @@ async def material_content(
     )
 
 
-@router.get("/tasks/{task_id}/materials/{material_id}/image-validity")
-async def image_material_validity(
-    task_id: str, material_id: str, request: Request
-) -> dict:
-    return await request.app.state.desktop_service.validate_image_material(
-        task_id, material_id
-    )
-
-
 @router.put("/materials/{material_id}")
 async def update_material(
     material_id: str, body: MaterialUpdate, request: Request

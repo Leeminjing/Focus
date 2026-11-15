@@ -340,14 +340,14 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                         {"material_id": text_id, "note": "结合文档"},
                         {"material_id": image_id, "note": "逐像素核对\n保留原文"},
                     ],
-                    "must_view_material_ids": [image_id],
                 },
             )
             assert accepted.status_code == 200
             _wait_run_status(client, accepted.json()["run_id"], "success")
             context = launched[-1][0].context["run_image_inputs"]
             assert [item["material_id"] for item in context["attached"]] == [image_id]
-            assert context["required_ids"] == [image_id]
+            assert "required_ids" not in context
+            assert "required_image_ids" not in launched[-1][0].context["run_material_inputs"]
             run_materials = launched[-1][0].context["run_material_inputs"]
             assert [item["material_id"] for item in run_materials["attached"]] == [text_id, image_id]
             assert [item["note"] for item in run_materials["attached"]] == ["结合文档", "逐像素核对\n保留原文"]
@@ -362,6 +362,7 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
             )
             assert history.status_code == 200
             assert history.json()[-1]["note"] == "逐像素核对\n保留原文"
+            assert "must_view_requested" not in history.json()[-1]
             assert history.json()[-1]["message_id"] == accepted.json()["message_id"]
             assert client.delete(
                 f"/desktop/api/materials/{image_id}", headers=SESSION
@@ -384,6 +385,10 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
             assert client.get(
                 f"/desktop/api/tasks/{first_id}/materials/{stale['material_id']}/image-validity",
                 headers=SESSION,
+            ).status_code == 404
+            assert client.post(
+                f"/desktop/api/tasks/{first_id}/main/runs", headers=SESSION,
+                json={"message": "检查图片", "material_inputs": [{"material_id": stale["material_id"], "note": "核对尺寸"}]},
             ).status_code == 422
             assert client.get(
                 f"/desktop/api/tasks/{first_id}/materials/{stale['material_id']}/content",

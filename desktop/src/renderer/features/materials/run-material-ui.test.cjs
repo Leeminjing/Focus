@@ -1,7 +1,7 @@
 /*
  * 本文件验证逐轮材料备注的渲染位置、草稿语义与历史材料卡片。输入为文本/图片/未选材料、折叠
  * 偏好、binding 草稿、线程历史与材料区事件入口；输出为备注框只出现在所属材料条目内、主输入区
- * 无材料托盘、取消勾选只隐藏输入框不丢弃草稿、重新勾选恢复原文、图片必看独立、分组折叠与已选
+ * 无材料托盘、取消勾选只隐藏输入框不丢弃草稿、重新勾选恢复原文、图片附件、分组折叠与已选
  * 摘要正确、备注编辑不启动材料拖放、内部协议不泄漏的断言。工作流在 VM 中调用 app.js 渲染函数、
  * 材料动作函数与 document 委托入口，并按输入顺序核对返回标记。
  * 示例：node run-material-ui.test.cjs。
@@ -24,8 +24,8 @@ const result = harness.vm.runInContext(`(() => {
   const idle = { material_id: "t2", relative_path: "idle.md", material_kind: "text", is_image: false, size_bytes: 5, retention: "removable", first_run_id: "r2" };
   state.materials.set("task", [text, image, idle]);
   state.materialGroups.set("task", []);
-  state.materialSelections.set("task", { bindings: [{ materialId: "t1", note: "第一行\\n第二行" }, { materialId: "i1", note: "对照" }], requiredImageIds: ["i1"], notes: { t1: "第一行\\n第二行", i1: "对照" } });
-  state.materialHistory.set("task", [{ binding_id: "b", run_id: "r1", message_id: "msg1", material_id: "t1", relative_path: "notes.md", material_kind: "text", note: "第一行\\n第二行", ordinal: 0, must_view_requested: false, current_available: true }]);
+  state.materialSelections.set("task", { bindings: [{ materialId: "t1", note: "第一行\\n第二行" }, { materialId: "i1", note: "对照" }], notes: { t1: "第一行\\n第二行", i1: "对照" } });
+  state.materialHistory.set("task", [{ binding_id: "b", run_id: "r1", message_id: "msg1", material_id: "t1", relative_path: "notes.md", material_kind: "text", note: "第一行\\n第二行", ordinal: 0, current_available: true }]);
 
   const textRow = renderMaterial(text);
   const imageRow = renderMaterial(image);
@@ -71,8 +71,8 @@ assert.doesNotMatch(result.openRow, /完整阅读|粗略阅读|严格遵守|仅�
 assert.match(result.openRow, /<label>保留规则<select data-field="retention"/);
 assert.doesNotMatch(result.imageRow, /线程内尚未使用|无备注/);
 
-// 图片材料：备注与「必须看」各自独立。
-assert.match(result.imageRow, /toggle-image-required[^>]*aria-pressed="true"/);
+// 图片材料：图片备注随本轮选择保留。
+assert.doesNotMatch(result.imageRow, /toggle-image-required|必须看/);
 assert.match(result.imageRow, /run-material-note[\s\S]*对照/);
 
 // 未选材料：没有任何备注输入框。

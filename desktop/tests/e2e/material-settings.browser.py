@@ -32,7 +32,6 @@ HARNESS = r"""
     if (path === '/desktop/api/tasks/root/materials') return reply(materialHarness.materials);
     if (path === '/desktop/api/tasks/root/material-history') return reply([
       {material_id:'protected',run_id:'previous-run',relative_path:'rules.md',note:'',current_available:true}]);
-    if (path.endsWith('/image-validity')) return reply({valid:true});
     if (path.endsWith('/image/content')) {
       const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6P3sAAAAASUVORK5CYII='), c=>c.charCodeAt(0));
       return new Response(bytes, {headers:{'Content-Type':'image/png'}});
@@ -117,21 +116,22 @@ with sync_playwright() as p:
         expect(protected.locator('[data-action="toggle-run-material"]')).to_be_enabled()
         assert page.evaluate("materialHarness.calls.find(c=>c.path.endsWith('/restore')).body.version_id") == 'saved-version'
 
-        # Image preview and mandatory viewing remain separate from inclusion.
+        # Image inclusion, notes and preview remain available without a declaration gate.
         image.get_by_role('button',name='材料设置',exact=True).click()
         expect(image.get_by_role('button',name='删除',exact=True)).to_have_count(0)
         expect(image.get_by_role('button',name='版本',exact=True)).to_be_visible()
-        expect(image.locator('[data-action="toggle-image-required"]')).to_be_disabled()
         image.locator('[data-action="toggle-run-material"]').click()
-        image.locator('[data-action="toggle-image-required"]').click()
-        expect(image.locator('[data-action="toggle-image-required"]')).to_have_attribute('aria-pressed','true')
-        assert page.evaluate("materialHarness.calls.some(c=>c.path.endsWith('/image-validity'))")
+        expect(image.get_by_text('必须看', exact=True)).to_have_count(0)
+        image.get_by_role('textbox', name='本轮备注', exact=True).fill('请核对图中的尺寸')
         image.locator('[data-action="preview-image-material"]').click()
         expect(page.locator('.image-lightbox')).to_be_visible()
         page.locator('.image-lightbox').get_by_role('button',name='关闭',exact=True).click()
         expect(page.locator('.image-lightbox')).to_have_count(0)
         image.locator('[data-action="toggle-run-material"]').click()
-        expect(image.locator('[data-action="toggle-image-required"]')).to_have_attribute('aria-pressed','false')
+        expect(image.get_by_role('textbox', name='本轮备注', exact=True)).to_have_count(0)
+        image.locator('[data-action="toggle-run-material"]').click()
+        expect(image.get_by_role('textbox', name='本轮备注', exact=True)).to_have_value('请核对图中的尺寸')
+        image.screenshot(path=str(OUTPUT/'image-material-note.png'))
         assert len(page.evaluate('materialHarness.materials')) == 3
 
         # File metadata shows its exact Run; expanded content still fetches pinned snapshots.

@@ -43,7 +43,6 @@ class WorkspaceAttachments:
             "",
             [RunMaterialRequest(item.material_id, item.note) for item in request.attachments],
             None,
-            [],
             workspace_id=loop.workspace_id,
         )
         frozen = []

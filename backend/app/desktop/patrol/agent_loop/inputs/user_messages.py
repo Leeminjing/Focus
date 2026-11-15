@@ -55,7 +55,11 @@ class LoopUserMessageAdmission:
             existing = await session.get(LoopUserIntent, intent_id)
             if existing is not None:
                 if existing.request_payload.get("request_hash") != digest:
-                    raise HTTPException(409, "用户消息请求身份已用于不同目标或内容")
+                    previous = existing.request_payload.get("request") or {}
+                    legacy = {**payload, "must_view_material_ids": previous.get("must_view_material_ids")}
+                    if ("must_view_material_ids" not in previous
+                            or existing.request_payload.get("request_hash") != message_request_hash(context_id, legacy)):
+                        raise HTTPException(409, "用户消息请求身份已用于不同目标或内容")
                 return accepted_message_view(existing)
             loop = await self._loop(session, context_id)
             if loop is None:

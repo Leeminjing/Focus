@@ -1,12 +1,12 @@
 """本文件对外提供 RunMaterialInput、RunMaterialInputs 与统一运行材料上下文投影函数。
 
-输入为服务端已验证的材料快照、稳定 origin run/message 身份和独立 required 图片 ID；输出为
+输入为服务端已验证的材料快照、稳定 origin run/message 身份；输出为
 不可变运行材料聚合、单向兼容读取的 equipment JSON、派生 RunImageInputs、<current_uploads> 标签
-及 runtime context。具体工作流为保留用户顺序和备注原文，拒绝重复材料与非图片必看项，新写入只使用
+及 runtime context。具体工作流为保留用户顺序和备注原文，拒绝重复材料，新写入只使用
 run_material_inputs（并在此声明它作为 run_image_inputs / model_supports_image_input 两个受治理键的
-服务端生产者）；旧 run_image_inputs 或 must_view_materials 仅在读取时提升为通用结构。
+服务端生产者）；旧 run_image_inputs 仅在读取时提升为通用结构。
 
-示例：inputs = RunMaterialInputs.build("r1", "msg1", materials, ["image1"])。
+示例：inputs = RunMaterialInputs.build("r1", "msg1", materials)。
 """
 
 from __future__ import annotations
@@ -76,7 +76,6 @@ class RunMaterialInputs:
     origin_run_id: str = ""
     origin_message_id: str = ""
     attached: tuple[RunMaterialInput, ...] = ()
-    required_image_ids: tuple[str, ...] = ()
 
     @classmethod
     def empty(cls) -> "RunMaterialInputs":
@@ -88,7 +87,6 @@ class RunMaterialInputs:
         origin_run_id: str,
         origin_message_id: str,
         attached: Iterable[RunMaterialInput | Mapping[str, Any]],
-        required_image_ids: Iterable[str] = (),
     ) -> "RunMaterialInputs":
         items = tuple(
             item if isinstance(item, RunMaterialInput) else RunMaterialInput.from_mapping(item)
@@ -97,15 +95,7 @@ class RunMaterialInputs:
         ids = [item.material_id for item in items]
         if len(ids) != len(set(ids)):
             raise ValueError("运行材料不能重复")
-        required = tuple(dict.fromkeys(str(value) for value in required_image_ids if str(value)))
-        by_id = {item.material_id: item for item in items}
-        detached = [value for value in required if value not in by_id]
-        if detached:
-            raise ValueError(f"必须看图片必须先选择: {', '.join(detached)}")
-        non_images = [value for value in required if by_id[value].material_kind != "image"]
-        if non_images:
-            raise ValueError(f"只有图片可以标记为必须看: {', '.join(non_images)}")
-        return cls(origin_run_id, origin_message_id, items, required)
+        return cls(origin_run_id, origin_message_id, items)
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any] | None) -> "RunMaterialInputs":
@@ -115,7 +105,6 @@ class RunMaterialInputs:
             str(value.get("origin_run_id") or ""),
             str(value.get("origin_message_id") or ""),
             value.get("attached") if isinstance(value.get("attached"), list) else (),
-            value.get("required_image_ids") if isinstance(value.get("required_image_ids"), list) else (),
         )
 
     @classmethod
@@ -141,7 +130,7 @@ class RunMaterialInputs:
             )
             for item in images.attached
         ]
-        return cls.build("", "", items, images.required_ids)
+        return cls.build("", "", items)
 
     @classmethod
     def from_context(cls, context: Any) -> "RunMaterialInputs":
@@ -168,7 +157,6 @@ class RunMaterialInputs:
                 for item in self.attached
                 if item.material_kind == "image"
             ),
-            self.required_image_ids,
         )
 
     @property
@@ -188,7 +176,6 @@ class RunMaterialInputs:
             "origin_run_id": self.origin_run_id,
             "origin_message_id": self.origin_message_id,
             "attached": [item.to_json() for item in self.attached],
-            "required_image_ids": list(self.required_image_ids),
         }
 
     def to_equipment(self) -> dict[str, Any]:

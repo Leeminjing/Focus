@@ -1,12 +1,12 @@
 """本文件对外提供 RunImageResolver，负责把本轮材料 ID 解析为权威 RunImageInputs。
 
-输入为数据库 session、任务 ID、工作区路径、attached IDs、required IDs 和资源限制；输出为
-按用户顺序去重且预算完整的 RunImageInputs。具体工作流为先校验 required 是 attached 子集，
-再仅查询当前任务材料，逐项确认文件存在、非空且真实内容可解码为受支持图片，生成送模副本
+输入为数据库 session、任务 ID、工作区路径、attached IDs 和资源限制；输出为
+按用户顺序去重且预算完整的 RunImageInputs。具体工作流为仅查询当前任务材料，
+逐项确认文件存在、非空且真实内容可解码为受支持图片，生成送模副本
 的字节/token 估算，最后校验单轮数量与聚合字节边界。
 工作区受理通过显式 workspace_id 使用同一解码与预算流程；measure 校验已冻结原始字节，避免改读活动路径。
 
-示例：inputs = await resolver.resolve(session, task_id, workspace, attached, required)。
+示例：inputs = await resolver.resolve(session, task_id, workspace, attached)。
 """
 
 from __future__ import annotations
@@ -35,14 +35,9 @@ class RunImageResolver:
         task_id: str,
         workspace_path: str,
         attached_ids: list[str],
-        required_ids: list[str],
         *, workspace_id: str | None = None,
     ) -> RunImageInputs:
         attached = list(dict.fromkeys(attached_ids))
-        required = list(dict.fromkeys(required_ids))
-        detached = [material_id for material_id in required if material_id not in attached]
-        if detached:
-            raise HTTPException(422, f"必须看图片必须先附加: {', '.join(detached)}")
         if len(attached) > self._limits.run_image_count:
             raise HTTPException(413, f"本轮最多附加 {self._limits.run_image_count} 张图片")
         if not attached:
@@ -60,7 +55,7 @@ class RunImageResolver:
             self._resolve_one(material_id, by_id.get(material_id), workspace_path)
             for material_id in attached
         ]
-        inputs = RunImageInputs.build(resolved, required)
+        inputs = RunImageInputs.build(resolved)
         if inputs.total_model_bytes > self._limits.run_model_bytes:
             raise HTTPException(
                 413, f"本轮图片送模总量超过上限 {self._limits.run_model_bytes} 字节"

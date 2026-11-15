@@ -1,7 +1,7 @@
 /*
- * 本文件验证图片材料选择、独立必看控件与逐轮备注可见性。输入为任务材料、binding/required 状态、
- * 材料备注和可控 image-validity API；输出为三个合法 UI 状态、备注框只随本轮选择出现且与必看
- * 相互独立、选择时的新鲜度校验，以及缩略图/消息/压缩/放大四个入口不泄漏 session 的断言。具体
+ * 本文件验证图片材料选择和逐轮备注可见性。输入为任务材料、binding 状态、
+ * 材料备注和可控 API；输出为备注框只随本轮选择出现、没有声明控件或额外校验，
+ * 以及缩略图/消息/压缩/放大四个入口不泄漏 session 的断言。具体
  * 工作流在 VM 中直接调用 app.js 的纯渲染和选择函数。
  * 示例：node desktop/src/renderer/features/materials/image-material-ui.test.cjs。
  */
@@ -24,34 +24,27 @@ harness.vm.runInContext(readAppSource(), harness.context);
 
     state.materialSelections.set("task", runMaterialPicker.empty());
     const idle = renderMaterial(material);
-    state.materialSelections.set("task", { bindings: [{ materialId: "m1", note: "对照" }], requiredImageIds: [], notes: { m1: "对照" } });
+    state.materialSelections.set("task", { bindings: [{ materialId: "m1", note: "对照" }], notes: { m1: "对照" } });
     const attached = renderMaterial(material);
-    state.materialSelections.set("task", { bindings: [{ materialId: "m1", note: "对照" }], requiredImageIds: ["m1"], notes: { m1: "对照" } });
-    const required = renderMaterial(material);
 
     const calls = [];
     api = async path => { calls.push(path); return {}; };
     state.materialSelections.set("task", runMaterialPicker.empty());
     toggleRunMaterial("m1");
-    await toggleImageRequired("m1");
 
     const message = renderMessageImages(["m1"]);
     const compression = renderCompressionBlockImages(["m1"]);
     openImageLightbox("blob:preview", "shot.png");
-    return { idle, attached, required, calls, message, compression };
+    return { idle, attached, calls, message, compression };
   })()`, harness.context);
 
   assert.match(result.idle, /toggle-run-material" aria-pressed="false"/);
-  assert.match(result.idle, /toggle-image-required" aria-pressed="false" disabled/);
   assert.match(result.attached, /toggle-run-material" aria-pressed="true"/);
-  assert.match(result.attached, /toggle-image-required" aria-pressed="false">/);
-  assert.match(result.required, /toggle-image-required" aria-pressed="true">/);
-  // 备注框只随本轮选择出现，并与「必须看」各自独立。
+  // 备注框只随本轮选择出现，不依赖额外的图片声明。
   assert.doesNotMatch(result.idle, /run-material-note/);
   assert.match(result.attached, /run-material-note[\s\S]*对照/);
-  assert.match(result.required, /run-material-note[\s\S]*对照/);
-  assert.equal(result.calls.length, 1);
-  assert.ok(result.calls.every(path => path.endsWith("/materials/m1/image-validity")));
+  assert.equal(result.calls.length, 0);
+  assert.doesNotMatch(result.attached, /toggle-image-required|必须看/);
 
   for (const html of [result.idle, result.message, result.compression]) {
     assert.match(html, /data-material-task-id="task"/);
