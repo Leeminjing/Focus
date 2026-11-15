@@ -26,6 +26,7 @@
   document.querySelector("#instruction").removeAttribute("data-i18n-placeholder");
   host.inert = true;
   const $ = selector => host.querySelector(selector), bridge = window.focusDesktop?.patrol;
+  document.body.dataset.panelOpaque = String(bridge?.opaquePanel === true);
   host.prepend($("#version-picker"),$("#version-detail"));
   const runtime = window.focusDesktop?.runtime() || { apiBase: location.origin, session: new URLSearchParams(location.search).get("session") || "" };
   const api = FocusLoopApi.create(runtime), live = FocusLoopLiveStore.create();
@@ -47,7 +48,7 @@
   let control = null;
   let restart = null;
   let onboarding = false;
-  let resizeFrame = null, lastPanelSize = null, lastInputLayout = null, sizingDisposed = false;
+  let resizeFrame = null, lastPanelSize = null, lastPanelScale = null, lastInputLayout = null, sizingDisposed = false;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   const references = FocusDesktopPatrolReferences.create({ host, api, runtime, store:draftStore, loopId:() => loopId, onError:fail });
   const artifacts = FocusArtifactDrawer.create({ host, api, getLoopId: () => loopId, onSource: id => openWorkbench(id) });
@@ -316,9 +317,10 @@
     await send(() => intake.submit(id, visible), id);
   }
   async function hidePanel() {
-    await intake.flush();
     const owner = ++closeEpoch;
-    host.classList.remove("is-opening"); host.classList.add("is-closing"); host.inert = true;
+    await intake.flush();
+    if (owner !== closeEpoch) return;
+    host.classList.add("is-closing"); host.inert = true;
     await Promise.all(host.getAnimations().map(animation => animation.finished.catch(() => {})));
     if (owner !== closeEpoch) return;
     try { await bridge?.hidePanel(); }
@@ -565,6 +567,7 @@
       input.style.height = `${Math.max(36, Math.min(108, input.scrollHeight))}px`;
     }
     const detail = !$("#version-detail").hidden, beside = detail && matchMedia("(min-width:580px)").matches;
+    const drawer = $(".artifact-drawer"), drawerOpen = artifacts.isOpen();
     const popupHeight = [$("#version-picker"),$("#version-detail"),$(".artifact-drawer")].reduce((sum,node) => sum + (node.hidden || (beside && node.id === "version-detail") ? 0 : node.offsetHeight + 8),0);
     const shellStyle = getComputedStyle($(".panel-shell"));
     const contentStyle = getComputedStyle($(".panel-content"));
@@ -574,11 +577,18 @@
     const contentHeight = composeHeight + $(".panel-feedback-content").offsetHeight + popupHeight;
     const menuHeight = $(".panel-menu").open ? $(".panel-menu-content").offsetTop + $(".panel-menu-content").offsetHeight + 10 : 0;
     const gutter = parseFloat(getComputedStyle(host).paddingTop);
-    // Measure intrinsic blocks, not the viewport or transformed opening animation.
-    const height = Math.min(500+gutter*2, Math.ceil(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 56 : 0)+gutter*2));
-    const size = { height, width:(detail || artifacts.isOpen() ? 590 : host.dataset.reading === "true" ? 520 : 288)+gutter*2 };
-    if (!bridge?.enabled || (lastPanelSize && Math.abs(size.height-lastPanelSize.height) <= 1 && Math.abs(size.width-lastPanelSize.width) <= 1)) return;
+    // Measure intrinsic blocks independently of the viewport.
+    let height = Math.min(500+gutter*2, Math.ceil(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 56 : 0)+gutter*2));
+    if (bridge?.opaquePanel && drawerOpen) {
+      // The drawer replaces the composer. Its clipped offsetHeight depends on
+      // the old viewport and must not feed a shrinking native-window loop.
+      const style = getComputedStyle(drawer);
+      height = Math.min(440, Math.ceil(drawer.scrollHeight + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth)));
+    }
+    const size = { height, width:(detail || drawerOpen ? 590 : host.dataset.reading === "true" ? 520 : 288)+gutter*2 };
+    if (!bridge?.enabled || (lastPanelSize && (!bridge.opaquePanel || lastPanelScale === scale) && Math.abs(size.height-lastPanelSize.height) <= 1 && Math.abs(size.width-lastPanelSize.width) <= 1)) return;
     lastPanelSize = size;
+    lastPanelScale = scale;
     void bridge.resizePanel(size).catch(error => { if (lastPanelSize === size) lastPanelSize = null; fail(error); });
   }
   const sizeObserver = new ResizeObserver(schedulePanelResize);
@@ -600,9 +610,6 @@
     bridge.onVisibility(setVisibility);
     bridge.onOpen(target => {
       closeEpoch++; host.inert = false; host.classList.remove("is-closing");
-      host.classList.remove("is-opening");
-      const owner = closeEpoch;
-      requestAnimationFrame(() => { if (owner === closeEpoch) host.classList.add("is-opening"); });
       return enqueue(async () => {
         if (target.setupWorkspace) { onboarding = true; renderOnboarding(); }
         if (target.workspaceId) await activate(target.workspaceId === workspace?.workspace_id ? workspace : await intake.workspace(target.workspaceId));

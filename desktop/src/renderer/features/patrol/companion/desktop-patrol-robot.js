@@ -1,6 +1,6 @@
 /* 本文件提供紧凑桌面机器人的 DOM 交互入口。
  * 输入为鼠标移动、拖放内容和宿主状态，输出为受限位置/内容 IPC 与现有机器人素材状态。
- * 工作流为点击唤起面板，拖动超过阈值只调整位置，外部拖入内容转成有界字节后送预览；状态更新不主动聚焦。
+ * 工作流为点击切换面板显隐，拖动超过阈值只调整位置，外部拖入内容转成有界字节后送预览；状态更新不主动聚焦。
  * 示例：将截图拖到机器人会调用 patrol.receive，不会调用 workspace input 提交 API。
  */
 (async function () {
@@ -50,7 +50,7 @@
   });
   button.addEventListener("pointerup", () => { drag = null; });
   button.addEventListener("pointercancel", () => { drag = null; });
-  button.addEventListener("click", () => { if (!moved) void bridge.openPanel(); moved = false; });
+  button.addEventListener("click", () => { if (!moved) void bridge.togglePanel(); moved = false; });
   document.querySelector("#robot-hide").addEventListener("click", () => bridge.hideRobot());
   host.addEventListener("dragover", event => { event.preventDefault(); host.classList.add("is-dragging"); });
   host.addEventListener("dragleave", () => host.classList.remove("is-dragging"));

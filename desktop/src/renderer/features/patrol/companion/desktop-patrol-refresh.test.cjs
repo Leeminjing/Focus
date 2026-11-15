@@ -20,7 +20,7 @@ const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: 
   contexts: { c: { entity_id: "c", updated_sequence: 1, state: { title: "回答", current_revision_id: revision } } },
   task_progress: { revision: 1, state: { document: { items: [] } } }, interventions: {}, ...patch });
 
-async function panel({ visible = true, workspaceId = "a", choose = async () => null, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true, manualFrames = false } = {}) {
+async function panel({ visible = true, workspaceId = "a", choose = async () => null, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true, manualFrames = false, opaquePanel = false, flush = async () => {} } = {}) {
   const body = createElement("body");
   body.innerHTML = fs.readFileSync(path.join(__dirname, "../../../desktop-patrol.html"), "utf8");
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
@@ -32,6 +32,7 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
   const sizing = { width:262, scrollHeight:36, feedbackHeight:0, reads:0, requests:[] }, frames = new Map();
   let frameId = 0;
   const input = body.querySelector("#instruction"), host = body.querySelector("#panel"), properties = new Map();
+  host.getAnimations = () => [];
   Object.defineProperty(input, "style", { value:{height:"36px"} });
   Object.defineProperty(input, "clientWidth", { get:() => sizing.width });
   Object.defineProperty(input, "scrollHeight", { get:() => { sizing.reads++; return sizing.scrollHeight; } });
@@ -43,12 +44,13 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create(undefined, intakeOptions.accessMode)); return stores.get(id); };
   const api = { workspacePatrol: async id => { loopReads.push(id); return { loop_id: `loop-${id}` }; }, workspaceInputs: history,
     conversation: (...args) => { calls.push(args); return read(...args); } };
-  const bridge = { enabled: true, onVisibility: callback => { events.visibility = callback; },
+  const bridge = { enabled: true, opaquePanel, onVisibility: callback => { events.visibility = callback; },
     onOpen: callback => { events.open = callback; }, onContent() {},
     ready: async () => ({ state: { workspaceId }, panelVisible: visible }),
+    hidePanel: async () => { events.hideCalls = (events.hideCalls || 0) + 1; events.visibility?.(false); },
     setState: async value => { states.push(value); }, resizePanel: async value => { sizing.requests.push(value); } };
   const intake = { store, hasUnfinished: () => false, isSending: () => false, remember() {}, claimUnbound() {},
-    flush: async () => {},
+    flush,
     readBinding: () => null, reconcile: async () => {},
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
     choose, bind: async path => ({ workspace_id: path, display_name: path }),
@@ -59,7 +61,7 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
     AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } },
     requestAnimationFrame: callback => { if (!manualFrames) return setImmediate(callback); frames.set(++frameId,callback); return frameId; },
     cancelAnimationFrame: id => { if (manualFrames) frames.delete(id); else clearImmediate(id); },
-    getComputedStyle: node => node === host ? {paddingTop:"8"} : {paddingTop:"2",paddingBottom:"1",borderTopWidth:"1",borderBottomWidth:"1"},
+    getComputedStyle: node => node === host ? {paddingTop:opaquePanel ? "0" : "8"} : {paddingTop:"2",paddingBottom:"1",borderTopWidth:"1",borderBottomWidth:"1"},
     screen:{availHeight:1040}, matchMedia:() => ({matches:false}), localStorage: {},
     ResizeObserver: class { constructor(callback) { events.resizeObserved = callback; } observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
@@ -94,6 +96,53 @@ test("desktop panel uses the Patrol file mode independently of ordinary session 
   const f = await panel();
   f.store("a").edit({ content: "检查工作区" });
   assert.equal(f.store("a").submit().request.access_mode, "danger-full-access");
+});
+
+test("opaque panel resends unchanged CSS dimensions when page scale changes", async () => {
+  const f = await panel({ opaquePanel: true, manualFrames: true });
+  f.flushLayout();
+  assert.equal(f.sizing.requests.length, 1);
+  assert.equal(f.sizing.requests[0].width, 288);
+  f.context.window.devicePixelRatio = 1.5;
+  f.events.resize(); f.flushLayout();
+  assert.equal(f.sizing.requests.length, 2, "The host needs another CSS target to apply the new page zoom");
+  assert.deepEqual(f.sizing.requests[1], f.sizing.requests[0], "Renderer must not multiply CSS sizes by devicePixelRatio");
+  f.events.resize(); f.flushLayout();
+  assert.equal(f.sizing.requests.length, 2);
+});
+
+test("reopening supersedes a close still waiting for the draft flush", async () => {
+  let release;
+  const pendingFlush = new Promise(resolve => { release = resolve; });
+  const f = await panel({ opaquePanel: true, flush: () => pendingFlush });
+  f.store("a").edit({ content: "Keep this draft" });
+  f.body.querySelector("#hide").dispatchEvent({ type: "click" });
+  await tick();
+  await f.events.open({});
+  release(); await tick(); await tick();
+  assert.equal(f.events.hideCalls || 0, 0, "A close superseded during persistence must never hide the reopened panel");
+  assert.equal(f.body.querySelector("#panel").inert, false);
+  assert.equal(f.store("a").get().draft.content, "Keep this draft");
+  assert.deepEqual(f.submissions, []);
+});
+
+test("opaque artifact drawer sizing uses its scroll content rather than clipped viewport height", async () => {
+  const f = await panel({ opaquePanel: true, manualFrames: true });
+  f.flushLayout();
+  const drawer = f.body.querySelector(".artifact-drawer");
+  drawer.hidden = false;
+  drawer.offsetHeight = 90;
+  drawer.scrollHeight = 300;
+  f.events.resizeObserved(); f.flushLayout();
+  assert.equal(f.sizing.requests.at(-1).height, 302, "Drawer needs its content plus borders even when the current window clips it");
+  assert.equal(f.sizing.requests.at(-1).width, 590);
+  const count = f.sizing.requests.length;
+  drawer.offsetHeight = 30;
+  f.events.resizeObserved(); f.flushLayout();
+  assert.equal(f.sizing.requests.length, count, "Clipping must not feed another smaller native resize");
+  drawer.hidden = true;
+  f.events.resizeObserved(); f.flushLayout();
+  assert.equal(f.sizing.requests.at(-1).width, 288, "Closing the drawer restores the compact composer target");
 });
 
 test("panel batches input measurements, deduplicates layout noise and refits on width changes", async () => {

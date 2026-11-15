@@ -29,10 +29,10 @@ function clampBounds(bounds, area) {
   };
 }
 
-function panelBounds(robot, area, height = PANEL_SIZE.height, width = PANEL_SIZE.width) {
+function panelBounds(robot, area, height = PANEL_SIZE.height, width = PANEL_SIZE.width, gutter = PANEL_GUTTER) {
   const x = robot.x - width - 6 >= area.x
-    ? robot.x - width - 6 + PANEL_GUTTER : robot.x + robot.width + 6 - PANEL_GUTTER;
-  return clampBounds({ x, y: robot.y + robot.height - 40 - height + PANEL_GUTTER, width, height }, area);
+    ? robot.x - width - 6 + gutter : robot.x + robot.width + 6 - gutter;
+  return clampBounds({ x, y: robot.y + robot.height - 40 - height + gutter, width, height }, area);
 }
 
 function boundedString(value, limit, name, optional = false) {
@@ -108,6 +108,11 @@ class DesktopPatrolHost {
     this._getWorkbench = getWorkbench;
     this._quit = quit;
     this._getModelSettings = getModelSettings;
+    this._panelOpaque = process.platform === "win32";
+    this._panelGutter = this._panelOpaque ? 0 : PANEL_GUTTER;
+    // Renderer measurements remain in CSS pixels; only _positionPanel converts
+    // opaque Windows panel targets to native DIP using the current page zoom.
+    this._panelCssSize = { width: 288 + this._panelGutter*2, height: 109 + this._panelGutter*2 };
     this._setupStep = "";
     this._preferencesPath = path.join(electron.app.getPath("userData"), "desktop-patrol.json");
     this._state = { workspaceId: "", workspaceName: "", state: "idle", dirty: false, pending: false };
@@ -130,8 +135,8 @@ class DesktopPatrolHost {
     const bounds = clampBounds({ ...saved, ...ROBOT_SIZE }, screen.getDisplayMatching({ ...saved, ...ROBOT_SIZE }).workArea);
     const common = {
       show: false, frame: false, resizable: false, maximizable: false, minimizable: false,
-      // Chromium owns the antialiased card edge. A native frame/material/region
-      // would add a second outline or opaque rectangle outside that edge.
+      // The robot and non-Windows panel retain alpha edges. Windows uses an
+      // opaque, edge-to-edge panel to avoid translucent native show flicker.
       thickFrame: false, hasShadow: false, transparent: true, backgroundColor: "#00000000", backgroundMaterial: "none", roundedCorners: false,
       skipTaskbar: true, alwaysOnTop: true, icon: this._icon,
       webPreferences: {
@@ -144,7 +149,13 @@ class DesktopPatrolHost {
     // Keep mouse activation available; showInactive() still avoids taking focus
     // when the robot starts or is restored without an intentional click.
     this.robot = new BrowserWindow({ ...common, ...bounds, focusable: true });
-    this.panel = new BrowserWindow({ ...common, ...panelBounds(bounds, screen.getDisplayMatching(bounds).workArea) });
+    this.panel = new BrowserWindow({ ...common,
+      ...panelBounds(bounds, screen.getDisplayMatching(bounds).workArea, this._panelCssSize.height, this._panelCssSize.width, this._panelGutter),
+      ...(this._panelOpaque ? { transparent: false, backgroundColor: "#f3f6fb" } : {}),
+      webPreferences: { ...common.webPreferences, additionalArguments: [
+        ...common.webPreferences.additionalArguments, ...(this._panelOpaque ? ["--focus-opaque-patrol-panel"] : []),
+      ] },
+    });
     for (const [surface, win] of [["robot", this.robot], ["panel", this.panel]]) {
       this._protectWindow(win, surface);
       win.on("close", event => { if (!this._disposed) { event.preventDefault(); win.hide(); } });
@@ -211,6 +222,11 @@ class DesktopPatrolHost {
     this.robot.showInactive();
     this._raiseSurfaces();
     if (this.panel.isVisible()) this.panel.focus();
+  }
+
+  togglePanel() {
+    if (this.panel.isVisible()) { this.panel.hide(); return true; }
+    return this.openPanel();
   }
 
   openPanel(target = {}) {
@@ -364,16 +380,17 @@ class DesktopPatrolHost {
       this._handlers.push(channel);
     };
     handle("open", ["robot", "panel", "workbench"], value => this.openPanel(value));
+    handle("toggle", ["robot"], () => this.togglePanel());
     handle("hide-panel", ["robot", "panel"], () => this.panel.hide());
     handle("resize-panel", ["panel"], size => {
       const height = typeof size === "object" && size ? size.height : size;
-      const width = typeof size === "object" && size ? size.width : PANEL_SIZE.width;
+      const width = typeof size === "object" && size ? size.width : 288 + this._panelGutter*2;
       if (!Number.isFinite(height)) throw new Error("面板高度无效");
       if (!Number.isFinite(width)) throw new Error("面板宽度无效");
-      const nextHeight = Math.max(PANEL_SIZE.height, Math.min(500 + PANEL_GUTTER*2, Math.ceil(height)));
-      const nextWidth = Math.max(PANEL_SIZE.width, Math.min(590 + PANEL_GUTTER*2, Math.ceil(width)));
-      if (Math.abs(nextHeight-this._panelHeight) <= BOUNDS_TOLERANCE && Math.abs(nextWidth-this._panelWidth) <= BOUNDS_TOLERANCE) return true;
-      this._panelHeight = nextHeight; this._panelWidth = nextWidth;
+      const nextHeight = Math.max(109 + this._panelGutter*2, Math.min(500 + this._panelGutter*2, Math.ceil(height)));
+      const nextWidth = Math.max(288 + this._panelGutter*2, Math.min(590 + this._panelGutter*2, Math.ceil(width)));
+      this._panelCssSize = { height: nextHeight, width: nextWidth };
+      // An unchanged CSS target still needs positioning when page zoom changed.
       this._positionPanel();
       return true;
     });
@@ -421,6 +438,7 @@ class DesktopPatrolHost {
       this._ready.add(surface);
       if (surface === "robot") this.robot.webContents.send(`${PREFIX}state`, this._state);
       if (surface === "panel") {
+        this._positionPanel();
         this.panel.webContents.send(`${PREFIX}open`, this._panelTarget || { workspaceId: this._state.workspaceId });
         this._panelTarget = null;
         for (const payload of this._queue) this.panel.webContents.send(`${PREFIX}content`, payload);
@@ -451,7 +469,14 @@ class DesktopPatrolHost {
   _positionPanel() {
     if (!this.robot || this.robot.isDestroyed() || !this.panel || this.panel.isDestroyed()) return;
     const robot = this.robot.getBounds();
-    const target = panelBounds(robot, this._electron.screen.getDisplayMatching(robot).workArea, this._panelHeight, this._panelWidth);
+    const zoom = this._panelOpaque ? this.panel.webContents.getZoomFactor() : 1;
+    const height = Math.ceil(this._panelCssSize.height * zoom), width = Math.ceil(this._panelCssSize.width * zoom);
+    // Keep the latest CSS intent above, but apply rounding tolerance only to
+    // the last accepted DIP target, never to CSS values or rounded HWND bounds.
+    if (this._panelZoom !== zoom || Math.abs(height-this._panelHeight) > BOUNDS_TOLERANCE || Math.abs(width-this._panelWidth) > BOUNDS_TOLERANCE) {
+      this._panelHeight = height; this._panelWidth = width; this._panelZoom = zoom;
+    }
+    const target = panelBounds(robot, this._electron.screen.getDisplayMatching(robot).workArea, this._panelHeight, this._panelWidth, this._panelGutter);
     const from = this.panel.getBounds();
     if (["x","y","width","height"].every(key => Math.abs(from[key]-target[key]) <= BOUNDS_TOLERANCE)) return;
     this.panel.setBounds(target);

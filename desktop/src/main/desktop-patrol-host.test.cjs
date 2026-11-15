@@ -16,6 +16,9 @@ const { DesktopPatrolHost, clampBounds, panelBounds, validateContent } = require
 
 const limits = { general_file_bytes: 32, run_material_count: 3 };
 const originalArea = { x: 0, y: 0, width: 1920, height: 1040 };
+const opaquePanel = process.platform === "win32";
+const panelGutter = opaquePanel ? 0 : 8;
+const panelMinimum = { width: 288 + panelGutter*2, height: 109 + panelGutter*2 };
 
 function fixture(t, { preferences, ...options } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "focus-patrol-host-"));
@@ -31,6 +34,7 @@ function fixture(t, { preferences, ...options } = {}) {
       this.focuses = 0;
       this.webContents = new EventEmitter();
       this.webContents.mainFrame = { url: "" };
+      this.webContents.getZoomFactor = () => this.zoomFactor ?? 1;
       this.webContents.setWindowOpenHandler = callback => { this.openHandler = callback; };
       this.webContents.send = (channel, value) => this.messages.push({ channel, value });
     }
@@ -179,38 +183,70 @@ test("fixed file identity crosses workbench IPC without accepting unbounded or u
   }
 });
 
-test("floating surfaces have alpha transparency and no Windows non-client frame", async t => {
+test("Windows panel is opaque while the robot retains alpha transparency", async t => {
   const f=fixture(t); await f.host.start();
   for (const win of [f.host.robot,f.host.panel]) {
     assert.equal(win.options.thickFrame,false,"无边框浮窗必须明确关闭 Windows 厚边框");
-    assert.equal(win.options.transparent,true,"CSS 圆角外必须使用真正的 alpha 透明");
     assert.equal(win.options.hasShadow,false,"不能保留系统矩形阴影");
     assert.equal(win.options.backgroundMaterial,"none","不能在卡片外绘制整窗 Acrylic");
   }
+  assert.equal(f.host.robot.options.transparent, true);
+  assert.equal(f.host.panel.options.transparent, !opaquePanel, "Windows panel must avoid the translucent native surface");
+  assert.equal(f.host.panel.options.backgroundColor, opaquePanel ? "#f3f6fb" : "#00000000");
+  assert.equal(f.host.panel.options.webPreferences.additionalArguments.includes("--focus-opaque-patrol-panel"), opaquePanel);
+  assert.equal(f.host.robot.options.webPreferences.additionalArguments.includes("--focus-opaque-patrol-panel"), false);
 });
 
 test("compact panel expands within display bounds and only accepts resize from its owner", async t => {
   const f = fixture(t); await f.host.start();
-  assert.equal(f.host.panel.getBounds().width, 304);
-  assert.equal(f.host.panel.getBounds().height, 125);
+  assert.equal(f.host.panel.getBounds().width, panelMinimum.width);
+  assert.equal(f.host.panel.getBounds().height, panelMinimum.height);
   assert.throws(() => f.invoke("resize-panel", f.host.robot, 500), /不能调用/);
   for (const value of [null, "400", NaN, Infinity]) assert.throws(() => f.invoke("resize-panel", f.host.panel, value), /高度无效/);
   f.invoke("resize-panel", f.host.panel, 10000);
-  assert.equal(f.host.panel.getBounds().height, 516);
+  assert.equal(f.host.panel.getBounds().height, 500 + panelGutter*2);
   f.host.openPanel();
-  assert.equal(f.host.panel.getBounds().height, 516);
+  assert.equal(f.host.panel.getBounds().height, 500 + panelGutter*2);
   f.screen.area = { x: 0, y: 0, width: 400, height: 300 };
   f.screen.emit("display-metrics-changed");
   assert.equal(f.host.panel.getBounds().height, 300);
-  assert.equal(f.host.panel.getBounds().width, 304);
+  assert.equal(f.host.panel.getBounds().width, panelMinimum.width);
   f.invoke("resize-panel", f.host.panel, 0);
-  assert.equal(f.host.panel.getBounds().height, 125);
+  assert.equal(f.host.panel.getBounds().height, panelMinimum.height);
   f.screen.area = { ...originalArea };
   f.invoke("resize-panel",f.host.panel,{height:400,width:10000});
-  assert.equal(f.host.panel.getBounds().width,606);
+  assert.equal(f.host.panel.getBounds().width,590 + panelGutter*2);
   f.invoke("resize-panel",f.host.panel,136);
-  assert.equal(f.host.panel.getBounds().width,304);
+  assert.equal(f.host.panel.getBounds().width,panelMinimum.width);
   assert.throws(() => f.invoke("resize-panel",f.host.panel,{height:200,width:NaN}),/宽度无效/);
+});
+
+test("opaque panel converts CSS targets to DIP once and preserves them across zoom/display changes", { skip: !opaquePanel }, async t => {
+  const f = fixture(t); await f.host.start();
+  for (const zoom of [1.2 ** -2, 1, 1.2 ** 2]) {
+    f.host.panel.zoomFactor = zoom;
+    f.invoke("resize-panel", f.host.panel, { width: 288, height: 200 });
+    assert.equal(f.host.panel.getBounds().width, Math.ceil(288 * zoom));
+    assert.equal(f.host.panel.getBounds().height, Math.ceil(200 * zoom));
+    f.invoke("resize-panel", f.host.panel, { width: 1, height: 1 });
+    assert.equal(f.host.panel.getBounds().width, Math.ceil(288 * zoom));
+    assert.equal(f.host.panel.getBounds().height, Math.ceil(109 * zoom));
+    f.invoke("resize-panel", f.host.panel, { width: 10000, height: 10000 });
+    assert.equal(f.host.panel.getBounds().width, Math.ceil(590 * zoom));
+    assert.equal(f.host.panel.getBounds().height, Math.ceil(500 * zoom));
+  }
+  f.host.panel.zoomFactor = 1.2 ** -2;
+  f.host.openPanel();
+  assert.equal(f.host.panel.getBounds().width, Math.ceil(590 * 1.2 ** -2), "Opening must use current page zoom without waiting for another CSS measurement");
+  f.screen.area = { x: 0, y: 0, width: 100, height: 90 }; f.screen.emit("display-metrics-changed");
+  assert.equal(f.host.panel.getBounds().width, 100);
+  f.screen.area = { ...originalArea }; f.screen.emit("display-metrics-changed");
+  assert.equal(f.host.panel.getBounds().width, Math.ceil(590 * 1.2 ** -2));
+  f.host.panel.zoomFactor = 1.2 ** 2;
+  f.invoke("resize-panel", f.host.panel, { width: 288, height: 200 });
+  assert.equal(f.host.panel.getBounds().height, 288);
+  f.invoke("resize-panel", f.host.panel, { width: 288, height: 201 });
+  assert.equal(f.host.panel.getBounds().height, 290, "One CSS pixel can exceed the one-DIP tolerance after page zoom");
 });
 
 test("panel resize applies once even when an older renderer requests animation", async t => {
@@ -278,6 +314,20 @@ test("IPC authenticates owner window, main frame, origin and surface before tran
     f.host.robot.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, target);
     assert.equal(prevented, true);
   }
+});
+
+test("only robot toggles visibility while open and receive always expand", async t => {
+  const f = fixture(t); await f.host.start(); await f.host.openWorkbench();
+  assert.throws(() => f.invoke("toggle", f.host.panel), /不能调用/);
+  assert.throws(() => f.invoke("toggle", f.workbench), /不能调用/);
+  f.invoke("toggle", f.host.robot); assert.equal(f.host.panel.isVisible(), true);
+  f.invoke("toggle", f.host.robot); assert.equal(f.host.panel.isVisible(), false);
+  f.invoke("toggle", f.host.robot); assert.equal(f.host.panel.isVisible(), true);
+  f.invoke("hide-panel", f.host.panel);
+  f.invoke("toggle", f.host.robot); assert.equal(f.host.panel.isVisible(), true);
+  f.host.openPanel(); f.host.openPanel(); assert.equal(f.host.panel.isVisible(), true);
+  f.invoke("receive", f.host.robot, { items: [{ kind: "text", text: "ref" }] });
+  assert.equal(f.host.panel.isVisible(), true);
 });
 
 test("recovery IPC belongs only to the panel main frame and acknowledges durable writes", async t => {
