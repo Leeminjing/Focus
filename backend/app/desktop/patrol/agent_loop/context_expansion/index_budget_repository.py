@@ -29,13 +29,13 @@ class IndexBudgetReservationRepository:
         "output_tokens": None,
     }
 
-    def __init__(self, sessions, loop_id, grant_revision, limits, frozen_usage, *, owner=None):
+    def __init__(self, sessions, loop_id, grant_revision, limits, frozen_usage, *, owner=None, reservation_id=None):
         self._sessions = sessions
         self._loop_id = loop_id
         self._grant_revision = grant_revision
         self._limits = dict(limits)
         self._frozen_usage = dict(frozen_usage)
-        self._reservation_id = uuid.uuid4().hex
+        self._reservation_id = reservation_id or uuid.uuid4().hex
         self._owner = dict(owner or {})
 
     @classmethod

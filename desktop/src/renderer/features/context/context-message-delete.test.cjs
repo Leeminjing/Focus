@@ -25,7 +25,7 @@ function setup({ expandedKey = null, reducedMotion = false } = {}) {
         { role: "human", content: "A" },
         { role: "ai", content: "B" },
         { role: "human", content: "C" }
-      ], uiKeys: ["a", "b", "c"], expandedKey: ${JSON.stringify(expandedKey)}
+      ], uiKeys: ["a", "b", "c"], expandedKey: ${JSON.stringify(expandedKey)}, editMode: "json"
     };
     contextSourcePanelMarkup = () => "";
     renderContextEditor();
@@ -34,21 +34,32 @@ function setup({ expandedKey = null, reducedMotion = false } = {}) {
     hydrateContextTrees = async () => {};
     openDerivedContext = () => {};
   `);
-  // The minimal DOM does not decode textarea HTML entities as a browser does.
-  for (const input of root.querySelectorAll("textarea")) {
-    input.value = run(`JSON.stringify(state.contextDraft.messages[${Number(input.dataset.contextMessageIndex)}])`);
-  }
-  for (const row of root.querySelectorAll(".context-message-editor")) {
-    row.animate = () => {
-      let finish;
-      const finished = new Promise(resolve => { finish = resolve; });
-      animations.push(finish);
-      return { finished };
-    };
-  }
-  const click = button => {
+  const hydrated = new WeakSet();
+  const hydrateRows = () => {
+    // Match browser textarea initial values and Web Animations on newly rendered nodes.
+    for (const input of root.querySelectorAll("textarea")) {
+      if (hydrated.has(input)) continue;
+      hydrated.add(input);
+      const path = `state.contextDraft.messages[${Number(input.dataset.contextMessageIndex)}]`;
+      input.value = input.hasAttribute("data-context-message-json") ? run(`JSON.stringify(${path})`)
+        : input.dataset.contextPartIndex == null ? run(`${path}.content`) : run(`${path}.content[${Number(input.dataset.contextPartIndex)}].text`);
+    }
+    for (const row of root.querySelectorAll(".context-message-editor")) {
+      if (row.animate) continue;
+      row.animate = () => {
+        let finish;
+        const finished = new Promise(resolve => { finish = resolve; });
+        animations.push(finish);
+        return { finished };
+      };
+    }
+  };
+  hydrateRows();
+  const click = async button => {
     context.clickTarget = button;
-    return run("handleDocumentClick({ target: clickTarget })");
+    const result = await run("handleDocumentClick({ target: clickTarget })");
+    hydrateRows();
+    return result;
   };
   const contents = () => JSON.parse(run("JSON.stringify(state.contextDraft.messages.map(message => message.content))"));
   const keys = () => [...root.querySelectorAll(".context-message-editor[data-context-ui-key]")].map(row => row.dataset.contextUiKey);
@@ -155,4 +166,95 @@ test("reduced motion removes immediately and repeated deletion remains harmless"
   await h.run("submitContext()");
   assert.deepEqual(h.contents(), ["B", "C"]);
   assert.deepEqual(h.submissions[0].messages.map(message => message.content), ["B", "C"]);
+});
+
+test("creating a duplicate reads pending body edits and preserves every message field independently", async () => {
+  const h = setup();
+  const original = { role: "tool", content: "result", tool_call_id: "call-1", name: "search", future: { nested: [null, false, { version: 3 }] } };
+  h.run(`state.contextDraft.messages[0] = ${JSON.stringify(original)}; renderContextEditor()`);
+  await h.click(h.root.querySelector('[data-context-ui-key="a"] [data-action="context-message-toggle"]'));
+  h.root.querySelector("[data-context-message-content]").value = "edited before blur\nsecond line";
+  await h.click(h.root.querySelector('[data-context-ui-key="a"] [data-action="context-message-duplicate"]'));
+  assert.deepEqual(h.contents(), ["edited before blur\nsecond line", "edited before blur\nsecond line", "B", "C"]);
+  assert.equal(new Set(h.keys()).size, 4);
+  h.run('state.contextDraft.messages[1].future.nested[2].version = 4');
+  assert.equal(h.run("state.contextDraft.messages[0].future.nested[2].version"), 3);
+  await h.run("submitContext()");
+  assert.deepEqual(h.submissions[0].messages[0], { ...original, content: "edited before blur\nsecond line" });
+});
+
+test("body and full JSON modes preserve multimodal blocks, tool calls and unknown fields through submission", async () => {
+  const h = setup();
+  const message = { role: "ai", content: [
+    { type: "text", text: "before", annotations: [{ future: true }] },
+    { type: "image_url", image_url: { url: "data:image/png;base64,exact" } },
+    { type: "text", text: "after" },
+  ], tool_calls: [{ id: "call-2", function: { name: "search", arguments: '{"q":"exact"}' } }], future: { keep: [1, null] } };
+  h.run(`state.contextDraft.messages[1] = ${JSON.stringify(message)}; renderContextEditor()`);
+  await h.click(h.root.querySelector('[data-context-ui-key="b"] [data-action="context-message-toggle"]'));
+  const parts = h.root.querySelectorAll("[data-context-message-content]");
+  assert.equal(parts.length, 2);
+  parts[0].value = "edited before";
+  parts[1].value = "edited after";
+  await h.click(h.root.querySelector('[data-context-ui-key="b"] [data-action="context-message-edit-json"]'));
+  assert.equal(h.root.querySelectorAll("[data-context-message-content]").length, 0);
+  message.content[0].text = "edited before";
+  message.content[2].text = "edited after";
+  assert.deepEqual(JSON.parse(h.run("JSON.stringify(state.contextDraft.messages[1])")), message);
+  message.future.addedInJson = { exact: true };
+  h.root.querySelector("[data-context-message-json]").value = JSON.stringify(message);
+  await h.click(h.root.querySelector('[data-context-ui-key="b"] [data-action="context-message-toggle"]'));
+  assert.equal(h.root.querySelectorAll("[data-context-message-json]").length, 0);
+  assert.equal(h.root.querySelector("[data-context-message-content]").value, "edited before");
+  h.run("moveContextMessage(1, 0)");
+  assert.equal(h.root.querySelector("[data-context-message-content]").dataset.contextMessageIndex, "0");
+  assert.equal(h.root.querySelector("[data-context-message-content]").getAttribute("aria-label"), "消息 1 正文 1");
+  await h.run("submitContext()");
+  assert.deepEqual(h.submissions[0].messages[0], message);
+});
+
+test("deleting a body editor retires its inputs during animation and undo keeps the edit", async () => {
+  const h = setup();
+  await h.click(h.root.querySelector('[data-context-ui-key="a"] [data-action="context-message-toggle"]'));
+  h.root.querySelector("[data-context-message-content]").value = "edited A";
+  const pending = h.run('deleteContextMessage("a")');
+  assert.equal(h.root.querySelectorAll("[data-context-message-content]").length, 0);
+  await h.run("submitContext()");
+  assert.deepEqual(h.submissions[0].messages.map(message => message.content), ["B", "C"]);
+  h.run("undoContextMessageDelete()");
+  assert.deepEqual(h.contents(), ["edited A", "B", "C"]);
+  await h.finish();
+  await pending;
+});
+
+test("invalid JSON prevents switching or duplication and keeps the input available for repair", async () => {
+  const h = setup({ expandedKey: "a" });
+  const input = h.root.querySelector("[data-context-message-json]");
+  input.value = "invalid JSON";
+  await h.click(h.root.querySelector('[data-context-ui-key="a"] [data-action="context-message-toggle"]'));
+  await h.click(h.root.querySelector('[data-context-ui-key="a"] [data-action="context-message-duplicate"]'));
+  assert.equal(h.root.querySelector("[data-context-message-json]"), input);
+  assert.deepEqual(h.keys(), ["a", "b", "c"]);
+  assert.deepEqual(h.contents(), ["A", "B", "C"]);
+});
+
+test("creating a duplicate reads pending full JSON edits including new extension fields", async () => {
+  const h = setup({ expandedKey: "a" });
+  const edited = { role: "ai", content: null, tool_calls: [{ id: "call-1", future: { raw: [null, 3] } }], extension: { exact: true } };
+  h.root.querySelector("[data-context-message-json]").value = JSON.stringify(edited);
+  await h.click(h.root.querySelector('[data-context-ui-key="a"] [data-action="context-message-duplicate"]'));
+  await h.run("submitContext()");
+  assert.deepEqual(h.submissions[0].messages.slice(0, 2), [edited, edited]);
+});
+
+test("adding a message closes the previous editor and renders the correct ordinal", async () => {
+  const h = setup();
+  await h.click(h.root.querySelector('[data-context-ui-key="b"] [data-action="context-message-toggle"]'));
+  h.root.querySelector("[data-context-message-content]").value = "edited B";
+  await h.click(h.root.querySelector('[data-action="context-message-add"]'));
+  assert.equal(h.root.querySelectorAll("textarea").length, 1);
+  assert.equal(h.root.querySelector("[data-context-message-content]").getAttribute("aria-label"), "消息 4 正文");
+  assert.equal([...h.root.querySelectorAll("header strong")].at(-1).textContent, "04 · human");
+  await h.run("submitContext()");
+  assert.deepEqual(h.submissions[0].messages.map(message => message.content), ["A", "edited B", "C", ""]);
 });

@@ -154,7 +154,7 @@ async def _admit_run(sessions, fixture: dict, directive_id: str, *, slot_id: str
     return run_id
 
 
-def test_interrupted_unsettled_main_keeps_context_and_capacity_with_another_slot(tmp_path: Path) -> None:
+def test_interrupted_unsettled_main_releases_global_capacity_but_keeps_context_ownership(tmp_path: Path) -> None:
     from backend.app.desktop.patrol.agent_loop.resources.context_run_pool import ContextRunPool
     from backend.app.desktop.runs.orchestration.admission import RunAdmissionConflict
 
@@ -173,7 +173,7 @@ def test_interrupted_unsettled_main_keeps_context_and_capacity_with_another_slot
                 session.add(WorkspaceSlot(slot_id=new_slot_id, workspace_id=original.workspace_id,
                     kind="isolated", root_path=str(tmp_path / "other-slot"), current_fingerprint="b" * 64))
             pool = ContextRunPool(sessions, LoopCoordinator(sessions), None)
-            assert await pool._active_run_count(fixture["loop_id"]) == 1
+            assert await pool._active_run_count(fixture["loop_id"]) == 0
             with pytest.raises(RunAdmissionConflict, match="活跃 Main"):
                 await _admit_run(sessions, fixture, directive_id, slot_id=new_slot_id)
             async with sessions.begin() as session:

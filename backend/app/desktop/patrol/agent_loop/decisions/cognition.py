@@ -42,21 +42,6 @@ async def require_observation(session, round_id, observation_id, generation=None
     return row
 
 
-async def has_pending_cleanup(session, loop_id):
-    for model in (LoopPatrolAttempt, LoopWorkerRequest):
-        query = select(model.round_id).where(model.loop_id == loop_id,
-            model.status.in_(("superseded", "cancelled", "interrupted")),
-            model.completed_at.is_(None))
-        if model is LoopWorkerRequest:
-            query = query.where(LoopWorkerRequest.scope["patrol_session_id"].astext.is_not(None))
-        if await session.scalar(query.limit(1)):
-            return True
-    return bool(await session.scalar(select(LoopEventOutbox.event_id).where(
-        LoopEventOutbox.loop_id == loop_id, LoopEventOutbox.status == "pending",
-        LoopEventOutbox.event_type == "loop.cognition.preempted",
-        LoopEventOutbox.payload["requires_cleanup"].as_boolean().is_(True)).limit(1)))
-
-
 async def preempt_observation(session, loop, round_row, old_observation_id, new_observation_id, generation):
     if round_row.decision_id is not None:
         raise ValueError("成功授权的 Round 不能替换认知 Observation")
@@ -95,6 +80,14 @@ async def preempt_observation(session, loop, round_row, old_observation_id, new_
         row.result = {**(row.result or {}), "reason": "observation_superseded"}
         if pending:
             row.completed_at = now
+    from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import EvidenceJob
+
+    jobs = await session.scalars(select(EvidenceJob).where(
+        EvidenceJob.observation_id == old_observation_id,
+        EvidenceJob.status.in_(("pending", "running"))).with_for_update()) if old_observation_id else ()
+    for job in jobs:
+        job.status = "superseded"
+        job.fencing_token += 1
     assignments = tuple(await session.scalars(select(LoopCuratorAssignment).where(
         LoopCuratorAssignment.session_id.in_([row.session_id for row in sessions]),
         LoopCuratorAssignment.state.in_(("queued", "reading", "analyzing", "proposed"))).with_for_update())) if sessions else ()

@@ -158,8 +158,8 @@ def test_patrol_transport_only_includes_requested_pages_and_checks_next_request(
                         "actions": [{"action": "continue_context", "context_id": seed["context_id"], "context_revision_id": seed["revision_id"], "message": "继续验证"}]}))
             if limited:
                 schema_message = type(messages[1])(content="只返回符合此 JSON Schema 的 JSON：" + json.dumps(PatrolCognitiveStep.model_json_schema(), ensure_ascii=False, separators=(",", ":")))
-                bound = PatrolRequestCapacity(app.models[0], {}).estimate([*messages, schema_message], PatrolCognitiveStep)
-                app.models[0].context_window = bound + app.models[0].curation_max_output_tokens
+                bound = PatrolRequestCapacity(app.models[0], {}, max_output_tokens=app.patrol.max_output_tokens).estimate([*messages, schema_message], PatrolCognitiveStep)
+                app.models[0].context_window = bound + app.patrol.max_output_tokens
             model = StructuredPatrolDecisionModel(app, reader=observations.selective_read)
             model._remaining_calls = 3
             if limited:

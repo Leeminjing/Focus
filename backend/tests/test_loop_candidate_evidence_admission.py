@@ -142,9 +142,17 @@ def test_invalid_candidate_does_not_replace_patrol_or_block_first_mission(tmp_pa
                 usage = model.usage
 
                 async def __call__(self, observation):
-                    assert observation.expansion_assessment["rejected_candidates"][0]["code"] == "invalid_candidate"
-                    assert not observation.expansion_assessment["opportunities"]
-                    return await original(observation)
+                    assert observation.expansion_assessment is None
+                    from backend.app.desktop.patrol.agent_loop.schemas import ContextPermission
+
+                    intent = await original(observation)
+                    return intent.model_copy(update={"context_permissions": tuple(ContextPermission(
+                        context_id=item["context_id"], access_mode="read-only") for item in observation.portfolio_frontier)})
+
+            async def unexpected_assessment(*args, **kwargs):
+                raise AssertionError("普通 Mission 推进不应准备派生评估")
+
+            orchestrator._expansions.assess = unexpected_assessment
 
             orchestrator._decision_model = lambda _: Model()
             result = await orchestrator.process(claim)

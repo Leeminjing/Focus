@@ -43,6 +43,10 @@ async def validate_context_permissions(session, loop, observation, proposal):
         if mode is not None:
             if _MODES[mode] > _MODES[equipment["access_mode"]]:
                 raise ValueError("本轮文件模式超出用户授权或 Context 角色上限")
+            if (getattr(loop, 'interaction_mode', None) == 'workspace_patrol'
+                    and context_id == loop.initial_context_id
+                    and mode != equipment['access_mode']):
+                raise ValueError('主 Context 文件模式必须与用户界面选择一致；只读审查请使用只读角色 Context')
             equipment = {**equipment, "access_mode": mode}
         resolved[context_id] = {**equipment, "access_mode": mode}
     for action in proposal.actions:

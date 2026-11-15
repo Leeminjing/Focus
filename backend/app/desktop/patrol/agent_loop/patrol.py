@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.app.desktop.patrol.agent_loop.decisions.evidence import PatrolEvidenceNeeds
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -28,7 +31,7 @@ from backend.app.desktop.patrol.agent_loop.schemas import (
 
 
 class PatrolDecisionModel(Protocol):
-    async def __call__(self, observation: LoopObservationEnvelope) -> PatrolDecisionIntent: ...
+    async def __call__(self, observation: LoopObservationEnvelope) -> PatrolDecisionIntent | PatrolEvidenceNeeds: ...
 
 
 class PatrolContractViolation(RuntimeError):
@@ -43,7 +46,7 @@ class PortfolioPatrol:
         self._sessions = sessions
         self._model = model
 
-    async def decide(self, observation: LoopObservationEnvelope, holder_id: str, *, fencing_token: int | None = None) -> PatrolDecisionIntent:
+    async def decide(self, observation: LoopObservationEnvelope, holder_id: str, *, fencing_token: int | None = None) -> PatrolDecisionIntent | PatrolEvidenceNeeds:
         attempt = await self._begin(observation, holder_id, fencing_token=fencing_token)
         if hasattr(self._model, "bind_usage_receipts"):
             from backend.app.desktop.patrol.agent_loop.resources.model_usage_owner import OwnedModelUsage
@@ -52,6 +55,11 @@ class PortfolioPatrol:
                                                           "patrol", attempt.patrol_attempt_id))
         try:
             intent = await self._model(observation)
+            from backend.app.desktop.patrol.agent_loop.decisions.evidence import PatrolEvidenceNeeds
+
+            if isinstance(intent, PatrolEvidenceNeeds):
+                await self._finish(attempt, "waiting_evidence", intent.model_dump(mode="json"), None)
+                return intent
             self._validate_output(intent, observation, holder_id)
             intent = intent.model_copy(update={"observation_id": attempt.observation_id,
                 "observation_generation": attempt.observation_generation,

@@ -25,8 +25,10 @@ class _Session:
     async def __aexit__(self, *_args):
         return False
 
-    async def scalar(self, _query):
-        return self.task
+    async def scalar(self, query):
+        from backend.app.desktop.persistence.models import DesktopThread
+
+        return self.task if query.column_descriptions[0]["entity"] is DesktopThread else None
 
     async def get(self, _model, _task_id):
         return self.task

@@ -1,5 +1,12 @@
 context_run_admission: true
 
+# Patrol 可独立选择模型；深度索引继续使用 curation_default 和原输出容量。
+patrol:
+  model_name: deepseek-v4-flash-vision-exp
+  output_method: prompt_json
+  max_output_tokens: 2048
+  initial_evidence_max_bytes: 16384
+
 models:
   - name: deepseek-v4-flash-vision-exp
     display_name: DeepSeek-V4-Flash-Vision-Exp

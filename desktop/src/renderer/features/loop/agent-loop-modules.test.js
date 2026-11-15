@@ -74,7 +74,7 @@ test("portfolio map renders every source edge for a multi-parent Context", () =>
     ],
   };
   const html = PortfolioMap.render(manifest, "release");
-  assert.equal((html.match(/<path /g) || []).length, 2);
+  assert.equal((html.match(/data-edge-id=/g) || []).length, 2);
   assert.match(html, /3<\/strong> 个 Context · 来源关系/);
 });
 
@@ -134,14 +134,14 @@ test("distinct source revisions keep exact edges across repeated DOM reconciliat
     host.innerHTML = PortfolioMap.render(manifest);
     for (let index = 0; index < 4; index++) {
       assert.equal(PortfolioMap.reconcile(host, manifest), true);
-      const edges = host.querySelectorAll("path[data-edge-id]");
+      const edges = host.querySelectorAll("[data-edge-id]");
       assert.equal(edges.length, 2);
       assert.equal(new Set(edges.map(edge => edge.getAttribute("data-edge-id"))).size, 2);
       assert.deepEqual(edges.map(edge => edge.querySelector("title").textContent).sort(), ["A1 → B1", "A2 → B1"]);
     }
     PortfolioMap.reconcile(host, {...manifest, edges:[manifest.edges[1]]});
-    assert.equal(host.querySelectorAll("path[data-edge-id]").length, 1);
-    assert.equal(host.querySelector("path[data-edge-id] title").textContent, "A2 → B1");
+    assert.equal(host.querySelectorAll("[data-edge-id]").length, 1);
+    assert.equal(host.querySelector("[data-edge-id] title").textContent, "A2 → B1");
   } finally { global.document = previousDocument; }
 });
 

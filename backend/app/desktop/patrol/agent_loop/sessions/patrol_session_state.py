@@ -64,10 +64,10 @@ class PatrolSessionStateMachine:
         PatrolPhase.OBSERVING: frozenset({PatrolPhase.DISPATCHING_CURATORS, PatrolPhase.PROPOSING}),
         PatrolPhase.DISPATCHING_CURATORS: frozenset({PatrolPhase.COLLECTING_CURATORS}),
         PatrolPhase.COLLECTING_CURATORS: frozenset({PatrolPhase.PROPOSING, PatrolPhase.AWAITING_EVIDENCE}),
-        PatrolPhase.PROPOSING: frozenset({PatrolPhase.AUTHORIZING}),
+        PatrolPhase.PROPOSING: frozenset({PatrolPhase.AUTHORIZING, PatrolPhase.DISPATCHING_CURATORS, PatrolPhase.AWAITING_EVIDENCE}),
         PatrolPhase.AUTHORIZING: frozenset({PatrolPhase.DELIVERING, PatrolPhase.PUBLISHING, PatrolPhase.AWAITING_EVIDENCE, PatrolPhase.COMPLETED}),
         PatrolPhase.DELIVERING: frozenset({PatrolPhase.AWAITING_EVIDENCE, PatrolPhase.COMPLETED}),
-        PatrolPhase.AWAITING_EVIDENCE: frozenset({PatrolPhase.OBSERVING, PatrolPhase.PUBLISHING, PatrolPhase.COMPLETED}),
+        PatrolPhase.AWAITING_EVIDENCE: frozenset({PatrolPhase.OBSERVING, PatrolPhase.PROPOSING, PatrolPhase.PUBLISHING, PatrolPhase.COMPLETED}),
         PatrolPhase.PUBLISHING: frozenset({PatrolPhase.COMPLETED}),
     }
 

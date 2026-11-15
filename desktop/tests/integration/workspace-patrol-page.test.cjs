@@ -80,6 +80,10 @@ if (!process.versions.electron) {
     await until('document.querySelector("[data-patrol-content]")');
     assert.equal(await run('window.patrolFixture.workspaceBinds.at(-1).path'), chosen);
     assert.equal(await run('window.patrolFixture.submissions.length'), 0);
+    assert.equal(await run(`Boolean(document.querySelector('.patrol-quiet-heading, .workbench-composer-label, [data-i18n="patrol.tagline"]'))`), false);
+    assert.equal(await run('document.querySelector(".patrol-workspace-heading").textContent.includes(state.patrolWorkspace.display_name)'), true);
+    assert.equal(await run('Boolean(document.querySelector("form[aria-label] [data-patrol-clear-draft]"))'), true);
+    assert.equal(await run('document.querySelector("[data-patrol-clear-draft]").hidden'), true);
     if (process.env.FOCUS_PATROL_TEST_NATIVE === "1") {
       assert.equal(await run('document.querySelector("[data-patrol-content]").hidden && document.querySelector("[data-patrol-content]").disabled'),true);
       assert.equal(await run('document.querySelector("[data-patrol-file-picker-open]").disabled'),true);
@@ -92,6 +96,8 @@ if (!process.versions.electron) {
       await until('window.patrolFixture.robotPanelOpens.length === 2');
       assert.deepEqual(await run('patrolFixture.robotPanelOpens[1]'),{workspaceId,file_refs:[file]});
       assert.equal(await run('workspacePatrolIntake.store(state.patrolWorkspace.workspace_id).get().draft.file_refs.length'),0);
+      await run(`workspacePatrolIntake.store(state.patrolWorkspace.workspace_id).edit({content:'机器人面板草稿',file_refs:[${JSON.stringify(file)}]})`);
+      assert.equal(await run('document.querySelector("[data-patrol-clear-draft]").hidden && document.querySelector("[data-patrol-clear-draft]").disabled'),true);
       assert.equal(await run('window.patrolFixture.submissions.length'),0);
       assert.equal(await run('patrolFixture.robotReady'),true);
       assert.equal(await run('typeof patrolFixture.openWorkbench'),"function");
@@ -165,7 +171,7 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-files-view]").click()');
     await until('document.querySelector("[data-files-preview]").textContent.includes("工作台中的报告正文")');
     await run('document.querySelector("[data-files-close]").click(); delete window.fileFeedbackFetch');
-    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-files-open")'),true);
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-tools-toggle")'),true);
     assert.equal(await run('window.savedPatrolComposer === document.querySelector("[data-patrol-composer]")'),true);
     const beforeLongInput = await run('window.patrolFixture.submissions.length');
     await run('document.querySelector("[data-patrol-content]").value="字".repeat(12001); document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-composer]").requestSubmit()');
@@ -223,8 +229,10 @@ if (!process.versions.electron) {
     assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "新回答草稿");
     const submissionsBeforeClear = await run('window.patrolFixture.submissions.length');
     await until('!document.querySelector("[data-patrol-dialog]").open');
+    assert.equal(await run('document.querySelector("[data-patrol-clear-draft]").hidden'), false);
     await run('document.querySelector("[data-patrol-clear-draft]").click()');
     assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "");
+    assert.equal(await run('document.querySelector("[data-patrol-clear-draft]").hidden'), true);
     assert.match(await run('document.querySelector("[data-patrol-target]").textContent'), /question-next · 版本 3/);
     assert.equal(await run('window.patrolFixture.submissions.length'), submissionsBeforeClear);
     assert.equal(await run('document.activeElement.hasAttribute("data-patrol-content")'), true);
@@ -251,7 +259,9 @@ if (!process.versions.electron) {
       replies[1]({revision:{revision_id:'b-r'},messages:[]});await second;
       replies[0]({revision:{revision_id:'a-r'},messages:[]});await first;
       if (!panel.textContent.includes('b-r') || panel.textContent.includes('a-r')) throw new Error('迟到响应污染检查身份');
+      panel.querySelector('[data-context-inspector-menu]').showPopover();
       inspector.close(); if (!panel.inert || document.activeElement!==input) throw new Error('关闭没有隔离命中/归还焦点');
+      if (panel.querySelector(':popover-open')) throw new Error('检查关闭后操作菜单仍在顶层显示');
       const reopen=inspector.select('loop-a','c',{title:'对象 C'},input); replies[2]({revision:{revision_id:'c-r'},messages:[]});await reopen;
       await new Promise(resolve=>setTimeout(resolve,240));
       if(panel.hidden || panel.inert || !panel.textContent.includes('c-r')) throw new Error('旧退出覆盖重开');
@@ -270,6 +280,26 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-patrol-composer] [data-patrol-details]").click()');
     await run('window.patrolFixture.lineage = { roots:{root:"r1"}, nodes:[{context_id:"root",revision_id:"r1",generation:1}],edges:[],complete:true }; window.patrolFixture.emit("loop-completion_check", "context", "root", 1, {current_revision_id:"r1",title:"首线程"})');
     await until('document.querySelector("[data-patrol-lineage] [data-context-id=root]")');
+    const graphFits = `(() => {
+      const map=document.querySelector('[data-patrol-lineage] .portfolio-map');
+      const scroll=map.querySelector('.portfolio-map-scroll'), canvas=map.querySelector('.portfolio-map-canvas');
+      const expected=Math.min(2,scroll.clientWidth/parseFloat(canvas.style.width),scroll.clientHeight/parseFloat(canvas.style.height));
+      return scroll.clientWidth>0 && scroll.clientHeight>0 && Math.abs(Number(map.dataset.zoom)-expected)<0.00001
+        && canvas.getBoundingClientRect().width<=scroll.clientWidth+1 && canvas.getBoundingClientRect().height<=scroll.clientHeight+1;
+    })()`;
+    await until(graphFits);
+    win.setContentSize(760, 640);
+    await until('innerWidth===760');
+    await until(graphFits);
+    assert.ok(await run('Number(document.querySelector("[data-patrol-lineage] .portfolio-map").dataset.zoom)<0.72'), '小窗口 Fit 必须允许低于 72%');
+    await run('document.querySelector("[data-patrol-lineage] [data-portfolio-zoom=in]").click()');
+    const manualGraphZoom = await run('document.querySelector("[data-patrol-lineage] .portfolio-map").dataset.zoom');
+    win.setContentSize(1280, 900);
+    await until('innerWidth===1280');
+    await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    assert.equal(await run('document.querySelector("[data-patrol-lineage] .portfolio-map").dataset.zoom'), manualGraphZoom, '窗口变化保留手动视野');
+    await run('document.querySelector("[data-patrol-lineage] [data-portfolio-zoom=fit]").click()');
+    await until(graphFits);
     await run(`(() => {
       const manifest={nodes:Array.from({length:10},(_,i)=>({context_id:'stable-'+i,title:'稳定节点 '+i,revision:{generation:1},status:'active'})),edges:[]};
       const host=document.createElement('div');host.style.cssText='position:fixed;inset:0;width:400px;height:300px';host.innerHTML=FocusPortfolioMapView.render(manifest,null,[]);document.body.append(host);FocusPortfolioMapView.bind(host);
@@ -307,8 +337,24 @@ if (!process.versions.electron) {
     await run('window.patrolFixture.controlError=false');
     await run('window.patrolFixture.observationError=true; window.patrolFixture.emit("loop-completion_check", "round", "round-1", 1, {number:1,observation_id:"observation-1"})');
     await until('document.querySelector("[data-patrol-observation-retry]")');
+    assert.equal(await run('document.querySelector("[data-patrol-observation] [data-observation-state]").dataset.observationState'), "error");
+    assert.equal(await run('document.querySelector("[data-patrol-observation] h3")'), null);
     await run('window.patrolFixture.observationError=false; document.querySelector("[data-patrol-observation-retry]").click()');
     await until('!document.querySelector("[data-patrol-observation-open]").disabled');
+    assert.match(await run('document.querySelector("[data-patrol-observation]").textContent'), /结论.*导入测试失败.*下一步.*先补齐测试配置.*当前未报告阻塞/s);
+    assert.doesNotMatch(await run('document.querySelector("[data-patrol-observation]").textContent'), /Round|Revision|OBSERVATION|因果关系/);
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-observation] .observation-blockers"))'), false);
+    await run('window.patrolFixture.emit("loop-completion_check", "loop_wait_request", "observation-blocker", 1, {round_id:"round-1",status:"open",response_mode:"text",prompt:"请提供测试环境配置。",scope:{}})');
+    await until('document.querySelector("[data-patrol-observation]").textContent.includes("请提供测试环境配置。")');
+    assert.equal(await run('document.querySelector("[data-patrol-observation]").firstElementChild.className'), "observation-blockers");
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-observation] [data-observation-state=unreported]"))'), false);
+    if (process.env.FOCUS_OBSERVATION_QA_PATH) {
+      await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      const rect = await run('(() => { const r=document.querySelector(".patrol-observation-card").getBoundingClientRect(); return {x:Math.floor(r.x),y:Math.floor(r.y),width:Math.ceil(r.width),height:Math.ceil(r.height)}; })()');
+      fs.writeFileSync(process.env.FOCUS_OBSERVATION_QA_PATH, (await win.webContents.capturePage(rect)).toPNG());
+    }
+    await run('window.patrolFixture.emit("loop-completion_check", "loop_wait_request", "observation-blocker", 2, {round_id:"round-1",status:"answered",response_mode:"text",prompt:"请提供测试环境配置。",scope:{}})');
+    await until('!document.querySelector("[data-patrol-observation]").textContent.includes("请提供测试环境配置。")');
     await run('document.querySelector("[data-patrol-observation-open]").click(); document.querySelector("[data-patrol-observation-section=sources]").click()');
     await until('document.querySelector("[data-patrol-dialog]").textContent.includes("frozen-source")');
     assert.equal(await run('getComputedStyle(document.querySelector("[data-patrol-dialog-body]")).backgroundColor'), "rgba(0, 0, 0, 0)");
@@ -330,7 +376,7 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-patrol-observation-section=patrol_history]").click()');
     await until('document.querySelector("[data-patrol-dialog]").textContent.includes("已读取 1 / 2 条记录")');
     await run('window.patrolFixture.emit("loop-completion_check", "round", "round-2", 1, {number:2,observation_id:"observation-2"})');
-    await until('document.querySelector("[data-patrol-observation]").textContent.includes("Round 2")');
+    await until('document.querySelector("[data-patrol-observation]").textContent.includes("导入验证已通过，正在检查产物。")');
     assert.equal(await run('document.querySelector("[data-patrol-dialog]").textContent.includes("observation-1")'), true);
     assert.equal(await run('document.querySelector("[data-patrol-dialog]").textContent.includes("observation-2")'), false);
     await run('document.querySelector("[data-patrol-observation-section=versions]").click()');
@@ -461,7 +507,40 @@ if (!process.versions.electron) {
       assert.equal(await run('document.querySelector("[data-nav-key][aria-current=page]").dataset.navKey'), page);
       await run(`document.querySelector('[data-page-search=${page}]').value='无匹配记录'; document.querySelector('[data-page-search=${page}]').dispatchEvent(new Event('input', {bubbles:true}))`);
       assert.equal(await run('document.querySelectorAll("#app .plugin-card, #app .memory-card").length'), 0);
-      if (page === "memory") assert.match(await run('document.querySelector("#app").textContent'), /没有匹配的记忆/);
+      if (page === "memory") {
+        assert.match(await run('document.querySelector("#app").textContent'), /没有匹配的记忆/);
+        const memories = await run('JSON.stringify(state.memory.memories)');
+        const requests = await run('window.patrolFixture.requests.length');
+        await run('document.querySelector("[data-action=clear-memory-search]").click()');
+        assert.equal(await run('state.memory.query'), "");
+        assert.equal(await run('document.activeElement.dataset.pageSearch'), "memory");
+        assert.equal(await run('JSON.stringify(state.memory.memories)'), memories);
+        assert.equal(await run('window.patrolFixture.requests.length'), requests);
+        assert.ok(await run('document.querySelectorAll(".memory-card").length > 0'));
+
+        // 仅缓存策略时，普通分类为空；策略分类搜索无匹配则提供清除入口。
+        await run(`state.memory.memories = [{memory_id:'strategy-empty-state',category:'evolution_strategy',title:'验证方法',enabled:true,strategy:{applicability:'存在假设',evolution:'先验证再实施',inheritance:'保留证据'}}];
+          document.querySelector('[data-action=memory-category][data-category=memory]').click()`);
+        assert.equal(await run('document.querySelector(".memory-empty h2").textContent'), "还没有任何记忆");
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty [data-action=new-memory]"))'), true);
+        assert.equal(await run('Boolean(document.querySelector(".memory-page-heading p"))'), false);
+        await snapshot("memory-category-empty");
+        await run(`document.querySelector('[data-action=memory-category][data-category=evolution_strategy]').click();
+          const search = document.querySelector('[data-page-search=memory]'); search.value='无匹配策略'; search.dispatchEvent(new Event('input',{bubbles:true}))`);
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty [data-action=new-strategy], .memory-empty [data-action=import-strategy]"))'), false);
+        await snapshot("memory-search-empty");
+        await run('document.querySelector("[data-action=clear-memory-search]").click()');
+        assert.equal(await run('state.memory.category'), "evolution_strategy");
+        assert.equal(await run('document.querySelectorAll(".memory-card").length'), 1);
+
+        await run('document.querySelector("[data-action=memory-category][data-category=memory]").click(); window.patrolFixture.pageError="分类读取失败"; hydrateMemory()');
+        assert.equal(await run('Boolean(document.querySelector(".memory-empty"))'), false);
+        assert.match(await run('document.querySelector("#app [role=alert]").textContent'), /分类读取失败/);
+        await snapshot("memory-read-error");
+        await run('window.patrolFixture.pageError=null; document.querySelector("[data-action=refresh-memory]").click()');
+        await until('!state.memory.loading && !state.memory.error');
+        await run(`document.querySelector('[data-action=memory-category][data-category=""]').click()`);
+      }
       await run(`document.querySelector('[data-page-search=${page}]').value=''; document.querySelector('[data-page-search=${page}]').dispatchEvent(new Event('input', {bubbles:true}))`);
     }
     await run('document.querySelector("[data-action=show-plugins]").click()');
@@ -474,7 +553,7 @@ if (!process.versions.electron) {
     await snapshot("standalone");
     await run('document.querySelector("[data-action=show-map]").click()');
     await until('document.body.dataset.view === "map"');
-    const exactEdges = await run('(() => { const manifest={nodes:[{context_id:"A",title:"A"},{context_id:"B",title:"B"}],edges:["A1","A2"].map(source_revision_id=>({source_context_id:"A",source_revision_id,target_context_id:"B",target_revision_id:"B1"}))}; const host=document.createElement("div"); host.innerHTML=FocusPortfolioMapView.render(manifest); app.append(host); const counts=[]; for(let i=0;i<4;i++){ FocusPortfolioMapView.reconcile(host,manifest); counts.push(host.querySelectorAll("path[data-edge-id]").length); } const titles=[...host.querySelectorAll("path[data-edge-id] title")].map(node=>node.textContent).sort(); FocusPortfolioMapView.reconcile(host,{...manifest,edges:[manifest.edges[1]]}); const remaining=host.querySelector("path[data-edge-id] title").textContent; host.remove(); return {counts,titles,remaining}; })()');
+    const exactEdges = await run('(() => { const manifest={nodes:[{context_id:"A",title:"A"},{context_id:"B",title:"B"}],edges:["A1","A2"].map(source_revision_id=>({source_context_id:"A",source_revision_id,target_context_id:"B",target_revision_id:"B1"}))}; const host=document.createElement("div"); host.innerHTML=FocusPortfolioMapView.render(manifest); app.append(host); const counts=[]; for(let i=0;i<4;i++){ FocusPortfolioMapView.reconcile(host,manifest); counts.push(host.querySelectorAll("[data-edge-id]").length); } const titles=[...host.querySelectorAll("[data-edge-id] title")].map(node=>node.textContent).sort(); FocusPortfolioMapView.reconcile(host,{...manifest,edges:[manifest.edges[1]]}); const remaining=host.querySelector("[data-edge-id] title").textContent; host.remove(); return {counts,titles,remaining}; })()');
     assert.deepEqual(exactEdges, {counts:[2,2,2,2],titles:["A1 → B1","A2 → B1"],remaining:"A2 → B1"});
     await run('mapPortfolio={workspaceId:state.patrolWorkspace.workspace_id,snapshot:{nodes:[{context_id:"root",revision_id:"r1",generation:1}],edges:[],complete:true},manifest:{loop_id:"loop-completion_check",nodes:[{context_id:"root",title:"首线程"}]}}; state.mapViewMode="graph"; state.selectionMode=false; state.soldierArmed=false; renderMap()');
     await run('document.querySelector("[data-action=toggle-selection-mode]").click(); document.querySelector(".portfolio-context-node").click()');
@@ -509,11 +588,10 @@ if (!process.versions.electron) {
     win.setContentSize(1400, 942);
     await until('innerWidth >= 1399 && innerHeight >= 941');
     await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    const historyBounds = () => run('(() => { const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON(); return {panel:rect("[data-patrol-input-history]"),clear:rect("[data-patrol-clear-draft]"),composer:rect("[data-patrol-composer]"),viewport:{width:innerWidth,height:innerHeight}}; })()');
+    const historyBounds = () => run('(() => { const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON(); return {panel:rect("[data-patrol-input-history]"),composer:rect("[data-patrol-composer]"),viewport:{width:innerWidth,height:innerHeight}}; })()');
     const assertHistoryBounds = bounds => {
       assert.ok(bounds.panel.left >= 8 && bounds.panel.top >= 8, JSON.stringify(bounds));
-      assert.ok(bounds.clear.left - bounds.panel.right >= 10, JSON.stringify(bounds));
-      assert.ok(Math.abs(bounds.panel.bottom - bounds.clear.bottom) <= 2, JSON.stringify(bounds));
+      assert.ok(Math.abs(bounds.panel.right - bounds.composer.right) <= 2, JSON.stringify(bounds));
       assert.ok(bounds.composer.top - bounds.panel.bottom >= 12, JSON.stringify(bounds));
     };
     const hiddenComposer = await run('document.querySelector("[data-patrol-composer]").getBoundingClientRect().toJSON()');
@@ -523,7 +601,7 @@ if (!process.versions.electron) {
     const desktopBounds = await historyBounds();
     assertHistoryBounds(desktopBounds);
     assert.ok(Math.abs(desktopBounds.panel.width / desktopBounds.composer.width - .344) < .005, JSON.stringify(desktopBounds));
-    const availableHistoryHeight = desktopBounds.clear.bottom - 16;
+    const availableHistoryHeight = desktopBounds.composer.top - Math.min(40, desktopBounds.composer.width * .031) - 16;
     assert.ok(Math.abs(desktopBounds.panel.height - Math.min(360, desktopBounds.viewport.height * .5, availableHistoryHeight)) < 2, JSON.stringify(desktopBounds));
     assert.ok(Math.abs(desktopBounds.composer.top - hiddenComposer.top) < 1);
     await snapshot("history-desktop-open");
@@ -585,7 +663,7 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-patrol-input-history]").focus()');
     await win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     await until('document.querySelector("[data-patrol-input-history]").hidden');
-    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-history-open")'), true);
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-tools-toggle")'), true);
     win.setContentSize(390, 844);
     await run('document.querySelector("[data-patrol-history-open]").click()');
     await until('!document.querySelector("[data-patrol-input-history]").hidden && !document.querySelector("[data-patrol-input-history]").getAnimations().length');
@@ -594,7 +672,7 @@ if (!process.versions.electron) {
     await snapshot("narrow-history");
     await win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
     await until('document.querySelector("[data-patrol-input-history]").hidden');
-    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-history-open")'), true);
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-tools-toggle")'), true);
     await snapshot("narrow-patrol");
     win.setContentSize(1280, 860);
     win.webContents.setZoomFactor(2);

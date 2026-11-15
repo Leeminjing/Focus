@@ -4,6 +4,42 @@ const assert = require("node:assert/strict");
 const feedback = require("./workspace-patrol-feedback.js");
 const view = require("./workspace-patrol-view.js");
 const { create } = require("./workspace-patrol-inputs.js");
+const { createElement } = require("../../../../../tests/helpers/test-dom.cjs");
+const i18n = require("../../../shared/i18n/i18n.js");
+
+function fragment(html) {
+  const node = createElement("div");
+  node.innerHTML = html;
+  return node;
+}
+
+test("presentation keeps receipt, execution, waiting and verified delivery separate", () => {
+  const loop = { status: "running", interaction_mode: "workspace_patrol", current_round_id: "r", goal_revision: 1 };
+  const projection = { loop: { updated_sequence: 10, state: loop } };
+  const model = { rows: [{ status: "accepted", accepted_sequence: 11 }] };
+  const show = connection => feedback.presentation(projection, { status: connection }, model);
+  assert.equal(show("live").work.state, "accepted");
+  assert.match(show("live").receipt, /已受理/);
+  projection.loop.updated_sequence = 11;
+  assert.equal(show("live").work.state, "running");
+  assert.equal(show("unavailable").work.state, "running");
+  assert.match(show("unavailable").sync, /更新中断.*上次状态/);
+  assert.equal(show("live").sync, "");
+  model.rows[0].status = "failed";
+  assert.equal(show("live").work.state, "running", "发送失败不覆盖正在执行的工作");
+  assert.match(show("live").receipt, /发送失败/);
+  loop.status = "waiting_user";
+  assert.equal(show("live").work.state, "waiting_user");
+  loop.waiting_reason = "awaiting_input";
+  assert.equal(show("live").work.state, "idle");
+  loop.status = "completed";
+  assert.match(show("live").work.text, /交付尚未验证/);
+  loop.final_result = { round_id: "r", goal_revision: 1, verification: { verification_id: "v", conclusion: "satisfied" } };
+  assert.equal(show("live").work.state, "delivered");
+  loop.goal_revision = 2;
+  assert.notEqual(show("live").work.state, "delivered");
+  assert.equal(feedback.presentation(null, { status: "live" }, { rows: [] }).work.state, "unknown", "连通不代表执行成功");
+});
 
 test("stopped and failed work separates saved inputs from reactivation", () => {
   for (const status of ["stopped", "failed"]) {
@@ -31,9 +67,12 @@ test("verified workspace delivery is explicit while Patrol remains available", (
         { check_id: "import", status: "satisfied", explanation: "导入测试通过" },
         { check_id: "optional", status: "unknown", explanation: "可选平台尚未验证" },
       ], unresolved: ["optional"] }, final_path: [{ context_id: "result", revision_id: "revision-result", title: "导入报告" }] } };
-  assert.match(feedback.status({ loop: { state: loop } }, { status: "live" }, { rows: [] }).text, /本次工作已交付/);
+  assert.match(feedback.status({ loop: { state: loop } }, { status: "live" }, { rows: [] }).text, /已验证交付/);
   const html = view.delivery({ loop: { state: loop } }, { path: "C:/workspace" });
-  for (const text of ["本次工作交付", "修复导入并生成报告", "验收通过", "仍未解决", "导入测试通过", "可选平台尚未验证", "C:/workspace", "继续提出调整"]) assert.ok(html.includes(text), text);
+  for (const text of ["本次工作交付", "修复导入并生成报告", "验收依据 · 已通过 1 项", "仍未解决 · 1 项", "导入测试通过", "可选平台尚未验证", "C:/workspace"]) assert.ok(html.includes(text), text);
+  assert.ok(html.indexOf('aria-label="查看本次交付"') < html.indexOf('class="patrol-delivery-evidence"'));
+  assert.ok(html.indexOf('class="patrol-delivery-unresolved"') < html.indexOf('class="patrol-delivery-evidence"'));
+  assert.doesNotMatch(html, /继续提出调整|结果与修改位置|查看结果 ·/);
   assert.match(html, /data-patrol-delivery-context="result"/);
   assert.match(html, /data-revision-id="revision-result"/);
   loop.current_round_id = "discussion";
@@ -55,16 +94,60 @@ const row = (disposition = "decision") => ({ submission_id: "one", input_type: "
 
 test("each disposition shows its own explanation and expandable exact sources", () => {
   for (const [disposition, label] of Object.entries({ discussion: "已用于讨论", decision: "已纳入决策", reference: "已作为参考", deferred: "已延期" })) {
-    const html = view.history({ rows: [row(disposition)] });
-    assert.ok(html.includes(`处理结果 · ${label}`));
-    assert.match(html, /先定位导入失败/);
-    assert.match(html, /<details[^>]*data-patrol-input-result/);
-    assert.match(html, /Mission 版本.*<dd>3<\/dd>/);
-    assert.match(html, /decision-1.*round-2.*observation-3/s);
-    assert.match(html, /fact-1/);
-    assert.match(html, /已请求停止 · 等待清理/);
-    assert.doesNotMatch(html, />已停止</);
+    const input = row(disposition);
+    const html = view.history({ rows: [input] });
+    assert.doesNotMatch(html, /处理结果 ·|普通信息/);
+    assert.ok(html.indexOf('先别改 UI') < html.indexOf(label));
+    const result = fragment(html).querySelector("details[data-patrol-input-result]");
+    assert.equal(result.dataset.patrolDisposition, disposition);
+    assert.ok(result.querySelector("summary strong").textContent.includes(label));
+    assert.equal(result.querySelector("summary span").textContent, input.processing_result.explanation);
+    for (const [field, value] of Object.entries({ mission_revision: "3", decision_id: "decision-1", round_id: "round-2", observation_id: "observation-3" })) {
+      assert.equal(result.querySelector(`[data-patrol-source="${field}"]`).textContent, value, field);
+    }
+    assert.equal(result.querySelector('[data-patrol-source="observation_generation"]').textContent, i18n.t("patrol.feedback.version", { version: 4 }));
+    assert.deepEqual(JSON.parse(result.querySelector("pre").textContent.replaceAll("&quot;", '"')), { fact_id: "fact-1", revision: 2 });
+    const cancellation = result.querySelector('[data-patrol-cancellation-state="cancel_requested"]');
+    assert.equal(cancellation.dataset.patrolTargetKind, "run");
+    assert.equal(cancellation.dataset.patrolTargetId, "ui-run");
+    assert.match(cancellation.textContent, /等待清理/);
+    assert.equal(result.querySelector('[data-patrol-cancellation-state="stopped"]'), null);
   }
+});
+
+test("input references stay with the original text and non-default input types remain explicit", () => {
+  const input = { ...row(), file_refs: [{ path: 'input.txt', revision: 3, fact_id: 'file', result_key: 'fixed-file' }] };
+  const html = view.history({ rows: [input] });
+  assert.ok(html.indexOf('先别改 UI') < html.indexOf('input.txt'));
+  assert.ok(html.indexOf('input.txt') < html.indexOf('已纳入决策'));
+  assert.match(html, /data-submission-id="one"/);
+  for (const [input_type, label] of Object.entries({ outcome: "最终结果", boundary: "执行边界", completion_check: "完成检查" })) {
+    assert.match(view.history({ rows: [{ ...row(), input_type }] }), new RegExp(label));
+  }
+});
+
+test("cancellation states remain distinct after removing the processing prefix", () => {
+  for (const [state, label] of Object.entries({ cancel_requested: "已请求停止 · 等待清理", stopped: "已停止", already_terminal: "请求时已结束", settled: "已结束", unknown: "停止状态待核实" })) {
+    const input = row(); input.processing_result.related_cancellations[0].state = state;
+    const html = feedback.inputResult(input);
+    assert.ok(html.includes(label));
+    if (state === 'cancel_requested') assert.doesNotMatch(html, />已停止</);
+    assert.doesNotMatch(html, /处理结果 ·/);
+  }
+});
+
+test("unresolved checks remain visible even without a criterion row", () => {
+  const loop = { interaction_mode: 'workspace_patrol', current_round_id: 'done', goal_revision: 2,
+    final_result: { round_id: 'done', goal_revision: 2, completion_checks: [{ check_id: 'missing', claim: '外部平台验证' }],
+      verification: { verification_id: 'v', conclusion: 'satisfied', criteria: [], unresolved: ['missing'] } } };
+  const html = feedback.delivery({ loop: { state: loop } });
+  assert.match(html, /仍未解决 · 1 项.*外部平台验证/s);
+  assert.ok(html.indexOf('外部平台验证') < html.indexOf('<details'));
+  assert.match(html, />已验收</);
+  loop.goal_revision = 3;
+  assert.match(feedback.delivery({ loop: { state: loop } }), /最近一次已验收交付/);
+  loop.final_result.verification.unresolved = [];
+  assert.doesNotMatch(feedback.delivery({ loop: { state: loop } }), /patrol-delivery-unresolved/);
 });
 
 test("delivery content is escaped and legacy results stay visible without claiming a new completion", () => {
@@ -94,7 +177,42 @@ test("all explanation, evidence and identity strings are escaped", () => {
   input.processing_result.rationale = "<script>bad()</script>";
   input.processing_result.evidence = [{ fact_id: "</pre><svg onload=bad()>" }];
   input.processing_result.related_cancellations[0].target_id = '<iframe src="bad">';
-  assert.doesNotMatch(feedback.inputResult(input), /<img|<script|<svg|<iframe/);
+  input.processing_result.disposition = '\" onclick="bad()';
+  input.processing_result.related_cancellations[0].state = '\" onclick="bad()';
+  input.processing_result.related_cancellations[0].target_kind = '\" onclick="bad()';
+  input.processing_result.changes = [{ operation: '<script>', section: '<svg>', quote: '<img src=x onerror="bad()">' }];
+  const html = feedback.inputResult(input);
+  assert.doesNotMatch(html, /<img|<script|<svg|<iframe|"\s+onclick=/);
+  assert.equal(fragment(html).querySelector("[onclick]"), null);
+});
+
+test("stop receipts preserve each execution state and identity independently of display order", () => {
+  const input = row();
+  const states = ["cancel_requested", "stopped", "already_terminal", "settled", "unknown", "future_state"];
+  input.processing_result.related_cancellations = states.map((state, i) => ({ state, target_kind: "worker", target_id: `worker-${i}`, reason: `reason-${i}` })).reverse();
+  const result = fragment(feedback.inputResult(input));
+  for (const [i, state] of states.entries()) {
+    const receipt = result.querySelector(`[data-patrol-cancellation-state="${state}"]`);
+    assert.equal(receipt.dataset.patrolTargetId, `worker-${i}`);
+    assert.equal(receipt.dataset.patrolTargetKind, "worker");
+    assert.equal(receipt.querySelector("p").textContent, `reason-${i}`);
+    if (state === "future_state") assert.match(receipt.querySelector("strong").textContent, /待核实/);
+    else if (state === "cancel_requested") assert.match(receipt.querySelector("strong").textContent, /等待清理/);
+  }
+});
+
+test("unknown enum values including object property names keep safe domain fallbacks", () => {
+  for (const unknown of ["future_state", "constructor", "toString", "__proto__"]) {
+    const input = row(unknown);
+    input.processing_result.related_cancellations = [{ state: unknown, target_kind: unknown, target_id: "target", reason: "reason" }];
+    input.processing_result.changes = [{ operation: unknown, section: unknown, quote: "quote" }];
+    const result = fragment(feedback.inputResult(input));
+    assert.equal(result.querySelector("summary strong").textContent, i18n.t("patrol.feedback.processed"));
+    assert.equal(result.querySelector("li strong").textContent, i18n.t("patrol.feedback.cancel_unknown"));
+    assert.ok(result.textContent.includes(unknown), "unknown operation/section/target remains visible");
+    const pending = fragment(feedback.inputResult({ status: "accepted", processing_state: unknown }));
+    assert.equal(pending.querySelector("p").textContent, i18n.t("patrol.feedback.pending"));
+  }
 });
 
 test("history refresh updates old loaded inputs without changing the paging cursor or draft", async () => {

@@ -3,7 +3,7 @@
 输入为工作区用户提交的四类原文、稳定提交身份和可选补充请求目标；输出为耐久 accepted 记录或冲突及分页历史。
 具体工作流为在调用方 Loop 事务内验证全局提交身份、保存原文类型和有界可见线索、记录既有 intervention 生命周期，
 回执保留引入的不可变观察及输入前快照身份；不恢复图、不取消 Run、不更新 Mission。示例：await repository.accept(session, loop, request)。
-同时提供 UserInputUse、MissionInputChange、ApplyUserInputsAction 和 workspace_input_scope；已保存文件模式仅用于首次授权，后续信息不扩大权限。
+同时提供 UserInputUse、MissionInputChange、ApplyUserInputsAction 和 workspace_input_scope；首次授权默认不应用文件沙箱，显式模式优先，后续信息不扩大权限。
 file_refs 可选绑定 Fact revision、Artifact result_key、slot/path 和内容 hash；接受时校验同工作区及证据权限，空引用保持旧请求 hash。
 attachments 保存用户选择的材料身份和来源；服务端另外冻结精确内容 manifest，空附件不改变旧请求 hash，纯附件保留空正文。
 history 追加已应用的逐输入 processing_result；intent_ids 仅在原工作区范围内刷新已加载旧记录，不改变受理语义。
@@ -68,7 +68,7 @@ class PatrolInputRequest(BaseModel):
     submission_id: str = Field(min_length=1, max_length=160)
     input_type: Literal["information", "outcome", "boundary", "completion_check"] = "information"
     content: str = Field(default="", max_length=12000)
-    access_mode: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
+    access_mode: Literal["read-only", "workspace-write", "danger-full-access"] = "danger-full-access"
     request_id: str | None = None
     request_revision: int | None = Field(default=None, gt=0)
     visible_context: VisibleContext | None = None

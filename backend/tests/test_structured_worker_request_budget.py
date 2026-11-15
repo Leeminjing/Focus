@@ -75,6 +75,11 @@ def test_estimate_matches_sdk_request_including_bound_output_contract(monkeypatc
             else:
                 actual = estimate_request_budget(body["messages"], format_spec={key: value for key, value in body.items() if key != "messages"})
             assert estimated == actual
+            metrics = worker.last_model_metadata
+            assert metrics["estimated_input_tokens"] == actual and metrics["contract_valid"] is True
+            assert metrics["input_tokens"] is None and metrics["ttft_ms"] is None
+            if method != "prompt_json":
+                assert "JSON Schema:" not in str(body.get("messages", body.get("input")))
             assert all(source.source_key in json.dumps(body) for source in inputs.task_delta.sources)
             if method == "json_schema":
                 assert "json_schema" in str(body.get("text", body.get("response_format")))

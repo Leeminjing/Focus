@@ -4,7 +4,8 @@ Progress 包含两种记忆。Task Progress 累计任务成果、义务、blocke
 
 ```text
 用户输入 Ui → 冻结输入前 Oi → 当前未决 Round 追加不可变 Vi
-                               └→ 完整 Curator → Patrol → Kernel 成功提交
+                               └→ Patrol 按动作准入 → Kernel 成功提交
+                                    └→ needs_evidence → 持久 Worker → 同一 Vi 恢复
                                                              └→ 登记决策 work
 已提交 R5 / R6 / R7 的执行后果 → 全部稳定 → 同一队列的 join work
                                                 └→ 来源全部吸收 → 唯一自动后继
@@ -16,6 +17,10 @@ Progress 包含两种记忆。Task Progress 累计任务成果、义务、blocke
 新 Loop 在激活事务创建 P0。旧 Loop 没有进度 head 时，在下一份正式 Observation 创建一次 migration baseline，明确 `history_complete=false`，登记已纳入来源的 receipts，不伪造旧 Round 的逐轮进度。旧 Observation 内容和 hash 保持原样。
 
 正式冻结由 `observation_capture.LoopObservationService` 完成。事务外准备精确 revision 内容，REPEATABLE READ 短事务内绑定已发布 Progress、Observation、完整 task manifest、Lineage snapshot；事务冲突重试整份冻结。冻结只保存决策输入，尚未提交的 V 不登记沉淀工作。领域来源以独立结果与吸收 receipts 为准，按稳定 key 分页，超过 4096 条明确阻断，不取最近 Run 切片作为任务增量。
+
+Patrol 首次认知读取已冻结的可用证据，不等待整组 Curator。认知步骤的 `needs_evidence` 可请求 `curator` 或 `expansion_assessment`；既有 Worker 队列按 Vi 和准备阶段去重，持久等待期间释放 coordinator 租约与轮次调度槽。完整派生评估先准备 Curator，收齐后再独立排队评估；两阶段沿用 Worker 的领取、取消、重试与恢复合同。Patrol attempt 已保存请求但尚未排队时发生中断，恢复端从原 attempt 重建工作，不重复调用模型。补充证据只进入 `LoopDecisionSupplement`，不替换 Vi 的正文、版本或 hash。
+
+`continue_context` 只要求对应 Revision、冻结授权、无未取消的 Run 冲突及任务事实；`spawn_context` 必须有完整派生评估，并继续经过来源、独立性、synthesis 和 quality 编译；`merge_contexts` 核对精确来源、完整 Lineage 与合并授权；`adopt_workspace_result` 核对来源及目标版本、既有冲突和精确版本的独立只读验证；`request_completion` 复用原完成资格合同。未完成的派生评估表示未知，不能推断没有 required 义务：已有未决 required opportunity 随 Vi 冻结，本轮 Curator 产生的 required 工作也会强制取证，完整评估后仍须给出合法派生出口。历史上已处理的 required Worker 材料不构成新的准备屏障。以上都只是提案准入，最终权限、版本、指纹与冲突复检仍由原 Kernel 和 publication/adoption 服务执行。
 
 每 Loop 同时至多一个未提交 Round。用户受理与 Kernel 成功权威提交按 Loop→Round 锁序确定先后：输入先受理则同轮追加新 V、旧 fence/Curator/Patrol 失权；提交先成功则输入新建例外 Round。先前已授权工作由所属 Round 管理，较新 Round 或 Mission 不直接取消它。所有活动轮、认知清理、发布/采用及输入处置收敛后，唯一自动推进事务再核对 join 清算。Kernel 负责机械合法性，Patrol 决定保留与精确取消。
 

@@ -689,7 +689,10 @@ def test_cancellation_during_synthesis_settles_actual_usage_once(tmp_path):
                     )
                 )
             ).all()
-            assert len(rows) == 1 and rows[0].settled_at is not None
+            # Four projector/verifier pairs and the cancelled synthesis attempt
+            # now each have their own durable receipt, rather than one batch row.
+            assert len(rows) == 9 and all(row.settled_at is not None for row in rows)
+            assert sum((row.actual_usage or {}).get("model_calls", 0) for row in rows) == 9
             assert (
                 await session.scalar(
                     select(LoopSemanticIndexArtifact.index_id).where(

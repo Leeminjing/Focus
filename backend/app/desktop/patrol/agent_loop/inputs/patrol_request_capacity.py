@@ -17,11 +17,11 @@ from backend.app.desktop.patrol.agent_loop.resources.resource_limits import exce
 
 
 class PatrolRequestCapacity:
-    def __init__(self, config, limits: dict) -> None:
+    def __init__(self, config, limits: dict, *, max_output_tokens=None) -> None:
         policy = limits.get("expansion_resources") or {}
         self._limit, self.output_reserve = request_limits(
             policy.get("max_request_input_tokens"), policy.get("output_token_reserve"),
-            config.context_window, config.curation_max_output_tokens,
+            config.context_window, max_output_tokens if max_output_tokens is not None else config.curation_max_output_tokens,
         )
 
     def check(self, messages, schema) -> int:

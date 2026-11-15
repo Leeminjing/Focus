@@ -60,7 +60,7 @@ async function run() {
     if (rail.querySelector('.context-rail-card[aria-current="true"]')?.dataset.taskId !== 'child') failures.push('当前 Context 没有选中态');
     if (!rail.querySelector('[data-action="derive-context"]')) failures.push('Context rail 缺少新增入口');
     if (!rail.querySelector('.context-rail-card[data-task-id="blocked"].is-blocked')) failures.push('受阻 Context 没有可见状态');
-    if (!rail.querySelector('.context-rail-card[data-task-id="merged"] .context-rail-parents')?.textContent.includes('安全 Context')) failures.push('多父 Context 没有附加父来源');
+    if (!rail.querySelector('.context-rail-item[data-context-id="merged"] .context-rail-parents')?.textContent.includes('安全 Context')) failures.push('多父 Context 没有附加父来源');
     if (rail.querySelector('.context-tree-root, .context-tree-children, .context-current-marker, .context-rail-lineage')) failures.push('Context rail 又引入了树线、层级胶囊或重复父来源');
     if (rail.querySelector('.context-family, .context-root-label, .context-derived-list, .context-derived-heading')) failures.push('Context rail 仍包含额外根容器、眉题或派生分区');
     const rootItem = rail.querySelector('.context-rail-card[data-task-id="root"]')?.closest('.context-rail-item');
@@ -70,16 +70,18 @@ async function run() {
     const childCardStyle = getComputedStyle(childItem?.querySelector('.context-rail-card'));
     const childCardRect = childItem?.querySelector('.context-rail-card')?.getBoundingClientRect();
     const childTitleRect = childItem?.querySelector('.context-rail-title')?.getBoundingClientRect();
-    if (!rootItem?.querySelector('.context-rail-meta')?.textContent.includes('根 Context')) failures.push('根 Context 缺少元信息');
-    if (!childItem?.querySelector('.context-rail-meta')?.textContent.includes('派生 Context')) failures.push('派生 Context 缺少元信息');
+    if (rootItem?.querySelector('.context-rail-card')?.textContent.includes('根 Context')) failures.push('根 Context 导航仍展示技术类型');
+    if (childItem?.querySelector('.context-rail-card')?.textContent.includes('派生 Context')) failures.push('派生 Context 导航仍展示技术类型');
     if (!(parseFloat(getComputedStyle(childItem).marginLeft) > parseFloat(getComputedStyle(rootItem).marginLeft))) failures.push('一级派生没有保留 depth 缩进');
     if (!(parseFloat(getComputedStyle(mergedItem).marginLeft) > parseFloat(getComputedStyle(childItem).marginLeft))) failures.push('深层派生没有保留轻量缩进');
     if (parseFloat(rootCardStyle.borderTopWidth) < 0.5 || parseFloat(childCardStyle.borderTopWidth) < 0.5 || parseFloat(childCardStyle.borderTopLeftRadius) < 3) failures.push('Context 卡片缺少清晰完整边框或圆角');
     if (childCardStyle.borderTopColor === rootCardStyle.borderTopColor) failures.push('当前项完整蓝色边框与默认卡片无法区分');
     if (!['left', 'start'].includes(childCardStyle.textAlign)) failures.push('Context 卡片内容没有恢复左对齐');
     if (childTitleRect.left - childCardRect.left > 22) failures.push('公共 button 样式仍把 Context 卡片内容居中');
-    if (!rail.querySelector('[data-task-id="child"]')?.textContent.includes('缓存 25%')) failures.push('Context rail 没有展示实际缓存命中率');
-    if (!rail.querySelector('[data-task-id="root"]')?.textContent.includes('缓存 —')) failures.push('无 usage 的 Context 没有展示未知缓存状态');
+    const childDiagnostics = childItem?.querySelector('.context-rail-diagnostics');
+    const rootDiagnostics = rootItem?.querySelector('.context-rail-diagnostics');
+    if (!childDiagnostics?.textContent.includes('25%') || childDiagnostics.open) failures.push('缓存命中率未放入默认折叠的技术详情');
+    if (!rootDiagnostics?.textContent.includes('—') || rootDiagnostics.open) failures.push('未知缓存状态未放入默认折叠的技术详情');
     if (!rail.querySelector('[data-action="edit-context-definition"][data-context-id="child"]')) failures.push('首次运行前的派生 Context 缺少编辑入口');
     const railList = rail.querySelector('.context-rail-list');
     const conversation = document.querySelector('#conversation');
@@ -158,7 +160,8 @@ async function run() {
       if (document.querySelector('.context-drag-preview, .context-drop-placeholder')) failures.push('拖拽结束后未清理临时视觉');
     }
     const firstCard = list.querySelector('.context-message-editor');
-    firstCard.querySelector('[data-action="context-message-toggle"]').click();
+    firstCard.querySelector('.context-source-json').open = true;
+    firstCard.querySelector('[data-action="context-message-edit-json"]').click();
     const sourceInput = await waitFor('[data-context-message-json]');
     const edited = JSON.parse(sourceInput.value);
     edited.content = '未失焦编辑必须保留';

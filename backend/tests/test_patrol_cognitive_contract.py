@@ -244,7 +244,7 @@ def test_semantic_contract_violation_carries_raw_output(monkeypatch):
 def test_contract_violation_is_retried_then_succeeds(monkeypatch):
     orchestrator, calls = _orchestrator(monkeypatch, [PatrolContractViolation("形状非法"), None])
 
-    intent = _run(orchestrator._decide_patrol(_claim(), None, "patrol:1", object()))
+    intent = _run(orchestrator._decide_patrol(_claim(), None, "patrol:1", _required_expansion_observation()))
 
     assert intent == "intent"
     assert calls["decide"] == 2
@@ -261,7 +261,8 @@ def test_retry_feedback_repairs_malformed_proposal_on_frozen_observation(monkeyp
     ])
     monkeypatch.setattr(module, "create_chat_model", lambda **kwargs: model)
     observation = _required_expansion_observation().model_copy(update={
-        "grant": {"grant_id": "grant-1", "holder_id": "patrol:1"},
+        "grant": {"grant_id": "grant-1", "holder_id": "patrol:1", "capabilities": ["continue_context"], "context_scope": ["context-1"]},
+        "portfolio_frontier": ({"context_id": "context-1", "revision_id": "revision-1"},),
         "expansion_assessment": None,
     })
 
@@ -297,7 +298,7 @@ def test_contract_violation_exhausts_attempts(monkeypatch):
     orchestrator, calls = _orchestrator(monkeypatch, [PatrolContractViolation("形状非法")] * 3)
 
     with pytest.raises(PatrolContractViolation):
-        _run(orchestrator._decide_patrol(_claim(), None, "patrol:1", object()))
+        _run(orchestrator._decide_patrol(_claim(), None, "patrol:1", _required_expansion_observation()))
 
     assert calls["decide"] == 3
     assert calls["retry"] == 2
@@ -308,7 +309,7 @@ def test_non_contract_failure_is_not_retried(monkeypatch):
     orchestrator, calls = _orchestrator(monkeypatch, [RuntimeError("模型不可用")])
 
     with pytest.raises(RuntimeError):
-        _run(orchestrator._decide_patrol(_claim(), None, "patrol:1", object()))
+        _run(orchestrator._decide_patrol(_claim(), None, "patrol:1", _required_expansion_observation()))
 
     assert calls["decide"] == 1
     assert calls["retry"] == 0

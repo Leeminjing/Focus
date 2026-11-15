@@ -21,12 +21,10 @@ from focus.models.lifecycle import model_client_scope
 from focus.context.requests import frozen_request_messages
 from focus.history import content_hash
 from focus.runtime.runs.usage import ModelUsage, callback_usage
-from focus.messages.request_budget import estimate_request_budget, estimate_responses_budget
-from focus.models.responses import FocusResponsesChatModel
+from focus.models.structured_metrics import StructuredRequestMetrics, structured_input_tokens
+from focus.models.telemetry import model_context
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableBinding, RunnableParallel
-from openai.lib._parsing import type_to_response_format_param
 
 
 class StructuredWorkerModel:
@@ -55,6 +53,10 @@ class StructuredWorkerModel:
     def max_output_tokens(self) -> int:
         return self._model_config().curation_max_output_tokens
 
+    @property
+    def small_evidence_max_bytes(self) -> int:
+        return self._model_config().curation_small_evidence_max_bytes
+
     def _model_config(self):
         config = self._app_config.get_model(
             self._model_name or self._app_config.resolve_curation_model_name()
@@ -66,7 +68,8 @@ class StructuredWorkerModel:
     def _chat_model(self):
         config = self._model_config()
         return create_chat_model(name=config.name, app_config=self._app_config,
-                                 max_tokens=self.max_output_tokens)
+                                 max_tokens=self.max_output_tokens,
+                                 streaming=getattr(config, "curation_streaming", False))
 
     @staticmethod
     def _structured_request(model, schema, method):
@@ -74,43 +77,29 @@ class StructuredWorkerModel:
 
     def estimate_input_tokens(self, schema, system, payload) -> int:
         model = self._chat_model()
-        messages = self.request_messages(schema, system, payload)
         method = self._model_config().curation_output_method
-        options = {}
-        if method != "prompt_json":
-            binding = self._structured_request(model, schema, method).first
-            if isinstance(binding, RunnableParallel):
-                binding = binding.steps__.get("raw")
-            if not isinstance(binding, RunnableBinding) or binding.bound is not model:
-                raise ValueError("structured_request_budget_unsupported_binding")
-            options = {key: value for key, value in binding.kwargs.items() if not key.startswith("ls_")}
-        if isinstance(model, FocusResponsesChatModel):
-            return estimate_responses_budget(model.request_payload(messages, validate_window=False, **options))
-        request = model._get_request_payload(messages, **options)
-        if "response_format" in request:
-            request["response_format"] = type_to_response_format_param(request["response_format"])
-        return estimate_request_budget(request.pop("messages"), format_spec=request)
+        messages = self.request_messages(schema, system, payload, method=method)
+        return structured_input_tokens(model, messages, schema, method)
 
     @model_client_scope()
     async def invoke(self, schema, system: str, payload: dict[str, Any]):
         config = self._model_config()
         self.last_model_metadata = {"configured_model": config.model}
         model = self._chat_model()
-        document = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        json_schema = json.dumps(
-            schema.model_json_schema(),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        messages = self.request_messages(schema, system, payload)
+        messages = self.request_messages(schema, system, payload, method=config.curation_output_method)
+        estimated = structured_input_tokens(model, messages, schema, config.curation_output_method) if (
+            hasattr(model, "request_payload") or hasattr(model, "_get_request_payload")
+        ) else None
         callback = UsageMetadataCallbackHandler()
         receipt = None
         if self._usage_receipts is not None:
-            receipt = await self._usage_receipts.reserve(len(document.encode("utf-8")) + len(json_schema.encode("utf-8")) + len(system.encode("utf-8")), config.curation_max_output_tokens)
+            if estimated is None:
+                raise ValueError("structured_request_budget_unsupported_model")
+            receipt = await self._usage_receipts.reserve(estimated, config.curation_max_output_tokens)
+        metrics = StructuredRequestMetrics()
+        contract_valid = False
         try:
-            invoke_config = {"callbacks": [callback]}
+            invoke_config = {"callbacks": [callback, metrics]}
             if config.curation_output_method == "prompt_json":
                 response = await model.ainvoke(messages, config=invoke_config)
                 metadata = getattr(response, "response_metadata", {}) or {}
@@ -132,7 +121,9 @@ class StructuredWorkerModel:
                     )
                 )
                 candidate = self._json_text(text)
-                return schema.model_validate(json.loads(candidate))
+                parsed = schema.model_validate(json.loads(candidate))
+                contract_valid = True
+                return parsed
             response = await self._structured_request(model, schema, config.curation_output_method).ainvoke(messages, config=invoke_config)
             if isinstance(response, dict) and "raw" in response:
                 metadata = getattr(response["raw"], "response_metadata", {}) or {}
@@ -141,11 +132,13 @@ class StructuredWorkerModel:
                 if response.get("parsing_error") is not None:
                     raise response["parsing_error"]
                 response = response["parsed"]
-            return (
+            parsed = (
                 response
                 if isinstance(response, schema)
                 else schema.model_validate(response)
             )
+            contract_valid = True
+            return parsed
         finally:
             self.last_model_metadata["usage_reported"] = bool(getattr(callback, "usage_metadata", None))
             self.last_model_metadata["usage_model_ids"] = tuple(
@@ -160,14 +153,19 @@ class StructuredWorkerModel:
                 measured if measured.model_calls else ModelUsage(model_calls=1)
             )
             self.usage += self.last_usage
+            self.last_model_metadata.update(metrics.finish(
+                category=(model_context.get() or {}).get("category", "curator"), model=config.model, schema=schema,
+                estimated_input_tokens=estimated, usage=self.last_usage,
+                usage_reported=self.last_usage_reported, contract_valid=contract_valid))
             if receipt is not None:
                 await self._usage_receipts.settle(receipt, self.last_usage, self.last_usage_reported)
 
     @staticmethod
-    def request_messages(schema, system, payload):
+    def request_messages(schema, system, payload, *, method="prompt_json"):
         document = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         json_schema = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
-        return frozen_request_messages(system, f"<worker_input>{document}</worker_input>\nJSON Schema: {json_schema}",
+        contract = f"\nJSON Schema: {json_schema}" if method == "prompt_json" else ""
+        return frozen_request_messages(system, f"<worker_input>{document}</worker_input>{contract}",
                                        scope="round", source_refs=({"payload_hash": content_hash(payload)},))
 
     @property

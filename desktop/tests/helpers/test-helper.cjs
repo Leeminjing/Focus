@@ -164,6 +164,7 @@ function createAppHarness(options = {}) {
   };
   // window === globalThis(浏览器语义):app.js 经 window.markdownit 访问渲染器
   context.window = context;
+  vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/shared/ui/accessible-controls.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/loop/loop-expansion-budget.js"), "utf8"), context);
   // markdown-it(vendor):与浏览器一致,script 内容在 context 内执行,暴露全局 markdownit
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/vendor/markdown-it.min.js"), "utf8"), context);

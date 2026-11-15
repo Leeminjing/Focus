@@ -45,12 +45,14 @@ class LoopRuntimeConvergence:
         self._directives = DirectiveLifecycleRepository()
         self._waits = LoopWaitRequestService()
 
-    async def converge(self, session: AsyncSession, loop: AgentLoop, reason: str) -> tuple[str, ...]:
+    async def converge(self, session: AsyncSession, loop: AgentLoop, reason: str, *, preserve_waits: bool = False) -> tuple[str, ...]:
         now = datetime.now(UTC)
         from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
         waits = tuple(await session.scalars(select(LoopWaitRequest).where(LoopWaitRequest.loop_id == loop.loop_id,
             LoopWaitRequest.status.in_(("open", "resolving"))).order_by(LoopWaitRequest.request_id).with_for_update()))
         for request in waits:
+            if preserve_waits:
+                continue
             if request.scope.get("information_only") and loop.status not in {"completed", "stopped", "failed"}:
                 continue
             await self._waits.cancel(session, request.request_id,

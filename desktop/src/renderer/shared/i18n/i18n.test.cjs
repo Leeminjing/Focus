@@ -113,7 +113,21 @@ test("every message key exists in both languages", () => {
   const enKeys = keys(enPart);
 
   assert.ok(zhKeys.length > 0 && enKeys.length > 0, "两种语言都必须有文案");
-  assert.deepEqual(enKeys, zhKeys);
+  assert.equal(new Set(zhKeys).size, zhKeys.length, "中文键不能重复");
+  assert.equal(new Set(enKeys).size, enKeys.length, "英文键不能重复");
+  assert.deepEqual(enKeys.sort(), zhKeys.sort(), "语言表顺序不影响翻译身份");
+  const { i18n } = loadI18n();
+  for (const key of zhKeys) {
+    i18n.setLocale("zh-CN");
+    const chinese = i18n.t(key);
+    i18n.setLocale("en-US");
+    const english = i18n.t(key);
+    assert.ok(chinese.trim(), `${key} 中文为空`);
+    assert.ok(english.trim(), `${key} 英文为空`);
+    assert.doesNotMatch(english, /\p{Script=Han}/u, `${key} 英文不能回退到中文`);
+    const placeholders = value => [...value.matchAll(/\{(\w+)\}/g)].map(match => match[1]).sort();
+    assert.deepEqual(placeholders(english), placeholders(chinese), `${key} 中英文插值须一致`);
+  }
   for (const key of [
     "access.panel_title",
     "access.approve_once",

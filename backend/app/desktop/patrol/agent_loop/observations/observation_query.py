@@ -3,6 +3,7 @@
 输入为 Desktop 会话、Loop/Observation 身份、section 与绑定内容哈希的游标；输出为安全摘要或有界冻结条目。
 具体工作流为复用当前 Live 权限，核对不可变输入身份，白名单投影并分页；版本清单截止所选 generation，因果链保留完整原文和精确 Oi 引用，输入前证据不读取当前 head 回填历史，不写领域状态。
 Patrol 审计按精确 Observation 读取阶段及 Curator；分页绑定已读审计内容，变化时要求重新读取，避免记录错位。
+摘要优先提供有权限的冻结来源短文与同版本已提交决定说明；不将候选安排或当前 head 回填为观察结论。
 示例：await ObservationInspectionQuery().read(session, "loop", "observation", section="sources", limit=40)。
 """
 
@@ -53,6 +54,7 @@ class ObservationInspectionQuery:
         summary["decision_state"] = "committed" if committed else "superseded" if round_row and round_row.observation_id != observation_id else "rejected" if candidates else "current"
         summary["decision_id"] = committed.decision_id if committed else None
         summary["candidate_statuses"] = [item.status for item in candidates]
+        summary["conclusions"] = self._conclusions(payload, committed, access.permissions)
         if section == "summary":
             if cursor:
                 raise HTTPException(422, "摘要不接受分页游标")
@@ -107,6 +109,28 @@ class ObservationInspectionQuery:
             **({"patrol_session": patrol["session"]} if patrol is not None else {}),
             "has_more": end < len(rows),
             "next_cursor": self._cursor(binding, end) if end < len(rows) else None,
+        }
+
+    @staticmethod
+    def _conclusions(payload, decision, permissions) -> dict:
+        """Bounded user-facing excerpts from this frozen version, never the current head."""
+        def text(value, limit):
+            value = value.strip() if isinstance(value, str) else ""
+            return value[:limit] + ("…" if len(value) > limit else "")
+
+        observed = []
+        if "view_evidence" in permissions:
+            for source in (payload.get("task_delta") or {}).get("sources", []):
+                body = source.get("payload") or {}
+                excerpt = text(body.get("summary"), 300) or text(body.get("title"), 300)
+                if excerpt and excerpt not in observed:
+                    observed.append(excerpt)
+                if len(observed) == 3:
+                    break
+        return {
+            "observed": observed,
+            "decision": text(decision.rationale, 600) or None
+            if decision is not None and decision.authority_committed_at is not None else None,
         }
 
     @staticmethod

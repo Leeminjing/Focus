@@ -42,11 +42,18 @@ class PatrolCausalReadRequest(BaseModel):
 
 class PatrolReadView:
     @classmethod
-    def payload(cls, observation, sources=None) -> dict:
+    def payload(cls, observation, sources=None, *, initial_evidence_max_bytes=0) -> dict:
         payload = EffectiveMissionProjector.observation_payload(observation)
         payload["evolution_strategies"] = strategy_catalog(observation.evolution_strategies)
         payload["clarification_admission"] = ClarificationAdmissionPolicy.read_view(ClarificationFacts.from_observation(observation))
         payload["worker_results"] = [cls._descriptor(item, observation.round_id) for item in observation.worker_results]
+        remaining = initial_evidence_max_bytes
+        for worker, descriptor in zip(observation.worker_results, payload["worker_results"], strict=True):
+            size = descriptor["result_bytes"]
+            if descriptor["current_round"] and worker.get("status") == "success" and size <= remaining:
+                descriptor["result"] = worker.get("result") or {}
+                descriptor["result_complete"] = True
+                remaining -= size
         payload["worker_source_catalog"] = [cls._descriptor(item, observation.round_id) for item in (sources if sources is not None else observation.worker_results)]
         payload.pop("pre_input_state", None)
         payload.pop("causal_chain", None)

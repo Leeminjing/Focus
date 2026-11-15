@@ -42,6 +42,7 @@ if (!process.versions.electron) {
     await until('!document.querySelector("[data-patrol-content]").disabled');
     await run(`document.querySelector('[data-patrol-content]').value='工作台验收';document.querySelector('[data-patrol-content]').dispatchEvent(new Event('input'));document.querySelector('[data-patrol-composer]').requestSubmit()`);
     await until('window.patrolFixture.connected("loop-graph")');
+    await click('[data-patrol-tools-toggle]');
     await click('[data-patrol-composer] [data-patrol-details]');
     await until('document.querySelector(".loop-map-empty")');
     await capture("empty");
@@ -72,17 +73,38 @@ if (!process.versions.electron) {
     await until('document.querySelectorAll(".workbench-node[hidden]").length===0');
     assert.deepEqual(await run(`({zoom:document.querySelector('.is-workbench').dataset.zoom,position:stableNode.getAttribute('style')})`),stable);
     await run(`window.patrolFixture.lineage.nodes.push({context_id:'ctx-03',revision_id:'older-source',generation:0});window.patrolFixture.lineage.edges.push({source_context_id:'ctx-03',source_revision_id:'older-source',target_context_id:'ctx-12',target_revision_id:'rev-12'});window.patrolFixture.emit('loop-graph','portfolio','p2',2,{version:2})`);
-    await until('document.querySelectorAll("[data-edge-hit]").length===45');
-    const edgePoint = await run(`(()=>{for(const path of document.querySelectorAll('[data-edge-hit]')){const id=JSON.parse(path.dataset.edgeHit);if(id[0]!=='ctx-03'||id[2]!=='ctx-12')continue;for(let fraction=.15;fraction<.9;fraction+=.1){const local=path.getPointAtLength(path.getTotalLength()*fraction),p=new DOMPoint(local.x,local.y).matrixTransform(path.getScreenCTM());const hit=document.elementFromPoint(p.x,p.y);if(hit?.dataset.edgeHit===path.dataset.edgeHit)return {x:p.x,y:p.y};}}throw Error('No visible precise edge hit')})()`);
+    await until('document.querySelectorAll("path[data-edge-hit]").length===45');
+    const edgePoint = await run(`(()=>{for(const path of document.querySelectorAll('path[data-edge-hit]')){const id=JSON.parse(path.dataset.edgeHit);if(id[0]!=='ctx-03'||id[2]!=='ctx-12')continue;for(let fraction=.15;fraction<.9;fraction+=.1){const local=path.getPointAtLength(path.getTotalLength()*fraction),p=new DOMPoint(local.x,local.y).matrixTransform(path.getScreenCTM());const hit=document.elementFromPoint(p.x,p.y);if(hit?.dataset.edgeHit===path.dataset.edgeHit)return {x:p.x,y:p.y};}}throw Error('No visible precise edge hit')})()`);
     pointer(edgePoint,'mouseDown',{button:'left',clickCount:1});pointer(edgePoint,'mouseUp',{button:'left',clickCount:1});
     await until('document.querySelector("[data-patrol-dialog]").open');
     assert.equal(await run('document.querySelectorAll(".workbench-edge-list li").length'),2);
     await click('[data-patrol-dialog-close]');
     await until('!document.querySelector("[data-patrol-dialog]").open');
+    await run(`document.querySelector('.portfolio-map-relations summary').focus()`);
+    win.webContents.sendInputEvent({type:"keyDown",keyCode:"Enter"});win.webContents.sendInputEvent({type:"char",keyCode:"Enter"});win.webContents.sendInputEvent({type:"keyUp",keyCode:"Enter"});
+    await until('document.querySelector(".portfolio-map-relations").open');
+    await run(`window.relationButton=[...document.querySelectorAll('button[data-edge-hit]')].find(button=>JSON.parse(button.dataset.edgeHit)[1]==='older-source');relationButton.focus()`);
+    assert.match(await run('relationButton.textContent'), /R0.*→/);
+    for (const key of ["Enter", "Space"]) {
+      win.webContents.sendInputEvent({type:"keyDown",keyCode:key});
+      if (key === "Enter") win.webContents.sendInputEvent({type:"char",keyCode:key});
+      win.webContents.sendInputEvent({type:"keyUp",keyCode:key});
+      await until('document.querySelector("[data-patrol-dialog]").open');
+      assert.deepEqual(await run(`Array.from(document.querySelectorAll('.workbench-edge-list li.is-selected button'),button=>[button.dataset.patrolEdgeContext,button.dataset.revisionId])`),[["ctx-03","older-source"],["ctx-12","rev-12"]]);
+      assert.match(await run('document.querySelector(".workbench-edge-list").textContent'), /Context ctx-03.*Revision older-source/);
+      await click('[data-patrol-dialog-close]');
+      await until('!document.querySelector("[data-patrol-dialog]").open && document.activeElement===relationButton');
+    }
+    await capture("keyboard-relationship-list");
+    await click('.portfolio-map-relations summary');
+    await until('!document.querySelector(".portfolio-map-relations").open');
+    const toolbarBounds = () => run('document.querySelector(".portfolio-map-zoom").getBoundingClientRect().toJSON()');
+    const toolsBeforeDrag = await toolbarBounds();
     await click('[data-portfolio-zoom=in]');await click('[data-portfolio-zoom=in]');
     const dragPoint = await run(`(()=>{const r=document.querySelector('.portfolio-map-scroll').getBoundingClientRect();for(let y=r.bottom-35;y>r.top+30;y-=35)for(let x=r.right-35;x>r.left+140;x-=35){const hit=document.elementFromPoint(x,y);if(hit?.matches('svg,.portfolio-map-canvas,.portfolio-map-scroll'))return {x,y};}throw Error('No blank graph surface')})()`);
     pointer(dragPoint,'mouseDown',{button:'left',clickCount:1});pointer({x:dragPoint.x-110,y:dragPoint.y-60},'mouseMove',{button:'left'});pointer({x:dragPoint.x-110,y:dragPoint.y-60},'mouseUp',{button:'left',clickCount:1});
     await until('document.querySelector(".portfolio-map-scroll").scrollLeft>0');
+    assert.deepEqual(await toolbarBounds(), toolsBeforeDrag, "缩放和平移画布不能移动图操作工具");
     assert.equal(await run('document.querySelector(".workbench-node.is-selected").dataset.contextId'),"ctx-12");
     await click('[data-portfolio-zoom=fit]');
     await run(`document.querySelector('[data-context-related="ctx-03"][data-revision-id="older-source"]').focus()`);
@@ -109,10 +131,11 @@ if (!process.versions.electron) {
     assert.equal(await run('document.querySelectorAll(".workbench-node").length'),32);
     await run(`window.patrolFixture.lineageError=false;document.querySelector('[data-patrol-lineage-retry]').click()`);
     await until('document.querySelector("[data-patrol-lineage-error]").hidden');
+    await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     await run(`window.progressBeforeFact=document.querySelector('[data-patrol-progress] li button');progressBeforeFact.focus();window.graphChanges=[];window.graphObserver=new MutationObserver(changes=>graphChanges.push(...changes));graphObserver.observe(document.querySelector('[data-patrol-lineage]'),{subtree:true,attributes:true,childList:true,characterData:true});window.patrolFixture.emit('loop-graph','fact','fact-1',2,{kind:'run',title:'真实事实修订',status:'contradicted',outcome_status:'failed'})`);
     await until('document.querySelector("[data-patrol-facts]").textContent.includes("真实事实修订")');
-    assert.equal(await run('document.querySelectorAll("[data-patrol-facts] article[data-fact-id=fact-1]").length'),1);
-    assert.equal(await run('graphChanges.length'),0);
+    assert.equal(await run(`Array.from(document.querySelectorAll('[data-patrol-facts] article[data-timeline-entry]')).filter(row=>row.querySelector('.work-timeline-heading strong')?.textContent==='真实事实修订').length`),1);
+    assert.equal(await run('graphChanges.length'),0,await run(`JSON.stringify(graphChanges.map(change=>({type:change.type,attribute:change.attributeName,target:change.target.outerHTML?.slice(0,400)})))`));
     assert.equal(await run('document.activeElement===progressBeforeFact'),true);
     await run('graphObserver.disconnect()');
     await click('[data-patrol-progress-locate="[]"]');
@@ -120,6 +143,9 @@ if (!process.versions.electron) {
     await click('[data-patrol-progress-locate=\'["ctx-10","ctx-11"]\']');
     await until('document.querySelector("[data-workbench-location]").textContent.includes("2 条关联工作线")');
     await click('[data-patrol-progress-locate=\'["ctx-12"]\']');
+    assert.equal(await run('document.querySelector(".workspace-patrol").dataset.workbenchPanel'), 'graph');
+    await click('[data-patrol-lineage] [data-context-id="ctx-12"]');
+    await until('document.querySelector(".workspace-patrol").dataset.workbenchPanel==="context"');
     await until('document.querySelector(".workbench-node.is-selected").dataset.contextId==="ctx-12"');
     await run(`document.querySelector('[data-patrol-content]').focus();document.querySelector('[data-patrol-content]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
     assert.equal(await run('window.patrolFixture.submissions.length'),2);
@@ -154,7 +180,15 @@ if (!process.versions.electron) {
       const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const check = (value, message) => { if (!value) throw new Error(host.clientWidth + 'px: ' + message); };
       check(visible(tabs) === compact, 'workbench tabs must follow available width');
-      if (!compact) return;
+      if (!compact) {
+        const map = graph.querySelector('.portfolio-map');
+        const tools = map.querySelector('.portfolio-map-zoom');
+        const bounds = map.getBoundingClientRect(), controls = tools.getBoundingClientRect();
+        check(getComputedStyle(tools).position === 'absolute' && tools.offsetParent === map, 'zoom tools must be positioned inside the graph');
+        check(controls.left >= bounds.left && controls.top >= bounds.top && controls.right <= bounds.right && controls.bottom <= bounds.bottom, 'zoom tools must remain within graph bounds');
+        check(tools.closest('section[aria-label]') === map, 'graph and its controls must share a named region');
+        return;
+      }
       const graphButton = tabs.querySelector('[data-workbench-show=graph]');
       check(visible(graphButton) === single, 'graph tab must be available when details replace the graph');
       for (const [name, selector] of [
@@ -185,13 +219,14 @@ if (!process.versions.electron) {
         graphButton.click();
       }
     };
-    for (const [width,height,zoom,available] of [[1440,900,1],[1199,900,1],[1100,900,1],[1000,900,1],[999,900,1],[900,800,1],[1440,900,1,900],[390,844,1],[1280,900,2]]) {
+    for (const [width,height,zoom,available] of [[1440,900,1],[1200,900,1],[1199,900,1],[1100,900,1],[1000,900,1],[999,900,1],[900,800,1],[1440,900,1,900],[390,844,1],[1280,900,2]]) {
       win.webContents.setZoomFactor(zoom);win.setContentSize(width,height);await sleep(300);
       await run(`document.querySelector('#app').style.width=${JSON.stringify(available ? available + 'px' : '')}`);
       await run(`(${checkWorkbenchLayout})()`);
+      await run('document.querySelector("[data-patrol-composer]").scrollIntoView({block:"nearest"})');
       await capture(`responsive-${width}-${zoom}`);
       assert.ok(await run('document.documentElement.scrollWidth<=innerWidth+1'));
-      assert.ok(await run('(()=>{const r=document.querySelector("[data-patrol-composer]").getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight})()'));
+      assert.ok(await run('(()=>{const r=document.querySelector("[data-patrol-composer]").getBoundingClientRect();return r.top>=-1&&r.bottom<=innerHeight+1})()'), await run('JSON.stringify({viewport:[innerWidth,innerHeight],composer:document.querySelector("[data-patrol-composer]").getBoundingClientRect().toJSON()})'));
       const workspaceWidth = await run('document.querySelector("#app").clientWidth');
       if(workspaceWidth<1200) for(const panel of ['progress','observation','facts','context','graph']) {
         if(panel==='graph'&&workspaceWidth>=1000) continue;

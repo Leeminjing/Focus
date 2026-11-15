@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2] / "src/renderer"
 
 HTML = """<!doctype html><html lang="zh-CN"><meta charset="UTF-8">
 <link rel="stylesheet" href="/shared/styles/tokens.css"><link rel="stylesheet" href="/shared/styles/base.css">
-<link rel="stylesheet" href="/shared/styles/components.css"><link rel="stylesheet" href="/features/patrol/workspace/workspace-patrol.css">
+<link rel="stylesheet" href="/shared/styles/components.css"><link rel="stylesheet" href="/shared/styles/workspace-patrol.css">
 <style>body{margin:0;background:#f6f8f9;padding:24px;font-family:system-ui,sans-serif;color:#28343e}
 main{max-width:760px;margin:auto;--workbench-muted:#60717d}main>.patrol-facts-card{height:790px;width:100%;padding:20px;box-sizing:border-box;background:white;border:1px solid #dfe5e9;border-radius:18px;display:flex;flex-direction:column}
 .demo-note{font-size:13px;color:#60717d;margin:0 auto 12px;max-width:760px}#draft{width:100%;box-sizing:border-box;margin-top:12px;min-height:48px}button{cursor:pointer}main>.patrol-facts-card [data-patrol-facts]{padding-top:4px}</style>
@@ -62,6 +62,8 @@ def main():
         if row["category"] == "fact":
             row["references"]["state"] = "verified" if row["fact_revision"] == 2 else "observed"
             row["occurred_at"] = "2026-10-21T02:04:00Z"
+    rows[7]["references"]["status"] = "success"
+    rows[3]["references"]["context_labels"] = {"context-ui": "插件技术验证"}
     reads, evidence_reads, errors = [], [], []
     fail = {"next": False}
 
@@ -117,12 +119,32 @@ def main():
         page.wait_for_load_state("networkidle")
         assert not errors, errors
         expect(page.locator("[data-timeline-entry]")).to_have_count(4)
+        page.evaluate("document.querySelector('.patrol-facts-card').style.height='320px'")
+        anchor = page.locator('[data-timeline-entry="e8"]').evaluate("node=>node.getBoundingClientRect().top")
         page.locator("[data-timeline-older]").click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(8)
+        assert abs(page.locator('[data-timeline-entry="e8"]').evaluate("node=>node.getBoundingClientRect().top") - anchor) < 2, "older pages preserve the visible reading anchor"
         page.locator("[data-timeline-older]").click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(9)
+        page.evaluate("document.querySelector('.patrol-facts-card').style.height='790px'")
         assert page.locator("[data-timeline-entry]").evaluate_all("nodes=>nodes.map(n=>n.dataset.timelineEntry)") == [f"e{i}" for i in range(1, 10)]
-        page.locator('[data-timeline-evidence="e4"] > summary').click()
+        observed = page.locator('[data-timeline-entry="e4"]')
+        expect(observed.locator(".work-timeline-heading")).to_contain_text("测试结果：8 passed")
+        expect(observed.locator(":scope > .work-timeline-meta")).to_contain_text("插件技术验证")
+        expect(observed.locator(".work-timeline-state")).to_have_text("已观察")
+        expect(observed.locator(".work-timeline-details > p")).to_be_hidden()
+        expect(observed.locator("[data-timeline-round]")).to_be_hidden()
+        expect(observed.locator(".work-timeline-source")).to_be_hidden()
+        expect(observed.locator("[data-timeline-evidence] > summary")).to_be_visible()
+        assert observed.locator("details").count() == 1, "one event disclosure replaces generic and nested evidence controls"
+        assert "查看详情" not in observed.inner_text() and "查看证据" not in observed.inner_text()
+        assert observed.locator("time").evaluate("node=>parseFloat(getComputedStyle(node).fontSize)") >= 12
+        assert not evidence_reads, "collapsed entries must not request evidence"
+        # The event title supports native keyboard disclosure and reads that event's fixed revision.
+        observed.locator(".work-timeline-details > summary").focus()
+        observed.locator(".work-timeline-details > summary").press("Enter")
+        expect(observed.locator(".work-timeline-details > p")).to_be_visible()
+        expect(observed.locator("[data-timeline-round]")).to_be_visible()
         expect(page.locator('[data-timeline-evidence="e4"]')).to_have_attribute("data-loaded", "true")
         expect(page.locator('[data-timeline-evidence="e4"]')).to_contain_text("当时尚未验证")
         expect(page.locator('[data-timeline-evidence="e4"]')).not_to_contain_text("后来验证通过")
@@ -134,9 +156,14 @@ def main():
         page.evaluate("timeline.sync('loop-demo',{last_sequence:10})")
         expect(page.locator("[data-timeline-entry]")).to_have_count(10)
         assert page.evaluate("savedEvidence===document.querySelector('[data-timeline-evidence=e4]') && savedEvidence.open && savedNode===document.querySelector('[data-timeline-entry=e4]')")
+        expect(observed.locator(".work-timeline-details")).to_have_attribute("open", "")
         assert page.evaluate("document.querySelector('[data-patrol-facts]').scrollTop===savedTop")
         expect(page.locator("#draft")).to_have_value("下一条中文想法")
         assert page.evaluate("document.activeElement.id") == "draft"
+        expect(page.locator("[data-patrol-new-facts]")).to_be_visible()
+        page.locator("[data-patrol-new-facts]").click()
+        expect(page.locator("[data-patrol-new-facts]")).to_be_hidden()
+        assert page.evaluate("(() => {const s=document.querySelector('[data-patrol-facts]');return s.scrollHeight-s.clientHeight-s.scrollTop<2})()")
         page.locator('[data-timeline-category="fact"]').click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(3)
         page.screenshot(path=str(args.output / "work-timeline-facts.png"), full_page=True)
@@ -144,14 +171,32 @@ def main():
         expect(page.locator("[data-timeline-entry]")).to_have_count(4)
         page.locator("[data-timeline-older]").click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(5)
+        page.locator('[data-timeline-entry="e1"] .work-timeline-details > summary').click()
         page.locator('[data-timeline-entry="e1"] [data-timeline-intent]').click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(2)
-        expect(page.locator("[data-timeline-scope]")).to_have_text("所选输入及后续决策")
+        expect(page.locator("[data-timeline-scope]")).to_have_text("输入 idea 及后续决策")
         page.locator("[data-timeline-clear]").click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(4)
         page.locator('[data-timeline-entry="e7"] [data-timeline-context]').click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(4)
         assert reads[-1]["context_id"] == ["context-ui"]
+        page.locator("[data-timeline-clear]").click()
+        expect(page.locator("[data-timeline-entry]")).to_have_count(4)
+        page.locator('[data-timeline-entry="e7"] .work-timeline-details > summary').click()
+        page.locator('[data-timeline-entry="e7"] [data-timeline-round]').click()
+        expect(page.locator("[data-timeline-scope]")).to_have_text("Round 1")
+        assert reads[-1]["round_id"] == ["r1"]
+        page.locator("[data-timeline-clear]").click()
+        expect(page.locator("[data-timeline-entry]")).to_have_count(4)
+        page.evaluate("timeline.selectContext('context-ui','插件技术验证')")
+        expect(page.locator("[data-timeline-scope]")).to_have_text("整个工作区")
+        expect(page.locator("[data-timeline-selected]")).to_have_text("仅看 插件技术验证")
+        page.locator("[data-timeline-selected]").click()
+        expect(page.locator("[data-timeline-scope]")).to_have_text("工作线：插件技术验证")
+        assert reads[-1]["context_id"] == ["context-ui"]
+        page.evaluate("timeline.selectContext('context-text','文本交互')")
+        expect(page.locator("[data-timeline-scope]")).to_have_text("工作线：插件技术验证")
+        expect(page.locator("[data-timeline-selected]")).to_have_text("仅看 文本交互")
         page.locator("[data-timeline-clear]").click()
         expect(page.locator("[data-timeline-entry]")).to_have_count(4)
         fail["next"] = True
@@ -169,6 +214,10 @@ def main():
         page.set_viewport_size({"width": 390, "height": 844})
         page.screenshot(path=str(args.output / "work-timeline-mobile.png"), full_page=True)
         assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
+        assert page.locator(".work-timeline-heading").evaluate_all("""headings=>headings.every(node=>{
+            const rect=node.getBoundingClientRect();
+            return [...node.children].every(child=>{const r=child.getBoundingClientRect();return r.left>=rect.left-1&&r.right<=rect.right+1});
+        })""")
         assert not errors, errors
         page.evaluate("timeline.dispose();lifetime.abort()")
         browser.close()

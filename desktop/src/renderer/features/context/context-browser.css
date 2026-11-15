@@ -1,6 +1,20 @@
 .context-browser-controls { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-2, 8px); min-width: 0; font-size: 11px; }
 .context-browser-controls [role="status"] { max-width: 260px; color: var(--text-secondary); overflow-wrap: anywhere; }
 .context-browser-controls button { padding: 4px 8px; font-size: inherit; }
+.context-inspector-actions { flex-shrink: 0; margin-left: auto; }
+.context-inspector-actions > button { min-width: 28px; font-size: 20px; line-height: 1; }
+.context-inspector-menu {
+  position: fixed; inset: auto; margin: 6px 0 0; position-area: bottom span-left;
+  position-try-fallbacks: top span-left;
+  width: min(240px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto;
+  padding: 8px; border: 1px solid var(--border-subtle, #8884); border-radius: 12px;
+  color: var(--text-primary); background: var(--surface-base); box-shadow: 0 8px 24px #22334424;
+}
+.context-inspector-menu .context-browser-controls { display: grid; width: 100%; gap: 4px; }
+.context-inspector-menu .context-browser-controls button { width: 100%; min-height: 32px; justify-content: flex-start; text-align: left; }
+.context-inspector-menu [role="status"] { padding: 4px 8px; }
+.context-inspector-menu [role="status"]:empty { display: none; }
+.context-inspector-menu button:focus-visible, .context-inspector-actions > button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
 .task-workspace-tools:has(.context-browser-controls) { flex-wrap: wrap; gap: var(--space-2, 8px); }
 .context-browser-dialog form { display: grid; gap: var(--space-4, 16px); padding: var(--space-5, 24px); }
 .context-browser-dialog h2, .context-browser-dialog p { margin: 0; }

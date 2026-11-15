@@ -430,6 +430,7 @@ class LoopObservationEnvelope(StrictModel):
     evolution_strategies: tuple[dict[str, Any], ...] = ()
     expansion_handles: tuple[dict[str, str], ...] = ()
     expansion_assessment: dict[str, Any] | None = None
+    expansion_obligations: tuple[dict[str, Any], ...] = ()
     recovery_opportunities: tuple[dict[str, Any], ...] = ()
     recovery_waiting_reason: str | None = None
     completion_admission: dict[str, Any] | None = None

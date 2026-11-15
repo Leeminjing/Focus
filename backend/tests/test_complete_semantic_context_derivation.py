@@ -597,7 +597,7 @@ def test_segment_only_index_exposes_zero_projected_units_and_exact_fallback_cove
         RevisionSemanticIndex.model_validate(tampered)
 
 
-def test_portfolio_index_build_is_bounded_retried_and_atomically_published() -> None:
+def test_portfolio_index_build_is_bounded_retried_and_incrementally_published() -> None:
     class Transaction:
         async def __aenter__(self):
             return object()
@@ -716,12 +716,12 @@ def test_portfolio_index_build_is_bounded_retried_and_atomically_published() -> 
         blocked = await failed.build(observation(("one", "fail", "three")))
         assert blocked.blocker_code == "portfolio_index_failed"
         assert failed.attempts["revision-fail"] == 2
-        assert failed._artifacts.published == []
+        assert len(failed._artifacts.published) == 2
 
         overflow = ProbeService(catalog_budget=1)
         blocked = await overflow.build(observation(("one",)))
         assert blocked.blocker_code == "portfolio_catalog_overflow"
-        assert overflow._artifacts.published == []
+        assert len(overflow._artifacts.published) == 1
 
     asyncio.run(run())
 

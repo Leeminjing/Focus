@@ -88,6 +88,8 @@ def test_first_input_without_context_or_run_and_retry(tmp_path, input_type):
             async with sessions() as session:
                 loop = await session.get(AgentLoop, accepted["loop_id"])
                 context = await session.get(DesktopThread, loop.initial_context_id)
+                assert context.ui_state["access_mode"] == "danger-full-access"
+                assert loop.equipment["access_mode"] == "danger-full-access"
                 assert context.current_revision_id is None
                 assert (
                     await session.scalar(

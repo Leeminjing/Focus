@@ -26,7 +26,7 @@ class LoopObservationBuilder:
         self._max_text = max_text
 
     def build(self, **facts: Any) -> LoopObservationEnvelope:
-        exact = {key: value for key, value in facts.items() if key in {"grant", "previous_task_progress", "task_delta", "committed_lineage", "decision_inputs_ref", "portfolio_frontier", "base_entity_revisions", "worker_results", "user_intents", "evolution_strategies", "completion_admission", "completion_eligibility", "mission", "information_requests", "intervention", "pre_input_state", "causal_chain"}}
+        exact = {key: value for key, value in facts.items() if key in {"grant", "previous_task_progress", "task_delta", "committed_lineage", "decision_inputs_ref", "portfolio_frontier", "base_entity_revisions", "worker_results", "user_intents", "evolution_strategies", "completion_admission", "completion_eligibility", "mission", "information_requests", "intervention", "pre_input_state", "causal_chain", "expansion_obligations"}}
         sanitized = {**self._sanitize({key: value for key, value in facts.items() if key not in exact}), **exact}
         return LoopObservationEnvelope.model_validate(sanitized)
 
@@ -57,5 +57,7 @@ def observation_hash(envelope: LoopObservationEnvelope) -> str:
         document.pop('completion_admission', None)
     if document.get('completion_eligibility') is None:
         document.pop('completion_eligibility', None)
+    if not document.get("expansion_obligations"):
+        document.pop("expansion_obligations", None)
     payload = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

@@ -1,5 +1,5 @@
 /* 本文件对外提供冻结 Observation 的摘要与分页检查 HTML。
- * 输入为同一 Observation 白名单响应和已读取 section；输出为人类可读依据、可选紧凑工作台摘要、独立前序与折叠精确身份。
+ * 输入为同一 Observation 白名单响应和已读取 section；紧凑卡将真实阻塞置前，仅以冻结来源结论和已提交安排作为正文，空态/权限/读取状态独立呈现；技术计数保留在详情。
  * 具体工作流为按精确 V 与逐输入 Oi/Ui 呈现完整因果清单和分页，分别显示接收边界、事实覆盖、历史权限与当前逐轮执行授权；实时资格单独标示，不填充历史。
  * 同一检查入口按所选版本读取 Patrol 阶段、等待目标及 Curator 失败信息，审计记录可独立刷新。
  * 示例：FocusObservationView.render(summary, { sources: page })。
@@ -57,9 +57,41 @@
     const fields = [[localize("冻结来源覆盖"), summary.sources?.complete], [localize("前序历史覆盖"), summary.previous_progress?.history_complete], [localize("来源关系覆盖"), summary.lineage?.complete]];
     return `<p class="observation-coverage">${fields.map(([label, value]) => `${label}：${value === true ? localize("完整") : value === false ? localize("不完整") : localize("未确认")}`).join(" · ")}</p>`;
   }
-  function card(summary, { compact = false } = {}) {
+  function notice(message, state, retry = false) {
+    return `<p class="observation-status" data-observation-state="${state}" role="status">${escape(message)}${retry ? localize(' <button type="button" data-patrol-observation-retry>重试</button>') : ""}</p>`;
+  }
+  function card(summary, { compact = false, projection, connection, readState = "ready", failure } = {}) {
+    if (compact) {
+      if (readState === "loading") return notice(localize("正在读取本轮冻结输入"), "loading");
+      if (readState === "error") return notice([401, 403].includes(failure?.status)
+        ? localize("当前权限不包含观察正文。") : localize`读取失败：${failure?.message || localize("未知错误")}`, [401, 403].includes(failure?.status) ? "forbidden" : "error", true);
+      if (!summary) return notice(localize("本轮尚未冻结"), "empty");
+      const observed = summary.evidence_visible === false || summary.availability === "legacy" ? []
+        : (summary.conclusions?.observed || []).filter(text => typeof text === "string" && text.trim());
+      const pending = { current: localize("正在分析本轮输入，尚未提交后续安排。"), rejected: localize("候选安排未获通过，尚未提交后续安排。"), superseded: localize("本轮观察已被更新版本替代。") };
+      const next = summary.decision_state === "committed" ? summary.conclusions?.decision?.trim() : "";
+      let content = observed.length ? localize`<section class="observation-conclusion"><h3>结论</h3><p>${escape(observed.join("；"))}</p></section>` : "";
+      if (summary.evidence_visible === false) content += notice(localize("当前权限不包含观察正文。"), "forbidden");
+      else if (summary.availability === "legacy") content += notice(localize("该历史记录未保留完整观察内容。"), "legacy");
+      else if (!observed.length && !next) content += notice(pending[summary.decision_state] || localize("本轮观察尚无可展示的结论。"), "empty");
+      if (next) content += localize`<section class="observation-next"><h3>下一步</h3><p>${escape(next)}</p></section>`;
+      else if (observed.length) content += notice(pending[summary.decision_state] || (summary.decision_state === "committed"
+        ? localize("已提交本轮安排，具体内容尚未返回。") : localize("尚未提交后续安排。")), "pending");
+      const current = projection?.round?.state?.observation_id === summary.observation_id;
+      const session = projection?.patrol_session?.state;
+      // 实时等待仅属于当前同版本；缺少请求投影不等于已确认没有阻塞。
+      if (connection && connection !== "live") return content + notice(localize("连接中断，阻塞状态待同步。"), "syncing");
+      if (!current || !summary.round_id || !projection?.wait_requests) return content + notice(localize("尚未取得当前阻塞状态。"), "unknown");
+      const requests = Object.values(projection.wait_requests).map(item => item.state);
+      const waits = requests.filter(item => summary.round_id && item?.status === "open" && item.round_id === summary.round_id);
+      const blockers = waits.map(item => item.prompt).filter(text => typeof text === "string" && text.trim());
+      if (session?.observation_id === summary.observation_id && session.wait_reason?.trim()) blockers.unshift(session.wait_reason);
+      const unknown = requests.some(item => !item?.status) || waits.some(item => !item.prompt?.trim());
+      if (blockers.length) content = localize`<section class="observation-blockers" aria-label="当前阻塞"><h3>当前阻塞</h3><ul>${[...new Set(blockers)].map(text => `<li>${escape(text)}</li>`).join("")}</ul></section>` + content;
+      if (unknown) return content + notice(localize("尚未取得当前阻塞状态。"), "unknown");
+      return blockers.length ? content : content + notice(localize("当前未报告阻塞。"), "unreported");
+    }
     if (!summary) return localize("本轮尚未冻结");
-    if (compact) return localize`<h3>OBSERVATION · Round ${escape(summary.round_number ?? "—")} · V${escape(summary.generation ?? "—")}</h3><p>${decisions[summary.decision_state] || localize("冻结观察")} · ${summary.causal_chain_count || 0} 条输入因果关系</p><p>本轮冻结 ${summary.sources.total} 个任务来源与 ${summary.lineage.node_count} 个 Revision。</p>`;
     return localize`<h3>Round ${escape(summary.round_number ?? "—")} 看到了什么</h3><p>本轮冻结 ${summary.sources.total} 个任务来源与 ${summary.lineage.node_count} 个 Revision。</p><small>基于前序 ${short(summary.previous_progress.progress_id)} · ${time(summary.frozen_at)}</small>${coverage(summary)}`;
   }
   function render(summary, sections = {}) {
@@ -72,7 +104,7 @@
   }
   function boundary(summary) {
     const value = summary.boundary || {};
-    return localize`<p>V${escape(summary.generation ?? "—")} · ${decisions[summary.decision_state] || localize("冻结观察")}</p><p>服务器受理前边界 ${escape(value.server_sequence ?? localize("未知"))} · 客户端 Live 位置 ${escape(value.live_sequence ?? localize("未知"))} · ${value.client_context_known ? localize("已保存客户端可见线索") : localize("客户端可见范围未知")}</p><p>当时 ${escape(value.round_count ?? 0)} 个活动 Round · ${escape(value.fact_count ?? 0)} 个 Fact revision · Fact 投影位置 ${escape(value.projection_cursor ?? localize("未知"))} · ${escape(value.projection_failures ?? 0)} 个投影缺口</p>`;
+    return localize`<p>V${escape(summary.generation ?? "—")} · ${decisions[summary.decision_state] || localize("冻结观察")} · ${escape(summary.causal_chain_count ?? 0)} 条输入因果关系</p><p>服务器受理前边界 ${escape(value.server_sequence ?? localize("未知"))} · 客户端 Live 位置 ${escape(value.live_sequence ?? localize("未知"))} · ${value.client_context_known ? localize("已保存客户端可见线索") : localize("客户端可见范围未知")}</p><p>当时 ${escape(value.round_count ?? 0)} 个活动 Round · ${escape(value.fact_count ?? 0)} 个 Fact revision · Fact 投影位置 ${escape(value.projection_cursor ?? localize("未知"))} · ${escape(value.projection_failures ?? 0)} 个投影缺口</p>`;
   }
   function permissionValidity(projection, run, round) {
     const binding = run.round_authorization, loop = projection.loop?.state;

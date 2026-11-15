@@ -199,7 +199,7 @@ class PatrolDecisionContract:
                 self._validate_spawn(action, opportunities)
             else:
                 self._validate_decline(action, blockers)
-        if assessment.get("level") == "required" and not self._has_required_exit(actions, expansion_actions):
+        if (assessment.get("level") == "required" or observation.expansion_obligations) and not self._has_required_exit(actions, expansion_actions):
             raise PatrolContractViolation("required Context expansion 必须提供合法出口：" + _EXPANSION_EXITS)
 
     @staticmethod

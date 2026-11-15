@@ -48,8 +48,11 @@ function inventory(home, policy, now = Date.now()) {
     try {
       if (/^update-\d+-[a-f0-9]+$/.test(id)) {
         manifest = readJson(path.join(directory, "recovery.json"), null);
-        if (manifest?.id === id && /^[a-f0-9]{64}$/.test(manifest.backupSha256)
-            && ["database.dump", "dependencies.json", "recover.cjs"].every(name => fs.existsSync(path.join(directory, name)))) {
+        const databaseComplete = manifest?.databaseBackup === false
+          ? manifest.backupSha256 === null
+          : /^[a-f0-9]{64}$/.test(manifest?.backupSha256) && fs.existsSync(path.join(directory, "database.dump"));
+        if (manifest?.id === id && databaseComplete
+            && ["dependencies.json", "recover.cjs"].every(name => fs.existsSync(path.join(directory, name)))) {
           row.kind = "update"; row.created_at = new Date(Number(id.split("-")[1])).toISOString();
         }
       } else if (/^regular-\d+-[a-f0-9]+$/.test(id)) {
@@ -98,7 +101,7 @@ function cleanup(home, policy, ids) {
   return { removed, errors };
 }
 
-function backup(installation, now = Date.now()) {
+async function backup(installation, now = Date.now()) {
   const i = installation;
   if (fs.existsSync(path.join(i.home, "update-state.json"))) throw new Error("Finish Focus recovery before creating another backup.");
   const root = path.join(i.home, "backups");
@@ -110,7 +113,7 @@ function backup(installation, now = Date.now()) {
   fs.mkdirSync(directory, { mode: 0o700 });
   // No manifest is published until pg_dump, pg_restore --list and SHA-256 succeed.
   // An interrupted/failed directory remains visible and protected for inspection.
-  const sha256 = i.backup(directory);
+  const sha256 = await i.backup(directory);
   const manifest = { schema: 1, id, created_at: new Date(now).toISOString(), sha256,
     scope: "postgresql", commit: i.git("rev-parse", "HEAD") };
   atomicJson(path.join(directory, "backup.json"), manifest);

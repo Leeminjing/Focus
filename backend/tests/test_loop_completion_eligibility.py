@@ -155,7 +155,9 @@ def test_stale_candidate_uses_existing_bounded_feedback_and_actual_receipts(tmp_
                     loop = await session.get(AgentLoop, fixture['loop_id'])
                     patrol = await session.scalar(select(LoopPatrolSession).where(LoopPatrolSession.round_id == frozen.round_id))
                     assert loop.status == 'waiting_user' and patrol.status == 'failed'
-                    assert (await session.get(LoopRound, frozen.round_id)).status == 'error'
+                    # Failed cognition uses the existing recoverable suspension;
+                    # it does not make the undecided round terminal.
+                    assert (await session.get(LoopRound, frozen.round_id)).status == 'observed'
     asyncio.run(run())
 
 
@@ -310,6 +312,10 @@ def test_historical_absent_eligibility_keeps_original_hash(tmp_path):
             historical.pop('completion_eligibility')
             historical.pop('interaction_mode')
             historical.pop('information_requests')
+            historical.pop('expansion_obligations')
+            for field in ('intervention', 'pre_input_state', 'pre_input_hash', 'causal_chain', 'evolution_strategies'):
+                if not historical.get(field):
+                    historical.pop(field, None)
             expected = hashlib.sha256(json.dumps(historical, ensure_ascii=False, sort_keys=True,
                 separators=(',', ':')).encode()).hexdigest()
             restored = LoopObservationEnvelope.model_validate(historical)

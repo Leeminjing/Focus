@@ -31,6 +31,8 @@ def test_portfolio_patrol_search_fetch_then_validated_decision(monkeypatch, meth
         config = app_config_for("patrol-web", None)
         config.models[0].protocol = "responses"
         config.models[0].curation_output_method = method
+        config.patrol.output_method = method
+        config.patrol.streaming = False
         monkeypatch.setattr(config_module, "_app_config", config)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-web-key")
         outputs = [
@@ -95,6 +97,7 @@ def test_portfolio_patrol_search_fetch_then_validated_decision(monkeypatch, meth
     {"web_tools": [{"name": "web_fetch", "arguments": {}}]},
     {"web_tools": [{"name": "web_search", "arguments": {"query": "x"}}] * 2},
     {"web_tools": [{"name": "web_search", "arguments": {"query": "x"}}], "reads": [{"context_id": "c", "revision_id": "r"}]},
+    {"web_tools": [{"name": "web_search", "arguments": {"query": "x"}}], "needs_evidence": ["curator"]},
 ])
 def test_patrol_web_requests_reject_unknown_tools_missing_arguments_and_mixed_steps(payload):
     with pytest.raises(ValidationError):
@@ -111,3 +114,27 @@ def test_patrol_does_not_fetch_without_budget_for_a_followup_decision(monkeypatc
     step = PatrolCognitiveStep.model_validate({"web_tools": [{"name": "web_fetch", "arguments": {"url": "https://example.com"}}]})
     with pytest.raises(RuntimeError, match="budget 已耗尽"):
         asyncio.run(model._cognitive_evidence(_observation(), step))
+
+
+def test_patrol_can_request_frozen_evidence_after_web_lookup(monkeypatch):
+    steps = iter([
+        PatrolCognitiveStep.model_validate({"web_tools": [{"name": "web_search", "arguments": {"query": "x"}}]}),
+        PatrolCognitiveStep(needs_evidence=("curator",), context_ids=("context",)),
+    ])
+
+    async def invoke(*args):
+        return next(steps)
+
+    async def lookup(request):
+        return {"kind": "web_tool", "name": request.name, "status": "success", "content": "external evidence"}
+
+    model = StructuredPatrolDecisionModel(object())
+    monkeypatch.setattr(model, "_invoke", invoke)
+    monkeypatch.setattr(module, "read_web_evidence", lookup)
+    result = asyncio.run(model._decide(object(), [], "prompt_json", _observation()))
+    assert result == module.PatrolEvidenceNeeds(needs_evidence=("curator",), context_ids=("context",))
+
+
+def test_patrol_final_step_disallows_further_web_requests():
+    with pytest.raises(ValidationError):
+        module.PatrolFinalStep.model_validate({"web_tools": [{"name": "web_fetch", "arguments": {"url": "https://example.com"}}]})

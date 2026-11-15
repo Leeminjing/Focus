@@ -284,7 +284,7 @@ def test_round_and_patrol_failure_roll_back_together(tmp_path, monkeypatch):
                 assert await session.scalar(select(func.count()).select_from(LoopWaitRequest).where(LoopWaitRequest.loop_id == claim.loop_id)) == 0
             await orchestrator._fail(claim, ValueError("provider_request_window"))
             async with sessions() as session:
-                assert (await session.get(LoopRound, claim.round_id)).status == "error"
+                assert (await session.get(LoopRound, claim.round_id)).status == "observed"
                 assert (await session.get(LoopPatrolSession, patrol.session_id)).status == "failed"
         finally:
             await _stop(fixture["service"], fixture["loop_id"])
@@ -295,7 +295,7 @@ def test_round_and_patrol_failure_roll_back_together(tmp_path, monkeypatch):
 class _Index:
     def __init__(self, fail=False):
         self.fail = fail
-    async def build(self, observation):
+    async def build(self, observation, *, fencing_token=None):
         return SimpleNamespace(catalog=None if self.fail else SimpleNamespace(model_dump=lambda **kwargs: {"catalog_id": "a" * 64}),
             indexes=(), stage_record=None, blocker_code="provider_request_window", blocker_summary="Tool Exchange remains indivisible")
 
@@ -329,7 +329,7 @@ def test_interrupted_dispatch_resumes_durable_preparation_or_atomically_fails(tm
                 assert await session.scalar(select(func.count()).select_from(LoopPatrolAttempt).where(LoopPatrolAttempt.round_id == claim.round_id)) == 0
                 assignments = await session.scalar(select(func.count()).select_from(LoopCuratorAssignment).where(LoopCuratorAssignment.session_id == patrol.session_id))
                 if fail:
-                    assert assignments == 0 and round_row.status == "error" and patrol_row.status == "failed"
+                    assert assignments == 0 and round_row.status == "observed" and patrol_row.status == "failed"
                     assert patrol_row.terminal_outcome["failed_phase"] == "dispatching_curators"
                     assert patrol_row.terminal_outcome["reason_code"] == "provider_request_window"
                     assert (await session.get(AgentLoop, claim.loop_id)).status == "waiting_user"

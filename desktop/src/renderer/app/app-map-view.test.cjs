@@ -113,7 +113,8 @@ renderHarness.vm.runInContext(`(() => {
   render();
   return true;
 })()`, renderHarness.context);
-assert.match(renderAppNode.innerHTML, /暂无活动 Context/, "任务视图显示实际活动范围空态");
+assert.match(renderAppNode.innerHTML, /暂无活动会话/, "任务视图显示实际活动范围空态");
+assert.match(renderAppNode.innerHTML, /data-settings-tab="data" data-settings-section="archived"/, "归档入口指定数据页的归档区");
 assert.match(renderAppNode.innerHTML, /data-action="new-task"/, "任务空态仍可新增任务");
 assert.match(renderAppNode.innerHTML, /data-action="open-settings"/, "任务空态仍可查看归档");
 

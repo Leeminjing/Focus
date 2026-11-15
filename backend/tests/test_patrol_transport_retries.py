@@ -17,6 +17,7 @@ def _config(method="prompt_json"):
     config = app_config_for("patrol-retry", None)
     config.models[0].protocol = "responses"
     config.models[0].curation_output_method = method
+    config.patrol.output_method = method
     return config
 
 
@@ -39,7 +40,22 @@ def _provider(monkeypatch, outcomes, *, proposal=None):
             raise httpx.ConnectError("temporary connection failure", request=request)
         if outcome == "timeout":
             raise httpx.ReadTimeout("temporary timeout", request=request)
-        return _success(proposal) if outcome == 200 else httpx.Response(outcome, json={"error": {"message": "temporary provider failure"}})
+        if outcome != 200:
+            return httpx.Response(outcome, json={"error": {"message": "temporary provider failure"}})
+        response = _success(proposal)
+        if not requests[-1].get("stream"):
+            return response
+        completed = response.json()
+        item = completed["output"][0]
+        events = [
+            {"type": "response.created", "response": {"id": completed["id"], "status": "in_progress"}},
+            {"type": "response.output_item.added", "output_index": 0, "item": {**item, "content": []}},
+            {"type": "response.output_text.delta", "output_index": 0, "content_index": 0,
+             "item_id": item["id"], "delta": item["content"][0]["text"]},
+            {"type": "response.completed", "response": completed},
+        ]
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+            content="".join("data: " + json.dumps(event) + "\n\n" for event in events))
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
 
@@ -74,6 +90,11 @@ def test_transient_failure_reuses_frozen_request_then_returns_one_intent(monkeyp
             assert decision_model.call_count == decision_model.usage.model_calls == 2
             assert (decision_model.usage.input_tokens, decision_model.usage.output_tokens) == (40, 10)
             assert len(decision_model.attempt_metadata) == 2
+            metrics = decision_model.attempt_metadata[-1]
+            assert metrics["input_tokens"] == 40 and metrics["output_tokens"] == 10
+            assert metrics["estimated_input_tokens"] > 0 and metrics["contract_valid"] is True
+            assert 0 <= metrics["ttft_ms"] <= metrics["duration_ms"]
+            assert metrics["output_duration_ms"] >= 0
             assert models[0].max_retries == 0
             assert observation.model_dump_json() == original
         finally:

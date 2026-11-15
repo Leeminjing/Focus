@@ -24,7 +24,7 @@ if (!process.versions.electron) {
     await run(`
       window.workspace=document.querySelector('.workspace-patrol');workspace.classList.remove('is-quiet');
       const details=document.querySelector('[data-patrol-details-content]');details.hidden=false;details.inert=false;
-      document.querySelector('.patrol-quiet-heading').hidden=true;
+      document.querySelector('.patrol-workspace-heading').hidden=true;
       document.querySelector('[data-patrol-facts]').innerHTML=${JSON.stringify(rows)};
       window.contextHtml=${JSON.stringify(View.context({ context_id: "ctx", revision: { revision_id: "r1", generation: 1 } }, { context_id: "ctx", title: "测试与故障分析" }, "overview", { presentation: "workbench" }))};
     `);
@@ -33,6 +33,7 @@ if (!process.versions.electron) {
       const result = await run(`(async()=>{
         workspace.style.height=(innerHeight-60)+'px';workspace.dataset.workbenchPanel='facts';
         document.querySelector('[data-patrol-context-content]').innerHTML=contextHtml;
+        const context=document.querySelector('[data-patrol-context]');context.hidden=false;context.inert=false;
         for(const key of ['older','selected','clear'])document.querySelector('[data-timeline-'+key+']').hidden=false;
         await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
         const card=document.querySelector('.patrol-facts-card'),stream=card.querySelector('[data-patrol-facts]');

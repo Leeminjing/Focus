@@ -1,4 +1,4 @@
-/* 使用生产 Patrol 模板和 CSS 验证状态提示布局和输入记录的视口边界。
+/* 使用生产 Patrol 模板和 CSS 验证菜单内状态提示布局和输入记录的视口边界。
  * 运行：electron tests/e2e/patrol-composer-layout.e2e.cjs。
  */
 "use strict";
@@ -41,12 +41,16 @@ async function run() {
             details.inert = ${quiet};
             const composer = patrol.querySelector('[data-patrol-composer]');
             const status = patrol.querySelector('[data-patrol-state]');
+            const tools = patrol.querySelector('[data-patrol-composer-tools]');
+            tools.showPopover();
             const delivery = patrol.querySelector('[data-patrol-delivery]');
             delivery.hidden = ${!deliveryVisible};
             delivery.textContent = '本次工作交付：结果已提交，可以继续提出调整。';
             const measure = () => ({
               composer: composer.getBoundingClientRect().toJSON(),
               status: status.getBoundingClientRect().toJSON(),
+              tools: tools.getBoundingClientRect().toJSON(),
+              toolsOverflows: tools.scrollWidth > tools.clientWidth,
               delivery: delivery.getBoundingClientRect().toJSON(),
             });
             status.textContent = '正在读取工作状态';
@@ -61,12 +65,10 @@ async function run() {
           for (const key of ["long", "unbroken"]) {
             const measurement = result[key];
             assert.ok(measurement.status.height > result.short.status.height, `未触发多行状态 ${label} ${key}`);
-            const statusGrowth = measurement.status.height - result.short.status.height;
-            const composerGrowth = measurement.composer.height - result.short.composer.height;
-            assert.ok(composerGrowth >= statusGrowth - 1, `状态未撑开输入框 ${label} ${key}`);
-            assert.ok(measurement.status.bottom <= measurement.composer.bottom + 1, `状态超出输入框 ${label} ${key}`);
-            assert.ok(measurement.status.right <= measurement.composer.right + 1, `长状态横向溢出 ${label} ${key}`);
-            if (deliveryVisible) assert.ok(measurement.delivery.top >= measurement.status.bottom - 1, `状态覆盖交付卡片 ${label} ${key}`);
+            assert.ok(Math.abs(measurement.composer.height - result.short.composer.height) < 1, `菜单状态改变输入框高度 ${label} ${key}`);
+            assert.ok(!measurement.toolsOverflows, `长状态导致菜单横向溢出 ${label} ${key}`);
+            assert.ok(measurement.status.right <= measurement.tools.right + 1, `长状态横向溢出 ${label} ${key}`);
+            if (deliveryVisible) assert.ok(measurement.delivery.top >= measurement.composer.bottom - 1, `输入框覆盖交付卡片 ${label} ${key}`);
           }
           count++;
         }
