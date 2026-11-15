@@ -536,10 +536,10 @@ test("artifact names open fixed version details and can be referenced without le
   await f.emit(projection("r1", { files: [{ fact_id: "artifact-a", revision: 2, kind: "artifact", file }] }));
   const artifacts = f.body.querySelector("#artifacts");
   assert.match(artifacts.textContent, /result.md/);
-  artifacts.querySelectorAll("button").find(button => button.textContent === "引用").dispatchEvent({ type: "click" }); await tick();
+  artifacts.querySelector('button[aria-label="引用"]').dispatchEvent({ type: "click" }); await tick();
   assert.equal(f.store("a").get().draft.file_refs[0].result_key, "result-v1");
   assert.equal(f.store("a").get().draft.file_refs[0].revision, 2);
-  artifacts.querySelectorAll("button").find(button => button.textContent === "打开").dispatchEvent({ type: "click" }); await tick();
+  artifacts.querySelector('button[aria-label="打开"]').dispatchEvent({ type: "click" }); await tick();
   assert.equal(details[0][0], "loop-a");
   assert.equal(details[0][1], "artifact-a");
   assert.equal(details[0][3], 2);

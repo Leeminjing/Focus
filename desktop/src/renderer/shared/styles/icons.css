@@ -32,6 +32,7 @@
 .icon-file { --icon-url: url("../../assets/icons/file.svg"); }
 .icon-file-text { --icon-url: url("../../assets/icons/file-text.svg"); }
 .icon-file-image { --icon-url: url("../../assets/icons/file-image.svg"); }
+.icon-quote { --icon-url: url("../../assets/icons/quote.svg"); }
 .icon-loader-circle { --icon-url: url("../../assets/icons/loader-circle.svg"); }
 .icon-circle-check { --icon-url: url("../../assets/icons/circle-check.svg"); }
 .icon-triangle-alert { --icon-url: url("../../assets/icons/triangle-alert.svg"); }
