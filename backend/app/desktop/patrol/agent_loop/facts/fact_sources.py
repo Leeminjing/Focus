@@ -108,7 +108,6 @@ class LoopFactBuilder:
             tool_name = str(message.get("name") or "") or None
             base = {
                 "context_id": run.task_id,
-                "status": cls.tool_status(message, content),
                 "evidence": {
                     **cls._run_evidence(run),
                     "context_revision_id": revision_id,
@@ -159,13 +158,6 @@ class LoopFactBuilder:
         if value is None:
             return ""
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
-
-    @staticmethod
-    def tool_status(message: dict[str, Any], content: str) -> str:
-        declared = str(message.get("status") or "").lower()
-        if declared in {"error", "failed", "failure"}:
-            return "failed"
-        return "verified"
 
     @staticmethod
     def fact_id(*parts: str) -> str:

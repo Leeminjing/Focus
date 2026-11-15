@@ -9240,14 +9240,6 @@ document.addEventListener("change", event => {
   queueComposerAttachments(files, taskId);
 });
 
-document.addEventListener("input", event => {
-  if (!event.target.matches?.("[data-loop-message-search]")) return;
-  const query = event.target.value.trim().toLowerCase();
-  app.querySelectorAll("[data-loop-transcript] .loop-message").forEach(message => {
-    message.hidden = Boolean(query) && !message.textContent.toLowerCase().includes(query);
-  });
-});
-
 document.addEventListener("paste", event => {
   if (event.target !== document.querySelector("#mainInput")) return;
   const images = [...(event.clipboardData?.items || [])].filter(item => item.type.startsWith("image/"));

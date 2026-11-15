@@ -139,7 +139,6 @@ class FactEventMaterializer:
         evidence_kind = {
             "run": "run",
             "test": "test",
-            "tool": "tool",
             "workspace": "workspace",
             "artifact": "artifact",
             "context_revision": "context_revision",
