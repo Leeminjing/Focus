@@ -32,7 +32,11 @@ from backend.app.desktop.patrol.agent_loop.lifecycle.runtime_convergence import 
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDelegationGrant,
+    LoopPendingDecision,
     LoopRound,
+)
+from backend.app.desktop.patrol.agent_loop.recovery.user_access_gate_recovery import (
+    UserAccessGateRecovery,
 )
 from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import (
     unlimited_loop_budgets,
@@ -105,6 +109,30 @@ async def _record_wait_revision(session, loop_id, wait, key):
         )}, idempotency_key=key))
 
 
+async def _freeze_legacy_access_sources(session, loop, waits):
+    for wait in waits:
+        if (wait.scope.get("kind") != "access_approval" or not wait.scope.get("pending_decision_id")
+                or wait.scope.get("legacy_access_source")
+                or wait.round_id != loop.current_round_id):
+            continue
+        gate = await session.get(LoopPendingDecision, wait.scope.get("pending_decision_id"), with_for_update=True)
+        if (gate is None or gate.loop_id != loop.loop_id or gate.kind != "access_approval"
+                or gate.delegable or gate.status != "pending" or gate.payload.get("source") is not None):
+            continue
+        try:
+            # Finalizers may still be settling interrupted Runs during startup;
+            # freezing identity does not grant recovery before that settlement.
+            source = await UserAccessGateRecovery(None)._source(session, loop, wait, gate, require_settled=False)
+        except ValueError:
+            continue
+        marker = {"kind": _REASON, "pending_decision_id": gate.pending_decision_id,
+                  "round_id": wait.round_id, "run_id": source.run_id, "task_id": source.task_id}
+        wait.scope = {**wait.scope, "legacy_access_source": marker}
+        wait.revision += 1
+        await _record_wait_revision(session, loop.loop_id, wait,
+                                    f"budget-upgrade-access-source:{wait.request_id}:{wait.revision}")
+
+
 async def upgrade_workspace_loop_budgets(sessions: async_sessionmaker[AsyncSession]) -> tuple[str, ...]:
     """Replace finite active authority without resuming a paused or waiting Loop."""
     async with sessions() as session:
@@ -146,6 +174,7 @@ async def upgrade_workspace_loop_budgets(sessions: async_sessionmaker[AsyncSessi
             loop.revision += 1
             active_grant = grant
             if grant.budgets != budgets:
+                await _freeze_legacy_access_sources(session, loop, waits)
                 prior = await session.get(LoopRound, loop.current_round_id) if loop.current_round_id else None
                 grant.status, grant.revoked_at = "revoked", datetime.now(UTC)
                 loop.authority_revision += 1
