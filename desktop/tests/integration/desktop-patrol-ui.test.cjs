@@ -648,11 +648,11 @@ if (!process.versions.electron) {
     await waitFor(host.panel,"document.querySelector('#file-refs').children.length === 0","引用未移除");
     failSubmission = 1;
     await run(host.panel,"document.querySelector('#instruction').value='未确认的输入'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#send').click()");
-    await waitFor(host.panel,"document.querySelector('#history-items').textContent.includes('按原内容重试')","失败输入必须提供原身份重试");
+    await waitFor(host.panel,"Boolean(document.querySelector('[data-history-action=retry]'))","失败输入必须提供原身份重试");
     await capture(host.panel,"desktop-send-unconfirmed");
-    assert.equal(await run(host.panel,"(() => { const retry=document.querySelector('#history-items button'); retry.focus(); document.querySelector('#instruction').value='后续草稿'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); return document.activeElement===retry; })()"),true,"继续编辑不能重建重试按钮并抢走焦点");
-    await run(host.panel,"document.querySelector('#history-items button').click()");
-    await waitFor(host.panel,"!document.querySelector('#history-items').textContent.includes('按原内容重试')","原身份重试未受理");
+    assert.equal(await run(host.panel,"(() => { const retry=document.querySelector('[data-history-action=retry]'); retry.focus(); document.querySelector('#instruction').value='后续草稿'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); return document.activeElement===retry; })()"),true,"继续编辑不能重建重试按钮并抢走焦点");
+    await run(host.panel,"document.querySelector('[data-history-action=retry]').click()");
+    await waitFor(host.panel,"!document.querySelector('[data-history-action=retry]')","原身份重试未受理");
     for (let i=0; i<100 && submissionAttempts.length<5; i++) await delay(20);
     assert.equal(submissionAttempts.at(-1).submission_id,submissionAttempts.at(-2).submission_id);
     assert.equal(await run(host.panel,"document.querySelector('#instruction').value"),"后续草稿","重试不得覆盖后续草稿");
@@ -717,7 +717,7 @@ if (!process.versions.electron) {
     apiBase = `http://127.0.0.1:${server.address().port}`;
     process.env.FOCUS_DESKTOP_API = apiBase;
     host = makeHost(); await host.start(); await host.openPanel();
-    await waitFor(host.panel, "document.querySelector('#instruction').value === '重启后继续编辑' && document.querySelector('.patrol-material-card img')?.complete && document.querySelector('#history-items').textContent.includes('服务端已受理但回执丢失') && ![...document.querySelectorAll('#history-items small')].some(node => node.textContent.startsWith('未确认'))", "跨来源重启后未恢复草稿或核对回执");
+    await waitFor(host.panel, "document.querySelector('#instruction').value === '重启后继续编辑' && document.querySelector('.patrol-material-card img')?.complete && document.querySelector('#history-items').textContent.includes('服务端已受理但回执丢失') && !document.querySelector('#history-items .input-unconfirmed')", "跨来源重启后未恢复草稿或核对回执");
     assert.equal(requests.length, requestsBeforeLostReceipt + 1, "服务端已受理的输入不能在重启后重发");
     assert.equal(uploads.length, 2, "重启恢复不能自动上传草稿附件");
     for (const terminal of ["stopped", "failed"]) {

@@ -8,13 +8,13 @@
 <body>
   <link rel="stylesheet" href="./features/patrol/workspace/workspace-patrol-feedback.css">
   <link rel="stylesheet" href="./features/files/artifact-drawer.css">
-  <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件" data-i18n-aria-label="panel.open"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false" data-i18n-alt="panel.robot"></button><span id="robot-status" role="status" data-i18n="panel.start">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘" data-i18n-aria-label="panel.hide_robot" data-i18n="panel.collapse">收起</button></main>
+  <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件" aria-describedby="robot-status" data-i18n-aria-label="panel.open"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false" data-i18n-alt="panel.robot"></button><span id="robot-status" class="sr-only" role="status" data-i18n="panel.start">点击开始</span></main>
   <main id="panel" hidden>
     <div class="panel-shell">
     <header class="panel-header">
       <button id="binding" title="选择工作区文件夹" data-i18n-title="panel.choose_workspace"><span class="ui-icon icon-folder" aria-hidden="true"></span><span id="binding-name" data-i18n="panel.bind">绑定工作区</span><span class="ui-icon icon-chevron-down" aria-hidden="true"></span></button>
       <details class="panel-menu"><summary aria-label="更多操作" title="更多操作" data-i18n-aria-label="panel.more" data-i18n-title="panel.more"><span class="ui-icon icon-ellipsis" aria-hidden="true"></span></summary><div class="panel-menu-content">
-        <button id="open-files" data-i18n="panel.files">文件 / 产物</button><button id="toggle-history" aria-controls="history" aria-expanded="false" data-i18n="panel.history">输入记录</button><button id="workbench" data-i18n="panel.workbench">打开工作台</button><button id="stop-work" type="button" disabled data-i18n="panel.stop">停止当前工作</button><button id="hide"><span data-i18n="panel.hide">收起面板 </span><span>Esc</span></button>
+        <button id="open-files" data-i18n="panel.files">文件 / 产物</button><button id="toggle-history" aria-controls="history" aria-expanded="false" data-i18n="panel.history">输入记录</button><button id="workbench" data-i18n="panel.workbench">打开工作台</button><button id="stop-work" type="button" disabled data-i18n="panel.stop">停止当前工作</button><button id="robot-hide" type="button" data-i18n="panel.hide_robot">隐藏机器人到托盘</button><button id="hide"><span data-i18n="panel.hide">收起面板 </span><span>Esc</span></button>
         <div class="status-row"><i></i><span id="status" role="status" data-i18n="panel.bind_help">绑定工作区后即可发送</span><button id="reconnect" hidden data-i18n="panel.reconnect">重连</button></div>
       </div></details>
     </header>
@@ -37,7 +37,7 @@
       <section id="delivery" class="patrol-delivery" aria-label="本次工作交付" hidden data-i18n-aria-label="panel.delivery"></section>
       <section id="requests" aria-label="待处理请求" data-i18n-aria-label="panel.requests"></section>
       <section id="results" aria-label="工作区已提交结果" data-i18n-aria-label="panel.results"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
-      <details id="history" hidden><summary><span data-i18n="panel.history">输入记录 </span><span id="receipt"></span></summary><div id="history-items"></div><p id="history-status" role="status" hidden></p><button id="retry-history" type="button" hidden data-i18n="panel.retry">重试读取</button><button id="older" hidden data-i18n="panel.older_inputs">更早的输入</button></details>
+      <details id="history" hidden><summary class="sr-only" tabindex="-1"><span data-i18n="panel.history">输入记录 </span><span id="receipt"></span></summary><div id="history-items"></div><p id="history-status" role="status" hidden></p><button id="retry-history" type="button" hidden data-i18n="panel.retry">重试读取</button><button id="older" hidden data-i18n="panel.older_inputs">更早的输入</button></details>
       </div></div>
     </div></div></div>
   </main>

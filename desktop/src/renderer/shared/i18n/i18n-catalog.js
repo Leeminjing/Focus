@@ -2286,6 +2286,7 @@
   "在输入框继续提出调整，Patrol 会继续处理。": "Request adjustments in the input box. Patrol will continue.",
   "工作状态连接中断 · 草稿已保留": "Work status disconnected · Draft preserved",
   "发送未确认 · 可按原身份重试": "Send unconfirmed · Retry with the original identity",
+  "等待发送确认": "Awaiting delivery confirmation",
   "正在发送 · 等待受理回执": "Sending · Awaiting acceptance receipt",
   "正在工作": "Working",
   "等待你的处理": "Awaiting your action",

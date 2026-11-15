@@ -27,6 +27,7 @@
   host.inert = true;
   const $ = selector => host.querySelector(selector), bridge = window.focusDesktop?.patrol;
   document.body.dataset.panelOpaque = String(bridge?.opaquePanel === true);
+  $("#robot-hide").hidden = !bridge?.enabled;
   host.prepend($("#version-picker"),$("#version-detail"));
   const runtime = window.focusDesktop?.runtime() || { apiBase: location.origin, session: new URLSearchParams(location.search).get("session") || "" };
   const api = FocusLoopApi.create(runtime), live = FocusLoopLiveStore.create();
@@ -67,6 +68,14 @@
   function enqueue(action) { commandQueue = commandQueue.then(action).catch(fail); return commandQueue; }
   function element(tag, text, parent) { const node = document.createElement(tag); node.textContent = text; parent?.append(node); return node; }
   function action(text, parent, handler) { const button = element("button", text, parent); button.type = "button"; button.addEventListener("click", () => { void Promise.resolve().then(handler).catch(fail); }); return button; }
+  function inputAction(name, icon, text, parent, handler) {
+    const button = action("", parent, handler);
+    button.dataset.historyAction = name;
+    button.title = text; button.setAttribute("aria-label", text);
+    const glyph = element("span", "", button);
+    glyph.className = `ui-icon icon-${icon}`; glyph.setAttribute("aria-hidden", "true");
+    return button;
+  }
   function openWorkbench(taskId, revisionId) {
     if (bridge?.enabled) return bridge.openWorkbench({ workspaceId: workspace?.workspace_id, ...(taskId ? { taskId, revisionId } : {}) });
     location.href = `./index.html?session=${encodeURIComponent(runtime.session)}`;
@@ -91,7 +100,7 @@
     restartButton.setAttribute("aria-busy", String(!!restarting));
     const latest = draftStore().get().rows[0];
     $("#receipt").textContent = latest?.status === "accepted" && recovery ? localize("已保存")
-      : ({ accepted: localize("已受理"), sending: localize("发送中"), failed: localize("未确认"), edited: localize("已转为草稿") }[latest?.status] || "");
+      : ({ accepted: localize("已受理"), sending: localize("发送中"), edited: localize("已转为草稿") }[latest?.status] || "");
     const deliveryHtml = FocusWorkspacePatrolFeedback.delivery(projection, workspace);
     $("#delivery").hidden = !deliveryHtml;
     if ($("#delivery").innerHTML !== deliveryHtml) $("#delivery").innerHTML = deliveryHtml;
@@ -118,9 +127,13 @@
     }
     $("#control-feedback").hidden = !control;
     $("#control-feedback").textContent = control ? `${{ pause: localize("暂停"), resume: localize("继续"), stop: localize("停止") }[control.command]}${{ requesting: localize("请求中…"), accepted: localize("已受理 · 等待工作状态更新"), applied: localize("已生效") }[control.phase]}` : "";
-    $("#status").textContent = workspace ? status.text : localize("准备接收新输入");
-    $("#activity").hidden = !workspace || (status.state === "idle" && !pausable && !resumable);
-    $("#activity-text").textContent = status.text; $("#activity-text").title = status.text;
+    const unconfirmed = status.state === "failed" && latest?.status === "failed";
+    const statusText = unconfirmed ? "" : status.text;
+    $("#status").textContent = workspace ? statusText : localize("准备接收新输入");
+    $(".status-row").hidden = unconfirmed;
+    $("#activity").hidden = !workspace || ((unconfirmed || status.state === "idle") && !pausable && !resumable);
+    $("#activity").dataset.inputUnconfirmed = String(unconfirmed);
+    $("#activity-text").textContent = statusText; $("#activity-text").title = statusText;
     host.dataset.state = status.state;
     $("#activity-reconnect").hidden = status.state !== "disconnected";
     $("#reconnect").hidden = status.state !== "disconnected";
@@ -165,7 +178,7 @@
     schedulePanelResize();
     $("#reply-target").hidden = !model.draft.request_id;
     $("#reply-target span").textContent = model.draft.request_id ? localize`回复指定问题 · 版本 ${model.draft.request_revision}` : "";
-    const status = { accepted: localize("已受理"), sending: localize("发送中"), failed: localize("未确认"), edited: localize("已转为草稿") };
+    const status = { accepted: localize("已受理"), sending: localize("发送中"), edited: localize("已转为草稿") };
     $("#receipt").textContent = status[model.rows[0]?.status] || "";
     const nextHistory = `${workspace?.workspace_id || ""}:${model.historyRevision}`;
     if (historyKey !== nextHistory) {
@@ -176,15 +189,21 @@
       for (const row of model.rows) {
         const card = element("article", "", items);
         card.dataset.submissionId = row.submission_id;
-        element("pre", row.content || localize("仅参考材料"), card);
+        const content = row.content || localize("仅参考材料");
+        const message = element("pre", row.status === "failed" ? content.trimEnd() : content, card);
+        if (row.status === "failed") {
+          const dot = element("span", "", message); dot.className = "input-unconfirmed";
+          dot.setAttribute("role", "img"); dot.setAttribute("aria-label", localize("等待发送确认"));
+        }
         card.insertAdjacentHTML("beforeend", FocusPatrolInputReferences.render(row));
         card.insertAdjacentHTML("beforeend", FocusWorkspacePatrolFeedback.inputResult(row));
-        element("small", status[row.status], card);
+        if (status[row.status]) element("small", status[row.status], card);
         if (row.status === "failed") {
-          element("small", row.error, card);
+          if (row.error && row.error !== "发送确认中断，请先核对历史后重试") element("small", row.error, card);
           const id = workspace?.workspace_id;
-          action(localize("按原内容重试"), card, () => send(() => intake.retry(id, row.submission_id), id));
-          action(localize("编辑为新输入"), card, () => intake.editFailed(id, row.submission_id));
+          const actions = element("div", "", card); actions.className = "input-actions";
+          inputAction("retry", "rotate-ccw", localize("按原内容重试"), actions, () => send(() => intake.retry(id, row.submission_id), id));
+          inputAction("edit", "pencil", localize("编辑为新输入"), actions, () => intake.editFailed(id, row.submission_id));
         }
       }
       restoreResults();
@@ -518,6 +537,10 @@
   $("#first-goal-folder").addEventListener("click", () => { void enqueue(choose); });
   $("#clear-reply").addEventListener("click", () => draftStore().edit({ request_id: null, request_revision: null }));
   $("#hide").addEventListener("click", () => { void hidePanel().catch(fail); });
+  $("#robot-hide").addEventListener("click", () => {
+    $(".panel-menu").open = false;
+    void bridge.hideRobot().catch(fail);
+  });
   $("#toggle-history").addEventListener("click", () => {
     const history = $("#history"); history.hidden = !history.hidden; history.open = !history.hidden;
     $("#toggle-history").setAttribute("aria-expanded", String(!history.hidden));

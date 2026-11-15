@@ -16,6 +16,10 @@
   const host = document.querySelector("#robot"), bridge = window.focusDesktop?.patrol;
   host.hidden = false;
   const label = document.querySelector("#robot-status"), button = document.querySelector("#robot-open");
+  function fail(error) {
+    label.textContent = String(error.message || error);
+    button.querySelector("img").src = "./assets/patrol-avatar/alert.png";
+  }
   if (!bridge?.enabled) { label.textContent = localize("请从 Focus 桌面版启动"); return; }
   let currentWorkspaceId = "";
   const stateLabels = { get idle() { return localize("点击打开 · 拖入材料"); }, get sending() { return localize("正在发送"); }, get accepted() { return localize("已受理"); }, get running() { return localize("工作中"); }, get waiting_user() { return localize("需要你处理"); }, get paused() { return localize("已暂停"); }, get stopped() { return localize("已停止"); }, get failed() { return localize("需要查看"); }, get disconnected() { return localize("连接中断"); }, get completed() { return localize("工作已完成"); }, get delivered() { return localize("本次工作已交付"); } };
@@ -46,12 +50,11 @@
     const x = event.screenX - drag.x, y = event.screenY - drag.y;
     if (!moved && Math.hypot(x, y) < 5) return;
     moved = true;
-    void bridge.move({ x: drag.bounds.x + x, y: drag.bounds.y + y }).catch(error => { label.textContent = error.message; });
+    void bridge.move({ x: drag.bounds.x + x, y: drag.bounds.y + y }).catch(fail);
   });
   button.addEventListener("pointerup", () => { drag = null; });
   button.addEventListener("pointercancel", () => { drag = null; });
   button.addEventListener("click", () => { if (!moved) void bridge.togglePanel(); moved = false; });
-  document.querySelector("#robot-hide").addEventListener("click", () => bridge.hideRobot());
   host.addEventListener("dragover", event => { event.preventDefault(); host.classList.add("is-dragging"); });
   host.addEventListener("dragleave", () => host.classList.remove("is-dragging"));
   host.addEventListener("drop", async event => {
@@ -61,6 +64,9 @@
       const data = FocusWorkspacePatrolMaterialPreview.captureTransfer(event.dataTransfer);
       const items = await FocusWorkspacePatrolMaterialPreview.readTransfer(data, ready.limits);
       if (items.length) await bridge.receive({ items, workspaceId });
-    } catch (error) { label.textContent = error.message; }
+    } catch (error) { fail(error); }
   });
-})().catch(error => { document.querySelector("#robot-status").textContent = error.message; });
+})().catch(error => {
+  document.querySelector("#robot-status").textContent = String(error.message || error);
+  document.querySelector("#robot-open img").src = "./assets/patrol-avatar/alert.png";
+});

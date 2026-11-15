@@ -17,10 +17,6 @@ body[data-surface=robot] { background:transparent; overflow:hidden; user-select:
 #robot-open { position:absolute; top:0; left:4px; width:88px; height:88px; padding:0; touch-action:none; }
 #robot img { width:100%; height:100%; object-fit:contain; pointer-events:none; transition:filter .2s; }
 #robot-open:hover img { filter:drop-shadow(0 2px 4px #7195ba18); }
-#robot-status { position:absolute; top:83px; left:50%; transform:translateX(-50%); font-size:8px; line-height:17px; width:max-content; max-width:96px; overflow:hidden; white-space:nowrap; background:rgba(245,249,253,.9); border:1px solid #ffffffb8; border-radius:9px; padding:0 5px; color:var(--secondary); }
-#robot-hide { position:absolute; top:104px; left:28px; font-size:9px; padding:0 8px; color:var(--secondary); }
-#robot-status,#robot-hide { opacity:0; transition:opacity .18s; }
-#robot:hover #robot-status,#robot:hover #robot-hide,#robot:focus-within #robot-status,#robot:focus-within #robot-hide,#robot[data-active=true] #robot-status,#robot.is-dragging #robot-status { opacity:1; }
 #robot.is-dragging #robot-open { background:#e2edfa80; outline:1px dashed #7d9bbb; outline-offset:-7px; border-radius:26px; }
 body[data-surface=panel] { background:transparent; overflow:hidden; }
 #panel { position:relative; display:flex; flex-direction:column; align-items:flex-end; height:100vh; padding:8px; overflow:hidden; gap:8px; transform-origin:100% 100%; }
@@ -103,6 +99,7 @@ body[data-panel-opaque=true] #panel.is-closing { animation:none; }
 #error { font-size:12px; padding:12px 0; margin:12px 0 0; color:#946e3d; border-top:1px solid var(--line); white-space:pre-wrap; overflow-wrap:anywhere; }
 #activity { display:flex; align-items:center; gap:6px; margin:9px 0 0; padding:6px 2px; height:28px; border-top:1px solid var(--line); font-size:11px; color:var(--secondary); }
 #activity i,.status-row i { flex-shrink:0; width:5px; height:5px; background:#7195ba; border-radius:50%; }
+#activity[data-input-unconfirmed=true]>i { display:none; }
 #panel[data-state=disconnected] #activity i,#panel[data-state=waiting_user] #activity i,#panel[data-state=failed] #activity i { background:#ae8953; }
 #panel[data-state=completed] #activity i { background:#548c7d; }
 #activity .ui-icon { display:none; margin-left:auto; width:12px; height:12px; color:#9aa9bc; }
@@ -144,13 +141,15 @@ body[data-panel-opaque=true] #panel.is-closing { animation:none; }
 #requests button { padding:5px 10px; background:#ffffff94; border:1px solid #ccd8e5b3; font-size:11px; color:var(--secondary); }
 #results button { padding:2px 0; font-size:11px; color:var(--accent); }
 #history { margin-top:12px; border-top:1px solid var(--line); font-size:11px; color:var(--secondary); }
-#history summary { cursor:pointer; padding:8px 0 3px; font-size:11px; list-style:none; }
-#receipt { float:right; color:var(--muted); font-size:10px; }
 #history-items:empty::after { content:"还没有输入记录"; display:block; padding:12px 0; }
 html[lang="en-US"] #history-items:empty::after { content:"No input history yet"; }
 #history-items article { padding:10px 0; border-bottom:1px solid var(--line); }
 #history-items pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 6px; font:11px/18px FocusUI,sans-serif; max-height:100px; overflow:auto; }
+#history-items .input-unconfirmed { display:inline-block; width:5px; height:5px; margin-inline-start:6px; vertical-align:middle; border-radius:50%; background:#e3ad40; }
 #history-items button,#older,#older-versions { font-size:10px; color:var(--accent); padding:5px 0; margin-right:12px; }
+#history-items .input-actions { display:flex; gap:4px; margin-top:4px; }
+#history-items .input-actions button { display:grid; place-items:center; width:24px; height:24px; padding:0; margin:0; }
+#history-items .input-actions button:hover { background:#dae6f494; }
 #history-items small { display:block; font-size:10px; color:var(--muted); }
 #version-picker,#version-detail { width:100%; flex-shrink:0; max-height:240px; overflow:auto; padding:10px; border:1px solid #ffffffef; border-radius:13px; background:#f1f6fcf7; box-shadow:0 3px 8px rgba(41,57,83,.09); }
 #version-picker { width:min(288px,100%); max-height:min(240px,var(--popup-room,240px)); }
