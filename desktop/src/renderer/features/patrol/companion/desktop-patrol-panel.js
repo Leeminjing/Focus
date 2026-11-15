@@ -5,7 +5,7 @@
  * 回答仅取固定 Context revision 的 assistant 正文并有界缓存，进度/产物分别来自 Live；隐藏时保留 Live 状态同步，取消正文读取并暂停结果 DOM 更新。
  * 回答独立读取和重试，保留其他卡片 DOM；展开后按需渲染 Markdown 并提供全文/代码复制，文件直接打开固定版本或加入引用。
  * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，输入下方可展开已提交的处理说明和证据。
- * 状态旁原位暂停/继续，停止收进菜单；复用 Loop control，区分 HTTP 受理与 Live 生效，隔离工作区代际并阻止在途重复控制。
+ * 标题圆点展示工作状态，暂停/继续与停止收进菜单；复用 Loop control，区分 HTTP 受理与 Live 生效，隔离工作区代际并阻止在途重复控制。
  * 当前 Loop 就绪即连接 Live，历史独立读取；历史加载/失败/重试仅更新记录面板，不重启工作连接。
  * 停止/失败在输入区展示保存提示与重新启用，复用工作区 restart；HTTP 受理后等待新 Loop 的 Live 确认，保留草稿并隔离迟到响应。
  */
@@ -68,12 +68,16 @@
   function enqueue(action) { commandQueue = commandQueue.then(action).catch(fail); return commandQueue; }
   function element(tag, text, parent) { const node = document.createElement(tag); node.textContent = text; parent?.append(node); return node; }
   function action(text, parent, handler) { const button = element("button", text, parent); button.type = "button"; button.addEventListener("click", () => { void Promise.resolve().then(handler).catch(fail); }); return button; }
-  function inputAction(name, icon, text, parent, handler) {
+  function iconAction(icon, text, parent, handler) {
     const button = action("", parent, handler);
-    button.dataset.historyAction = name;
     button.title = text; button.setAttribute("aria-label", text);
     const glyph = element("span", "", button);
     glyph.className = `ui-icon icon-${icon}`; glyph.setAttribute("aria-hidden", "true");
+    return button;
+  }
+  function inputAction(name, icon, text, parent, handler) {
+    const button = iconAction(icon, text, parent, handler);
+    button.dataset.historyAction = name;
     return button;
   }
   function openWorkbench(taskId, revisionId) {
@@ -132,10 +136,9 @@
     $("#status").textContent = workspace ? statusText : localize("准备接收新输入");
     $(".status-row").hidden = unconfirmed;
     $("#activity").hidden = !workspace || ((unconfirmed || status.state === "idle") && !pausable && !resumable);
-    $("#activity").dataset.inputUnconfirmed = String(unconfirmed);
-    $("#activity-text").textContent = statusText; $("#activity-text").title = statusText;
+    $("#activity").title = statusText;
+    $("#activity-text").textContent = statusText;
     host.dataset.state = status.state;
-    $("#activity-reconnect").hidden = status.state !== "disconnected";
     $("#reconnect").hidden = status.state !== "disconnected";
     const state = { workspaceId: workspace?.workspace_id || "", workspaceName: workspace?.display_name || "", state: status.state, dirty: intake.hasUnfinished(), pending: intake.isSending() };
     const key = JSON.stringify(state);
@@ -482,10 +485,9 @@
           const file = FocusLoopFactsView.fileReference(fact), row = element("div", "", card); row.className = "artifact-result";
           const name = element("span", file?.path?.split(/[\\/]/).at(-1) || fact.title || localize("产物"), row); name.title = file?.path || fact.title || localize("产物");
           const actions = element("div", "", row); actions.className = "artifact-actions";
-          action(localize("打开"), actions, () => file?.path && file.result_key ? references.detail(file) : openWorkbench(fact.context_id, fact.revision_id));
-          if (file?.path && file.result_key) action(localize("引用"), actions, () => references.reference(file));
+          iconAction("file-text", localize("打开"), actions, () => file?.path && file.result_key ? references.detail(file) : openWorkbench(fact.context_id, fact.revision_id));
+          if (file?.path && file.result_key) iconAction("quote", localize("引用"), actions, () => references.reference(file));
         }
-        action(localize("文件 / 产物"), card, openArtifacts);
       }
     }
     const key = FocusWorkspacePatrolFeedback.signature(projection);
@@ -566,7 +568,6 @@
   $("#stop-work").addEventListener("click", () => { void controlWork("stop"); });
   $("#restart-work").addEventListener("click", () => { void restartWork(); });
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });
-  $("#activity-reconnect").addEventListener("click", () => $("#reconnect").click());
   $("#retry-workspace").addEventListener("click", () => { void enqueue(() => activate(workspace)); });
   $("#retry-history").addEventListener("click", () => { void readHistory(historyRetryBefore); });
   $("#add-material").addEventListener("click", () => $("#file-picker").click());
