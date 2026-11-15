@@ -121,7 +121,7 @@ class AgentLoopService:
             if request is None or request.loop_id != loop_id:
                 raise HTTPException(404, "等待请求不存在")
             self._validate_wait_answer(request, body.answer)
-            if request.kind == "budget_action" and body.answer.get("action") == "retry" and request.status == "open":
+            if (request.kind == "budget_action" or request.scope.get("component") == "authority_upgrade") and body.answer.get("action") == "retry" and request.status == "open":
                 grant = await session.scalar(select(LoopDelegationGrant).where(
                     LoopDelegationGrant.loop_id == loop_id,
                     LoopDelegationGrant.status == "active",

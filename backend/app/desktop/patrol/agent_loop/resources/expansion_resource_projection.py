@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.desktop.patrol.agent_loop.resources.resource_limits import exceeds_limit, remaining_capacity
+from backend.app.desktop.patrol.agent_loop.resources.resource_limits import remaining_capacity
 from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import resolve_expansion_resources
 
 
@@ -100,6 +100,6 @@ def repeated_expansion_blocker(sessions: tuple[dict[str, Any], ...]) -> dict[str
             "last_round": later,
             "stage": second.get("stage"),
             "summary": second.get("blocker_summary"),
-            "action": "Context Expansion 已连续受同一内部资源边界阻断；请查看策略与用量后修订授权容量。",
+            "action": "Context Expansion 已连续受同一资源边界阻断；请查看来源、模型容量与执行诊断。",
         }
     return None

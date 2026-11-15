@@ -33,6 +33,7 @@ from backend.app.desktop.patrol.agent_loop.models import (
     LoopBudgetUsage,
     LoopDelegationGrant,
     LoopRound,
+    LoopWorkerRequest,
 )
 from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import (
     unlimited_loop_budgets,
@@ -166,6 +167,104 @@ def test_upgrade_preserves_control_history_and_settles_inflight_usage(runtime_po
                 usage = await session.get(LoopBudgetUsage, running["loop"])
                 assert (usage.model_calls, usage.input_tokens, usage.output_tokens) == (98, 499420, 49180)
                 assert (await session.get(LoopIndexBudgetReservation, running["receipt"])).settled_at is not None
+        finally:
+            await engine.dispose()
+    asyncio.run(run())
+
+
+def test_upgrade_replaces_obsolete_execution_retries_without_restarting_workers(runtime_postgres_database, tmp_path):
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            for variant in ("worker", "already_upgraded", "expired"):
+                identity = await _seed(sessions, tmp_path, status="waiting_user", wait_kind="recovery_action",
+                                       expired=variant == "expired")
+                worker_id = uuid.uuid4().hex
+                old_scope = {"worker_request_id": worker_id, "worker_kind": "completion_verifier"}
+                async with sessions.begin() as session:
+                    wait = await session.get(LoopWaitRequest, identity["wait"])
+                    wait.scope = old_scope
+                    wait.response_contract = {"actions": [{"action": "retry", "label": "重试"},
+                                                           {"action": "stop", "label": "停止"}]}
+                    round_row = await session.get(LoopRound, identity["round"])
+                    round_row.status = "waiting_workers"
+                    session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=identity["loop"],
+                                                 round_id=identity["round"], kind="completion_verifier", status="error",
+                                                 scope={"execution_authority_revision": 1}, attempt=3, max_attempts=3,
+                                                 result={"error": "old failure"}))
+                    if variant == "already_upgraded":
+                        loop = await session.get(AgentLoop, identity["loop"])
+                        grant = await session.get(LoopDelegationGrant, identity["grant"])
+                        loop.authority_revision = grant.revision = 2
+                        grant.budgets = unlimited_loop_budgets()
+                        round_row.status = "superseded"
+                assert identity["loop"] in await upgrade_workspace_loop_budgets(sessions)
+                async with sessions() as session:
+                    loop = await session.get(AgentLoop, identity["loop"])
+                    old = await session.get(LoopWaitRequest, identity["wait"])
+                    replacement = await session.scalar(select(LoopWaitRequest).where(
+                        LoopWaitRequest.loop_id == loop.loop_id, LoopWaitRequest.status == "open"))
+                    assert loop.status == "waiting_user"
+                    assert (old.status, old.scope) == ("superseded", old_scope)
+                    assert replacement.scope == {"component": "authority_upgrade", "superseded_request_id": old.request_id}
+                    assert replacement.kind == "recovery_action"
+                    replacement_id, replacement_revision = replacement.request_id, replacement.revision
+                assert await upgrade_workspace_loop_budgets(sessions) == ()
+                service = AgentLoopService(sessions)
+                with pytest.raises(HTTPException) as blocked:
+                    await service.control(identity["loop"], "resume")
+                assert blocked.value.status_code == 409
+                with pytest.raises(HTTPException) as obsolete:
+                    await service.resolve_wait_request(identity["loop"], identity["wait"], LoopWaitResponseRequest(
+                        request_revision=1, idempotency_key=uuid.uuid4().hex, answer={"action": "retry"}), actor_id="user")
+                assert obsolete.value.status_code == 409
+                retry = LoopWaitResponseRequest(request_revision=replacement_revision,
+                                               idempotency_key=uuid.uuid4().hex, answer={"action": "retry"})
+                if variant == "expired":
+                    with pytest.raises(HTTPException) as denied:
+                        await service.resolve_wait_request(identity["loop"], replacement_id, retry, actor_id="user")
+                    assert denied.value.status_code == 409
+                else:
+                    result = await service.resolve_wait_request(identity["loop"], replacement_id, retry, actor_id="user")
+                    assert result["loop_status"] == "running"
+                async with sessions() as session:
+                    loop = await session.get(AgentLoop, identity["loop"])
+                    worker = await session.get(LoopWorkerRequest, worker_id)
+                    assert (worker.status, worker.attempt, worker.max_attempts, worker.result) == (
+                        "error", 3, 3, {"error": "old failure"})
+                    usage = await session.get(LoopBudgetUsage, loop.loop_id)
+                    assert usage.retries == 5
+                    if variant == "expired":
+                        assert (loop.status, loop.current_round_id) == ("waiting_user", identity["round"])
+                    else:
+                        new_round = await session.get(LoopRound, loop.current_round_id)
+                        assert new_round.round_id != identity["round"]
+                        assert (new_round.status, new_round.authority_revision) == ("observed", loop.authority_revision)
+        finally:
+            await engine.dispose()
+    asyncio.run(run())
+
+
+def test_upgrade_keeps_human_wait_contracts_even_with_execution_hints(runtime_postgres_database, tmp_path):
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            for human_scope in ({"kind": "access_approval"}, {"information_only": True, "cause": "missing_input"},
+                                {"cause": "missing_goal", "evidence_identity": {"kind": "mission"}},
+                                {"quality_recovery": {"authority_revision": 1}}):
+                identity = await _seed(sessions, tmp_path, status="waiting_user", wait_kind="recovery_action")
+                scope = {**human_scope, **({"worker_request_id": "old-worker"} if "quality_recovery" not in human_scope else {})}
+                async with sessions.begin() as session:
+                    wait = await session.get(LoopWaitRequest, identity["wait"])
+                    wait.scope = scope
+                await upgrade_workspace_loop_budgets(sessions)
+                async with sessions() as session:
+                    wait = await session.get(LoopWaitRequest, identity["wait"])
+                    loop = await session.get(AgentLoop, identity["loop"])
+                    assert (wait.status, wait.revision, wait.scope, wait.prompt) == ("open", 1, scope, "needs user")
+                    assert loop.status == "waiting_user"
         finally:
             await engine.dispose()
     asyncio.run(run())

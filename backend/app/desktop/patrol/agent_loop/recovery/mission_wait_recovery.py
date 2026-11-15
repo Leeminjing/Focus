@@ -5,6 +5,7 @@ r"""本文件对外提供 MissionWaitRecoveryGuard 与 MissionWaitRecoveryReject
 无活动 Run/人工 gate、活跃 Primary frontier 和硬预算，再交由调用方原子 supersede 请求并创建继任轮。
 示例：`current = await guard.validate(session, loop, request, request_revision=1)`。
 缺省 outcome 按未提供处理，不授予旧 missing_goal 的自动恢复资格。
+预算升级的服务端 marker 仅在不可裁剪的原授权和当前授权证明同权限换代时允许旧轮次恢复；不改写原 round。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.patrol.agent_loop.resources.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
 from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
 from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.patrol.agent_loop.models import (
@@ -58,7 +60,7 @@ class MissionWaitRecoveryGuard:
             raise MissionWaitRecoveryRejected("等待请求的 Mission 证据 revision 已变化")
         await self._require_mission(session, loop)
         grant = await self._require_grant(session, loop)
-        current = await self._require_round_and_frontier(session, loop, request)
+        current = await self._require_round_and_frontier(session, loop, request, grant)
         await self._require_no_gate_or_run(session, loop)
         await self._require_budget(session, loop, grant)
         return current
@@ -91,9 +93,15 @@ class MissionWaitRecoveryGuard:
         return grant
 
     @staticmethod
-    async def _require_round_and_frontier(session: AsyncSession, loop: AgentLoop, request: LoopWaitRequest) -> LoopRound:
+    async def _require_round_and_frontier(session: AsyncSession, loop: AgentLoop, request: LoopWaitRequest,
+                                          grant: LoopDelegationGrant) -> LoopRound:
         current = await session.get(LoopRound, loop.current_round_id, with_for_update=True) if loop.current_round_id else None
-        if current is None or current.status not in {"settled", "error"} or current.goal_revision != loop.goal_revision or current.authority_revision != loop.authority_revision:
+        if (current is None or current.loop_id != loop.loop_id or current.status not in {"settled", "error"}
+                or current.goal_revision != loop.goal_revision):
+            raise MissionWaitRecoveryRejected("当前 round 或 Mission/授权版本无法安全恢复")
+        if current.authority_revision != loop.authority_revision and not await MissionWaitRecoveryGuard._budget_upgrade_lineage(
+            session, loop, request, current, grant,
+        ):
             raise MissionWaitRecoveryRejected("当前 round 或 Mission/授权版本无法安全恢复")
         if request.round_id is not None and request.round_id != current.round_id:
             raise MissionWaitRecoveryRejected("等待请求不属于当前 round")
@@ -106,6 +114,33 @@ class MissionWaitRecoveryGuard:
         if primary is None or context is None or context.current_revision_id is None or await current_frontier_hash(session, loop.loop_id) is None:
             raise MissionWaitRecoveryRejected("Primary Context frontier 当前不可运行")
         return current
+
+    @staticmethod
+    async def _budget_upgrade_lineage(session: AsyncSession, loop: AgentLoop, request: LoopWaitRequest,
+                                      current: LoopRound, grant: LoopDelegationGrant) -> bool:
+        marker = (request.scope or {}).get("authority_upgrade")
+        if not isinstance(marker, dict) or not isinstance(marker.get("source_grant_id"), str):
+            return False
+        source = await session.get(LoopDelegationGrant, marker["source_grant_id"])
+        if (source is None or source.loop_id != loop.loop_id or source.status != "revoked"
+                or source.revision != current.authority_revision
+                or grant.revision != source.revision + 1 or grant.budgets != unlimited_loop_budgets()
+                or source.budgets == grant.budgets):
+            return False
+        if marker != {
+            "kind": "fixed_unlimited_budget_upgrade",
+            "source_round_id": current.round_id,
+            "source_authority_revision": source.revision,
+            "source_grant_id": source.grant_id,
+            "grant_id": grant.grant_id,
+            "authority_revision": loop.authority_revision,
+            "mission_revision": loop.goal_revision,
+        }:
+            return False
+        return all(getattr(source, name) == getattr(grant, name) for name in (
+            "holder_id", "capabilities", "context_scope", "permission_scope", "delegable_gates",
+            "compression_policy", "expires_at",
+        ))
 
     @staticmethod
     async def _require_no_gate_or_run(session: AsyncSession, loop: AgentLoop) -> None:
