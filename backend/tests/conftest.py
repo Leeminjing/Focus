@@ -143,4 +143,4 @@ def wait_for_memory_status(wait_until):
 
     return _wait
 
-pytest_plugins = ("backend.tests.migration_support",)
+pytest_plugins = ("backend.tests.migration_support", "backend.tests.browser_process_support")
