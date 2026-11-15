@@ -59,12 +59,9 @@
     } else if (request.response_mode === "structured") {
       control = Object.entries(contract.fields || {}).map(([name, field]) => `<label>${escape(field.label || name)}<input name="${escape(name)}" type="${escape(field.type || "text")}" value="${escape(draftState[name] || "")}"${disabled}></label>`).join("") + localize`<button class="primary" type="submit"${disabled}>确认</button>`;
     } else if (request.response_mode === "action") {
-      control = (contract.actions || []).map(action => {
-        const inputs = action.input_schema && typeof action.input_schema === "object"
-          ? `<fieldset data-wait-action-input="${escape(action.action)}">${Object.entries(action.input_schema).map(([name, value]) => `<label>${escape(name)}<input name="budget:${escape(name)}" type="number" min="0" value="${escape(draftState[`budget:${name}`] ?? value)}"${disabled}></label>`).join("")}</fieldset>`
-          : "";
-        return `${inputs}<button type="button" data-action="loop-wait-response" data-wait-action="${escape(action.action)}"${disabled}>${escape(action.label || action.action)}</button>`;
-      }).join("");
+      control = (contract.actions || []).filter(action => action.action !== "revise_budget").map(action =>
+        `<button type="button" data-action="loop-wait-response" data-wait-action="${escape(action.action)}"${disabled}>${escape(action.label || action.action)}</button>`
+      ).join("");
     } else {
       control = localize`<p class="loop-wait-unsupported">当前客户端暂不支持响应模式 ${escape(request.response_mode)}</p>`;
     }

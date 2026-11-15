@@ -290,6 +290,7 @@ def test_explicit_successor_preserves_context_progress_grant_and_old_inputs(tmp_
         from backend.app.desktop.patrol.agent_loop.task_progress.repository import TaskProgressRepository
         from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
         from backend.app.desktop.patrol.agent_loop.models import LoopContextMembership
+        from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
 
         engine, sessions, workspace, service = await _setup(tmp_path)
         try:
@@ -317,6 +318,9 @@ def test_explicit_successor_preserves_context_progress_grant_and_old_inputs(tmp_
                     lifecycle="retained",
                 )
                 session.add(retained)
+                prior_grant = await session.scalar(select(LoopDelegationGrant).where(
+                    LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.status == "active"))
+                prior_grant.budgets = {**prior_grant.budgets, "max_rounds": 40, "max_model_calls": 100}
                 await LoopTerminalLifecycle().finalize(session, loop, "stopped", "user_stop")
             late = await service.submit(
                 workspace, PatrolInputRequest(submission_id=uuid.uuid4().hex, content="停止时补充")
@@ -339,6 +343,8 @@ def test_explicit_successor_preserves_context_progress_grant_and_old_inputs(tmp_
                     )
                 )
                 assert grant.permission_scope == ["read", "write", "host_command"]
+                assert grant.budgets == unlimited_loop_budgets()
+                assert (await session.get(LoopDelegationGrant, prior_grant.grant_id)).budgets["max_rounds"] == 40
                 inherited_slot = await session.get(WorkspaceSlot, retained.slot_id)
                 assert (
                     inherited_slot.owner_loop_id == current.loop_id

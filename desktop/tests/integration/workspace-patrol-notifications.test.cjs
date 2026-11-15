@@ -49,29 +49,29 @@ if (!process.versions.electron) {
             loop:{entity_id:"loop-notify",revision:1,updated_sequence:1,state:{status:"waiting_user",interaction_mode:"workspace_patrol"}},
             wait_requests:{question:{entity_id:"question",revision:1,updated_sequence:1,
               state:{status:"open",kind:"clarification",response_mode:"text",prompt:"请补充目标",response_contract:{max_length:200},scope:{}}},
-              budget:{entity_id:"budget",revision:1,updated_sequence:1,
-              state:{status:"open",kind:"budget_action",response_mode:"action",prompt:"已达到预算边界",
-                response_contract:{actions:[{action:"revise_budget",label:"调整预算",input_schema:{max_rounds:7}}]},scope:{}}}}});
+              permission:{entity_id:"permission",revision:1,updated_sequence:1,
+              state:{status:"open",kind:"clarification",response_mode:"structured",prompt:"请补充授权范围",
+                response_contract:{fields:{reason:{label:"授权说明",type:"text"}}},scope:{cause:"permission"}}}}});
         }
         return null;
       };
-      openTaskNotification({taskId:"notify-root",workspaceId:"notify",loopId:"loop-notify",attentionId:"budget"});
+      openTaskNotification({taskId:"notify-root",workspaceId:"notify",loopId:"loop-notify",attentionId:"permission"});
     `);
     await until('releaseNotificationLive && document.querySelector("[data-patrol-dialog]")?.open');
     assert.equal(await run("state.patrolWorkspace.workspace_id"), "notify");
     assert.equal(await run("state.view"), "patrol");
     await run("releaseNotificationLive()");
-    await until('document.querySelector("[data-wait-request-id=budget] input")');
+    await until('document.querySelector("[data-wait-request-id=permission] input")');
     await until('!document.querySelector("[data-patrol-dialog]").getAnimations().length');
-    assert.equal(await run('document.activeElement === document.querySelector("[data-wait-request-id=budget] input")'), true);
-    await run('document.activeElement.value="12"; document.activeElement.dispatchEvent(new Event("input",{bubbles:true})); document.querySelector("[data-patrol-dialog-close]").click()');
+    assert.equal(await run('document.activeElement === document.querySelector("[data-wait-request-id=permission] input")'), true);
+    await run('document.activeElement.value="仅在工作区内执行"; document.activeElement.dispatchEvent(new Event("input",{bubbles:true})); document.querySelector("[data-patrol-dialog-close]").click()');
     await until('!document.querySelector("[data-patrol-dialog]").open');
-    await run('workspacePatrolController.showAttention("budget","old-patrol")');
+    await run('workspacePatrolController.showAttention("permission","old-patrol")');
     assert.equal(await run('document.querySelector("[data-patrol-dialog]").open'), false);
-    await run('openTaskNotification({taskId:"notify-root",workspaceId:"notify",loopId:"loop-notify",attentionId:"budget"})');
+    await run('openTaskNotification({taskId:"notify-root",workspaceId:"notify",loopId:"loop-notify",attentionId:"permission"})');
     await until('document.querySelector("[data-patrol-dialog]").open && !document.querySelector("[data-patrol-dialog]").getAnimations().length');
-    assert.equal(await run('document.querySelector("[data-wait-request-id=budget] input").value'), "12");
-    assert.equal(await run('document.activeElement === document.querySelector("[data-wait-request-id=budget] input")'), true);
+    assert.equal(await run('document.querySelector("[data-wait-request-id=permission] input").value'), "仅在工作区内执行");
+    assert.equal(await run('document.activeElement === document.querySelector("[data-wait-request-id=permission] input")'), true);
     await run('openTaskNotification({taskId:"notify-root",workspaceId:"notify",loopId:"loop-notify",attentionId:"question"})');
     assert.equal(await run('document.activeElement === document.querySelector("[data-wait-request-id=question] textarea")'), true);
     console.log("PATROL_NOTIFICATIONS_PASS");

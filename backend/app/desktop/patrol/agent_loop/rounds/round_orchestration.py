@@ -333,7 +333,7 @@ class StructuredPatrolDecisionModel:
         limits = observation.budget.get("limits") or {}
         usage = observation.budget.get("usage") or {}
         self._remaining_calls = remaining_capacity(
-            limits.get("max_model_calls", 200), int(usage.get("model_calls", 0)),
+            limits.get("max_model_calls"), int(usage.get("model_calls", 0)),
         )
         self._remaining_retries = remaining_capacity(limits.get("max_retries"), int(usage.get("retries", 0)))
         config = self._app_config.get_model(self._model_name or self._app_config.resolve_patrol_model_name())

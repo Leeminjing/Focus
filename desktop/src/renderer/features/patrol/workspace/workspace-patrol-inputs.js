@@ -63,7 +63,7 @@
         if (!draft.content.trim() && !draft.attachments?.length) throw new Error("请输入信息或添加材料");
         const payload = { submission_id: identity(), access_mode: typeof accessMode === "function" ? accessMode() : accessMode, ...draft, ...(visibleContext ? { visible_context: visibleContext } : {}) };
         if (!payload.attachments?.length) delete payload.attachments;
-        if (payload.budget_preset == null) delete payload.budget_preset;
+        delete payload.budget_preset;
         const request = frozenCopy(payload);
         const row = { request, ...request, status: "sending", error: null, order: ++order, draftRevision: ++draftRevision, created_at: new Date().toISOString() };
         rows.set(request.submission_id, row);

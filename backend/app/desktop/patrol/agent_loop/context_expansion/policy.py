@@ -15,6 +15,7 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     ExpansionOpportunity,
 )
 from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.patrol.agent_loop.resources.resource_limits import exceeds_limit
 
 
 class ExpansionAdmissionPolicy:
@@ -91,10 +92,10 @@ class ExpansionAdmissionPolicy:
             (bool(manifest_context_ids - source_ids), "source_unreadable", "manifest 来源不在冻结 Portfolio frontier", False),
             (bool(source_identities - exact_sources), "stale_source", "manifest Revision 已不再是冻结 frontier 的精确来源", False),
             (bool(manifest_context_ids - scope), "source_out_of_scope", "manifest 来源不在 delegation context scope", False),
-            (int(usage.get("contexts", len(source_ids)) or 0) >= int(limits.get("max_contexts", 16) or 16), "context_budget_exhausted", "Context 预算已耗尽", True),
-            (int(usage.get("lanes", len(source_ids)) or 0) >= int(limits.get("max_lanes", 8) or 8), "lane_budget_exhausted", "Lane 预算已耗尽", True),
-            (int(limits.get("max_new_lanes_per_round", 3) or 0) < 1, "round_lane_budget_exhausted", "本轮不允许新增 Lane", True),
-            (self._active_runs(observation) >= int(limits.get("max_concurrent_runs", 4) or 4), "concurrency_budget_exhausted", "并行 Run 预算已耗尽", True),
+            (exceeds_limit(int(usage.get("contexts", len(source_ids)) or 0), limits.get("max_contexts"), inclusive=True), "context_budget_exhausted", "Context 预算已耗尽", True),
+            (exceeds_limit(int(usage.get("lanes", len(source_ids)) or 0), limits.get("max_lanes"), inclusive=True), "lane_budget_exhausted", "Lane 预算已耗尽", True),
+            (exceeds_limit(1, limits.get("max_new_lanes_per_round")), "round_lane_budget_exhausted", "本轮不允许新增 Lane", True),
+            (exceeds_limit(self._active_runs(observation), limits.get("max_concurrent_runs"), inclusive=True), "concurrency_budget_exhausted", "并行 Run 预算已耗尽", True),
             (opportunity.independence_key.casefold() in duplicate_keys, "duplicate_expansion", "等价 expansion 已存在", False),
             (workspace_mode == "isolated_write" and "write" not in permissions, "workspace_conflict", "派生写入未获得 write permission", False),
             (workspace_mode == "isolated_write" and "adopt_workspace_result" not in capabilities, "workspace_isolation_unavailable", "delegation 未授权隔离写入与结果采用", True),

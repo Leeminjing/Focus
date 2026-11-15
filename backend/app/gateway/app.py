@@ -210,8 +210,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.agent_loop_ownership_repair_task = None
         if not update_check:
             from backend.app.desktop.patrol.agent_loop.lifecycle.retirement import retire_context_loops
+            from backend.app.desktop.patrol.agent_loop.lifecycle.unlimited_budget_upgrade import upgrade_workspace_loop_budgets
 
             await retire_context_loops(sessions)
+            await upgrade_workspace_loop_budgets(sessions)
             await service.start()
             app.state.agent_loop_ownership_repair_task = asyncio.create_task(
                 CurationOwnershipRecovery(sessions).reconcile(),

@@ -17,13 +17,14 @@ import uuid
 
 from alembic import command
 from alembic.config import Config
+from fastapi import HTTPException
 import pytest
 from sqlalchemy import create_engine, func, select, MetaData, Table, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-import backend.app.desktop.persistence.registry
+import backend.app.desktop.persistence.registry  # noqa: F401
 from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
 from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
@@ -76,7 +77,7 @@ def test_wait_request_factories_define_typed_response_contracts() -> None:
     assert clarification.response_mode == "text"
     assert clarification.response_contract == {"min_length": 1, "max_length": 12000}
     assert budget.response_mode == "action"
-    assert {item["action"] for item in budget.response_contract["actions"]} == {"revise_budget", "stop"}
+    assert {item["action"] for item in budget.response_contract["actions"]} == {"retry", "stop"}
     assert recovery.kind == "legacy_recovery"
     assert {item["action"] for item in recovery.response_contract["actions"]} >= {"retry", "stop"}
 
@@ -351,16 +352,24 @@ def test_wait_response_resumes_once_while_unrelated_task_admits(tmp_path: Path) 
                 loop = await session.get(AgentLoop, loop_id, with_for_update=True)
                 budget = await waits.open(session, loop, LoopWaitRequestFactory.budget_action("需要增加预算", {"max_input_tokens": 10}), created_by="budget", correlation_id="wait-budget")
                 budget_request_id = budget.request_id
-            revised = await service.resolve_wait_request(
+            with pytest.raises(HTTPException) as rejected:
+                await service.resolve_wait_request(
+                    loop_id,
+                    budget_request_id,
+                    LoopWaitResponseRequest(request_revision=1, idempotency_key="wait-budget-forbidden", answer={"action": "revise_budget", "budgets": {"max_input_tokens": 42}}),
+                    actor_id="user",
+                )
+            assert rejected.value.status_code == 422
+            resumed = await service.resolve_wait_request(
                 loop_id,
                 budget_request_id,
-                LoopWaitResponseRequest(request_revision=1, idempotency_key="wait-budget-response", answer={"action": "revise_budget", "budgets": {"max_input_tokens": 42}}),
+                LoopWaitResponseRequest(request_revision=1, idempotency_key="wait-budget-response", answer={"action": "retry"}),
                 actor_id="user",
             )
-            assert revised["loop_status"] == "running"
+            assert resumed["loop_status"] == "running"
             async with sessions() as session:
                 grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.status == "active"))
-                assert grant.budgets["max_input_tokens"] == 42
+                assert grant.budgets["max_input_tokens"] == 10
 
             async with sessions.begin() as session:
                 loop = await session.get(AgentLoop, loop_id, with_for_update=True)

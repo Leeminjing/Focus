@@ -3,7 +3,7 @@
 输入为隔离数据库、真实等待/授权/停止入口及晚到响应；输出为旧等待失效、原子回滚和规范投影一致性的断言。
 具体工作流为创建真实恢复等待并撤权，在历史实体中核对终态，
 验证等待变更的锁顺序、旧请求失效和已提交回答的幂等重放。
-修复前遗留数据作为显式夹具保留旧开放请求，新等待原子替换；已提交预算响应的重放不能覆盖后续真实预算选择。
+修复前遗留数据作为显式夹具保留旧开放请求，新等待原子替换；预算恢复响应幂等重放不重复恢复或修改预算。
 示例：pytest backend/tests/test_loop_wait_authority_convergence.py -q；不修改原生验收数据库。
 """
 
@@ -172,7 +172,7 @@ def test_open_current_wait_supersedes_legacy_request_and_keeps_current_replay(tm
     asyncio.run(run())
 
 
-def test_committed_budget_answer_replay_cannot_reapply_old_budget(tmp_path):
+def test_committed_budget_retry_replay_cannot_repeat_recovery(tmp_path):
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -180,14 +180,14 @@ def test_committed_budget_answer_replay_cannot_reapply_old_budget(tmp_path):
         service = fixture["service"]
         first = None
         try:
-            for limit in (10000, 20000):
+            for _ in range(2):
                 async with sessions.begin() as session:
                     loop = await session.get(AgentLoop, fixture["loop_id"], with_for_update=True)
                     request = await LoopWaitRequestService().open(session, loop,
                         LoopWaitRequestFactory.budget_action("budget choice", {}), created_by="test",
                         correlation_id=uuid.uuid4().hex)
                 body = LoopWaitResponseRequest(request_revision=1, idempotency_key=f"budget:{request.request_id}",
-                    answer={"action": "revise_budget", "budgets": {"max_input_tokens": limit}})
+                    answer={"action": "retry"})
                 assert (await service.resolve_wait_request(fixture["loop_id"], request.request_id, body, actor_id="user"))["created"]
                 if first is None:
                     first = (request.request_id, body)
@@ -198,7 +198,7 @@ def test_committed_budget_answer_replay_cannot_reapply_old_budget(tmp_path):
                 grant = await session.scalar(select(LoopDelegationGrant).where(
                     LoopDelegationGrant.loop_id == fixture["loop_id"], LoopDelegationGrant.status == "active"))
                 loop = await session.get(AgentLoop, fixture["loop_id"])
-                assert grant.budgets["max_input_tokens"] == 20000
+                assert grant.budgets["max_input_tokens"] is None
                 assert loop.status == "running" and loop.current_round_id == current_round_id
         finally:
             await _stop(service, fixture["loop_id"])

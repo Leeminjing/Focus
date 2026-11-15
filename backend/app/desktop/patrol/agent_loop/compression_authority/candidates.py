@@ -76,7 +76,7 @@ class CompressionCandidateService:
             usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
             if usage is None:
                 raise ValueError("Loop budget usage 不存在")
-            if exceeds_limit(usage.model_calls, grant.budgets.get("max_model_calls", 0), inclusive=True):
+            if exceeds_limit(usage.model_calls, grant.budgets.get("max_model_calls"), inclusive=True):
                 raise ValueError("Loop model call budget 已耗尽")
             normalized = self._manifest.normalize(
                 messages,
@@ -302,13 +302,13 @@ class CompressionCandidateService:
         input_tokens: int,
         output_tokens: int = 0,
     ) -> None:
-        if exceeds_limit(usage.model_calls, budgets.get("max_model_calls", 0), inclusive=True):
+        if exceeds_limit(usage.model_calls, budgets.get("max_model_calls"), inclusive=True):
             raise ValueError("Loop model call budget 已耗尽")
-        if exceeds_limit(usage.input_tokens + input_tokens, budgets.get("max_input_tokens", 0)):
+        if exceeds_limit(usage.input_tokens + input_tokens, budgets.get("max_input_tokens")):
             raise ValueError("Loop input token budget 不足以准备压缩候选")
-        if exceeds_limit(usage.output_tokens + output_tokens, budgets.get("max_output_tokens", 0)):
+        if exceeds_limit(usage.output_tokens + output_tokens, budgets.get("max_output_tokens")):
             raise ValueError("Loop output token budget 不足以接受压缩候选")
-        if usage.retries > 0 and exceeds_limit(usage.retries, budgets.get("max_retries", 0), inclusive=True):
+        if usage.retries > 0 and exceeds_limit(usage.retries, budgets.get("max_retries"), inclusive=True):
             raise ValueError("Loop candidate preparation attempt budget 已耗尽")
 
     @staticmethod

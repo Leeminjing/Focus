@@ -408,10 +408,11 @@ class LoopCoordinator:
                 if current is not None:
                     await terminate_round(session, current_loop, current, category="budget", reason="Loop hard budget 已耗尽，未启动新的 Run", allowed_statuses=("ready",))
             return ()
-        configured = int((grant.budgets if grant else {}).get("max_concurrent_runs", concurrency))
+        configured = (grant.budgets if grant else {}).get("max_concurrent_runs")
+        capacity = concurrency if configured is None else min(concurrency, configured)
         run_ids = ()
         try:
-            run_ids = await dispatcher.dispatch(claim.loop_id, claim.round_id, min(concurrency, configured))
+            run_ids = await dispatcher.dispatch(claim.loop_id, claim.round_id, capacity)
         finally:
             current = await self._record_dispatch_state(claim, run_ids)
         return run_ids if current else None

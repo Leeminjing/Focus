@@ -119,9 +119,9 @@ class ExpansionSignalCollector:
     def _tokens(self, observation: LoopObservationEnvelope) -> ExpansionSignal | None:
         limits = observation.budget.get("limits") or {}
         usage = observation.budget.get("usage") or {}
-        limit = int(limits.get("max_input_tokens", 0) or 0)
+        limit = limits.get("max_input_tokens")
         used = int(usage.get("input_tokens", 0) or 0)
-        if limit <= 0:
+        if limit is None or limit <= 0:
             return None
         return ExpansionSignal.create(
             "token_pressure",
@@ -158,10 +158,10 @@ class ExpansionSignalCollector:
         return ExpansionSignal.create(
             "budget_state",
             {
-                "max_contexts": limits.get("max_contexts", 0),
-                "max_lanes": limits.get("max_lanes", 0),
-                "max_new_lanes_per_round": limits.get("max_new_lanes_per_round", 0),
-                "max_concurrent_runs": limits.get("max_concurrent_runs", 0),
+                "max_contexts": limits.get("max_contexts"),
+                "max_lanes": limits.get("max_lanes"),
+                "max_new_lanes_per_round": limits.get("max_new_lanes_per_round"),
+                "max_concurrent_runs": limits.get("max_concurrent_runs"),
                 "contexts": usage.get("contexts", len(observation.portfolio_frontier)),
                 "lanes": usage.get("lanes", len(observation.portfolio_frontier)),
                 "rounds": usage.get("rounds", 0),

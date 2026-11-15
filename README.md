@@ -101,7 +101,7 @@ Use Patrol for everyday input. Open the workbench when you want a closer look.
 
 Open important file outputs and modifications to inspect saved content and available diffs. Use **@ file-version references** to give feedback on a specific result. Inspecting a Context keeps your everyday input directed to the same Patrol.
 
-You can also pause, resume, or stop execution, adjust authorization and budgets, or open a line of work in the task interface to inspect, edit, and derive contexts directly.
+You can also pause, resume, or stop execution, adjust authorization, or open a line of work in the task interface to inspect, edit, and derive contexts directly. Loop budgets are fixed and unlimited; usage remains visible. See [Loop budgets](docs/loop-budgets.md).
 
 ### Patrol on your desktop
 
@@ -131,7 +131,7 @@ A Strategy has three parts:
 | `evolution` | How work advances, adapts, comes together, and ends. |
 | `inheritance` | Which background, evidence, and constraints each line of work should carry. |
 
-Enabled strategies are available for Patrol to consider against the current task. Actual adoption is recorded with the round, and execution remains subject to current requirements, permissions, and budgets.
+Enabled strategies are available for Patrol to consider against the current task. Actual adoption is recorded with the round, and execution remains subject to current requirements, permissions, and runtime capacity.
 
 Read the [Strategy guide](docs/strategies/README.md), or start with the [validate critical assumptions](docs/strategies/examples/validate-before-build/STRATEGY.md) example.
 
@@ -307,7 +307,7 @@ The “No workspace” mode also lets you select a global or specific-workspace 
 
 Contexts can persist over time or be derived from multiple sources. Execution results return to the overall project state and inform subsequent arrangements.
 
-Concurrent writing tasks require authorized Git worktree isolation and a clean baseline. When those conditions are unavailable, work proceeds serially within available resources. Execution respects authorization and budgets, with explicit requests when user input or approval is needed.
+Concurrent writing tasks require authorized Git worktree isolation and a clean baseline. When those conditions are unavailable, work proceeds serially within available resources. Execution respects authorization and runtime capacity, with explicit requests when user input or approval is needed.
 
 Completion uses evidence from an independent verification process, checked against the current task, contexts, and workspace. Test, file, and tool results support the acceptance checks.
 

@@ -8,7 +8,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
-from backend.app.desktop.patrol.agent_loop.resources.budget_presets import initial_budgets
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
 from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import (
     BudgetedIndexModel,
     IndexBudgetExceeded,
@@ -18,6 +18,12 @@ from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import Role
 from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import resolve_expansion_resources
 from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
 from backend.tests.config_helpers import app_config_for
+
+
+def _legacy_finite_budgets():
+    # Historical bounded contracts remain readable and keep their accounting semantics.
+    return {**unlimited_loop_budgets(), "max_model_calls": 100,
+            "max_input_tokens": 500_000, "max_output_tokens": 50_000}
 
 
 class Answer(BaseModel):
@@ -40,7 +46,7 @@ class Receipts:
         receipt.measured, receipt.reported = measured, reported
 
 
-def test_normal_budget_releases_each_reported_production_attempt(monkeypatch):
+def test_legacy_finite_budget_releases_each_reported_production_attempt(monkeypatch):
     async def run():
         class Provider:
             async def ainvoke(self, messages, config):
@@ -54,7 +60,7 @@ def test_normal_budget_releases_each_reported_production_attempt(monkeypatch):
         config = app_config_for("budget-test", None)
         config.models[0].curation_output_method = "prompt_json"
         receipts = Receipts()
-        budget = IndexModelBudget(resolve_expansion_resources(initial_budgets(), 1),
+        budget = IndexModelBudget(resolve_expansion_resources(_legacy_finite_budgets(), 1),
                                   usage_receipts=receipts)
         model = RoleBoundStructuredModel(config, "semantic_index_projector")
         assert model.max_output_tokens == 8192
@@ -88,7 +94,7 @@ def test_each_reported_retry_is_released_before_the_next_attempt(monkeypatch, va
                             lambda **kwargs: Provider())
         config = app_config_for("budget-test", None)
         config.models[0].curation_output_method = "prompt_json"
-        budget = IndexModelBudget(resolve_expansion_resources(initial_budgets(), 1), usage_receipts=Receipts())
+        budget = IndexModelBudget(resolve_expansion_resources(_legacy_finite_budgets(), 1), usage_receipts=Receipts())
         wrapped = BudgetedIndexModel(RoleBoundStructuredModel(config, "semantic_index_projector", max_attempts=7), budget)
 
         def validate(result):
@@ -104,7 +110,7 @@ def test_each_reported_retry_is_released_before_the_next_attempt(monkeypatch, va
 
 def test_batch_settlement_releases_only_once():
     async def run():
-        budget = IndexModelBudget(resolve_expansion_resources(initial_budgets(), 1))
+        budget = IndexModelBudget(resolve_expansion_resources(_legacy_finite_budgets(), 1))
         model = SimpleNamespace(max_output_tokens=8192)
         for _ in range(6):
             await budget.admit(model, Answer, "test", {})
@@ -129,7 +135,7 @@ def test_unguarded_model_bills_all_attempts_for_its_invocation():
                 )
                 return schema(answer="ok")
 
-        budget = IndexModelBudget(resolve_expansion_resources(initial_budgets(), 1))
+        budget = IndexModelBudget(resolve_expansion_resources(_legacy_finite_budgets(), 1))
         await BudgetedIndexModel(Model(), budget).invoke(Answer, "test", {})
         assert (budget._calls, budget._input, budget._output) == (97, 499_994, 49_991)
 
@@ -139,7 +145,7 @@ def test_unguarded_model_bills_all_attempts_for_its_invocation():
 def test_pending_and_unknown_receipts_keep_their_own_reservations():
     async def run():
         receipts = Receipts()
-        budget = IndexModelBudget(resolve_expansion_resources(initial_budgets(), 1), usage_receipts=receipts)
+        budget = IndexModelBudget(resolve_expansion_resources(_legacy_finite_budgets(), 1), usage_receipts=receipts)
         tracked = budget.usage_receipts
         pending, unknown, done = await asyncio.gather(*(tracked.reserve(1000, 8192) for _ in range(3)))
         actual = LoopUsageDelta(model_calls=1, input_tokens=1, output_tokens=1)
@@ -167,7 +173,7 @@ def test_persistent_failure_does_not_refund_or_double_charge(failure):
             async def settle(self, *args):
                 raise RuntimeError("database failure")
 
-        budget = IndexModelBudget(resolve_expansion_resources(initial_budgets(), 1), usage_receipts=FailingReceipts())
+        budget = IndexModelBudget(resolve_expansion_resources(_legacy_finite_budgets(), 1), usage_receipts=FailingReceipts())
         if failure == "reserve":
             with pytest.raises(RuntimeError, match="database failure"):
                 await budget.usage_receipts.reserve(1000, 8192)
@@ -183,7 +189,7 @@ def test_persistent_failure_does_not_refund_or_double_charge(failure):
 
 def test_concurrent_admission_is_bounded_and_settlement_allows_next_call():
     async def run():
-        limits = {**initial_budgets(), "max_output_tokens": 8192}
+        limits = {**_legacy_finite_budgets(), "max_output_tokens": 8192}
         budget = IndexModelBudget(resolve_expansion_resources(limits, 1), usage_receipts=Receipts())
         results = await asyncio.gather(*(budget.usage_receipts.reserve(1000, 8192) for _ in range(2)),
                                        return_exceptions=True)
@@ -199,7 +205,7 @@ def test_concurrent_admission_is_bounded_and_settlement_allows_next_call():
 
 def test_explicit_output_reserve_is_kept_in_both_budgets():
     async def run():
-        limits = {**initial_budgets(), "max_output_tokens": 19_000,
+        limits = {**_legacy_finite_budgets(), "max_output_tokens": 19_000,
                   "expansion_resources": {"output_token_reserve": 10_000}}
         receipts = Receipts()
         budget = IndexModelBudget(resolve_expansion_resources(limits, 1), usage_receipts=receipts)
@@ -217,7 +223,7 @@ def test_explicit_output_reserve_is_kept_in_both_budgets():
 @pytest.mark.parametrize("unlimited", [False, True])
 def test_refund_preserves_frozen_usage_unlimited_and_actual_overruns(unlimited):
     async def run():
-        limits = initial_budgets()
+        limits = _legacy_finite_budgets()
         if unlimited:
             limits.update(max_model_calls=None, max_input_tokens=None, max_output_tokens=None)
         budget = IndexModelBudget(resolve_expansion_resources(limits, 1,
@@ -237,7 +243,7 @@ def test_refund_preserves_frozen_usage_unlimited_and_actual_overruns(unlimited):
 
 @pytest.mark.usefixtures("isolated_postgres_database")
 @pytest.mark.parametrize("production_model", [False, True])
-def test_normal_budget_full_index_cold_append_and_cache(tmp_path, monkeypatch, production_model):
+def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeypatch, production_model):
     from sqlalchemy import select
 
     from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import RevisionInterpretationProposal
@@ -251,7 +257,7 @@ def test_normal_budget_full_index_cold_append_and_cache(tmp_path, monkeypatch, p
     from backend.tests.test_incremental_index_real_model import observed_model_factory
     from backend.tests.test_incremental_revision_index import exercise
 
-    budgets = initial_budgets()
+    budgets = _legacy_finite_budgets()
 
     async def run(sessions, seed):
         probe = ModelProbe()

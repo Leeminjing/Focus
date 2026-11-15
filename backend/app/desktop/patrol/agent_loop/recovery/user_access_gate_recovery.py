@@ -3,6 +3,7 @@
 输入为已锁定Loop、精确recovery_action、实际主执行与可信检查点；输出为同事务收口或明确拒绝。
 具体工作流为绑定审批原主体及已结算人工resume，严格读取同一执行身份的实际检查点，确认无访问中断才标记投影resolved并写审计；
 旧投影只接受唯一被阻断Directive确定的主体。读取失败、缺失、仍有审批、主体或执行变化均保持阻断，不批准工具、不扩权、不改原payload。
+预算升级可保留事先完整核对的旧来源到服务端等待scope；恢复仍执行原主体、人工resume与检查点核对。
 示例：`await recovery.resolve(session, loop, wait, response_id, actor_id)`；外层等待响应失败时投影与审计一并回滚。
 """
 
@@ -114,12 +115,21 @@ class UserAccessGateRecovery:
                      'response_id': response_id, 'resolution': 'source_execution_superseded',
                      'access_approved_by_recovery': False}))
 
-    async def _source(self,session,loop,wait,gate):
+    async def _source(self,session,loop,wait,gate,*,require_settled=True):
         recovery=gate.payload.get('recovery') or {}
         request=recovery.get('request') or {}
         if recovery.get('status')!='resumable' or request.get('type')!=APPROVAL_TYPE or request.get('agent_role')!='main':
             raise ValueError('人工访问审批缺少可信可恢复来源')
         source=gate.payload.get('source')
+        marker=wait.scope.get('legacy_access_source')
+        if source is None and marker is not None:
+            if (not isinstance(marker,dict) or marker.get('kind')!='fixed_unlimited_budget_upgrade'
+                or marker.get('pending_decision_id')!=gate.pending_decision_id
+                or marker.get('round_id')!=wait.round_id
+                or wait.scope.get('kind')!='access_approval'
+                or wait.scope.get('pending_decision_id')!=gate.pending_decision_id):
+                raise ValueError('旧人工访问审批冻结来源身份不匹配')
+            source={'run_id':marker.get('run_id'),'task_id':marker.get('task_id')}
         if source is None:
             targets=tuple(await session.scalars(select(LoopDirective.target_context_id).where(
                 LoopDirective.loop_id==loop.loop_id,LoopDirective.round_id==wait.round_id,
@@ -136,7 +146,7 @@ class UserAccessGateRecovery:
             original=await session.get(DesktopRun,source['run_id'])
             if original is None or original.task_id!=source['task_id']:
                 raise ValueError('人工访问审批来源身份不匹配')
-        if original is None or original.kind!='main' or original.status!='interrupted' or original.settled_at is None:
+        if original is None or original.kind!='main' or original.status!='interrupted' or (require_settled and original.settled_at is None):
             raise ValueError('人工访问审批原执行未稳定中断')
         if original.created_at>gate.created_at or original.loop_id not in (None,loop.loop_id):
             raise ValueError('人工访问审批原执行的时间或Loop归属不匹配')

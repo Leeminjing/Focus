@@ -61,11 +61,11 @@ class LoopWaitRequestFactory:
     def budget_action(reason: str, current_budget: dict[str, Any]) -> WaitRequestDraft:
         return WaitRequestDraft(
             kind="budget_action",
-            prompt=f"Loop 已达到预算边界：{reason}",
+            prompt=f"Loop 预算固定无上限；请确认恢复执行或停止：{reason}",
             response_mode="action",
             response_contract={
                 "actions": [
-                    {"action": "revise_budget", "label": "调整预算", "input_schema": current_budget},
+                    {"action": "retry", "label": "继续执行"},
                     {"action": "stop", "label": "停止 Loop"},
                 ]
             },

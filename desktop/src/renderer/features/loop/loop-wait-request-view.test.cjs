@@ -37,10 +37,10 @@ test("quality recovery renders safe dimensions and typed revision actions withou
 
 test("renders text and typed action requests without magic chat text", () => {
   const text = WaitView.render({ wait_request_id: "w1", prompt: "Which target?", response_mode: "text", response_contract: { max_length: 20 }, scope: { kind: "portfolio" } });
-  const action = WaitView.render({ wait_request_id: "w2", prompt: "Budget exhausted", response_mode: "action", response_contract: { actions: [{ action: "revise_budget", label: "Revise" }, { action: "stop", label: "Stop" }] }, scope: { kind: "loop" } });
+  const action = WaitView.render({ wait_request_id: "w2", prompt: "Budget exhausted", response_mode: "action", response_contract: { actions: [{ action: "revise_budget", label: "Revise", input_schema: {max_rounds: 7} }, { action: "stop", label: "Stop" }] }, scope: { kind: "loop" } });
   assert.match(text, /data-wait-request-id="w1"/);
   assert.match(text, /textarea/);
-  assert.match(action, /data-wait-action="revise_budget"/);
+  assert.doesNotMatch(action, /data-wait-action="revise_budget"|name="budget:/);
   assert.match(action, /data-wait-action="stop"/);
 });
 

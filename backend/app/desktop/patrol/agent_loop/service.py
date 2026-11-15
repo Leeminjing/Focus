@@ -5,7 +5,7 @@ r"""本文件对外提供 Workspace Patrol 的查询、类型化等待响应、�
 pause/resume 推进 revision，stop 委托 TerminalLifecycle 原子收敛运行时并释放 Lane；失败轮恢复时新建观察轮并累计 retry。
 记忆与 Worker 恢复、等待响应按 Loop → 等待请求锁定，原子提交并保留冻结输入及单调尝试身份。
 控制事务提交后才通知执行器取消，Run 租约由真实结算释放。
-已提交等待响应的幂等重放只返回历史提交身份和当前状态，不重复执行停止、预算修订或恢复效果。
+已提交等待响应的幂等重放只返回历史提交身份和当前状态，不重复执行停止或恢复效果；预算固定无上限，不接受等待响应修改。
 材料修订响应在已锁定 Loop 的等待事务内复查实际授权、目标和耐久次数，普通 retry 保持原恢复含义。
 人工访问门禁的正式 retry 先核对同主体人工恢复及严格检查点，不代替用户批准工具。
 workspace idle 可显式暂停，信息型卡片不作为全局恢复 gate。示例：`await service.get(loop_id)`。
@@ -55,7 +55,6 @@ from backend.app.desktop.patrol.agent_loop.models import (
 from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import create_observation_round
 from backend.app.desktop.patrol.agent_loop.lifecycle.runtime_convergence import LoopRuntimeConvergence
 from backend.app.desktop.patrol.agent_loop.schemas import (
-    LoopBudgetContract,
     LoopWaitResponseRequest,
     ResumeWithCurrentMissionRequest,
 )
@@ -122,6 +121,17 @@ class AgentLoopService:
             if request is None or request.loop_id != loop_id:
                 raise HTTPException(404, "等待请求不存在")
             self._validate_wait_answer(request, body.answer)
+            if (request.kind == "budget_action" or request.scope.get("component") == "authority_upgrade") and body.answer.get("action") == "retry" and request.status == "open":
+                grant = await session.scalar(select(LoopDelegationGrant).where(
+                    LoopDelegationGrant.loop_id == loop_id,
+                    LoopDelegationGrant.status == "active",
+                    LoopDelegationGrant.revision == loop.authority_revision,
+                ).with_for_update())
+                expires_at = None if grant is None else grant.expires_at
+                if expires_at is not None and expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=UTC)
+                if grant is None or (expires_at is not None and expires_at <= datetime.now(UTC)):
+                    raise HTTPException(409, "Patrol delegation 已撤销或过期，不能恢复执行")
             try:
                 request, response, created = await self._waits.resolve(
                     session,
@@ -155,8 +165,6 @@ class AgentLoopService:
             if created and action == "stop":
                 loop.revision += 1
                 await self._terminal.finalize(session, loop, "stopped", "wait_request_stop")
-            elif created and action == "revise_budget":
-                await self._apply_wait_budget_revision(session, loop, body.answer)
             elif created and action == "retry" and request.scope.get("component") == "progress_memory":
                 from backend.app.desktop.patrol.agent_loop.task_progress.repository import TaskProgressRepository
 
@@ -382,6 +390,8 @@ class AgentLoopService:
 
     @staticmethod
     def _validate_wait_answer(request: LoopWaitRequest, answer: dict) -> None:
+        if answer.get("action") == "revise_budget" or "budgets" in answer:
+            raise HTTPException(422, {"code": "fixed_unlimited_budget", "message": "Loop 预算固定无上限，不可调整"})
         if request.response_mode == "text":
             text = answer.get("text")
             if not isinstance(text, str) or not text.strip():
@@ -406,21 +416,6 @@ class AgentLoopService:
             missing = [name for name, definition in fields.items() if definition.get("required") and answer.get(name) in {None, ""}]
             if missing:
                 raise HTTPException(422, {"code": "missing_wait_fields", "fields": missing})
-
-    @staticmethod
-    async def _apply_wait_budget_revision(session: AsyncSession, loop: AgentLoop, answer: dict) -> None:
-        budgets = answer.get("budgets")
-        if not isinstance(budgets, dict) or not budgets:
-            raise HTTPException(422, "revise_budget 需要 budgets")
-        grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.status == "active").with_for_update())
-        if grant is None:
-            raise HTTPException(409, "Loop 没有 active grant")
-        revised = LoopBudgetContract.model_validate({**(grant.budgets or {}), **budgets})
-        payload = revised.model_dump(mode="json")
-        payload["expansion_resources_source"] = (
-            "explicit" if "expansion_resources" in budgets else (grant.budgets or {}).get("expansion_resources_source", "default")
-        )
-        grant.budgets = payload
 
     async def _resume_after_wait(
         self,

@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.patrol.agent_loop.governance.authority import AuthorityViolation, DelegatedAuthorityGuard
 from backend.app.desktop.patrol.agent_loop.resources.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.patrol.agent_loop.resources.resource_limits import exceeds_limit
 from backend.app.desktop.patrol.agent_loop.inputs.clarification_admission import ClarificationAdmissionPolicy, ClarificationFactsReader, ClarificationRejected
 from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
@@ -408,10 +409,10 @@ class LoopKernel:
                 raise KernelRejected("Loop hard budget 已耗尽: " + ",".join(budget.reasons))
             if budget.status == "change_direction":
                 raise KernelRejected("连续无进展，禁止继续相同方向")
-        if usage is not None and usage.rounds >= int(budgets.get("max_rounds", 50)):
+        if usage is not None and exceeds_limit(usage.rounds, budgets.get("max_rounds"), inclusive=True):
             raise KernelRejected("round budget 已耗尽")
         new_lanes = sum(action.action in {"create_lane", "merge_contexts"} for action in intent.actions)
-        if new_lanes > int(budgets.get("max_new_lanes_per_round", 3)):
+        if exceeds_limit(new_lanes, budgets.get("max_new_lanes_per_round")):
             raise KernelRejected("本轮新 Lane 超出预算")
         active_lanes = await session.scalar(
             select(func.count()).select_from(CurationLane).where(
@@ -419,9 +420,9 @@ class LoopKernel:
                 CurationLane.lifecycle != "retired",
             )
         )
-        if int(active_lanes or 0) + new_lanes > int(budgets.get("max_lanes", 8)):
+        if exceeds_limit(int(active_lanes or 0) + new_lanes, budgets.get("max_lanes")):
             raise KernelRejected("活动 Lane 总数超出预算")
-        if usage_values["contexts"] + new_lanes > int(budgets.get("max_contexts", 16)):
+        if exceeds_limit(usage_values["contexts"] + new_lanes, budgets.get("max_contexts")):
             raise KernelRejected("Loop Context 总数超出预算")
         active = await session.scalar(select(func.count()).select_from(DesktopRun).where(DesktopRun.loop_id == loop.loop_id, DesktopRun.status.in_(["pending", "running"])))
         direct_targets = [
@@ -435,7 +436,7 @@ class LoopKernel:
         if active and any(action.action in unsafe_while_active for action in intent.actions):
             raise KernelRejected("Loop 已有活动 Run")
         created = tuple(action for action in intent.actions if action.action == "create_lane")
-        if active and int(active) + len(created) > int(budgets.get("max_concurrent_runs", 4)):
+        if active and exceeds_limit(int(active) + len(created), budgets.get("max_concurrent_runs")):
             raise KernelRejected("并行 Run 预算已耗尽")
         for action in created:
             workspace_mode = str(action.plan.lane_policy.get("workspace_mode") or "read_only")

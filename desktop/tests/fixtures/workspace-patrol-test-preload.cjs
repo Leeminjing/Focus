@@ -68,7 +68,6 @@ window.fetch = async (input, options = {}) => {
     await new Promise(resolve => { window.patrolFixture.releaseBootstrap = resolve; });
   }
   const prefix = "/desktop/api/agent-loops";
-  if (path === `${prefix}/budget-presets`) return json(require("./workspace-patrol-budget-fixture.cjs"));
   const timeline = path.match(/\/agent-loops\/([^/]+)\/timeline$/);
   if (timeline) {
     let rows = (timelines.get(timeline[1]) || []).filter(row => !url.searchParams.get("category") || row.category === url.searchParams.get("category"));
@@ -109,7 +108,7 @@ window.fetch = async (input, options = {}) => {
   if (path === "/desktop/api/assembly/task") return json({ task_id: "assembly", title: "自由会话", harness_mode: "assembly", active_run: null });
   if (path === "/desktop/api/sessions/archived") return json([]);
   if (path.endsWith("/console") && path.startsWith(prefix)) return json(window.patrolFixture.mapConsole || { loop_id: path.split("/").at(-2), nodes: [{context_id:"root", revision_id:"r1", title:"产品想法与范围", status:"active"}], edges: [] });
-  if (/\/agent-loops\/loop-[^/]+$/.test(path)) return json({loop_id:path.split("/").at(-1), status:"running", grant:{capabilities:["read"],context_scope:["root"],permission_scope:["read"],delegable_gates:[],budgets:{max_rounds:7}}});
+  if (/\/agent-loops\/loop-[^/]+$/.test(path)) return json({loop_id:path.split("/").at(-1), status:"running", usage:{model_calls:40,input_tokens:100000,output_tokens:5000,rounds:5,retries:0},grant:{capabilities:["read"],context_scope:["root"],permission_scope:["read"],delegable_gates:[],budgets:{}}});
   if (path.endsWith("/grant") && path.startsWith(prefix)) { window.patrolFixture.grantChanges.push({loopId:path.split("/").at(-2),body:JSON.parse(options.body)}); return json({status:"waiting_user"}); }
   if (path.endsWith("/responses") && path.startsWith(prefix)) { window.patrolFixture.waitAnswers.push(JSON.parse(options.body)); return json({status:"accepted"}); }
   if (path === "/desktop/api/tasks/assembly") return json({ task_id: "assembly", harness_mode: "assembly", messages: [], ui_state: {}, active_run: null });

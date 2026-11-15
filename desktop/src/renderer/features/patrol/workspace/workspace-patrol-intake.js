@@ -188,19 +188,23 @@
       const unbound = stores.get(null);
       if (!unbound) return;
       const draft = unbound.get().draft;
-      if (!draft.content && !draft.attachments?.length && !draft.budget_preset) return;
+      if (!draft.content && !draft.attachments?.length) return;
       const target = store(id).get().draft;
       // 合并和清空作为一次恢复快照提交，避免中断后重复领用未绑定草稿。
       const targetStore = store(id);
       batching = true;
       try {
-        targetStore.edit({ content: [target.content, draft.content].filter(Boolean).join("\n"), attachments: [...(target.attachments || []), ...(draft.attachments || [])], ...(draft.budget_preset ? { budget_preset: draft.budget_preset } : {}) });
-        unbound.edit({ content: "", attachments: [], budget_preset: null });
+        targetStore.edit({ content: [target.content, draft.content].filter(Boolean).join("\n"), attachments: [...(target.attachments || []), ...(draft.attachments || [])] });
+        unbound.edit({ content: "", attachments: [] });
       } finally { batching = false; }
       persist();
     }
     async function prepare(id, row) {
-      if (payloads.has(row.submission_id)) return payloads.get(row.submission_id);
+      if (payloads.has(row.submission_id)) {
+        const request = { ...payloads.get(row.submission_id) };
+        delete request.budget_preset;
+        return request;
+      }
       const result = [];
       for (const [index, item] of (row.request.attachments || []).entries()) {
         if (!item.local_id) { result.push(item); continue; }
@@ -218,7 +222,10 @@
         }
         result.push({ material_id: uploaded.material_id, sha256: uploaded.sha256 || uploaded.digest, source_kind: item.source_kind, note: item.note || "" });
       }
-      return { ...row.request, ...(result.length ? { attachments: result } : {}) };
+      // Older recovery snapshots remain readable; retired settings never cross the current intake boundary.
+      const outgoing = { ...row.request };
+      delete outgoing.budget_preset;
+      return { ...outgoing, ...(result.length ? { attachments: result } : {}) };
     }
     function send(id, row) {
       if (!id) return Promise.reject(new Error("请先绑定工作区"));

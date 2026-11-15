@@ -388,11 +388,19 @@ if (!process.versions.electron) {
     assert.equal(await run('document.querySelector("[data-patrol-dialog]").textContent.includes("selected-worker")'), false);
     await run('document.querySelector("[data-patrol-dialog-close]").click()');
     await run('document.querySelector("[data-patrol-grant-open]").click()');
-    await until('document.querySelector("#agentLoopBudgetForm")');
-    await run('document.querySelector("#agentLoopBudgetForm [name=maxRounds]").value="12"; document.querySelector("#agentLoopBudgetForm").requestSubmit(document.querySelector("#agentLoopBudgetForm button"))');
+    await until('document.querySelector("#agentLoopGrantForm")');
+    assert.match(await run('document.querySelector("[data-patrol-dialog]").textContent'), /预算：无上限（固定）/);
+    assert.equal(await run('document.querySelector("#agentLoopBudgetForm, [data-budget-preset], [data-budget-increase]")'), null);
+    assert.match(await run('document.querySelector("[data-patrol-dialog]").textContent'), /模型调用：已结算 40/);
+    if (process.env.FOCUS_BUDGET_QA_PATH) {
+      await run('document.querySelector(".loop-grant").open=true; document.querySelector("[aria-label=执行用量]").scrollIntoView({block:"center"}); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      fs.writeFileSync(process.env.FOCUS_BUDGET_QA_PATH, (await win.webContents.capturePage()).toPNG());
+    }
+    await run('document.querySelector("#agentLoopGrantForm").requestSubmit(document.querySelector("#agentLoopGrantForm button"))');
     await until('window.patrolFixture.grantChanges.length === 1');
     assert.equal(await run('window.patrolFixture.grantChanges[0].loopId'), "loop-completion_check");
-    assert.equal(await run('window.patrolFixture.grantChanges[0].body.budgets.max_rounds'), 12);
+    assert.equal(await run('window.patrolFixture.grantChanges[0].body.command'), "narrow");
+    assert.equal(await run('window.patrolFixture.grantChanges[0].body.budgets'), undefined);
     await run('document.querySelector("[data-patrol-dialog-close]").click(); window.patrolFixture.emit("loop-completion_check", "loop_wait_request", "typed-question", 1, {status:"open",response_mode:"text",prompt:"补充目标",response_contract:{max_length:200},scope:{}})');
     await until('document.querySelector("[data-wait-request-id=typed-question] textarea")');
     await run('document.querySelector("[data-patrol-pending]").click(); window.savedWaitInput=document.querySelector("[data-wait-request-id=typed-question] textarea"); savedWaitInput.value="保留回答草稿"; savedWaitInput.dispatchEvent(new Event("input",{bubbles:true})); savedWaitInput.focus(); savedWaitInput.setSelectionRange(1,4); window.patrolFixture.emit("loop-completion_check","fact","draft-update",1,{kind:"run",status:"observed",title:"Live 草稿验收更新"})');

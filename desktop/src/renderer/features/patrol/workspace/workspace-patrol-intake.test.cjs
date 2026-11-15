@@ -33,6 +33,31 @@ test("Patrol submits without a file sandbox by default in every workspace", asyn
   assert.deepEqual(posts.map(item => item.body.access_mode), ["danger-full-access", "danger-full-access"]);
 });
 
+test("new submissions discard retired budget presets from restored drafts", async () => {
+  const { intake, posts } = harness();
+  intake.store("a").edit({ content: "保留目标", budget_preset: "long" });
+  await intake.submit("a");
+  assert.equal(posts[0].body.content, "保留目标");
+  assert.equal(Object.hasOwn(posts[0].body, "budget_preset"), false);
+});
+
+test("legacy failed inputs remain readable while retries omit retired cached budget settings", async () => {
+  for (const cached of [false, true]) {
+    const request = { submission_id: "legacy", content: "旧目标", input_type: "outcome", access_mode: "workspace-write", budget_preset: "long", file_refs: [] };
+    const state = { version: 1, workspaces: [["a", { draft: { content: "新草稿", input_type: "information", file_refs: [], budget_preset: "normal" }, rows: [{ ...request, request, status: "failed" }] }]],
+      payloads: cached ? [["legacy", request]] : [] };
+    const posts = [];
+    const intake = Intake.create({ runtime: {}, storage: null, recovery: { read: () => ({ state, sources: [] }), save: async () => {} },
+      api: { workspaceInputs: async () => ({ items: [], next_before: null }), submitWorkspaceInput: async (_id, body) => { posts.push(body); return { loop_id: "loop" }; } } });
+    assert.equal(intake.store("a").get().rows[0].request.budget_preset, "long");
+    assert.equal(intake.store("a").get().draft.budget_preset, "normal");
+    await intake.retry("a", "legacy");
+    assert.deepEqual(posts, [{ submission_id: "legacy", content: "旧目标", input_type: "outcome", access_mode: "workspace-write", file_refs: [] }]);
+    assert.equal(intake.store("a").get().draft.content, "新草稿");
+    await intake.flush();
+  }
+});
+
 test("overlong input never uploads or posts and leaves the complete draft editable", async () => {
   const { intake, calls, posts } = harness();
   await intake.add("a", [text("参考材料")]);

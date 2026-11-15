@@ -29,6 +29,7 @@ test("api sends grant mutations through the authority boundary", async () => {
     calls.push({ url, options });
     return { ok: true, json: async () => ({ loop_id: "l1" }) };
   });
+  assert.equal(api.budgetPresets, undefined);
   await api.mutateGrant("loop one", { command: "revoke" });
   assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/loop%20one/grant");
   assert.deepEqual(JSON.parse(calls[0].options.body), { command: "revoke" });

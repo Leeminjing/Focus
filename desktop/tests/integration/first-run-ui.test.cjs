@@ -85,7 +85,6 @@ if (!process.versions.electron) {
     if (url.pathname.endsWith("/sandbox/status")) return json(res, { available: true, platform: "win32" });
     if (url.pathname.endsWith("/shell-recovery")) return json(res, { items: [] });
     if (url.pathname.endsWith("/materials/limits")) return json(res, limits);
-    if (url.pathname.endsWith("/budget-presets")) return json(res, require("../fixtures/workspace-patrol-budget-fixture.cjs"));
     if (url.pathname.endsWith("/workspaces/project")) return json(res, workspace);
     if (url.pathname.endsWith("/workspace/project")) return json(res, null);
     if (url.pathname.endsWith("/workspace/project/inputs")) {

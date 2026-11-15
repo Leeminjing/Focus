@@ -1,8 +1,8 @@
 r"""本文件对外提供 LoopAuthorityService，承接用户对 Patrol delegation 的根权力变更。
 
-输入为 Loop id 与 narrow、adjust_budgets 或 revoke 的封闭请求（含可撤销压缩 policy）；输出为新的 authority revision 与
+输入为 Loop id 与 narrow 或 revoke 的封闭请求（含可撤销压缩 policy）；输出为新的 authority revision 与
 活动 Run 处理结果。具体工作流为锁定 Loop/grant，撤销旧 grant，使旧 Patrol 工作失效，安全中断旧
-authority 下的 Run；narrow/adjust 创建新 grant 和观察轮，revoke 则进入 waiting_user。
+authority 下的 Run；narrow 创建新 grant 和观察轮，revoke 则进入 waiting_user。
 全部 Round/Directive/Worker/Patrol/Run 取消复用 LoopRuntimeConvergence；提交控制事实后才通知执行器，事务回滚不取消仍获授权的 Run；Run 租约由实际结算负责释放；授权与状态的规范事件由共享 LifecycleEventRecorder 同事务记录。
 示例：`await service.mutate(loop_id, request)`。
 旧等待随同旧授权在收敛事务中 superseded；撤权或预算耗尽创建属于新授权原因的等待，而不是沿用旧请求。
@@ -27,7 +27,7 @@ from backend.app.desktop.patrol.agent_loop.models import (
     LoopEventOutbox,
     LoopRound,
 )
-from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest, IncreaseLoopBudgetRequest, LoopGrantMutationRequest, NarrowLoopGrantRequest
+from backend.app.desktop.patrol.agent_loop.schemas import LoopGrantMutationRequest, NarrowLoopGrantRequest, RevokeLoopGrantRequest
 from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import create_observation_round
 from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy
 from backend.app.desktop.patrol.agent_loop.compression_authority.repository import CompressionAuthorityRepository
@@ -41,6 +41,8 @@ class LoopAuthorityService:
         self._convergence = LoopRuntimeConvergence()
 
     async def mutate(self, loop_id: str, request: LoopGrantMutationRequest) -> dict:
+        if not isinstance(request, (NarrowLoopGrantRequest, RevokeLoopGrantRequest)):
+            raise HTTPException(422, "Loop 预算固定为无上限，不支持修改")
         async with self._sessions.begin() as session:
             loop = await session.scalar(select(AgentLoop).where(AgentLoop.loop_id == loop_id).with_for_update())
             if loop is None:
@@ -56,30 +58,6 @@ class LoopAuthorityService:
             )
             if grant is None:
                 raise HTTPException(409, "Agent Loop 当前没有可修改的活动授权")
-            preserve_pause = False
-            if isinstance(request, IncreaseLoopBudgetRequest):
-                if loop.authority_revision != request.expected_authority_revision:
-                    raise HTTPException(409, "预算授权已更新，请刷新后重试")
-                if loop.status == "waiting_user":
-                    from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
-
-                    wait = await session.scalar(select(LoopWaitRequest).where(
-                        LoopWaitRequest.loop_id == loop_id, LoopWaitRequest.status == "open").with_for_update())
-                    if wait is None or wait.kind != "budget_action":
-                        raise HTTPException(409, "请先处理当前待办；增加预算不能代替授权或补充信息")
-                from backend.app.desktop.patrol.agent_loop.resources.budget_presets import increased_budgets
-
-                usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
-                used = {name: int(getattr(usage, name) or 0) if usage else 0
-                        for name in ("rounds", "model_calls", "input_tokens", "output_tokens", "retries")}
-                from backend.app.desktop.patrol.agent_loop.journal.accounting_query import LoopAccountingQuery
-
-                accounting = await LoopAccountingQuery().read(session, loop_id)
-                used.update(accounting["consumption"]["occupied"])
-                used["duration_seconds"] = max(0, int((datetime.now(UTC) - self._as_utc(loop.created_at)).total_seconds()))
-                preserve_pause = loop.status == "paused"
-                request = AdjustLoopBudgetsRequest(command="adjust_budgets",
-                    budgets=increased_budgets(grant.budgets, used, request.preset))
             prior_round = await session.get(LoopRound, loop.current_round_id) if loop.current_round_id else None
             replacement = self._replacement(loop, grant, request)
             loop.revision += 1
@@ -116,11 +94,11 @@ class LoopAuthorityService:
                 else:
                     round_row = await create_observation_round(session, loop, prior_round, "0" * 64)
                     loop.current_round_id = round_row.round_id
-                    loop.status = "paused" if preserve_pause else "running"
-                    loop.health = "idle" if preserve_pause else "observing"
+                    loop.status = "running"
+                    loop.health = "observing"
                     loop.waiting_reason = None
                     session.add(round_row)
-                event_type = "LoopGrantNarrowed" if isinstance(request, NarrowLoopGrantRequest) else "LoopBudgetsAdjusted"
+                event_type = "LoopGrantNarrowed"
             await self._append_event(
                 session,
                 loop,
@@ -167,8 +145,6 @@ class LoopAuthorityService:
                 if current_expiry is not None and candidate > current_expiry:
                     raise HTTPException(422, "narrow 不得延长 delegation 到期时间")
                 expires_at = candidate
-        elif isinstance(request, AdjustLoopBudgetsRequest):
-            budgets = request.budgets.as_grant_budgets(grant.budgets)
         return LoopDelegationGrant(
             grant_id=uuid.uuid4().hex,
             loop_id=loop.loop_id,

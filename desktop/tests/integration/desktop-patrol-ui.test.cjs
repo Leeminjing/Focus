@@ -53,8 +53,8 @@ if (!process.versions.electron) {
   }
   app.on("window-all-closed", () => {});
   const limits = { general_file_bytes: 1024 * 1024, original_image_bytes: 256 * 1024, run_material_count: 8 };
-  const budgetCatalog = require("../fixtures/workspace-patrol-budget-fixture.cjs"), grantChanges = [];
-  let authorityRevision = 1, activeBudget = { ...budgetCatalog.presets.long.budgets };
+  const grantChanges = [];
+  let authorityRevision = 1;
   const session = "isolated-patrol-ui-fixture";
   const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [], workspaceReads = [];
   let previewPng = null;
@@ -146,7 +146,7 @@ if (!process.versions.electron) {
             { check_id: "optional", status: "unknown", explanation: "可选平台尚未验证" },
           ], unresolved: ["optional"] }, final_path: [{ context_id: "context-answer", revision_id: "revision-answer", title: "分析报告" }] } : {},
         authority_revision: authorityRevision, created_at: new Date(Date.now() - 600000).toISOString(),
-        grant: { status: "active", budgets: activeBudget }, usage: { model_calls: 40, input_tokens: 100000, output_tokens: 5000, rounds: 5, retries: 0 } }),
+        grant: { status: "active", budgets: {} }, usage: { model_calls: 40, input_tokens: 100000, output_tokens: 5000, rounds: 5, retries: 0 } }),
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
       interventions: inputProcessingResult ? Object.fromEntries((history.get("workspace-a") || []).map(row => [row.intent_id,
         { ...entity(row.intent_id, { state: "addressed" }), revision: loopRevision }])) : {},
@@ -201,7 +201,6 @@ if (!process.versions.electron) {
       if (unavailableVersion) return json(response,{file:{...fileRef,result_key:"c".repeat(64)}});
       return json(response,{file:{...fileRef,after:{available:true,text:"class ProtocolSafeRevisionSegmenter:\n    VERSION = 2"},before:{available:false,reason:"not_recorded"}}});
     }
-    if (url.pathname.endsWith("/agent-loops/budget-presets")) return json(response, budgetCatalog);
     const control = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/control$/);
     if (control && request.method === "POST") {
       controlChanges.push({ loopId: control[1], command: body.command });
@@ -209,9 +208,8 @@ if (!process.versions.electron) {
     }
     if (/\/agent-loops\/loop-[^/]+\/grant$/.test(url.pathname)) {
       grantChanges.push(body);
-      assert.equal(body.expected_authority_revision, authorityRevision);
+      assert.ok(["narrow", "revoke"].includes(body.command));
       authorityRevision++;
-      activeBudget = { ...activeBudget, max_model_calls: activeBudget.max_model_calls + budgetCatalog.presets[body.preset].budgets.max_model_calls };
       return json(response, { authority_revision: authorityRevision });
     }
     if (/\/agent-loops\/loop-[^/]+$/.test(url.pathname)) return json(response, snapshot(url.pathname.split("/").at(-1)).loop.state);

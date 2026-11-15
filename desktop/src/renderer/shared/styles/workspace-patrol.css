@@ -136,13 +136,13 @@
     & > p { line-height: 1.75; overflow-wrap: anywhere; }
   }
   & [data-patrol-answer] { color: var(--text-accent); font-weight: 600; }
-  & :is(.observation-inspection, .observation-meta, .observation-audit, .observation-source-list li p, .loop-start-budget label, .patrol-workspace-description, .patrol-workspace-note, .patrol-picker-heading p) { color: var(--text-primary); }
+  & :is(.observation-inspection, .observation-meta, .observation-audit, .observation-source-list li p, .patrol-workspace-description, .patrol-workspace-note, .patrol-picker-heading p) { color: var(--text-primary); }
   & .patrol-tabs { padding: 16px 0; gap: 8px; }
   & .patrol-fact-filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
   & .patrol-fact-filters label { display: grid; gap: 6px; min-width: 0; }
   & .patrol-facts { max-height: none; }
   & .loop-grant > summary { cursor: pointer; font-weight: 600; }
-  & :is(#agentLoopGrantForm, #agentLoopBudgetForm) { display: grid; gap: 16px; margin: 20px 0; }
+  & #agentLoopGrantForm { display: grid; gap: 16px; margin: 20px 0; }
   & #agentLoopGrantForm > label { display: grid; gap: 8px; }
   & #agentLoopGrantForm > .loop-delegation-option { display: flex; align-items: flex-start; gap: 10px; }
   & #agentLoopGrantForm > .loop-delegation-option input { flex-shrink: 0; }

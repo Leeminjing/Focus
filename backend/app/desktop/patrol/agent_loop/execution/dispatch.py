@@ -143,7 +143,11 @@ class LoopWaveDispatcher:
                 DesktopRun.loop_id == loop_id, DesktopRun.status.in_(("pending", "running")))) or 0)
             reserved = int(await session.scalar(select(func.count()).select_from(LoopDirective).where(
                 LoopDirective.loop_id == loop_id, LoopDirective.status == "launching")) or 0)
-            concurrency = min(concurrency, int((grant.budgets or {}).get("max_concurrent_runs") or concurrency) - active - reserved)
+            from backend.app.desktop.patrol.agent_loop.resources.resource_limits import remaining_capacity
+
+            remaining = remaining_capacity((grant.budgets or {}).get("max_concurrent_runs"), active + reserved)
+            if remaining is not None:
+                concurrency = min(concurrency, remaining)
             if concurrency <= 0:
                 return ()
             directives = list(

@@ -349,7 +349,7 @@ async def _create_wave(sessions, tmp_path, *, count=3, writing=False, git=False,
 
 
 @pytest.mark.parametrize("round_status", ["ready", "running"])
-@pytest.mark.parametrize("global_limit,loop_limit,expected", [(1, 2, 1), (2, 1, 1), (2, 2, 2)])
+@pytest.mark.parametrize("global_limit,loop_limit,expected", [(1, 2, 1), (2, 1, 1), (2, 2, 2), (1, None, 1), (2, None, 2)])
 def test_context_pool_reserves_a_wave_and_refills_running_round(tmp_path, round_status, global_limit, loop_limit, expected):
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

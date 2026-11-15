@@ -3,6 +3,11 @@
   "use strict";
   const catalog = Object.freeze(
 {
+  "Delegation 授权": "Delegation authorization",
+  "工作区授权": "Workspace authorization",
+  "授权": "Authorization",
+  "执行用量": "Execution usage",
+  "预算：无上限（固定）": "Budget: unlimited (fixed)",
   "Patrol 输入": "Patrol input",
   "未命名工作线": "Untitled work thread",
   "版本待确认": "Revision pending confirmation",

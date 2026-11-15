@@ -27,7 +27,7 @@ from backend.app.desktop.patrol.agent_loop.governance.authority_control import L
 from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
 from backend.app.desktop.patrol.agent_loop.lifecycle.retirement import retire_context_loops
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopRound, LoopUserIntent, LoopWorkerRequest
-from backend.app.desktop.patrol.agent_loop.schemas import AdjustLoopBudgetsRequest, LoopBudgetContract
+from backend.app.desktop.patrol.agent_loop.schemas import RevokeLoopGrantRequest
 from backend.app.desktop.patrol.agent_loop.workers.worker_attempts import WorkerAttemptAuthority, WorkerAttemptRejected
 from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
@@ -93,9 +93,7 @@ def test_startup_retires_legacy_work_without_resuming_or_changing_workspace_patr
                 with pytest.raises(WorkerAttemptRejected, match="已退役"):
                     await WorkerAttemptAuthority().require_authorized(session, legacy, worker)
             with pytest.raises(HTTPException) as rejected:
-                await LoopAuthorityService(sessions).mutate(legacy_id, AdjustLoopBudgetsRequest(
-                    command="adjust_budgets", budgets=LoopBudgetContract(max_rounds=100),
-                ))
+                await LoopAuthorityService(sessions).mutate(legacy_id, RevokeLoopGrantRequest(command="revoke"))
             assert rejected.value.status_code == 409
             assert "已退役" in rejected.value.detail
             assert await retire_context_loops(sessions) == (legacy_id,)
