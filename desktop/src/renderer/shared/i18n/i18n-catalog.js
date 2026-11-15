@@ -2434,6 +2434,7 @@
   "任务运行失败": "Task failed",
   "Focus · 桌面 Patrol": "Focus · Desktop Patrol",
   "显示机器人": "Show robot",
+  "隐藏机器人到托盘": "Hide robot to tray",
   "打开工作台": "Open workbench",
   "退出 Focus": "Quit Focus",
   "还有未发送的草稿或尚未确认的发送。": "There are unsent drafts or unconfirmed submissions.",

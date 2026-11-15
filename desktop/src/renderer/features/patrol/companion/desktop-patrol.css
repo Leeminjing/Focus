@@ -52,7 +52,7 @@ body[data-panel-opaque=true] #panel.is-closing { animation:none; }
 .panel-feedback-content { display:flow-root; }
 #panel[data-state=failed] .panel-feedback-content { display:flex; flex-direction:column; }
 #panel[data-state=failed] #results { order:2; }
-#panel[data-state=failed] #history { order:1; }
+#panel[data-state=failed] #history { order:-1; }
 #compose { margin:0; flex-shrink:0; }
 #instruction { display:block; resize:none; width:100%; height:36px; max-height:108px; border:0; background:transparent; padding:0; color:#2b3749; font-size:13px; line-height:18px; font-weight:400; }
 #instruction::placeholder { color:#96a2b2; opacity:1; }
@@ -144,8 +144,9 @@ body[data-panel-opaque=true] #panel.is-closing { animation:none; }
 #history-items:empty::after { content:"还没有输入记录"; display:block; padding:12px 0; }
 html[lang="en-US"] #history-items:empty::after { content:"No input history yet"; }
 #history-items article { padding:10px 0; border-bottom:1px solid var(--line); }
-#history-items pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:0 0 6px; font:11px/18px FocusUI,sans-serif; max-height:100px; overflow:auto; }
-#history-items .input-unconfirmed { display:inline-block; width:5px; height:5px; margin-inline-start:6px; vertical-align:middle; border-radius:50%; background:#e3ad40; }
+#history-items .input-message { display:flex; align-items:flex-end; gap:6px; margin:0 0 6px; }
+#history-items pre { flex:0 1 auto; min-width:0; white-space:pre-wrap; overflow-wrap:anywhere; margin:0; font:11px/18px FocusUI,sans-serif; max-height:100px; overflow:auto; }
+#history-items .input-unconfirmed { flex-shrink:0; width:5px; height:5px; margin-bottom:6px; border-radius:50%; background:#e3ad40; }
 #history-items button,#older,#older-versions { font-size:10px; color:var(--accent); padding:5px 0; margin-right:12px; }
 #history-items .input-actions { display:flex; gap:2px; }
 #history-items .input-actions button { display:grid; place-items:center; width:16px; height:16px; padding:0; margin:0; border-radius:4px; }

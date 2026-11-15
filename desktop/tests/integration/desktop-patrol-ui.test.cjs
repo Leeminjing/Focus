@@ -306,13 +306,18 @@ if (!process.versions.electron) {
       contents.on("console-message", (_event, level, message) => { if (level >= 3) errors.push(message); });
       contents.on("preload-error", (_event, _path, error) => errors.push(error.message));
     });
-    const makeHost = () => new DesktopPatrolHost({ electron, apiBase, desktopDir: path.resolve(__dirname, "../.."), icon: path.join(__dirname, "../../src/renderer/assets/focus-icon.ico"), limits,
+    const trayMenus = [];
+    const makeHost = (modelSettings = null) => new DesktopPatrolHost({ electron: { ...electron, Menu: {
+      buildFromTemplate(template) { const menu = electron.Menu.buildFromTemplate(template); trayMenus.push(menu); return menu; },
+    } }, apiBase, desktopDir: path.resolve(__dirname, "../.."), icon: path.join(__dirname, "../../src/renderer/assets/focus-icon.ico"), limits,
+      ...(modelSettings ? { getModelSettings: async () => modelSettings } : {}),
       getWorkbench: () => workbench, quit: () => app.quit(),
       openWorkbench: async () => {
         if (!workbench) {
           workbench = new BrowserWindow({ show: false, webPreferences: { preload: path.join(__dirname, "../../src/preload/preload.cjs"), sandbox: true, contextIsolation: true, additionalArguments: ["--focus-desktop-patrol"] } });
           await workbench.loadURL(`${apiBase}/desktop/`);
         }
+        if (modelSettings) workbench.show();
       },
     });
     host = makeHost();
@@ -649,6 +654,8 @@ if (!process.versions.electron) {
     failSubmission = 1;
     await run(host.panel,"document.querySelector('#instruction').value='未确认的输入'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#send').click()");
     await waitFor(host.panel,"Boolean(document.querySelector('[data-history-action=retry]'))","失败输入必须提供原身份重试");
+    for (let i = 0; i < 120 && host._state.pending; i++) await delay(20);
+    assert.equal(host._state.pending, false, "等待失败发送完成后再重试");
     await capture(host.panel,"desktop-send-unconfirmed");
     assert.equal(await run(host.panel,"(() => { const retry=document.querySelector('[data-history-action=retry]'); retry.focus(); document.querySelector('#instruction').value='后续草稿'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); return document.activeElement===retry; })()"),true,"继续编辑不能重建重试按钮并抢走焦点");
     await run(host.panel,"document.querySelector('[data-history-action=retry]').click()");
@@ -701,7 +708,8 @@ if (!process.versions.electron) {
     await run(host.panel,"document.querySelectorAll('#file-refs button[aria-label^=移除]').forEach(button=>button.click())");
     const requestsBeforeLostReceipt = requests.length;
     dropReceipt = true;
-    await run(host.panel, "document.querySelector('#instruction').value='服务端已受理但回执丢失'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#send').click()");
+    const longUnconfirmedInput = Array(20).fill("服务端已受理但回执丢失的长输入").join("\n");
+    await run(host.panel, `document.querySelector('#instruction').value=${JSON.stringify(longUnconfirmedInput)}; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#send').click()`);
     await waitFor(host.panel, "document.querySelector('#history-items').textContent.includes('发送中')", "未收到回执前发送状态错误");
     for (let i = 0; i < 120 && requests.length < requestsBeforeLostReceipt + 1; i++) await delay(40);
     assert.equal(requests.length, requestsBeforeLostReceipt + 1);
@@ -709,7 +717,6 @@ if (!process.versions.electron) {
     await run(host.robot, `(() => { const bytes = Uint8Array.from(atob(${JSON.stringify(png)}), value=>value.charCodeAt(0)); const data = new DataTransfer(); data.items.add(new File([bytes], '重启草稿.png', {type:'image/png'})); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
     await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 1", "重启前材料未保存");
     host.dispose(); workbench.destroy(); workbench = null;
-    hiddenSubmission = null;
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
     streams.clear();
@@ -717,9 +724,30 @@ if (!process.versions.electron) {
     apiBase = `http://127.0.0.1:${server.address().port}`;
     process.env.FOCUS_DESKTOP_API = apiBase;
     host = makeHost(); await host.start(); await host.openPanel();
+    await waitFor(host.panel, "document.querySelector('#history-items .input-unconfirmed') && !document.querySelector('#history').hidden", "重启后未显示未确认长输入");
+    await run(host.panel, "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    const markerGeometry = () => run(host.panel, `(() => {
+      const dot = document.querySelector('#history-items .input-unconfirmed'), pre = dot.closest('article').querySelector('pre');
+      const rect = dot.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight && rect.left >= 0 && rect.right <= innerWidth;
+      return { visible, inScroller: pre.contains(dot), long: pre.scrollHeight > pre.clientHeight, top: rect.top, left: rect.left };
+    })()`);
+    const initialMarker = await markerGeometry();
+    assert.equal(initialMarker.long, true, "恢复正文必须覆盖真实滚动区");
+    assert.equal(initialMarker.inScroller, false, "未确认标识必须位于正文滚动区外");
+    assert.equal(initialMarker.visible, true, "重启后无需滚动正文即可看到未确认标识");
+    await run(host.panel, "const pre=document.querySelector('#history-items .input-unconfirmed').closest('article').querySelector('pre'); pre.scrollTop=pre.scrollHeight");
+    assert.deepEqual(await markerGeometry(), initialMarker, "滚动正文不能移动或裁剪未确认标识");
+    await capture(host.panel, "desktop-restored-long-unconfirmed");
+    assert.equal(requests.length, requestsBeforeLostReceipt + 1, "未确认输入不能在重启后自动重发");
+    hiddenSubmission = null;
+    const previousStream = streams.get("loop-workspace-a");
+    host.dispose(); host = makeHost(); await host.start(); await host.openPanel();
     await waitFor(host.panel, "document.querySelector('#instruction').value === '重启后继续编辑' && document.querySelector('.patrol-material-card img')?.complete && document.querySelector('#history-items').textContent.includes('服务端已受理但回执丢失') && !document.querySelector('#history-items .input-unconfirmed')", "跨来源重启后未恢复草稿或核对回执");
     assert.equal(requests.length, requestsBeforeLostReceipt + 1, "服务端已受理的输入不能在重启后重发");
     assert.equal(uploads.length, 2, "重启恢复不能自动上传草稿附件");
+    for (let i = 0; i < 120 && (!streams.has("loop-workspace-a") || streams.get("loop-workspace-a") === previousStream); i++) await delay(20);
+    assert.ok(streams.has("loop-workspace-a") && streams.get("loop-workspace-a") !== previousStream, "重载后必须等待新的 Live 连接");
     for (const terminal of ["stopped", "failed"]) {
       const loopId = currentLoops.get("workspace-a") || "loop-workspace-a";
       for (let i = 0; i < 120 && !streams.has(loopId); i++) await delay(20);
@@ -730,6 +758,8 @@ if (!process.versions.electron) {
       const before = requests.length, restartCount = restartRequests.length;
       await run(host.panel, "document.querySelector('#instruction').value='继续，换个方案'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#send').click()");
       await waitFor(host.panel, "document.querySelector('#recovery-message').textContent === '这条输入已保存，重新启用后处理。' && document.querySelector('#receipt').textContent === '已保存'", "已保存和重新启用必须区分");
+      for (let i = 0; i < 120 && host._state.pending; i++) await delay(20);
+      assert.equal(host._state.pending, false, "等待发送流程收尾后再验收重新启用");
       assert.equal(requests.length, before + 1);
       assert.equal(restartRequests.length, restartCount, "发送不得自动重新启用");
       await capture(host.panel, `desktop-saved-${terminal}`);
@@ -754,6 +784,25 @@ if (!process.versions.electron) {
       assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "保留后续草稿");
       assert.equal(requests.length, before + 1, "重新启用不得重复提交输入");
       await capture(host.panel, `desktop-reactivated-${terminal}`);
+    }
+    host.dispose();
+    for (const modelSettings of [{ setup_required: true }, { setup_required: false, verification: { ok: false } }]) {
+      host = makeHost(modelSettings); await host.start(); await host.openPanel();
+      assert.equal(host.panel.isVisible(), false, "模型引导期间面板不可达");
+      assert.equal(workbench.isVisible(), true);
+      const menu = trayMenus.at(-1);
+      const hide = menu.items.find(item => item.label === "隐藏机器人到托盘");
+      assert.ok(hide, "真实 Electron 托盘必须提供隐藏入口");
+      hide.click();
+      assert.equal(host.robot.isVisible(), false);
+      assert.equal(host.panel.isVisible(), false);
+      assert.equal(host.robot.isDestroyed(), false, "隐藏后 Focus 继续运行");
+      assert.equal(workbench.isVisible(), true);
+      menu.items.find(item => item.label === "显示机器人").click();
+      assert.equal(host.robot.isVisible(), true);
+      await host.openPanel();
+      assert.equal(host.panel.isVisible(), false, "恢复后仍进入模型设置");
+      host.dispose();
     }
     assert.deepEqual(errors, []);
     console.log("PATROL_UI_PASS preview-before-binding, pathless-image, screenshot-paste, remove, explicit-send, IME guard, CtrlEnter, workspace isolation, pause-resume-stop, control-acceptance-and-Live, hide/restore, accepted-is-not-complete, committed-answer-source, independent-progress, hidden-refresh-budget, revision-cache, reload-recovery, new-port-recovery, lost-receipt-reconciliation");

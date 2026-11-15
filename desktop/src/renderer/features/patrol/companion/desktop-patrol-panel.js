@@ -190,7 +190,8 @@
         const card = element("article", "", items);
         card.dataset.submissionId = row.submission_id;
         const content = row.content || localize("仅参考材料");
-        const message = element("pre", row.status === "failed" ? content.trimEnd() : content, card);
+        const message = element("div", "", card); message.className = "input-message";
+        element("pre", row.status === "failed" ? content.trimEnd() : content, message);
         if (row.status === "failed") {
           const dot = element("span", "", message); dot.className = "input-unconfirmed";
           dot.setAttribute("role", "img"); dot.setAttribute("aria-label", localize("等待发送确认"));

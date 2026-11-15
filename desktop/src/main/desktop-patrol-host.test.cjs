@@ -126,6 +126,31 @@ test("configured desktop starts with only the lightweight robot", async t => {
   assert.equal(f.host.panel.isVisible(), true);
 });
 
+for (const [name, snapshot] of [
+  ["missing models", { setup_required: true }],
+  ["failed verification", { setup_required: false, verification: { ok: false } }],
+]) test(`tray can hide and restore the robot during ${name}`, async t => {
+  const f = fixture(t, { getModelSettings: async () => snapshot });
+  await f.host.start();
+  await f.host.openPanel();
+  assert.equal(f.host.panel.isVisible(), false, "模型引导期间面板不可达");
+  const hide = f.host._tray.menu.find(item => item.label === "隐藏机器人到托盘");
+  assert.ok(hide, "面板不可达时托盘仍需提供隐藏入口");
+  hide.click();
+  assert.equal(f.host.robot.isVisible(), false);
+  assert.equal(f.host.panel.isVisible(), false);
+  assert.equal(f.host.robot.isDestroyed(), false);
+  assert.equal(f.workbench.isVisible(), true, "隐藏机器人不能关闭模型设置");
+  assert.equal(f.quits, 0, "隐藏后 Focus 继续运行");
+  f.host.refreshLanguage();
+  f.host._tray.menu.find(item => item.label === "显示机器人").click();
+  assert.equal(f.host.robot.isVisible(), true);
+  assert.equal(f.host.panel.isVisible(), false);
+  await f.host.openPanel();
+  assert.equal(f.host.panel.isVisible(), false, "恢复后仍遵守模型引导");
+  assert.equal(f.workbench.isVisible(), true);
+});
+
 test("interrupted setup resumes and a status read failure keeps setup reachable", async t => {
   const f = fixture(t, { getModelSettings: async () => { throw new Error("HTTP 503"); } });
   await f.host.start();

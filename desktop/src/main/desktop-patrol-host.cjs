@@ -196,6 +196,7 @@ class DesktopPatrolHost {
     this._tray.setToolTip(this._text("Focus · 桌面 Patrol"));
     this._tray.setContextMenu(this._electron.Menu.buildFromTemplate([
       { label: this._text("显示机器人"), click: () => this.restore() },
+      { label: this._text("隐藏机器人到托盘"), click: () => this.hideRobot() },
       { label: this._text("打开工作台"), click: () => this.openWorkbench() },
       { type: "separator" },
       { label: this._text("退出 Focus"), click: () => this.requestQuit() },
@@ -227,6 +228,11 @@ class DesktopPatrolHost {
   togglePanel() {
     if (this.panel.isVisible()) { this.panel.hide(); return true; }
     return this.openPanel();
+  }
+
+  hideRobot() {
+    this.panel.hide();
+    this.robot.hide();
   }
 
   openPanel(target = {}) {
@@ -394,7 +400,7 @@ class DesktopPatrolHost {
       this._positionPanel();
       return true;
     });
-    handle("hide-robot", ["robot", "panel"], () => { this.panel.hide(); this.robot.hide(); });
+    handle("hide-robot", ["robot", "panel"], () => this.hideRobot());
     handle("workbench", ["robot", "panel"], value => this.openWorkbench(value));
     handle("complete-model-setup", ["workbench"], () => this.completeModelSetup());
     handle("receive", ["robot"], value => {
