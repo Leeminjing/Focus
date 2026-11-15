@@ -36,9 +36,9 @@
   update(ready.state);
   button.addEventListener("pointerdown", event => {
     if (event.button !== 0) return;
-    // Derive the current frameless-window origin from this pointer, so display
-    // changes or OS repositioning cannot leave a cached drag origin behind.
-    drag = { x: event.screenX, y: event.screenY, bounds: {x:event.screenX-event.clientX,y:event.screenY-event.clientY} }; moved = false;
+    // Window and pointer screen coordinates share native desktop units;
+    // client coordinates are page-scaled and cannot determine this origin.
+    drag = { x: event.screenX, y: event.screenY, bounds: {x:window.screenX,y:window.screenY} }; moved = false;
     button.setPointerCapture(event.pointerId);
   });
   button.addEventListener("pointermove", event => {

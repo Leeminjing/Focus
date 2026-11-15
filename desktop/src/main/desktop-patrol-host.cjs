@@ -140,7 +140,10 @@ class DesktopPatrolHost {
         additionalArguments: ["--focus-desktop-patrol"],
       },
     };
-    this.robot = new BrowserWindow({ ...common, ...bounds, focusable: false });
+    // Windows consumes WM_LBUTTONDOWN for a non-activatable Chromium window.
+    // Keep mouse activation available; showInactive() still avoids taking focus
+    // when the robot starts or is restored without an intentional click.
+    this.robot = new BrowserWindow({ ...common, ...bounds, focusable: true });
     this.panel = new BrowserWindow({ ...common, ...panelBounds(bounds, screen.getDisplayMatching(bounds).workArea) });
     for (const [surface, win] of [["robot", this.robot], ["panel", this.panel]]) {
       this._protectWindow(win, surface);
