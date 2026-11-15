@@ -2,7 +2,8 @@ r"""本文件对外提供 RunAdmissionService 与 RunAdmissionResult。
 
 输入为调用方事务中已构造但未提交的 DesktopRun；输出为同事务持久化的唯一 Run 与 accepted RunDispatch。
 具体工作流为已存在的幂等 Loop Run 直接重放；新 Loop Run 先取得权威控制锁，再取得 task/idempotency 互斥锁及 Main Run 行锁，
-锁后再次核对幂等赢家，仅 Main 执行查询活跃或尚未结算的 Main，随后复核父链、绑定输入来源并同时写 Run/dispatch；控制与准入均按 Loop→Run 顺序，不创建 Agent。
+锁后再次核对幂等赢家，仅 Main 执行查询活跃或尚未结算的 Main；普通 Main 在取得 Run 行锁后再锁 Context 复检 Patrol 所有权，
+与结算保持 Run→Context 顺序，幂等重放也复检所有权。随后复核父链、绑定输入来源并同时写 Run/dispatch；Loop 控制与准入均按 Loop→Run 顺序，不创建 Agent。
 示例：`result = await service.admit(session, run)`。
 """
 
@@ -38,7 +39,8 @@ class RunAdmissionService:
         self._ownership_validator = ownership_validator
 
     async def admit(self, session: AsyncSession, run: DesktopRun) -> RunAdmissionResult:
-        if run.loop_id is not None or run.round_id is not None:
+        is_loop_run = run.loop_id is not None or run.round_id is not None
+        if is_loop_run:
             if run.idempotency_key:
                 existing = await session.scalar(select(DesktopRun).where(DesktopRun.idempotency_key == run.idempotency_key))
                 if existing is not None:
@@ -46,18 +48,15 @@ class RunAdmissionService:
             if self._ownership_validator is None:
                 raise ValueError("Loop Run 缺少注入的权威来源验证器")
             await self._ownership_validator(session, run)
-        elif run.kind == "main" and self._ownership_validator is not None:
-            await self._ownership_validator(session, run)
         await session.execute(select(func.pg_advisory_xact_lock(self._lock_key("task", run.task_id))))
+        existing = None
         if run.idempotency_key:
             await session.execute(select(func.pg_advisory_xact_lock(self._lock_key("idempotency", run.idempotency_key))))
             existing = await session.scalar(
                 select(DesktopRun).where(DesktopRun.idempotency_key == run.idempotency_key).with_for_update()
             )
-            if existing is not None:
-                dispatch = await self._dispatch(session, existing.run_id)
-                return RunAdmissionResult(existing, dispatch, False)
-        if run.kind == "main":
+        active = None
+        if existing is None and run.kind == "main":
             active = await session.scalar(
                 select(DesktopRun).where(
                     DesktopRun.task_id == run.task_id,
@@ -66,8 +65,14 @@ class RunAdmissionService:
                     DesktopRun.run_id != run.run_id,
                 ).with_for_update().limit(1)
             )
-            if active is not None:
-                raise RunAdmissionConflict(f"任务已有活跃 Main Run: {active.run_id}")
+        # Finalization publishes the checkpoint under Run→Context locks. Keep the
+        # ordinary Main ownership check after every Run lock, including replay.
+        if not is_loop_run and run.kind == "main" and self._ownership_validator is not None:
+            await self._ownership_validator(session, run)
+        if existing is not None:
+            return RunAdmissionResult(existing, await self._dispatch(session, existing.run_id), False)
+        if active is not None:
+            raise RunAdmissionConflict(f"任务已有活跃 Main Run: {active.run_id}")
         await validate_parent_chain(session, run)
         run.input_messages = bind_run_inputs(run)
         self._normalize_mutable_payloads(run)

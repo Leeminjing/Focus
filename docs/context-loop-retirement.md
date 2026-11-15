@@ -51,4 +51,8 @@
 
 2026-11-15 本地隔离测试结果：核心 Loop 回归 101 项通过，工作区输入、后继、附件、历史、退役迁移及普通 Main 输入相关回归 54 项通过，准入锁顺序与控制竞争回归 10 项通过。另行验证了 Worker 恢复、预算账务、完成资格、Live 投影和旧决策重放拒绝。生产改动通过 Python 语法、未定义名称及未使用导入检查。
 
+PR #14 的 B1 补充修复将普通 Main 准入与结算统一为 Run→Context 锁顺序：先锁幂等赢家或活跃 Main，再锁 Context 并在同一事务复查 Patrol 所有权，随后返回幂等结果或持久化新 Run/dispatch。Loop Run 继续先取得 Loop 控制锁。`test_main_admission_lock_order.py` 的隔离 PostgreSQL 双事务回归共 7 项通过，覆盖带/不带幂等键的新输入、幂等重放与最终 checkpoint 发布并发，以及等待 Context 锁后对 active/paused Patrol 成员的拒绝；同时核对用量、current revision、唯一 outbox 和 dispatch 状态。将同一组三项结算并发测试切回修复前的准入代码时，全部复现真实 `DeadlockDetectedError`，未用异常重试掩盖死锁。
+
+B1 修复后的相关回归另有 52 项通过，覆盖工作区统一输入、durable Run 派发、共享结算、执行所有权、暂停/停止/撤权竞争、Loop 派发锁顺序、Main intake 与普通会话输入。新增测试通过 Ruff 全规则检查，改动生产模块通过 F401/F821，`git diff --check` 通过。
+
 桌面全量测试为 955 项通过、2 项跳过、5 项失败，其中 1 个缩放时序用例单独重跑通过；其余 4 个静态 UI 断言在未修改的 HEAD 快照中同样失败。后端检查还发现既有的 provider 请求窗口、历史事实迁移拒绝降级、文件头规范及任务记忆依赖检查失败，已与 HEAD 对照确认。本次不修改这些无关功能或放宽检查。

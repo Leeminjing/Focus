@@ -1,7 +1,7 @@
 """本文件对外提供 Workspace Patrol 统一输入的普通 Main Run 准入检查。
 
 输入为事务和目标 Context；输出为允许普通 Main 输入或明确的 409 拒绝。
-具体工作流为 HTTP 只读预检，持久准入通过注入的所有权策略锁定 Context 后再次校验，
+具体工作流为 HTTP 只读预检，持久准入先取得 Run 行锁，再通过注入的所有权策略锁定 Context 后再次校验，
 避免在 Patrol 已管理的工作线上绕过统一输入。示例：`await ensure_context_main_input_allowed(session, context_id)`。
 """
 
