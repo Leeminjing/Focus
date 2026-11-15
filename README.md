@@ -12,7 +12,7 @@ Start with a rough idea, refine the requirements and spec, move into implementat
 
 **Rough idea → Refined spec → Execution → Revised decisions → Further execution.**
 
-[Quick start](#quick-start) · [Working strategies](#strategy-bring-your-way-of-working) · [Sandbox](docs/sandbox.md) · [Documentation](#documentation)
+[Quick start](#quick-start) · [Working strategies](#strategy-bring-your-way-of-working) · [Sandbox](docs/sandbox.md) · [agent-roles](docs/agent-roles.md) · [Documentation](#documentation)
 
 ## One entry point for an evolving project
 
@@ -323,6 +323,7 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 
 ## Documentation
 
+- [agent-roles](docs/agent-roles.md)
 - [Sandbox: tool admission and Windows execution lifecycle](docs/sandbox.md)
 - [Strategy: write, import, and share working methods](docs/strategies/README.md)
 - [File outputs and version-specific feedback](docs/context-evolution-file-feedback.md)

@@ -12,7 +12,7 @@ Focus 是一个开源、本地优先的 Agent 开发工作区。你持续向 **P
 
 **模糊想法 → 精细化 Spec → 执行 → 调整决策 → 继续执行。**
 
-[快速开始](#快速开始) · [工作策略](#strategy把你的工作方法交给-focus) · [沙箱](docs/sandbox.md) · [文档](#文档)
+[快速开始](#快速开始) · [工作策略](#strategy把你的工作方法交给-focus) · [沙箱](docs/sandbox.md) · [agent-roles](docs/agent-roles.md) · [文档](#文档)
 
 ## 一个入口，持续组织整个项目
 
@@ -322,6 +322,7 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 
 ## 文档
 
+- [agent-roles](docs/agent-roles.md)
 - [沙箱：工具准入与 Windows 执行生命周期](docs/sandbox.md)
 - [Strategy：编写、导入与分享工作方法](docs/strategies/README.md)
 - [文件产出与版本反馈](docs/context-evolution-file-feedback.md)
