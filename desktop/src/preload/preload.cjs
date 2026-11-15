@@ -115,6 +115,7 @@ contextBridge.exposeInMainWorld("focusDesktop", {
   },
   patrol: {
     enabled: patrolEnabled,
+    opaquePanel: process.argv.includes("--focus-opaque-patrol-panel"),
     recovery: {
       read: () => recoveryCall("read"),
       put: (id, bytes) => recoveryWrite("put", { id, bytes }),
@@ -123,6 +124,7 @@ contextBridge.exposeInMainWorld("focusDesktop", {
       flushed: result => ipcRenderer.invoke("focus:patrol-recovery-flushed", result),
     },
     openPanel: target => ipcRenderer.invoke("focus:patrol-open", target),
+    togglePanel: () => ipcRenderer.invoke("focus:patrol-toggle"),
     hidePanel: () => ipcRenderer.invoke("focus:patrol-hide-panel"),
     resizePanel: size => ipcRenderer.invoke("focus:patrol-resize-panel", size),
     hideRobot: () => ipcRenderer.invoke("focus:patrol-hide-robot"),

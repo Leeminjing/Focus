@@ -25,10 +25,14 @@ body[data-surface=robot] { background:transparent; overflow:hidden; user-select:
 body[data-surface=panel] { background:transparent; overflow:hidden; }
 #panel { position:relative; display:flex; flex-direction:column; align-items:flex-end; height:100vh; padding:8px; overflow:hidden; gap:8px; transform-origin:100% 100%; }
 .panel-shell { display:flex; flex-direction:column; flex:0 1 auto; width:min(288px,100%); max-height:100%; margin-top:auto; min-height:0; overflow:hidden; border:1px solid rgba(255,255,255,.94); border-radius:15px; background:linear-gradient(120deg,rgba(253,254,255,.96),rgba(239,245,251,.94) 60%,rgba(248,251,255,.96)); box-shadow:0 3px 8px rgba(41,57,83,.09),inset 0 1px 1px #fff,inset 0 -1px 1px #97a8ba1a; }
+body[data-panel-opaque=true] { background:#f3f6fb; }
+body[data-panel-opaque=true] #panel { padding:0; }
+body[data-panel-opaque=true] #panel .panel-shell { width:100%; flex:1; margin-top:0; border-radius:0; box-shadow:none; }
+body[data-panel-opaque=true] #panel>.artifact-drawer { flex:1; max-height:none; margin-top:0; border-radius:0; box-shadow:none; }
 #panel[data-reading=true] .panel-shell { width:min(520px,100%); }
 #panel:has(.panel-menu[open]) .panel-shell { flex:1; margin-top:0; }
-#panel.is-opening { animation:panel-open .38s ease-out both; }
 #panel.is-closing { animation:panel-open .38s ease-in reverse both; }
+body[data-panel-opaque=true] #panel.is-closing { animation:none; }
 @keyframes panel-open { from { opacity:0; transform:scale(.975) translateY(4px); } to { opacity:1; transform:none; } }
 .panel-header { position:relative; display:flex; align-items:center; justify-content:space-between; margin:0 12px; height:35px; flex-shrink:0; }
 #binding { display:flex; align-items:center; gap:7px; min-width:0; max-width:calc(100% - 26px); padding:0; height:24px; font-size:11px; font-weight:500; text-align:left; }
@@ -179,7 +183,10 @@ html[lang="en-US"] #history-items:empty::after { content:"No input history yet";
 .file-version [role=tabpanel] p { padding:8px; }
 .file-version summary { padding:6px 0; font-size:11px; color:var(--secondary); cursor:pointer; }
 .file-version pre { padding:9px; border-radius:7px; background:#fcfeffae; font:10px/18px Consolas,monospace; max-height:160px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
-@media(min-width:580px) { #version-detail { position:absolute; left:8px; bottom:64px; width:286px; max-height:280px; } }
+@media(min-width:580px) {
+  #version-detail { position:absolute; left:8px; bottom:64px; width:286px; max-height:280px; }
+  body[data-panel-opaque=true] #panel:has(>#version-detail:not([hidden]))>.panel-shell { width:288px; }
+}
 @media(prefers-reduced-transparency:reduce) { .panel-shell { background:#f1f6fc; backdrop-filter:none; } }
 @media(prefers-reduced-motion:reduce) { * { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
 

@@ -45,6 +45,7 @@ if (!process.versions.electron) {
   const { registerDesktopPreferences } = require("../../src/main/desktop-preferences.cjs");
   const { setTimeout: delay } = require("node:timers/promises");
   const directory = process.env.FOCUS_PATROL_UI_USER_DATA || fs.mkdtempSync(path.join(os.tmpdir(), "focus-patrol-ui-"));
+  const panelMinimum = process.platform === "win32" ? { width: 288, height: 109 } : { width: 304, height: 125 };
   app.setPath("userData", directory);
   if (process.platform !== "win32" && !process.env.FOCUS_PATROL_NATIVE_PREVIEW) {
     app.disableHardwareAcceleration();
@@ -131,7 +132,7 @@ if (!process.versions.electron) {
       await capture(host.panel,"desktop-typing-stable");
       await run(host.panel,"document.querySelector('#instruction').value=''; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true}))");
       await settle();
-      assert.ok(Math.abs(host.panel.getBounds().height-125)<=1,"清空后应收回基础高度");
+      assert.ok(Math.abs(host.panel.getBounds().height-panelMinimum.height)<=1,"清空后应收回基础高度");
       console.log(`PATROL_SIZING_PASS scale=${electron.screen.getPrimaryDisplay().scaleFactor} same-line-writes=0 multiline-writes=${changes} settled-writes=0`);
     } finally { host.panel.setBounds = setBounds; }
   }
@@ -356,10 +357,10 @@ if (!process.versions.electron) {
     await verifyInputSizing(resizeRequests);
     await capture(host.panel, "desktop-empty");
     for (let i = 0; i < 100 && host._panelHeight == null; i++) await delay(20);
-    assert.ok(Math.abs(host.panel.getBounds().width-304)<=1,"透明原生窗口允许一个 DIP 的系统缩放取整");
+    assert.ok(Math.abs(host.panel.getBounds().width-panelMinimum.width)<=1,"原生窗口允许一个 DIP 的系统缩放取整");
     assert.equal(await run(host.panel,"document.querySelector('.panel-shell').offsetWidth"),288,"阴影留白不能放大可见卡片");
-    assert.equal(host._panelHeight,125);
-    assert.ok(Math.abs(host.panel.getBounds().height-125)<=1,"系统缩放下原生边界应在一个 DIP 的取整范围内");
+    assert.equal(host._panelHeight,panelMinimum.height);
+    assert.ok(Math.abs(host.panel.getBounds().height-panelMinimum.height)<=1,"系统缩放下原生边界应在一个 DIP 的取整范围内");
     assert.equal(await run(host.panel, "document.querySelector('#send').disabled"), true);
     assert.equal(await run(host.panel, "document.querySelector('#history').hidden"), true);
     await run(host.panel, "document.querySelector('.panel-menu summary').click()");
