@@ -6,6 +6,11 @@ Focus 调用独立的 `focus-distinct-browser` EXE；基建不认识 Context、R
 [协议 v1](https://github.com/Leeminjing/focus-distinct-browser/blob/9051180b8ce81a22a127117cbefe2fb4c56df6b4/docs/protocol.md)。
 Windows 11 默认开启会话恢复；`FOCUS_DISTINCT_BROWSER_RECOVERY=0` 可回退匿名管道。其他平台保留原有默认路径。
 
+后端 pytest 通过 `browser_process_support` 为每个用例隔离浏览器缓存，并在 teardown
+回收本用例的宿主及 WebView 子进程（包括断言失败、断开连接和 Gateway 子进程启动的宿主）。
+`disconnect()` 保留窗口是运行时合同，不能当作测试资源清理；清理仅覆盖本用例的临时目录
+及直接启动的匿名管道宿主，不按进程名批量关闭现有浏览器。
+
 ## 用户操作
 
 1. 在 Windows 11 x64 和 WebView2 Evergreen Runtime 138+ 环境中正常启动 Focus。
@@ -142,8 +147,8 @@ Context 保存 `browser_id`、`host_id`、受信任的本机 endpoint 路径和�
 用户检查页面并在原生工具栏**交还**后，新执行才能取得新租约、重新观察。
 下载/权限的断连收尾仍由基建处理；Focus 不补发下载、不代做网站权限决定。
 
-测试入口为 `backend/tests/test_browser_recovery.py`、`backend/tests/test_browser_endpoint_cleanup.py`
-和 `backend/tests/test_browser_security.py`，显式设置 `FOCUS_BROWSER_RECOVERY_REAL=1`
+测试入口为 `backend/tests/test_browser_recovery.py`、`backend/tests/test_browser_endpoint_cleanup.py`、
+`backend/tests/test_browser_security.py` 和 `backend/tests/test_browser_test_cleanup.py`，显式设置 `FOCUS_BROWSER_RECOVERY_REAL=1`
 和 `FOCUS_BROWSER_RECOVERY_EXE` 后运行。使用独立数据库与缓存，真实 Gateway 的模型采样被固定，
 其余持久化、策略、Run 调度、浏览器工具和原生宿主均为实际实现。
 系统消息交还、桌面自动化与真实物理设备验收分别记录。实际旧宿主拒绝用例可额外设置
