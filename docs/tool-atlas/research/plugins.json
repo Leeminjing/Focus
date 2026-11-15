@@ -1,0 +1,29 @@
+[
+  {
+    "id": "plugin.demo_echo",
+    "name": "demo_echo",
+    "category": "插件",
+    "summary": "演示插件回声工具：将输入文本加上 demo-echo 前缀后返回，用于验证插件工具能够注入 Agent。",
+    "params": [
+      {
+        "name": "text",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "需要回显的文本。"
+      }
+    ],
+    "returns": "字符串：demo-echo: <text>。",
+    "effects": "实现只拼接字符串，无文件、网络或进程副作用；但源码未签发 Focus 效果契约，因此准入层按 opaque_local 处理。受保护模式（read-only / workspace-write）下逐次申请批准，danger-full-access 下直接执行；需要受治理执行身份。",
+    "availability": "plugins/demo/plugin.json 的 enabled=true，插件成功加载为 active 后，由 PluginBridgeMiddleware.tools 注入使用该桥的 Agent 图；清单声明提供 tool、hook.before_model、hook.after_model，无 requires 依赖。",
+    "notes": [
+      "工具名是 demo_echo；不是插件目录名 demo。",
+      "before_model / after_model 是生命周期 hook，不是模型可调用工具。",
+      "插件桥捕获构图时工具快照；reload_plugins 只影响新装配的图。",
+      "仓库中存在不等于每个实际 Agent / Run 均启用。"
+    ],
+    "source": "plugins/demo/plugin.py",
+    "line": 7,
+    "example": "demo_echo({\"text\": \"你好，Focus\"}) → \"demo-echo: 你好，Focus\""
+  }
+]

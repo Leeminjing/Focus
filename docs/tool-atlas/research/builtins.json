@@ -1,0 +1,599 @@
+[
+  {
+    "id": "read_file",
+    "name": "read_file",
+    "params": [
+      {
+        "name": "path",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "路径；相对路径以本次运行工作区为基准，也接受绝对路径，最终由访问策略准入。"
+      },
+      {
+        "name": "start_line",
+        "type": "int",
+        "required": false,
+        "default": 1,
+        "description": "起始行，从 1 开始。"
+      },
+      {
+        "name": "max_lines",
+        "type": "int",
+        "required": false,
+        "default": 200,
+        "description": "请求行数，范围 1..500。"
+      },
+      {
+        "name": "start_column",
+        "type": "int",
+        "required": false,
+        "default": 1,
+        "description": "起始列，从 1 开始；用于续读超长行。"
+      },
+      {
+        "name": "expected_sha256",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "预期原文件 SHA-256；不一致时拒绝继续。"
+      },
+      {
+        "name": "mode",
+        "type": "Literal['paged', 'full']",
+        "required": false,
+        "default": "paged",
+        "description": "paged 返回有界页；full 返回全文，不能同时更改分页参数。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+    "line": 148,
+    "category": "工作区",
+    "summary": "分页读取 UTF-8 文件或提取 PDF、DOCX、DOC 文档文本，可校验版本。",
+    "returns": "JSON 字符串。paged 含 path、sha256、format、utf8_bom、total_lines、lines[{line,column,text,line_ending}]、truncated、next_line、next_column；full 含 path、sha256、text、format。",
+    "effects": "structured_fs：读取指定 path；需要 read 能力，路径由 AccessPolicyMiddleware 准入。",
+    "availability": "进入 WORKSPACE_TOOLS / 通用 builtin 池；桌面运行按 read 权限装配。",
+    "notes": [
+      "默认每页 200 行，最多 500 行/20000 文本字符；分页 UTF-8 输入最多 4 MiB，full 不受该输入上限。",
+      "文档 SHA-256 绑定原文件字节；只有 utf-8 原文适合 edit_file 精确替换。",
+      "图片、二进制、无效 UTF-8、目录会返回可修正的错误；不做 OCR 或图像理解。",
+      "runtime 由执行器注入，不是模型可填参数。"
+    ],
+    "example": {
+      "path": "README.md",
+      "max_lines": 80
+    }
+  },
+  {
+    "id": "discover_files",
+    "name": "discover_files",
+    "params": [
+      {
+        "name": "path",
+        "type": "str",
+        "required": false,
+        "default": ".",
+        "description": "路径；相对路径以本次运行工作区为基准，也接受绝对路径，最终由访问策略准入。"
+      },
+      {
+        "name": "pattern",
+        "type": "str",
+        "required": false,
+        "default": "*",
+        "description": "glob 路径过滤，1..512 字符。"
+      },
+      {
+        "name": "query",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "单行字面搜索文本，1..2048 字符，非正则。"
+      },
+      {
+        "name": "recursive",
+        "type": "bool",
+        "required": false,
+        "default": true,
+        "description": "是否递归扫描。"
+      },
+      {
+        "name": "include_directories",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "description": "是否返回目录；提供 query 时不得为 true。"
+      },
+      {
+        "name": "max_results",
+        "type": "int",
+        "required": false,
+        "default": 100,
+        "description": "最大文件或文本匹配结果数，范围 1..200，默认 100。"
+      },
+      {
+        "name": "context_lines",
+        "type": "int",
+        "required": false,
+        "default": 2,
+        "description": "命中前后上下文行数，0..5。"
+      },
+      {
+        "name": "case_sensitive",
+        "type": "bool",
+        "required": false,
+        "default": true,
+        "description": "文本搜索是否大小写敏感。"
+      },
+      {
+        "name": "include_hidden",
+        "type": "bool",
+        "required": false,
+        "default": false,
+        "description": "是否包含隐藏项；.git 与目录链接仍跳过。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+    "line": 198,
+    "category": "工作区",
+    "summary": "统一列目录、glob 找文件和字面文本搜索，无需 Shell。",
+    "returns": "JSON 字符串：path、matches（文件/目录路径，或文本命中的 line/column/上下文）、truncated、limit_reasons、skipped、incomplete、entries_scanned。",
+    "effects": "structured_fs：读取搜索树及适用的祖先忽略文件；需要 read 能力。",
+    "availability": "进入 WORKSPACE_TOOLS / 通用 builtin 池；桌面运行按 read 权限装配。",
+    "notes": [
+      "遵守 .gitignore/.ignore/.rgignore；默认跳过隐藏项，始终跳过 .git、目录链接。",
+      "单文件 4 MiB、累计读取 32 MiB、10000 扫描条目、5 秒、64 层深度、20000 输出字符均有限额。",
+      "truncated/incomplete 代表搜索未完整，应缩小范围；query 是单行字面文本，不是正则。"
+    ],
+    "example": {
+      "path": "backend",
+      "pattern": "*.py",
+      "query": "make_lead_agent",
+      "max_results": 20
+    }
+  },
+  {
+    "id": "write_file",
+    "name": "write_file",
+    "params": [
+      {
+        "name": "path",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "路径；相对路径以本次运行工作区为基准，也接受绝对路径，最终由访问策略准入。"
+      },
+      {
+        "name": "content",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "要整文件写入的 UTF-8 文本。"
+      },
+      {
+        "name": "requested_mode",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "可选单次模式升级申请；workspace-write 或 danger-full-access，必须比当前更宽并同时给非空 reason。已有能力仍不能凭此新增。"
+      },
+      {
+        "name": "reason",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "单次模式升级的理由；requested_mode 非空时必须为非空。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+    "line": 267,
+    "category": "工作区",
+    "summary": "创建或覆盖 UTF-8 文本文件，自动创建父目录。",
+    "returns": "已写入真实宿主机路径: <absolute path>。",
+    "effects": "structured_fs：写指定 path；需要 write 能力；会覆盖现有内容，写入前后通知文件版本观察端口。",
+    "availability": "进入 WORKSPACE_TOOLS / 通用 builtin 池；桌面运行按 write 权限装配。",
+    "notes": [
+      "整文件覆盖，不提供 expected_sha256 竞争保护；局部变更应使用 edit_file。",
+      "requested_mode/reason 由最外层中间件处理，工具体不自行放宽授权。"
+    ],
+    "example": {
+      "path": "notes/example.txt",
+      "content": "工具图鉴示例\n"
+    }
+  },
+  {
+    "id": "edit_file",
+    "name": "edit_file",
+    "params": [
+      {
+        "name": "path",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "路径；相对路径以本次运行工作区为基准，也接受绝对路径，最终由访问策略准入。"
+      },
+      {
+        "name": "edits",
+        "type": "list[TextEdit]",
+        "required": true,
+        "default": null,
+        "description": "1..50 个 TextEdit 对象；每项必须且只能含 old_text 和 new_text，二者均为严格字符串。old_text 非空、在原文件唯一匹配；new_text 可为空以删除旧内容。各替换区间不得重叠。"
+      },
+      {
+        "name": "expected_sha256",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "预期原文件 SHA-256；不一致时拒绝继续。"
+      },
+      {
+        "name": "requested_mode",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "可选单次模式升级申请；workspace-write 或 danger-full-access，必须比当前更宽并同时给非空 reason。已有能力仍不能凭此新增。"
+      },
+      {
+        "name": "reason",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "单次模式升级的理由；requested_mode 非空时必须为非空。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+    "line": 224,
+    "category": "工作区",
+    "summary": "对现有 UTF-8 文件执行一次原子精确替换，可校验原文件版本。",
+    "returns": "JSON 字符串：path、changed、before_sha256、sha256、diff、diff_truncated；实际 unified diff 最多 20000 字符。",
+    "effects": "structured_fs：读取并写入同一 path；执行时同时需要 read/write；写入前后通知文件版本观察端口。",
+    "availability": "进入 WORKSPACE_TOOLS / 通用 builtin 池；选择器按 write 装配，实际调用仍额外检查 read。",
+    "notes": [
+      "edits 必须 1..50 项；old_text 非空且在原文件中唯一匹配，替换区间不得重叠。",
+      "保留 BOM、换行、空白原样；全部检查后一次提交。UTF-8 文件及更新后内容最多 4 MiB。",
+      "建议先 read_file，带回 sha256；版本变化、文本不匹配或路径变化时拒绝修改。"
+    ],
+    "example": {
+      "path": "notes/example.txt",
+      "edits": [
+        {
+          "old_text": "工具图鉴示例",
+          "new_text": "Focus 工具图鉴示例"
+        }
+      ]
+    }
+  },
+  {
+    "id": "bash",
+    "name": "bash",
+    "params": [
+      {
+        "name": "command",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "要交给所选 Shell 执行的非空命令。"
+      },
+      {
+        "name": "requested_mode",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "可选单次模式升级申请；workspace-write 或 danger-full-access，必须比当前更宽并同时给非空 reason。已有能力仍不能凭此新增。"
+      },
+      {
+        "name": "reason",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "单次模式升级的理由；requested_mode 非空时必须为非空。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+    "line": 368,
+    "category": "代码执行",
+    "summary": "在本次运行工作区执行 Bash 命令。",
+    "returns": "JSON 字符串，含 run/session/call/agent 标识、mode、workspace、mode_source、backend_applied、enforcement、status、exit_code、failure_kind、file_denial_observed、stdout/stderr/output、truncated、approval_id、cleanup_warnings、process_cleanup。",
+    "effects": "sandboxed_shell：需要 host_command 能力；命令可读写文件或执行外部程序，按本次服务端绑定的访问模式执行。",
+    "availability": "进入 WORKSPACE_TOOLS / 通用 builtin 池；桌面按 host_command 权限装配，还要求 PATH 中可找到对应 Shell。实际命令行：bash -c。",
+    "notes": [
+      "Windows 使用 ACL 受限后端与可取消 Job，POSIX 完全访问使用进程组，POSIX 受限模式明确不可用。",
+      "拒绝 Windows WSL 启动器；找不到 Shell 或沙箱不可用时不启动替代命令。",
+      "输出合计超过 30000 字符时截断；stdout/stderr 分别保留末 15000 字符，output 保留末 30000 字符。",
+      "requested_mode/reason 由准入中间件触发单次升级审核；不自动提升权限。",
+      "process_cleanup 单列，清理告警不伪装为命令结果。"
+    ],
+    "example": {
+      "command": "printf hello"
+    }
+  },
+  {
+    "id": "powershell",
+    "name": "powershell",
+    "params": [
+      {
+        "name": "command",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "要交给所选 Shell 执行的非空命令。"
+      },
+      {
+        "name": "requested_mode",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "可选单次模式升级申请；workspace-write 或 danger-full-access，必须比当前更宽并同时给非空 reason。已有能力仍不能凭此新增。"
+      },
+      {
+        "name": "reason",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "单次模式升级的理由；requested_mode 非空时必须为非空。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+    "line": 395,
+    "category": "代码执行",
+    "summary": "在本次运行工作区执行 PowerShell 命令。",
+    "returns": "JSON 字符串，含 run/session/call/agent 标识、mode、workspace、mode_source、backend_applied、enforcement、status、exit_code、failure_kind、file_denial_observed、stdout/stderr/output、truncated、approval_id、cleanup_warnings、process_cleanup。",
+    "effects": "sandboxed_shell：需要 host_command 能力；命令可读写文件或执行外部程序，按本次服务端绑定的访问模式执行。",
+    "availability": "进入 WORKSPACE_TOOLS / 通用 builtin 池；桌面按 host_command 权限装配，还要求 PATH 中可找到对应 Shell。实际命令行：powershell.exe -NoProfile -Command。",
+    "notes": [
+      "Windows 使用 ACL 受限后端与可取消 Job，POSIX 完全访问使用进程组，POSIX 受限模式明确不可用。",
+      "拒绝 Windows WSL 启动器；找不到 Shell 或沙箱不可用时不启动替代命令。",
+      "输出合计超过 30000 字符时截断；stdout/stderr 分别保留末 15000 字符，output 保留末 30000 字符。",
+      "requested_mode/reason 由准入中间件触发单次升级审核；不自动提升权限。",
+      "process_cleanup 单列，清理告警不伪装为命令结果。"
+    ],
+    "example": {
+      "command": "Get-Location"
+    }
+  },
+  {
+    "id": "cmd",
+    "name": "cmd",
+    "params": [
+      {
+        "name": "command",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "要交给所选 Shell 执行的非空命令。"
+      },
+      {
+        "name": "requested_mode",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "可选单次模式升级申请；workspace-write 或 danger-full-access，必须比当前更宽并同时给非空 reason。已有能力仍不能凭此新增。"
+      },
+      {
+        "name": "reason",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "单次模式升级的理由；requested_mode 非空时必须为非空。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+    "line": 386,
+    "category": "代码执行",
+    "summary": "在本次运行工作区执行 Windows CMD 命令。",
+    "returns": "JSON 字符串，含 run/session/call/agent 标识、mode、workspace、mode_source、backend_applied、enforcement、status、exit_code、failure_kind、file_denial_observed、stdout/stderr/output、truncated、approval_id、cleanup_warnings、process_cleanup。",
+    "effects": "sandboxed_shell：需要 host_command 能力；命令可读写文件或执行外部程序，按本次服务端绑定的访问模式执行。",
+    "availability": "进入 WORKSPACE_TOOLS / 通用 builtin 池；桌面按 host_command 权限装配，还要求 PATH 中可找到对应 Shell。实际命令行：cmd.exe /c。",
+    "notes": [
+      "Windows 使用 ACL 受限后端与可取消 Job，POSIX 完全访问使用进程组，POSIX 受限模式明确不可用。",
+      "拒绝 Windows WSL 启动器；找不到 Shell 或沙箱不可用时不启动替代命令。",
+      "输出合计超过 30000 字符时截断；stdout/stderr 分别保留末 15000 字符，output 保留末 30000 字符。",
+      "requested_mode/reason 由准入中间件触发单次升级审核；不自动提升权限。",
+      "process_cleanup 单列，清理告警不伪装为命令结果。"
+    ],
+    "example": {
+      "command": "echo hello"
+    }
+  },
+  {
+    "id": "sh",
+    "name": "sh",
+    "params": [
+      {
+        "name": "command",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "要交给所选 Shell 执行的非空命令。"
+      },
+      {
+        "name": "requested_mode",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "可选单次模式升级申请；workspace-write 或 danger-full-access，必须比当前更宽并同时给非空 reason。已有能力仍不能凭此新增。"
+      },
+      {
+        "name": "reason",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "单次模式升级的理由；requested_mode 非空时必须为非空。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+    "line": 377,
+    "category": "代码执行",
+    "summary": "在本次运行工作区执行 POSIX sh 命令。",
+    "returns": "JSON 字符串，含 run/session/call/agent 标识、mode、workspace、mode_source、backend_applied、enforcement、status、exit_code、failure_kind、file_denial_observed、stdout/stderr/output、truncated、approval_id、cleanup_warnings、process_cleanup。",
+    "effects": "sandboxed_shell：需要 host_command 能力；命令可读写文件或执行外部程序，按本次服务端绑定的访问模式执行。",
+    "availability": "进入 WORKSPACE_TOOLS / 通用 builtin 池；桌面按 host_command 权限装配，还要求 PATH 中可找到对应 Shell。实际命令行：sh -c。",
+    "notes": [
+      "Windows 使用 ACL 受限后端与可取消 Job，POSIX 完全访问使用进程组，POSIX 受限模式明确不可用。",
+      "拒绝 Windows WSL 启动器；找不到 Shell 或沙箱不可用时不启动替代命令。",
+      "输出合计超过 30000 字符时截断；stdout/stderr 分别保留末 15000 字符，output 保留末 30000 字符。",
+      "requested_mode/reason 由准入中间件触发单次升级审核；不自动提升权限。",
+      "process_cleanup 单列，清理告警不伪装为命令结果。"
+    ],
+    "example": {
+      "command": "printf hello"
+    }
+  },
+  {
+    "id": "web_search",
+    "name": "web_search",
+    "params": [
+      {
+        "name": "query",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "搜索关键词；去空白后非空，最多 128 个 Unicode 字符。"
+      },
+      {
+        "name": "max_results",
+        "type": "int",
+        "required": false,
+        "default": 5,
+        "description": "最大网页搜索结果数，范围 1..10，默认 5；必须为整数，不接受布尔值。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/web_tools.py",
+    "line": 81,
+    "category": "联网",
+    "summary": "通过 DeepSeek 搜索网页，返回可引用的标题、完整 URL 与摘要。",
+    "returns": "编号文本列表，每条为 [n] 标题、URL: 完整地址、摘要。",
+    "effects": "no_local_effect：仅网络请求/内存文本；会向 DeepSeek 发送查询。",
+    "availability": "进入 WEB_TOOLS / 通用 builtin 池；桌面各 Agent 角色装配；运行时需配置可用 DeepSeek 凭据与网络。",
+    "notes": [
+      "query 去空白后非空，最多 128 个 Unicode 字符；max_results 为 1..10 的整数（拒绝 bool）。",
+      "请求超时 30 秒；缺凭据、HTTP/网络错误、空结果或无效返回会报错。",
+      "联网凭据来自独立 web_tools 配置，与本轮选用的模型无关。"
+    ],
+    "example": {
+      "query": "Python asyncio 官方文档",
+      "max_results": 5
+    }
+  },
+  {
+    "id": "web_fetch",
+    "name": "web_fetch",
+    "params": [
+      {
+        "name": "url",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "非空 http:// 或 https:// 网页 URL。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/web_tools.py",
+    "line": 112,
+    "category": "联网",
+    "summary": "通过 DeepSeek 抓取单个网页，获取提取后的 Markdown 正文。",
+    "returns": "Markdown 字符串，最多 30000 字符，超长时追加截断提示。",
+    "effects": "no_local_effect：仅网络请求/内存文本；会向 DeepSeek 发送 URL。",
+    "availability": "进入 WEB_TOOLS / 通用 builtin 池；桌面各 Agent 角色装配；运行时需配置可用 DeepSeek 凭据与网络。",
+    "notes": [
+      "只支持 http:// 与 https:// URL；不提供浏览器交互或页面脚本执行。",
+      "请求超时 30 秒；空正文、无效响应、鉴权或网络失败会报错。"
+    ],
+    "example": {
+      "url": "https://docs.python.org/3/library/asyncio.html"
+    }
+  },
+  {
+    "id": "spawn_agent",
+    "name": "spawn_agent",
+    "params": [
+      {
+        "name": "task",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "要交给临时子 Agent 的独立子任务。"
+      },
+      {
+        "name": "system_prompt",
+        "type": "str | None",
+        "required": false,
+        "default": null,
+        "description": "自定义子 Agent 系统提示词；缺省/空值使用辅助子 Agent 默认提示。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/spawn_agent_tool.py",
+    "line": 64,
+    "category": "子代理",
+    "summary": "同步等待一个临时子 Agent 独立处理任务，返回最终回答。",
+    "returns": "子 Agent 最后一条 AI 消息的文本；无回答返回说明，流执行异常返回最多 500 字符异常描述，取消继续向上传播。",
+    "effects": "delegated_execution：派生受治理子执行身份，权限、工作根和访问模式不得比父级更宽；实际子工具各自准入。",
+    "availability": "工厂 build_spawn_agent_tool 生成，不在通用 builtin 池；桌面 main 且非 governed_loop 时装配。",
+    "notes": [
+      "本实现并非后台任务句柄：调用会等待子 Agent 流结束；子代理不再携带 spawn_agent，限制为一层。",
+      "子 Agent 使用父级派生模型和按子权限过滤的工作区工具；make_lead_agent 仍可从 PluginBridgeMiddleware 注入启用插件工具。",
+      "独立 thread/checkpoint namespace，不向父 Context 写入中间状态，不发布 SSE、不持久化 checkpoint。",
+      "构图或安全上下文派生错误在流 try 块外，仍可能向上传播。"
+    ],
+    "example": {
+      "task": "读取 README 并总结项目入口，不修改文件。"
+    }
+  },
+  {
+    "id": "describe_skill",
+    "name": "describe_skill",
+    "params": [
+      {
+        "name": "name",
+        "type": "str",
+        "required": true,
+        "default": null,
+        "description": "技能名；精确匹配不区分大小写，先去除首尾空白。"
+      }
+    ],
+    "source": "backend/packages/harness/focus/tools/builtins/describe_skill_tool.py",
+    "line": 45,
+    "category": "技能",
+    "summary": "按技能名称查询元数据和 SKILL.md 的真实宿主路径，支持懒发现。",
+    "returns": "精确命中返回 Skill、Description、Allowed tools、Location（可含 License）；空名/未命中返回可用名列表，模糊匹配返回候选名。",
+    "effects": "no_local_effect：只检索构图时的内存技能索引，不读写工作区。",
+    "availability": "工厂 build_describe_skill_tool(catalog) 生成；桌面 main 装配。make_lead_agent 在 tools=None 时也会加入。",
+    "notes": [
+      "返回元数据，不返回技能全文；随后需 read_file 读取 Location。",
+      "Allowed tools 未声明时返回 unrestricted，这只是技能元数据，不是额外授权。"
+    ],
+    "example": {
+      "name": "pdf"
+    }
+  },
+  {
+    "id": "report_must_view_images",
+    "name": "report_must_view_images",
+    "category": "图片",
+    "summary": "逐图声明本轮必看图片是否已读，供完成门检查。",
+    "params": [
+      {
+        "name": "images",
+        "type": "list[MustViewImageReport]",
+        "required": true,
+        "default": null,
+        "description": "每项含 material_id（图片材料标识）和 read（是否声明已读，布尔值）。"
+      }
+    ],
+    "returns": "字符串：已记录 N 张必看图片的逐图声明。",
+    "effects": "实现不读取图片、不写文件；未单独声明效果契约，在主图准入层默认按 opaque_local 处理。",
+    "availability": "仅当桌面 main 本轮 image_inputs.required_ids 非空时，与 MustViewCompletionMiddleware 一起装配。",
+    "notes": [
+      "read 是模型声明，不是图片像素交付的证据；图片由 image_attachment.py 独立注入。",
+      "完成门检查缺项最多提醒两次；声明未读或提醒耗尽时触发人工处理。"
+    ],
+    "source": "backend/packages/harness/focus/agents/must_view.py",
+    "line": 52,
+    "example": {
+      "images": [
+        {
+          "material_id": "<required-material-id>",
+          "read": true
+        }
+      ]
+    }
+  }
+]

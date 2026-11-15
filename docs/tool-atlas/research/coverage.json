@@ -1,0 +1,328 @@
+{
+  "scope": [
+    "backend/packages/harness/focus/**/*.py",
+    "backend/app/**/*.py",
+    "plugins/**/*.py"
+  ],
+  "method": "Python AST: @tool decorators and StructuredTool.from_function literal name keywords; no imports or runtime execution",
+  "declaration_count": 44,
+  "unique_names": [
+    "approve_plan",
+    "bash",
+    "browser_click",
+    "browser_close_page",
+    "browser_key",
+    "browser_list_downloads",
+    "browser_list_pages",
+    "browser_navigate",
+    "browser_observe",
+    "browser_release",
+    "browser_scroll",
+    "browser_select_page",
+    "browser_type",
+    "claim_task",
+    "cmd",
+    "complete_task",
+    "delegate_with_review",
+    "demo_echo",
+    "describe_skill",
+    "discover_files",
+    "edit_file",
+    "find_reference_urls",
+    "list_board_tasks",
+    "list_patrol_agents",
+    "powershell",
+    "publish_task",
+    "read_file",
+    "read_patrol_agent_history",
+    "read_swarm_agent_history",
+    "report_must_view_images",
+    "request_plan_approval",
+    "request_shutdown",
+    "respond_shutdown",
+    "send_message",
+    "sh",
+    "spawn_agent",
+    "spawn_teammate",
+    "spawn_worker",
+    "wait_for_swarm",
+    "wake_agent",
+    "web_fetch",
+    "web_search",
+    "write_file"
+  ],
+  "declarations": [
+    {
+      "name": "approve_plan",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 204,
+      "kind": "decorator"
+    },
+    {
+      "name": "bash",
+      "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+      "line": 368,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_click",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 63,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_close_page",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 115,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_key",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 73,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_list_downloads",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 91,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_list_pages",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 83,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_navigate",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 54,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_observe",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 23,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_release",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 120,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_scroll",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 78,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_select_page",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 110,
+      "kind": "decorator"
+    },
+    {
+      "name": "browser_type",
+      "source": "backend/app/desktop/browser/tools.py",
+      "line": 68,
+      "kind": "decorator"
+    },
+    {
+      "name": "claim_task",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 300,
+      "kind": "decorator"
+    },
+    {
+      "name": "cmd",
+      "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+      "line": 386,
+      "kind": "decorator"
+    },
+    {
+      "name": "complete_task",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 323,
+      "kind": "decorator"
+    },
+    {
+      "name": "delegate_with_review",
+      "source": "backend/packages/harness/focus/agents/commitment/workflow.py",
+      "line": 323,
+      "kind": "decorator"
+    },
+    {
+      "name": "demo_echo",
+      "source": "plugins/demo/plugin.py",
+      "line": 7,
+      "kind": "decorator"
+    },
+    {
+      "name": "describe_skill",
+      "source": "backend/packages/harness/focus/tools/builtins/describe_skill_tool.py",
+      "line": 100,
+      "kind": "StructuredTool"
+    },
+    {
+      "name": "discover_files",
+      "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+      "line": 198,
+      "kind": "decorator"
+    },
+    {
+      "name": "edit_file",
+      "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+      "line": 224,
+      "kind": "decorator"
+    },
+    {
+      "name": "find_reference_urls",
+      "source": "backend/packages/harness/focus/agents/commitment/delegation.py",
+      "line": 676,
+      "kind": "StructuredTool"
+    },
+    {
+      "name": "find_reference_urls",
+      "source": "backend/packages/harness/focus/agents/commitment/references.py",
+      "line": 57,
+      "kind": "decorator"
+    },
+    {
+      "name": "list_board_tasks",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 269,
+      "kind": "decorator"
+    },
+    {
+      "name": "list_patrol_agents",
+      "source": "backend/app/desktop/patrol/service.py",
+      "line": 466,
+      "kind": "decorator"
+    },
+    {
+      "name": "powershell",
+      "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+      "line": 395,
+      "kind": "decorator"
+    },
+    {
+      "name": "publish_task",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 243,
+      "kind": "decorator"
+    },
+    {
+      "name": "read_file",
+      "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+      "line": 148,
+      "kind": "decorator"
+    },
+    {
+      "name": "read_patrol_agent_history",
+      "source": "backend/app/desktop/patrol/service.py",
+      "line": 471,
+      "kind": "decorator"
+    },
+    {
+      "name": "read_swarm_agent_history",
+      "source": "backend/app/desktop/agents/service.py",
+      "line": 471,
+      "kind": "decorator"
+    },
+    {
+      "name": "report_must_view_images",
+      "source": "backend/packages/harness/focus/agents/must_view.py",
+      "line": 52,
+      "kind": "decorator"
+    },
+    {
+      "name": "request_plan_approval",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 174,
+      "kind": "decorator"
+    },
+    {
+      "name": "request_shutdown",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 189,
+      "kind": "decorator"
+    },
+    {
+      "name": "respond_shutdown",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 225,
+      "kind": "decorator"
+    },
+    {
+      "name": "send_message",
+      "source": "backend/app/desktop/agents/collaboration.py",
+      "line": 132,
+      "kind": "decorator"
+    },
+    {
+      "name": "sh",
+      "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+      "line": 377,
+      "kind": "decorator"
+    },
+    {
+      "name": "spawn_agent",
+      "source": "backend/packages/harness/focus/tools/builtins/spawn_agent_tool.py",
+      "line": 64,
+      "kind": "decorator"
+    },
+    {
+      "name": "spawn_teammate",
+      "source": "backend/app/desktop/agents/service.py",
+      "line": 70,
+      "kind": "decorator"
+    },
+    {
+      "name": "spawn_worker",
+      "source": "backend/app/desktop/agents/service.py",
+      "line": 77,
+      "kind": "decorator"
+    },
+    {
+      "name": "wait_for_swarm",
+      "source": "backend/app/desktop/agents/service.py",
+      "line": 94,
+      "kind": "decorator"
+    },
+    {
+      "name": "wake_agent",
+      "source": "backend/app/desktop/agents/service.py",
+      "line": 84,
+      "kind": "decorator"
+    },
+    {
+      "name": "web_fetch",
+      "source": "backend/packages/harness/focus/tools/builtins/web_tools.py",
+      "line": 112,
+      "kind": "decorator"
+    },
+    {
+      "name": "web_search",
+      "source": "backend/packages/harness/focus/tools/builtins/web_tools.py",
+      "line": 81,
+      "kind": "decorator"
+    },
+    {
+      "name": "write_file",
+      "source": "backend/packages/harness/focus/tools/builtins/workspace_tools.py",
+      "line": 267,
+      "kind": "decorator"
+    }
+  ],
+  "excluded_from_model_count": [
+    "delegate_with_review"
+  ],
+  "dynamic_internal_adapters": [
+    "resolve-library-id",
+    "query-docs"
+  ],
+  "revision": "5feed0d85284d145759baf7b5373ad80ee8edea3"
+}

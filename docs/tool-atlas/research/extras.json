@@ -1,0 +1,73 @@
+[
+  {
+    "id": "commitment.find_reference_urls",
+    "name": "find_reference_urls",
+    "category": "承诺流程",
+    "exposure": "model",
+    "summary": "为用户明确引用但未提供完整 URL 的网站、文档或项目搜索最多 5 个候选网址。",
+    "params": [{"name":"query","type":"str","required":true,"default":null,"description":"用户提到的网站、文档或项目名称；空白查询返回空数组。"}],
+    "returns": "list[dict[str,str]]，正常条目为 {title,url}，网络 HTTP 错误时返回 [{error:...}]。",
+    "effects": "发起 DuckDuckGo HTML 搜索网络请求；不写本地文件。该工具未单独声明 Focus 效果契约，且承诺 Worker 通过独立 create_agent 直接装配，不走主图 AccessPolicyMiddleware。",
+    "availability": "commitment.enabled=true 且 /commit 触发承诺流程；仅阶段 4 Worker 注册 traced_find_reference_urls 包装，同名同参数；普通主代理目录不包含它。",
+    "notes": ["候选网址必须由后续人工确认，工具搜索结果不代表用户已同意引用。","HTTP 请求 15 秒超时；最多返回 5 项。","references.py 头部注释称网络失败返回空列表，实际 HTTP 错误返回 error 条目，以实现为准。"],
+    "source": "backend/packages/harness/focus/agents/commitment/references.py",
+    "line": 57,
+    "example": "{\"query\":\"React docs\"}"
+  },
+  {
+    "id": "commitment.delegate_with_review",
+    "name": "delegate_with_review",
+    "category": "承诺流程",
+    "exposure": "internal",
+    "summary": "执行承诺流程的一个阶段，经 Worker 产出与 Evaluator 审核后推进九阶段状态。",
+    "params": [
+      {"name":"stage","type":"int (1..9)","required":true,"default":null,"description":"待执行阶段，必须等于当前已完成 stage + 1。"},
+      {"name":"instruction","type":"str","required":true,"default":null,"description":"当前阶段任务指令。"},
+      {"name":"context","type":"dict[str,Any]","required":false,"default":{},"description":"阶段上下文、用户反馈、上传文件等；args_schema 为 TaskEnvelope。"},
+      {"name":"acceptance_criteria","type":"list[str]","required":false,"default":[],"description":"Evaluator 验收条件；args_schema 为 TaskEnvelope。"}
+    ],
+    "returns": "LangGraph Command 更新阶段 artifacts、awaiting_human、knowledge_files 等状态，ToolMessage JSON 含 approved / reviewed_failed / invalid_stage。",
+    "effects": "阶段 1..7 调用 Worker/Evaluator；阶段 6 写入工作区理论知识文件并冻结快照；多阶段等待人工审查；阶段 8/9交付合同与最终答复。",
+    "availability": "仅承诺子图 ToolNode 的内部编排工具；_prepare_supervisor_call 用 Python 生成 tool_calls，不绑定主模型或由模型自由选择调用。",
+    "notes": ["真实 @tool，但不计入默认模型可调用工具数。","runtime 为 LangGraph 注入，不是模型输入参数。","TaskEnvelope schema 的 context / acceptance_criteria 有默认值，函数签名通过 schema 实现输入契约。","承诺子图独立安全身份和 checkpoint；此 ToolNode 没有主图 AccessPolicyMiddleware 包装。"],
+    "source": "backend/packages/harness/focus/agents/commitment/workflow.py",
+    "line": 323,
+    "example": "{\"stage\":1,\"instruction\":\"明确目标\",\"context\":{},\"acceptance_criteria\":[\"给出清晰目标\"]}"
+  },
+  {
+    "id": "commitment.context7.resolve-library-id",
+    "name": "resolve-library-id",
+    "category": "外部文档适配",
+    "exposure": "internal",
+    "summary": "承诺阶段 5 将技术名称解析成 Context7 库标识。",
+    "params": [
+      {"name":"libraryName","type":"str (调用方已知字段)","required":true,"default":null,"description":"Focus 当前受控调用传入的技术名；真实远端 schema 在 MCP 发现时获取。"},
+      {"name":"query","type":"str (调用方已知字段)","required":true,"default":null,"description":"Focus 传入 latest stable version and official documentation 查询。"}
+    ],
+    "returns": "远端 MCP 工具结果，由 Focus 提取 library_id；完整输出格式取决于远端服务。",
+    "effects": "Context7 网络请求；Focus 随版本信任表签发 no_local_effect。",
+    "availability": "承诺阶段 5 按需懒加载隔离 Context7 工具；当前由受控 Python resolver.ainvoke 调用，未直接绑定到 Worker 模型工具列表。",
+    "notes": ["列出的是 Focus 受控调用已知字段，不是固定远端 JSON Schema；MCP 可用性与真实 schema 由连接结果决定。","若用户另外配置普通 Context7 MCP，也可能作为动态 MCP 来源进入主代理；那是独立装配路径。"],
+    "source": "backend/packages/harness/focus/agents/commitment/delegation.py",
+    "line": 360,
+    "example": "{\"libraryName\":\"React\",\"query\":\"React latest stable version and official documentation\"}"
+  },
+  {
+    "id": "commitment.context7.query-docs",
+    "name": "query-docs",
+    "category": "外部文档适配",
+    "exposure": "internal",
+    "summary": "承诺阶段 5 核实最新稳定版本，阶段 6查询已确认技术的官方理论资料。",
+    "params": [
+      {"name":"libraryId","type":"str (调用方已知字段)","required":true,"default":null,"description":"先前解析得到的 Context7 库标识；真实远端 schema 在 MCP 发现时获取。"},
+      {"name":"query","type":"str (调用方已知字段)","required":true,"default":null,"description":"版本或官方知识查询文本。"}
+    ],
+    "returns": "远端 MCP 工具结果；Focus 提取稳定版本与官方知识内容，完整格式由服务提供。",
+    "effects": "Context7 网络请求；Focus 随版本信任表签发 no_local_effect。",
+    "availability": "承诺阶段 5/6 受控 Python 直接 ainvoke；不直接绑定 Worker 模型。",
+    "notes": ["这是内部外部工具适配项，不计入仓库固定模型工具数。","params 为当前调用方要求的字段，并非静态复制远端 schema。"],
+    "source": "backend/packages/harness/focus/agents/commitment/delegation.py",
+    "line": 412,
+    "example": "{\"libraryId\":\"<resolved-library-id>\",\"query\":\"What is the exact latest stable version?\"}"
+  }
+]
