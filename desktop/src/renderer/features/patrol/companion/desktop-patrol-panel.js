@@ -4,7 +4,7 @@
  * 要求与参考文字分开，Enter/IME 不发送，Ctrl+Enter 显式发送；示例：拖入截图、补充“解释报错”、点击发送。
  * 回答仅取固定 Context revision 的 assistant 正文并有界缓存，进度/产物分别来自 Live；隐藏时保留 Live 状态同步，取消正文读取并暂停结果 DOM 更新。
  * 回答独立读取和重试，保留其他卡片 DOM；展开后按需渲染 Markdown 并提供全文/代码复制，文件直接打开固定版本或加入引用。
- * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，输入下方可展开已提交的处理说明和证据。
+ * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，已提交的决策与延期状态以内联标签紧跟输入正文。
  * 标题圆点展示工作状态，暂停/继续与停止收进菜单；复用 Loop control，区分 HTTP 受理与 Live 生效，隔离工作区代际并阻止在途重复控制。
  * 当前 Loop 就绪即连接 Live，历史独立读取；历史加载/失败/重试仅更新记录面板，不重启工作连接。
  * 停止/失败在输入区展示保存提示与重新启用，复用工作区 restart；HTTP 受理后等待新 Loop 的 Live 确认，保留草稿并隔离迟到响应。
@@ -187,21 +187,25 @@
     if (historyKey !== nextHistory) {
       historyKey = nextHistory;
       const items = $("#history-items");
-      const restoreResults = FocusWorkspacePatrolFeedback.preserveInputResults(items);
       items.replaceChildren();
       for (const row of model.rows) {
         const card = element("article", "", items);
         card.dataset.submissionId = row.submission_id;
         const content = row.content || localize("仅参考材料");
+        const disposition = row.status === "accepted" ? row.processing_result?.disposition : null;
+        const badge = disposition === "decision" ? "ready" : disposition === "deferred" ? "delayed" : null;
         const message = element("div", "", card); message.className = "input-message";
-        element("pre", row.status === "failed" ? content.trimEnd() : content, message);
+        const body = element("pre", row.status === "failed" || badge ? content.trimEnd() : content, message);
+        if (badge) {
+          const label = element("span", badge, body);
+          label.className = "input-disposition"; label.dataset.disposition = disposition;
+        }
         if (row.status === "failed") {
           const dot = element("span", "", message); dot.className = "input-unconfirmed";
           dot.setAttribute("role", "img"); dot.setAttribute("aria-label", localize("等待发送确认"));
         }
         card.insertAdjacentHTML("beforeend", FocusPatrolInputReferences.render(row));
-        card.insertAdjacentHTML("beforeend", FocusWorkspacePatrolFeedback.inputResult(row));
-        if (status[row.status]) element("small", status[row.status], card);
+        if (!badge && status[row.status]) element("small", status[row.status], card);
         if (row.status === "failed") {
           if (row.error && row.error !== "发送确认中断，请先核对历史后重试") element("small", row.error, card);
           const id = workspace?.workspace_id;
@@ -210,7 +214,6 @@
           inputAction("edit", "pencil", localize("编辑为新输入"), actions, () => intake.editFailed(id, row.submission_id));
         }
       }
-      restoreResults();
       historyReferences.bind(model);
     }
     $("#older").hidden = !model.cursor;

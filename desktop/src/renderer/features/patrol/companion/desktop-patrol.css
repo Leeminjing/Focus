@@ -140,6 +140,8 @@ html[lang="en-US"] #history-items:empty::after { content:"No input history yet";
 #history-items article { padding:10px 0; border-bottom:1px solid var(--line); }
 #history-items .input-message { display:flex; align-items:flex-end; gap:6px; margin:0 0 6px; }
 #history-items pre { flex:0 1 auto; min-width:0; white-space:pre-wrap; overflow-wrap:anywhere; margin:0; font:11px/18px FocusUI,sans-serif; max-height:100px; overflow:auto; }
+#history-items .input-disposition { display:inline-block; margin-left:5px; padding:0 6px; border-radius:999px; background:#d6e6f8; color:#385d84; font:10px/16px FocusUI,sans-serif; vertical-align:baseline; white-space:nowrap; }
+#history-items .input-disposition[data-disposition=deferred] { background:#f9e4b6; color:#805a22; }
 #history-items .input-unconfirmed { flex-shrink:0; width:5px; height:5px; margin-bottom:6px; border-radius:50%; background:#e3ad40; }
 #history-items button,#older,#older-versions { font-size:10px; color:var(--accent); padding:5px 0; margin-right:12px; }
 #history-items .input-actions { display:flex; gap:2px; }
