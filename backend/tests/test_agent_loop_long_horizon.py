@@ -9,6 +9,9 @@ HumanMessage，再由用户提升权力版本并取消旧方向，随后保留�
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop, advance_workspace_mission
+from loop_run_boundary_support import commit_patrol
+
 import asyncio
 from datetime import UTC, datetime
 import os
@@ -21,15 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import backend.app.desktop.persistence.registry
-from backend.app.desktop.patrol.agent_loop import (
-    AgentLoopService,
-    CompletionEvidenceService,
-    CompletionVerificationContract,
-    CriterionVerification,
-    LoopCreateRequest,
-    LoopKernel,
-    PatrolDecisionIntent,
-)
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, CompletionEvidenceService, CompletionVerificationContract, CriterionVerification, PatrolDecisionIntent
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopContextMembership,
@@ -124,33 +119,18 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                 session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=root_id, agent_id=f"main:{root_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{root_id}", context_revision_id=refs[root_id].revision_id, settled_at=datetime.now(UTC)))
 
             service = AgentLoopService(sessions)
-            started = await service.start(
-                LoopCreateRequest(
-                    loop_id=loop_id,
-                    workspace_id=workspace_id,
-                    initial_context_id=root_id,
-                    initial_run_id=f"initial-{suffix}",
-                    holder_id=f"patrol-{suffix}",
-                    goal="Deliver the scoped change safely",
-                    task_contract="Correct drift, investigate repeated failures, and pass tests",
-                    acceptance_criteria=(
+            started = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=root_id, initial_run_id=f"initial-{suffix}", holder_id=f"patrol-{suffix}", goal="Deliver the scoped change safely", task_contract="Correct drift, investigate repeated failures, and pass tests", acceptance_criteria=(
                         {
                             "criterion_id": "tests",
                             "text": "required tests pass",
                             "required": True,
                         },
-                    ),
-                    capabilities=(
+                    ), capabilities=(
                         "continue_context",
                         "request_lane_curator",
                         "request_completion_verifier",
                         "request_completion",
-                    ),
-                    context_scope=(root_id, side_id),
-                    permission_scope=("read", "write", "host_command"),
-                    budgets={"max_rounds": 20, "max_contexts": 8, "max_providers": 3},
-                )
-            )
+                    ), context_scope=(root_id, side_id), permission_scope=("read", "write", "host_command"), budgets={"max_rounds": 20, "max_contexts": 8, "max_providers": 3})
             first_round = await _round(sessions, started["current_round_id"])
             repeated_failure_intent = _intent(
                 snapshot=started,
@@ -166,15 +146,10 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                 ),
                 key=f"failure-analysis-{suffix}",
             )
-            first_result = await LoopKernel(sessions).commit(repeated_failure_intent)
+            first_result = await commit_patrol(sessions, repeated_failure_intent)
             assert first_result.status == "committed"
 
-            reprioritized = await service.override(
-                loop_id,
-                "Prioritize correctness over speculative optimization",
-                "Keep the implementation lane authoritative and isolate alternative analysis",
-                [{"criterion_id": "tests", "text": "required tests pass", "required": True}],
-            )
+            reprioritized = await advance_workspace_mission(sessions, loop_id, "Prioritize correctness over speculative optimization", "Keep the implementation lane authoritative and isolate alternative analysis", [{"criterion_id": "tests", "text": "required tests pass", "required": True}])
             async with sessions.begin() as session:
                 first_directive = await session.get(
                     LoopDirective,
@@ -318,13 +293,13 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                 ),
                 key=f"complete-{suffix}",
             )
-            completed = await LoopKernel(sessions).commit(completion)
+            completed = await commit_patrol(sessions, completion)
             assert completed.status == "committed"
 
             events = await service.events(loop_id)
             assert [event["cursor"] for event in events] == list(range(1, len(events) + 1))
             assert len({event["event_id"] for event in events}) == len(events)
-            assert {"LoopStarted", "MissionRevisionActivated", "LoopDecisionCommitted"}.issubset(
+            assert {"LoopStarted", "LoopDecisionCommitted"}.issubset(
                 {event["type"] for event in events}
             )
             async with sessions() as session:
@@ -350,7 +325,7 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                         )
                     ).all()
                 )
-                assert loop.status == "completed"
+                assert (loop.status, loop.health, loop.waiting_reason) == ("waiting_user", "idle", "awaiting_input")
                 assert loop.final_result["final_path"][0]["context_id"] == root_id
                 assert synthesis_id in {
                     item["context_id"] for item in loop.final_result["unadopted_lanes"]

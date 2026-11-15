@@ -1,8 +1,9 @@
-r"""本文件对外提供 LoopActivation 不可变授权 lineage 实体。
+r"""本文件对外提供已退役 Context Loop 的历史激活账务读模型。
 
-输入为新 Loop、选中的直接用户 Run、可选前置 Loop、readiness token 与幂等 activation key；输出为独立于历史 AgentLoop 行结构的授权事实。
-具体工作流为创建事务锁定 eligibility 后写唯一 activation，等价重试复用该行，前置 Loop 与 Run 标识永不改写。
-示例：`LoopActivation(loop_id="l2", selected_run_id="r2", predecessor_loop_id="l1", ...)`。
+输入为已有激活身份；输出为初始 Run 与历史授权的关联。
+具体工作流为仅供历史迁移注册及 LoopAccountingQuery 读取，避免退役后丢失已有消费的归属。
+旧启动接口和写入用例已移除，Workspace Patrol 不创建激活记录。
+示例：`select(LoopActivation).where(LoopActivation.loop_id == loop_id)`。
 """
 
 from __future__ import annotations

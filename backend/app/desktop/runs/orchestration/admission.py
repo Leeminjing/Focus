@@ -46,6 +46,8 @@ class RunAdmissionService:
             if self._ownership_validator is None:
                 raise ValueError("Loop Run 缺少注入的权威来源验证器")
             await self._ownership_validator(session, run)
+        elif run.kind == "main" and self._ownership_validator is not None:
+            await self._ownership_validator(session, run)
         await session.execute(select(func.pg_advisory_xact_lock(self._lock_key("task", run.task_id))))
         if run.idempotency_key:
             await session.execute(select(func.pg_advisory_xact_lock(self._lock_key("idempotency", run.idempotency_key))))

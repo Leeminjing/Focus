@@ -17,7 +17,6 @@ SOURCE_FILES = (
     "backend/app/desktop/patrol/agent_loop/persistence/persistence_safety.py",
     "backend/app/desktop/patrol/agent_loop/waits/wait_models.py",
     "backend/app/desktop/patrol/agent_loop/waits/wait_requests.py",
-    "backend/app/desktop/patrol/agent_loop/governance/activation_eligibility.py",
     "backend/app/desktop/patrol/agent_loop/recovery/projection_recovery.py",
     "backend/app/desktop/patrol/agent_loop/curation/curation_ownership.py",
     "backend/app/desktop/patrol/agent_loop/lifecycle/terminal_lifecycle.py",

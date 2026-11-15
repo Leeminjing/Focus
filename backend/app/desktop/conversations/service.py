@@ -198,14 +198,10 @@ class ConversationService:
 
         associations = (
             select(AgentLoop.loop_id, AgentLoop.initial_context_id.label("task_id"))
+            .where(AgentLoop.interaction_mode == "workspace_patrol")
             .union(
-                select(
-                    AgentLoop.loop_id, LoopContextMembership.context_id.label("task_id")
-                )
-                .join(
-                    LoopContextMembership,
-                    LoopContextMembership.loop_id == AgentLoop.loop_id,
-                )
+                select(AgentLoop.loop_id, LoopContextMembership.context_id.label("task_id"))
+                .join(LoopContextMembership, LoopContextMembership.loop_id == AgentLoop.loop_id)
                 .where(AgentLoop.interaction_mode == "workspace_patrol")
             )
             .subquery()
@@ -273,14 +269,6 @@ class ConversationService:
         ) in rows:
             summary = by_task.get(task_id)
             if summary is None:
-                continue
-            latest_created = (summary.get("latest_run") or {}).get("created_at")
-            if (
-                mode == "context_loop"
-                and status in {"completed", "stopped", "failed"}
-                and latest_created
-                and (latest_created > updated_at.isoformat())
-            ):
                 continue
             summary["loop"] = {"loop_id": loop_id, "status": status}
             if mode == "workspace_patrol":

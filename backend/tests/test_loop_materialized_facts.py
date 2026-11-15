@@ -9,6 +9,8 @@ r"""本文件验证版本化 Loop Fact 的确定性 identity、验证权力、�
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+
 import asyncio
 import os
 import uuid
@@ -25,7 +27,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop import AgentLoopService
 from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
 from backend.app.desktop.patrol.agent_loop.facts.fact_identity import FactIdentityResolver
@@ -155,7 +157,7 @@ def test_materialized_fact_projection_rebuilds_without_duplicates(tmp_path) -> N
                 await repository.switch_current(session, ref, None)
                 session.add(DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, final_checkpoint_id=f"checkpoint-{suffix}", user_intent_id=correlation_id, workspace_result={"workspace_status": "settled", "revision": 2, "effect_evidence": [{"kind": "workspace_fingerprint_transition", "changed": True, "changed_files": ["src/service.py"]}], "artifacts": ["reports/pytest.xml"]}, settled_at=datetime.now(UTC)))
             service = AgentLoopService(sessions)
-            await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=run_id, holder_id=f"patrol-{suffix}", goal="Verify", task_contract="Use evidence", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "view_evidence")))
+            await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=run_id, holder_id=f"patrol-{suffix}", goal="Verify", task_contract="Use evidence", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "view_evidence"))
             async with sessions.begin() as session:
                 event = await LoopEventJournal().append(session, loop_id, CanonicalEventDraft(kind="context.run.settled", entity_type="context_run", entity_id=run_id, entity_revision=2, correlation_id=correlation_id, payload={"run_id": run_id, "status": "success"}, idempotency_key=f"run:{run_id}:settled"))
             projector = FactProjector(sessions, _Checkpointer())

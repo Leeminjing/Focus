@@ -9,7 +9,6 @@ assessment）；输出为合同通过，或携带稳定拒绝原因的 PatrolCon
 澄清动作还要通过共享准入策略核对冻结的 Mission、授权、gate、预算和可安全继续的 Context。
 
 示例：`PatrolDecisionContract().validate(actions=proposal.actions, mission_references=proposal.mission_references, observation=observation)`。
-消息交付只允许选本轮冻结的唯一 intent identity；未处理直接消息阻止完成提案，模型不能改写正文。
 完成重请求复用冻结的 CompletionRequestAdmission，等价输入反馈进入原有有界候选纠错，最终 Kernel 仍复检。
 完成动作精确选择 completion_eligibility 冻结目录中的可用验证，拒绝码进入同一纠错流程，不把新验证准入当完成许可。
 普通工作区提案可引用精确 input 或 current progress；缺省分区不成为要求引用，用户 Mission 修订后重新冻结再评估派生。
@@ -102,7 +101,6 @@ class PatrolDecisionContract:
         self._validate_expansion_decision(actions, observation)
         self._validate_recovery_decision(actions, observation)
         self._validate_clarification(actions, observation)
-        self._validate_user_messages(actions, observation)
         self._validate_attachment_inputs(actions, observation)
         from backend.app.desktop.patrol.agent_loop.completion.completion_eligibility import CompletionEligibilityPolicy, CompletionEligibilityRejected
 
@@ -136,16 +134,6 @@ class PatrolDecisionContract:
                 ) from error
 
     @staticmethod
-    def _validate_user_messages(actions, observation):
-        messages = {item["intent_id"] for item in observation.user_intents
-                    if item.get("intent_kind") == "direct_message"}
-        selected = [action.intent_id for action in actions if action.action == "deliver_user_message"]
-        if len(selected) != len(set(selected)) or not set(selected).issubset(messages):
-            raise PatrolContractViolation("用户消息交付只能选择本轮冻结的唯一 intent identity")
-        if messages and any(action.action == "request_completion" for action in actions):
-            raise PatrolContractViolation("未处理直接用户消息阻止完成")
-
-    @staticmethod
     def _validate_clarification(actions: tuple[PatrolModelAction, ...], observation: LoopObservationEnvelope) -> None:
         waits = tuple(action for action in actions if isinstance(action, WaitForUserAction))
         if not waits:
@@ -166,7 +154,7 @@ class PatrolDecisionContract:
         inputs = {item["intent_id"] for item in observation.user_intents}
         check_ids = tuple(str(item.get("check_id")) for item in mission.get("completion_checks", ()) if item.get("check_id"))
         for reference in mission_references:
-            if getattr(observation, "interaction_mode", "context_loop") == "workspace_patrol":
+            if observation.interaction_mode == "workspace_patrol":
                 if reference.role == "outcome" and not mission.get("outcome"):
                     raise PatrolContractViolation("未提供最终结果，不能制造 outcome 引用")
                 if reference.role == "boundary" and not (mission.get("boundaries") or {}).get(reference.reference_id):
@@ -188,7 +176,7 @@ class PatrolDecisionContract:
         observation: LoopObservationEnvelope,
     ) -> None:
         assessment = observation.expansion_assessment or {}
-        if (getattr(observation, "interaction_mode", "context_loop") == "workspace_patrol"
+        if (observation.interaction_mode == "workspace_patrol"
                 and len(actions) == 1 and actions[0].action == "apply_user_inputs" and actions[0].changes):
             return
         opportunities = self._opportunity_ids(assessment)

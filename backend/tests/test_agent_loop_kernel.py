@@ -1,43 +1,28 @@
-r"""本文件对外提供唯一 delegated authority、零 Worker 正常路径、用户介入生命周期、Mission 修订与 Completion Guard 测试。
+r"""Workspace Patrol 的 delegated authority、零 Worker 路径、Mission 版本隔离与 Completion Guard 测试。
 
 输入为真实 PostgreSQL Loop/Context revision、严格 Patrol intent 与 verifier evidence；输出为一次 Kernel
-commit、外部 provenance、Mission 不变、直接消息 delivery/Run 终态、陈旧 decision superseded 和 unknown completion waiting-user 断言。
-具体工作流为 service start、Kernel commit、直接消息交付与结算、用户确认 Mission revision 和 guard 检查；Verifier 证据提交引用真实领取身份。
-用户 Run 在结算前经过真实 LoopRunExecutionBoundary，交付、实际启动与结算分别保留独立事实。
+commit、外部 provenance、陈旧 decision superseded 和 unknown completion waiting-user 断言。
+具体工作流为 Workspace Patrol 状态播种、Kernel commit、Mission 版本隔离 和 guard 检查；Verifier 证据提交引用真实领取身份。
 示例：`pytest test_agent_loop_kernel.py`。
-用户消息测试改为先受理、真实冻结及 Patrol/Kernel 授权后交付，不再手工插入裸 Run。
-实际全库dispatch用例使用逐用例runtime数据库，导入的执行helper不会继承其原测试模块标记，避免领取其他用例的accepted队列。
 """
 
 from __future__ import annotations
+
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop, advance_workspace_mission
 
 import asyncio
 import os
 import uuid
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
-from loop_run_boundary_support import start_loop_run, commit_patrol
+from loop_run_boundary_support import commit_patrol
 from completion_evidence_support import claim_verifier, record_verified_fixture
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop import (
-    AgentLoopService,
-    CompletionEvidenceService,
-    CompletionGuard,
-    CompletionVerificationContract,
-    CriterionVerification,
-    DelegatedDirectiveFactory,
-    LoopCoordinator,
-    LoopCreateRequest,
-    LoopKernel,
-    LoopWaveDispatcher,
-    PatrolDecisionIntent,
-    PendingDecisionProjector,
-)
+from backend.app.desktop.patrol.agent_loop import AgentLoopService, CompletionEvidenceService, CompletionGuard, CompletionVerificationContract, CriterionVerification, DelegatedDirectiveFactory, LoopWaveDispatcher, PatrolDecisionIntent, PendingDecisionProjector
 from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
 from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
     CompletionCheckDefinition,
@@ -45,18 +30,7 @@ from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
     LoopMissionContract,
 )
 from backend.app.desktop.patrol.agent_loop.missions.mission_history import MissionHistoryQueryService
-from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
-from backend.app.desktop.patrol.agent_loop.models import (
-    AgentLoop,
-    LoopDirective,
-    LoopDirectiveTransition,
-    LoopGoalRevision,
-    LoopInterventionTransition,
-    LoopRound,
-    LoopUserIntent,
-    LoopWorkerRequest,
-    MessageProvenance,
-)
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDirective, LoopDirectiveTransition, LoopGoalRevision, LoopRound, LoopWorkerRequest, MessageProvenance
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -76,8 +50,55 @@ def test_closed_action_union_rejects_unknown() -> None:
         PatrolDecisionIntent.model_validate({"decision_id": "d", "idempotency_key": "k", "loop_id": "l", "loop_revision": 1, "round_id": "r", "holder_id": "h", "grant_id": "g", "grant_revision": 1, "goal_revision": 1, "observed_frontier_hash": "a" * 64, "observed_workspace_revision": 1, "rationale": "x", "actions": [{"action": "worker_commit_database"}]})
 
 
+@pytest.mark.parametrize("deferred_status", ["publishing", "adopting"])
+def test_retired_context_loop_cannot_replay_deferred_side_effects(tmp_path, deferred_status) -> None:
+    from unittest.mock import Mock
+    from backend.tests.workspace_loop_support import _seed_greeting_loop
+    from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel, KernelRejected
+    from backend.app.desktop.patrol.agent_loop.models import LoopDecision
+
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            fixture = await _seed_greeting_loop(sessions, tmp_path)
+            snapshot = fixture["snapshot"]
+            async with sessions.begin() as session:
+                loop = await session.get(AgentLoop, fixture["loop_id"])
+                loop.interaction_mode = "context_loop"
+                round_row = await session.get(LoopRound, snapshot["current_round_id"])
+                intent = PatrolDecisionIntent(
+                    decision_id=uuid.uuid4().hex, idempotency_key=f"retired-{deferred_status}-{loop.loop_id}",
+                    loop_id=loop.loop_id, loop_revision=loop.revision, round_id=round_row.round_id,
+                    holder_id=loop.holder_id, grant_id=snapshot["grant"]["grant_id"],
+                    grant_revision=loop.authority_revision, goal_revision=loop.goal_revision,
+                    observed_frontier_hash=round_row.frontier_hash,
+                    observed_workspace_revision=round_row.workspace_revision,
+                    rationale="Replay a previously authorized deferred decision",
+                    actions=({"action": "continue_context", "context_id": fixture["context_id"],
+                              "context_revision_id": fixture["revision_id"], "message": "Continue"},),
+                )
+                session.add(LoopDecision(decision_id=intent.decision_id, loop_id=loop.loop_id,
+                    round_id=round_row.round_id, holder_id=loop.holder_id,
+                    intent=intent.model_dump(mode="json"), rationale=intent.rationale,
+                    status=deferred_status, idempotency_key=intent.idempotency_key))
+            publication, adoption = Mock(), Mock()
+            kernel = LoopKernel(sessions, portfolio_publication=publication, workspace_adoption=adoption)
+            with pytest.raises(KernelRejected, match="旧 Context Loop 已退役"):
+                await kernel.commit(intent)
+            assert publication.mock_calls == []
+            assert adoption.mock_calls == []
+            async with sessions() as session:
+                decision = await session.get(LoopDecision, intent.decision_id)
+                assert decision.status == deferred_status
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 @pytest.mark.usefixtures("runtime_postgres_database")
-def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
+def test_workspace_zero_worker_directive_and_mission_fences(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -99,7 +120,7 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
                 await ContextRevisionRepository().switch_current(session, ref, None)
                 session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
             service = AgentLoopService(sessions)
-            snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-1", goal="Implement the feature", task_contract="Stay in scope and pass tests", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},), capabilities=("continue_context", "request_completion_verifier", "request_completion", "wait_for_user", "stop_loop"), context_scope=(context_id,), permission_scope=("read", "write"), delegable_gates=("compression",)))
+            snapshot = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-1", goal="Implement the feature", task_contract="Stay in scope and pass tests", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},), capabilities=("continue_context", "request_completion_verifier", "request_completion", "wait_for_user", "stop_loop"), context_scope=(context_id,), permission_scope=("read", "write"), delegable_gates=("compression",))
             compression = await PendingDecisionProjector(sessions).project(loop_id, {"type": "compression", "checkpoint_id": "checkpoint-1"})
             assert compression.delegable is True
             assert (await service.get(loop_id))["status"] == "running"
@@ -122,58 +143,17 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
                 assert [item.to_state for item in transitions] == ["proposed", "authorized"]
                 assert [item.kind for item in journal] == ["directive.proposed", "directive.authorized"]
                 assert workers == []
-            mission_before = snapshot["mission"]
-            direct = await service.user_message(context_id, "只复现一次 Windows 路径失败，不改变长期目标。")
-            after_direct = await service.get(loop_id)
-            assert direct["mission_revision"] == 1
-            assert after_direct["goal_revision"] == 1
-            assert after_direct["mission"] == mission_before
-            async with sessions() as session:
-                revisions = list((await session.scalars(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == loop_id))).all())
-                user_intent = await session.get(LoopUserIntent, direct["intent_id"])
-                direct_history = tuple((await session.scalars(select(LoopInterventionTransition).where(LoopInterventionTransition.intent_id == user_intent.intent_id).order_by(LoopInterventionTransition.revision))).all())
-                cancelled_directive = await session.get(LoopDirective, result.directive_ids[0])
-                cancelled_history = tuple((await session.scalars(select(LoopDirectiveTransition).where(LoopDirectiveTransition.directive_id == cancelled_directive.directive_id).order_by(LoopDirectiveTransition.revision))).all())
-                assert len(revisions) == 1
-                assert user_intent.status == "pending"
-                assert user_intent.origin_kind == "user"
-                assert user_intent.delivery_state == "accepted"
-                assert [item.to_state for item in direct_history] == ["submitted", "accepted"]
-                assert cancelled_directive.lifecycle_state == "cancelled"
-                assert cancelled_history[-1].to_state == "cancelled"
-                assert user_intent.content == "只复现一次 Windows 路径失败，不改变长期目标。"
-            from test_loop_user_message_transaction import authorize_message
-            from test_loop_failure_repair_transaction import _launch, _finish
-            from focus.runtime.runs.schemas import RunStatus
-
-            fixture = {"loop_id": loop_id, "context_id": context_id, "revision_id": revision_id,
-                       "snapshot": after_direct, "service": service}
-            coordinator = LoopCoordinator(sessions)
-            claim = await coordinator.claim_for_loop(loop_id, "direct-user-kernel")
-            await authorize_message(sessions, fixture, claim, direct["intent_id"])
-            record = await _launch(sessions, fixture, coordinator, claim)
-            record.status = RunStatus.success
-            await _finish(sessions, fixture, coordinator, record, [])
-            async with sessions() as session:
-                settled_history = tuple((await session.scalars(select(LoopInterventionTransition).where(LoopInterventionTransition.intent_id == direct["intent_id"]).order_by(LoopInterventionTransition.revision))).all())
-            assert [item.to_state for item in settled_history] == ["submitted", "accepted", "observed", "delivered", "run_started", "settled"]
-            overridden = await service.override(loop_id, "Prioritize migration safety", "Do not change public API", [{"criterion_id": "api", "text": "API stable"}])
+            overridden = await advance_workspace_mission(sessions, loop_id, "Prioritize migration safety", "Do not change public API", [{"criterion_id": "api", "text": "API stable"}])
             assert overridden["goal_revision"] == 2
-            mission_event = next(event for event in await service.events(loop_id) if event["type"] == "MissionRevisionActivated")
-            assert mission_event["payload"]["previous_mission_revision"] == 1
-            assert mission_event["payload"]["mission_revision"] == 2
             stale = intent.model_copy(update={"decision_id": uuid.uuid4().hex, "idempotency_key": "stale", "round_id": overridden["current_round_id"]})
             stale_result = await commit_patrol(sessions, stale)
             assert stale_result.status == "superseded"
             assert stale_result.reason == "mission_revision_changed"
-            restricted = await service.override(
-                loop_id,
-                mission=LoopMissionContract(
+            restricted = await advance_workspace_mission(sessions, loop_id, mission=LoopMissionContract(
                     outcome="Finish the migration safely",
                     boundaries=ExecutionBoundaries(prohibited_actions=("continue_context",)),
                     completion_checks=(CompletionCheckDefinition(check_id="api", claim="API remains stable", expected_evidence_kinds=("test",)),),
-                ),
-            )
+                ))
             blocked = PatrolDecisionIntent(
                 decision_id=uuid.uuid4().hex,
                 idempotency_key="blocked-by-mission",
@@ -204,14 +184,11 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
 
             assert await LoopWaveDispatcher(sessions, forbidden_launch).dispatch(loop_id, restricted["current_round_id"], 1) == ()
 
-            target_round = await service.override(
-                loop_id,
-                mission=LoopMissionContract(
+            target_round = await advance_workspace_mission(sessions, loop_id, mission=LoopMissionContract(
                     outcome="Continue safely",
                     boundaries=ExecutionBoundaries(),
                     completion_checks=(CompletionCheckDefinition(check_id="api", claim="API remains stable", expected_evidence_kinds=("test",)),),
-                ),
-            )
+                ))
             missing_target = PatrolDecisionIntent(
                 decision_id=uuid.uuid4().hex,
                 idempotency_key="missing-target",
@@ -269,8 +246,7 @@ def test_completion_guard_rejects_unknown() -> None:
     assert result.waiting_user is True
 
 
-@pytest.mark.parametrize("interaction_mode", ["context_loop", "workspace_patrol"])
-def test_independent_verifier_is_required_before_completion_and_final_result_is_auditable(tmp_path, interaction_mode) -> None:
+def test_independent_verifier_is_required_before_completion_and_final_result_is_auditable(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -293,11 +269,11 @@ def test_independent_verifier_is_required_before_completion_and_final_result_is_
                 await repository.switch_current(session, ref, None)
                 session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
             service = AgentLoopService(sessions)
-            snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-complete", goal="Finish safely", task_contract="Tests must pass", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass", "required": True},), capabilities=("request_completion_verifier", "request_completion"), context_scope=(context_id,), permission_scope=("read", "host_command")))
+            snapshot = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-complete", goal="Finish safely", task_contract="Tests must pass", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass", "required": True},), capabilities=("request_completion_verifier", "request_completion"), context_scope=(context_id,), permission_scope=("read", "host_command"))
             async with sessions.begin() as session:
                 round_row = await session.get(LoopRound, snapshot["current_round_id"])
                 loop = await session.get(AgentLoop, loop_id)
-                loop.interaction_mode = interaction_mode
+                loop.interaction_mode = "workspace_patrol"
                 slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == workspace_id, WorkspaceSlot.kind == "authoritative"))
                 worker_id = uuid.uuid4().hex
                 session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=loop_id, round_id=round_row.round_id, kind="completion_verifier", scope={"candidate_context_ids": [context_id]}))
@@ -310,9 +286,8 @@ def test_independent_verifier_is_required_before_completion_and_final_result_is_
             assert result.status == "committed", result.reason
             async with sessions() as session:
                 loop = await session.get(AgentLoop, loop_id)
-                assert loop.status == ("waiting_user" if interaction_mode == "workspace_patrol" else "completed")
-                if interaction_mode == "workspace_patrol":
-                    assert (loop.health, loop.waiting_reason) == ("idle", "awaiting_input")
+                assert loop.status == "waiting_user"
+                assert (loop.health, loop.waiting_reason) == ("idle", "awaiting_input")
                 assert loop.final_result["verification"]["verification_id"] == verification.verification_id
                 assert loop.final_result["summary"] == "Finish safely"
                 assert loop.final_result["round_id"] == round_row.round_id

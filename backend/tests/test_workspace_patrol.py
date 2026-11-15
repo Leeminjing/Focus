@@ -36,6 +36,8 @@ def test_legacy_context_main_route_cannot_bypass_workspace_input(tmp_path):
         from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
         from backend.app.desktop.api.schemas import MainRunCreate
         from backend.app.desktop.api.runs import start_main_run
+        from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
+        from backend.app.desktop.patrol.agent_loop.execution.execution_ownership import RunOwnershipPolicy
 
         engine, sessions, workspace_id, service = await _setup(tmp_path)
         try:
@@ -53,6 +55,14 @@ def test_legacy_context_main_route_cannot_bypass_workspace_input(tmp_path):
             with pytest.raises(HTTPException) as rejected:
                 await start_main_run(context_id, MainRunCreate(message="绕过统一输入", idempotency_key=uuid.uuid4().hex), request, None)
             assert rejected.value.status_code == 409 and "统一输入" in rejected.value.detail
+            async with sessions.begin() as session:
+                with pytest.raises(HTTPException) as rejected:
+                    await RunAdmissionService(RunOwnershipPolicy().admit).admit(session, DesktopRun(
+                        run_id=uuid.uuid4().hex, task_id=context_id,
+                        agent_id=f"main:{context_id}", kind="main", status="pending",
+                        origin="direct_user", input_messages=[{"role": "user", "content": "绕过 HTTP 检查"}],
+                    ))
+                assert rejected.value.status_code == 409 and "统一输入" in rejected.value.detail
             async with sessions() as session:
                 loop = await session.get(AgentLoop, receipt["loop_id"])
                 assert (loop.revision, loop.authority_revision, loop.current_round_id) == original

@@ -65,7 +65,7 @@ class LoopWorkspaceAdoptionService:
         for decision_id in ids:
             async with self._sessions.begin() as session:
                 loop, round_row, decision = await self._lock_owner(session, decision_id)
-                if (loop.status != "running" or round_row.status != "adopting"
+                if (loop.interaction_mode != "workspace_patrol" or loop.status != "running" or round_row.status != "adopting"
                     or decision.status != "adopting" or round_row.decision_id != decision_id
                     or round_row.authority_revision != loop.authority_revision
                     or decision.authority_committed_at is None):
@@ -238,6 +238,8 @@ class LoopWorkspaceAdoptionService:
 
     @staticmethod
     def _require_current_owner(loop: AgentLoop, round_row: LoopRound, decision: LoopDecision) -> None:
+        if loop.interaction_mode != "workspace_patrol":
+            raise RuntimeError("旧 Context Loop 已退役")
         if round_row.decision_id != decision.decision_id or decision.authority_committed_at is None:
             raise ValueError("Workspace adoption 缺少所属 Round 的成功权威提交")
         if (loop.status != "running"

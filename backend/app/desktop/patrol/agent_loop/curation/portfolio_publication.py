@@ -228,6 +228,8 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
 
     @staticmethod
     async def _validate_authority(session, loop, round_row, grant, controls) -> None:
+        if loop.interaction_mode != "workspace_patrol":
+            raise PortfolioSuperseded("旧 Context Loop 已退役")
         if loop.status != "running" or grant is None or grant.status != "active":
             raise PortfolioSuperseded("Loop delegation 已撤销")
         if round_row.status in {"settled", "error", "superseded"}:
@@ -476,6 +478,8 @@ class LoopPortfolioPublicationService:
                 return None, {}, existing_id
             if decision.status not in {"publishing", "publishing_run"}:
                 raise PortfolioSuperseded("Loop decision 不处于 publishing")
+            if loop is None or loop.interaction_mode != "workspace_patrol":
+                raise PortfolioSuperseded("旧 Context Loop 已退役")
             program = await session.get(CurationProgram, loop.program_id, with_for_update=True) if loop else None
             if loop is None or round_row is None or program is None:
                 raise PortfolioSuperseded("Loop publication identity 不完整")

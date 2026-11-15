@@ -1,16 +1,14 @@
 r"""本文件对外提供 Agent Loop API、版本化 Expansion 预算、Mission、类型化等待原因/响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
 
 输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion/recovery opportunity、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
-合同。具体工作流为预算合同验证 Expansion 子策略并标记来源，创建请求再解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 identity
+合同。具体工作流为预算合同验证 Expansion 子策略并标记来源，工作区输入分别表达最终结果、边界和完成检查，模型只以 identity
 选择（spawn_context/recover_context）或结构化拒绝（decline_expansion）表达 Context 派生与恢复、可信 plan 由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
-envelope 绑定所有控制 revision 与未处理用户意图，completion 的模型候选与持久合同共用 CompletionVerificationResult，绑定唯一 check_id、类型化证据及 unresolved 引用；bootstrap intent 有模型外来源标识，自主压缩 action 只能引用已持久化候选，Kernel 只接受
+envelope 绑定所有控制 revision 与未处理用户意图，completion 的模型候选与持久合同共用 CompletionVerificationResult，绑定唯一 check_id、类型化证据及 unresolved 引用；自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
 新版 Observation 校验完整 TaskProgress、来源 manifest 和已提交 Lineage 合同；legacy 输入保留原 schema。
-LoopCreateRequest.inherit_initial_equipment 显式要求服务端继承初始 Run，equipment 与 permission_scope 仅表达 override 或缩权。
-deliver_user_message 只接受已冻结 intent_id，不接受模型提供正文、目标或装备。
 completion_admission 冻结当前完成请求语义身份、原验证及准入 blocker，历史 envelope 可缺省。
 completion_eligibility 独立冻结具体验证的版本化完成资格，历史输入缺省不回填或改写。
-workspace_patrol、精确用户输入处置与 awaiting_input 扩展现有联合；缺省交互模式继续兼容旧 Observation。
+workspace_patrol、精确用户输入处置与 awaiting_input 扩展现有联合；缺省交互模式为工作区 Patrol，保留旧 Observation 身份的只读解析。
 evolution_strategies 保存生效策略目录、适用信息和不可变正文 hash；兼容历史全文快照，不改变执行权限。
 可执行消息动作的 attachment_input_ids 仅选择冻结输入来源，不能提供任意材料路径或扩大素材访问范围。
 """
@@ -37,8 +35,6 @@ from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy i
 )
 from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
     EvidenceKind,
-    LegacyMissionAdapter,
-    LoopMissionContract,
 )
 from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import ApplyUserInputsAction
 from backend.app.desktop.patrol.agent_loop.task_progress.contracts import (
@@ -85,11 +81,6 @@ class ContinueContextAction(StrictModel):
     required_barrier: bool = True
     workspace_repair: WorkspaceRepairSelection | None = None
     attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
-
-
-class DeliverUserMessageAction(StrictModel):
-    action: Literal["deliver_user_message"]
-    intent_id: str = Field(min_length=1, max_length=32)
 
 
 class CancelExecutionAction(StrictModel):
@@ -217,7 +208,7 @@ class StopLoopAction(StrictModel):
 
 
 PatrolAction = Annotated[
-    ContinueContextAction | DeliverUserMessageAction | CancelExecutionAction | ApplyUserInputsAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | CancelExecutionAction | ApplyUserInputsAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -226,7 +217,7 @@ PatrolAction = Annotated[
 PATROL_ACTION_ADAPTER = TypeAdapter(PatrolAction)
 
 PatrolModelAction = Annotated[
-    ContinueContextAction | DeliverUserMessageAction | CancelExecutionAction | ApplyUserInputsAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | CancelExecutionAction | ApplyUserInputsAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -245,7 +236,7 @@ class StrategyAdoption(StrictModel):
 class PatrolDecisionIntent(StrictModel):
     decision_id: str
     idempotency_key: str
-    origin_kind: Literal["patrol", "mission_bootstrap"] = "patrol"
+    origin_kind: Literal["patrol"] = "patrol"
     loop_id: str
     loop_revision: int = Field(gt=0)
     round_id: str
@@ -331,58 +322,6 @@ LoopGrantMutationRequest = Annotated[
 ]
 
 
-class LoopCreateRequest(StrictModel):
-    loop_id: str
-    workspace_id: str
-    initial_context_id: str
-    initial_run_id: str
-    readiness_token: str | None = Field(default=None, min_length=64, max_length=64)
-    activation_key: str | None = Field(default=None, min_length=1, max_length=160)
-    holder_id: str
-    mission: LoopMissionContract | None = None
-    goal: str | None = Field(default=None, min_length=1)
-    task_contract: str | None = Field(default=None, min_length=1)
-    acceptance_criteria: tuple[dict[str, Any], ...] | None = Field(default=None, min_length=1)
-    capabilities: tuple[str, ...]
-    context_scope: tuple[str, ...] = Field(min_length=1)
-    permission_scope: tuple[str, ...]
-    delegable_gates: tuple[str, ...] = ()
-    compression_policy: AutonomousCompressionPolicy | None = None
-    budgets: LoopBudgetContract = Field(default_factory=LoopBudgetContract)
-    equipment: dict[str, Any] = Field(default_factory=dict)
-    inherit_initial_equipment: bool = False
-    expires_at: str | None = None
-
-    @model_validator(mode="after")
-    def require_one_mission_shape(self) -> LoopCreateRequest:
-        legacy = (self.goal, self.task_contract, self.acceptance_criteria)
-        if self.mission is not None and any(value is not None for value in legacy):
-            raise ValueError("mission 与旧 goal/task_contract/acceptance_criteria 不能同时提交")
-        if self.mission is None and any(value is None for value in legacy):
-            raise ValueError("必须提交 mission 或完整旧目标字段")
-        if self.mission is not None and (not self.mission.outcome or not self.mission.completion_checks):
-            raise ValueError("旧 Context Loop 启动仍需完整最终结果和完成检查；工作区 Patrol 使用统一输入")
-        return self
-
-    def resolved_mission(self) -> LoopMissionContract:
-        if self.mission is not None:
-            return self.mission
-        return LegacyMissionAdapter.convert(
-            goal=self.goal or "",
-            task_contract=self.task_contract or "",
-            acceptance_criteria=self.acceptance_criteria or (),
-        )
-
-
-class LoopInterventionRequest(StrictModel):
-    mode: Literal["patrol_context_intent", "patrol_portfolio_intent"]
-    content: str = Field(min_length=1, max_length=12000)
-    context_id: str | None = None
-
-    def scope(self) -> str:
-        return "context" if self.mode == "patrol_context_intent" else "portfolio"
-
-
 class LoopWaitResponseRequest(StrictModel):
     request_revision: int = Field(gt=0)
     idempotency_key: str = Field(min_length=1, max_length=160)
@@ -402,6 +341,7 @@ class LoopObservationEnvelope(StrictModel):
     pre_input_state: dict[str, Any] | None = None
     pre_input_hash: str | None = None
     causal_chain: tuple[dict[str, Any], ...] = ()
+    # Missing mode identifies historical envelopes; new observations set it explicitly.
     interaction_mode: Literal["context_loop", "workspace_patrol"] = "context_loop"
     information_requests: tuple[dict[str, Any], ...] = ()
     input_schema_version: Literal[0, 1] = 0

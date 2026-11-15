@@ -1,8 +1,8 @@
-"""主运行输入受理：先校验引用，再进行 Loop 分流或幂等派发。
+"""主运行输入受理：校验引用后幂等派发普通 Main Run。
 
 输入为已验证的运行请求及可选 HTTP 幂等身份；输出为原有受理或 Run 响应。
-工作流保持引用授权、Loop 优先、持久化幂等查询及派发通知的既有顺序，
-不持有 HTTP Request 或应用状态。示例：MainRunIntake(desktop, loop).submit(task_id, body)。
+工作流保持引用授权、持久化幂等查询及派发通知的顺序，
+不持有 HTTP Request 或应用状态。示例：MainRunIntake(desktop).submit(task_id, body)。
 """
 
 from __future__ import annotations
@@ -28,18 +28,9 @@ class MainRunIntakePorts(Protocol):
     def notify_run_dispatch(self) -> None: ...
 
 
-class LoopMessagePorts(Protocol):
-    async def user_message(
-        self, task_id: str, message: str, *, request_id: str, payload: dict
-    ) -> dict | None: ...
-
-
 class MainRunIntake:
-    def __init__(
-        self, ports: MainRunIntakePorts, loop_service: LoopMessagePorts | None = None
-    ) -> None:
+    def __init__(self, ports: MainRunIntakePorts) -> None:
         self._ports = ports
-        self._loop_service = loop_service
 
     async def submit(
         self, task_id: str, body: MainRunCreate, idempotency_header: str | None = None
@@ -49,18 +40,6 @@ class MainRunIntake:
             body.idempotency_key or idempotency_header or uuid.uuid4().hex
         )
         await validate_message_reference(ports, task_id, body.message_reference)
-        loop_service = self._loop_service
-        if loop_service is not None:
-            accepted = await loop_service.user_message(
-                task_id,
-                _loop_message_text(body.message),
-                request_id=request_identity,
-                payload=body.model_dump(
-                    mode="json", exclude_unset=True, exclude={"idempotency_key"}
-                ),
-            )
-            if accepted is not None:
-                return accepted
         idempotency_key = f"direct-user:{request_identity}"
         existing = await ports.run_by_idempotency(idempotency_key)
         if existing is not None:
@@ -96,16 +75,3 @@ class MainRunIntake:
         )
         ports.notify_run_dispatch()
         return prepared.payload
-
-
-def _loop_message_text(message: str | list[dict]) -> str:
-    if isinstance(message, str):
-        return message
-    return (
-        "\n".join(
-            str(block.get("text") or "")
-            for block in message
-            if isinstance(block, dict) and block.get("type") == "text"
-        ).strip()
-        or "[用户提交了非文本消息内容]"
-    )

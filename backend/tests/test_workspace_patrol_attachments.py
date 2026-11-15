@@ -10,7 +10,6 @@ import base64
 import hashlib
 import io
 import json
-from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 import uuid
@@ -25,7 +24,7 @@ import pytest
 from sqlalchemy import func, select
 
 from backend.app.desktop.patrol.agent_loop.execution.dispatch import DesktopDirectiveLaunchPort
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopObservation, LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopObservation, LoopUserIntent
 from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest, request_document
 from backend.app.desktop.patrol.agent_loop.inputs.patrol_request_capacity import PatrolRequestCapacity
 from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
@@ -294,7 +293,6 @@ def test_kernel_authorizes_frozen_input_and_dispatch_delivers_same_version(tmp_p
         from backend.app.desktop.runs.orchestration.lifecycle import RunLifecycleFinalizer
         from backend.app.desktop.persistence.models import DesktopRun
         from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
-        from backend.app.desktop.patrol.agent_loop.governance.provenance import DelegatedDirectiveFactory
         from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
         from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
         from backend.app.desktop.contexts.evolution import ContextEvolutionService
@@ -313,7 +311,7 @@ def test_kernel_authorizes_frozen_input_and_dispatch_delivers_same_version(tmp_p
             identity = uuid.uuid4().hex
             image = await _upload(sessions, workspace_id, identity, _png())
             receipt = await service.submit(workspace_id, PatrolInputRequest(submission_id=identity,
-                attachments=[_reference(image)]))
+                attachments=[_reference(image)], access_mode="read-only"))
             checkpointer = InMemorySaver()
             await WorkspacePatrolBootstrap(sessions,
                 ContextEvolutionService(sessions, checkpointer, graph_factory)).prepare(receipt["loop_id"])
@@ -369,7 +367,7 @@ def test_kernel_authorizes_frozen_input_and_dispatch_delivers_same_version(tmp_p
             await LoopRunExecutionBoundary(sessions).validate(run_ids[0])
             assert captured["material_inputs"][0].frozen_snapshot["digest"] == image.digest
             assert captured["run_identity"]["user_intent_id"] is None
-            assert captured["must_view_material_ids"] == []
+            assert "must_view_material_ids" not in captured
             async with sessions() as session:
                 source = await session.get(LoopUserIntent, receipt["intent_id"])
                 assert source.delivery_state == "addressed"

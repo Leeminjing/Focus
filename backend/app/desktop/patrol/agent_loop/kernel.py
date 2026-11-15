@@ -5,14 +5,13 @@ r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯
 澄清动作在同一事务内根据当前事实再次验证 cause 与 evidence identity，只有准入后才写等待请求；
 无副作用 decline_expansion 仅形成审计 action，普通动作
 单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用 Kernel port 执行外部准备并
-原子收口权威状态；Mission bootstrap 与 Patrol 共用 continuation 提交边界且只在外部记录来源；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的延迟决策必须在同一事务内复用Round终止入口记录结算和事件，并把仍运行的当前轮所属
+原子收口权威状态；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的延迟决策必须在同一事务内复用Round终止入口记录结算和事件，并把仍运行的当前轮所属
 Loop交回用户；成功权威凭据与 Round.decision_id 不回退，提交前拒绝只留候选审计与恢复等待，提交成功后收口该 round 已观察的用户意图；自主压缩由专用committer在同一事务内只提交
 resolution、不触碰 graph；completed/stopped/failed 委托 TerminalLifecycle 原子收敛并释放策展所有权；执行阶段与控制状态由共享生命周期入口发布，实体版本不代替控制版本；Worker 无提交端口。示例：`result = await kernel.commit(intent)`。
-直接用户消息经专职适配器核验冻结身份并生成用户来源 Directive；普通意见收口不会把直接消息标为 addressed，未处理消息阻止完成。
 完成动作复用共享只读资格政策并在当前权威事务重读具体验证及来源。
 完成 Worker 受理前在当前控制事务复检同源语义输入，等价已验证输入零新 Worker；语义合同与审计来源保存于现有 scope。
 延迟失败只先读取决策归属，再依 Loop、Round、Decision 顺序加锁并刷新；已落定的决策原样返回，迟到回调不覆盖暂停终态。
-workspace_input 由 apply_user_inputs 完整处置，有来源的 Mission 修订、逐 Context 权限、精确取消与新工作在同一授权事务提交；发布重放只处理尚未生效动作，后续失败不能撤回已提交输入或取消。workspace 完成落点保留绑定并 idle，旧 Context Loop 仍走终态。
+workspace_input 由 apply_user_inputs 完整处置，有来源的 Mission 修订、逐 Context 权限、精确取消与新工作在同一授权事务提交；发布重放只处理尚未生效动作，后续失败不能撤回已提交输入或取消。工作区完成落点保留绑定并等待新输入；旧 Context Loop 仅保留历史结果读取，禁止新提交和延迟副作用。
 Savepoint 回退后显式刷新控制实体。仅迁移前 schema0 且无 DecisionInputs 的 Observation 不登记认知沉淀 work，执行来源仍由全轮汇合吸收。
 消息动作的附件选择仅来自本轮冻结观察或其精确输入因果链，提交前核验工作区，Dispatcher 从同一已提交观察解析版本。
 """
@@ -24,7 +23,7 @@ from datetime import UTC, datetime
 import uuid
 from typing import Protocol
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.patrol.agent_loop.governance.authority import AuthorityViolation, DelegatedAuthorityGuard
@@ -34,16 +33,15 @@ from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import 
 from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
 from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.patrol.agent_loop.inputs.user_message_delivery import LoopUserMessageDelivery, UserMessageDeliveryRejected
 from backend.app.desktop.patrol.agent_loop.missions.mission_authority import MissionAuthorityGuard, MissionAuthorityViolation
-from backend.app.desktop.patrol.agent_loop.governance.ownership import KernelFencingRejected, LoopFencingGuard
+from backend.app.desktop.patrol.agent_loop.governance.ownership import LoopFencingGuard
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop, CompletionVerification, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopDecision,
     LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopPendingDecision,
     LoopObservation, LoopRound, LoopUserIntent, LoopWorkerRequest,
 )
 from backend.app.desktop.patrol.agent_loop.governance.provenance import DelegatedDirectiveFactory
-from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import UNDECIDED_ROUND_STATUSES, terminate_round
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import terminate_round
 from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
 from backend.app.desktop.patrol.agent_loop.compression_authority.commit import CompressionAuthorityCommitter, CompressionCommitRejected
 from backend.app.desktop.patrol.agent_loop.context_expansion.repository import ContextExpansionRepository
@@ -53,7 +51,7 @@ from backend.app.desktop.patrol.agent_loop.context_recovery import (
     ContextRecoveryAuthorityValidator,
     ContextRecoveryOpportunityRepository,
 )
-from backend.app.desktop.contexts.curation.models import CurationLane, PortfolioRevision
+from backend.app.desktop.contexts.curation.models import CurationLane
 from backend.app.desktop.contexts.curation.portfolio_publisher import PortfolioSuperseded
 from backend.app.desktop.contexts.evolution.models import ContextRevision
 from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
@@ -105,7 +103,6 @@ class LoopKernel:
         self._directive_lifecycle = DirectiveLifecycleRepository()
         self._journal = LoopEventJournal()
         self._interventions = InterventionLifecycleRepository()
-        self._user_messages = LoopUserMessageDelivery()
         self._recovery_opportunities = ContextRecoveryOpportunityRepository()
         self._recovery_authority = ContextRecoveryAuthorityValidator()
         self._compression = CompressionAuthorityCommitter()
@@ -122,6 +119,9 @@ class LoopKernel:
             if existing is not None:
                 if existing.status not in {"publishing", "adopting"}:
                     return await self._result(session, existing)
+                loop = await session.get(AgentLoop, existing.loop_id, with_for_update=True, populate_existing=True)
+                if loop is None or loop.interaction_mode != "workspace_patrol":
+                    raise KernelRejected("旧 Context Loop 已退役")
                 deferred_id = existing.decision_id
                 deferred_kind = existing.status
             if deferred_id is None:
@@ -168,6 +168,8 @@ class LoopKernel:
         grant = await session.get(LoopDelegationGrant, intent.grant_id, with_for_update=True, populate_existing=True)
         if loop is None or round_row is None or round_row.loop_id != intent.loop_id:
             raise KernelRejected("Loop 或 round 不存在")
+        if loop.interaction_mode != "workspace_patrol":
+            raise KernelRejected("旧 Context Loop 已退役")
         existing = await session.scalar(select(LoopDecision).where(LoopDecision.idempotency_key == intent.idempotency_key))
         if existing is not None:
             return None, None, await self._result(session, existing)
@@ -296,7 +298,7 @@ class LoopKernel:
             ).all()
         )
         for intent in intents:
-            if intent.intent_kind in {"direct_message", "workspace_input"}:
+            if intent.intent_kind == "workspace_input":
                 continue
             intent.status = "addressed"
             if intent.delivery_state == "observed":
@@ -361,7 +363,6 @@ class LoopKernel:
         applications = [action for action in intent.actions if action.action == "apply_user_inputs"]
         if len(applications) > 1:
             raise KernelRejected("输入处置动作必须唯一")
-        message_targets = []
         for action in intent.actions:
             attachment_ids = getattr(action, "attachment_input_ids", ())
             if attachment_ids:
@@ -374,11 +375,6 @@ class LoopKernel:
                     WorkspaceAttachments().authorized(observation.envelope, attachment_ids, loop.workspace_id)
                 except ValueError as error:
                     raise KernelRejected(str(error)) from error
-            if action.action == "deliver_user_message":
-                try:
-                    message_targets.append(await self._user_messages.validate(session, loop, round_row, grant, action.intent_id))
-                except UserMessageDeliveryRejected as exc:
-                    raise KernelRejected(str(exc)) from exc
         wait_actions = tuple(action for action in intent.actions if action.action == "wait_for_user" and action.cause != "awaiting_input")
         if wait_actions:
             facts = await self._clarification_facts.read(session, loop, grant, round_row)
@@ -432,7 +428,7 @@ class LoopKernel:
             action.context_id
             for action in intent.actions
             if action.action == "continue_context"
-        ] + message_targets
+        ]
         if len(direct_targets) != len(set(direct_targets)):
             raise KernelRejected("同一 round 不得向同一 Context 派发多个并行 Run")
         unsafe_while_active = {"update_lane", "merge_contexts", "pause_lane"}
@@ -676,15 +672,7 @@ class LoopKernel:
             action = LoopAction(action_id=action_id, decision_id=decision.decision_id, loop_id=loop.loop_id, position=position, action_type=intent_action.action, payload=intent_action.model_dump(mode="json"), status="committed")
             session.add(action)
             action_ids.append(action_id)
-            if intent_action.action == "deliver_user_message":
-                directive, provenance = await self._user_messages.create(
-                    session, loop, round_row, grant, decision, action, intent_action.intent_id)
-                session.add_all([directive, provenance])
-                await session.flush()
-                await self._directive_lifecycle.register(session, directive)
-                await self._directive_lifecycle.transition(session, directive.directive_id, "authorized")
-                directive_ids.append(directive.directive_id)
-            elif intent_action.action == "apply_user_inputs":
+            if intent_action.action == "apply_user_inputs":
                 action.result = (input_results or {})[position]
                 action.status = "applied"
             elif intent_action.action == "cancel_execution":
@@ -780,23 +768,13 @@ class LoopKernel:
                     correlation_id=decision.decision_id,
                     round_id=round_row.round_id,
                 )
-                if loop.interaction_mode == "workspace_patrol" and intent_action.cause == "missing_input":
+                if intent_action.cause == "missing_input":
                     await self._park_workspace(session, loop, required=False, deferred_inputs=deferred_inputs)
             elif intent_action.action == "stop_loop":
                 await self._terminal.finalize(session, loop, "stopped", "patrol_stop_loop")
             elif intent_action.action == "request_completion":
-                final_result = await self._completion_result(session, loop, intent_action)
-                if loop.interaction_mode == "workspace_patrol":
-                    loop.final_result = final_result
-                    await self._park_workspace(session, loop)
-                    continue
-                await self._terminal.finalize(
-                    session,
-                    loop,
-                    "completed",
-                    "patrol_request_completion",
-                    final_result=final_result,
-                )
+                loop.final_result = await self._completion_result(session, loop, intent_action)
+                await self._park_workspace(session, loop)
         return action_ids, directive_ids
 
     @staticmethod
@@ -1033,7 +1011,7 @@ class LoopKernel:
             return "resolving_gate"
         if any(action.action in {"request_lane_curator", "request_completion_verifier"} for action in intent.actions):
             return "waiting_workers"
-        if any(action.action in {"continue_context", "deliver_user_message", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
+        if any(action.action in {"continue_context", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
             return "ready"
         return "settled"
 
@@ -1043,7 +1021,7 @@ class LoopKernel:
             return "resuming"
         if any(action.action in {"request_lane_curator", "request_completion_verifier"} for action in intent.actions):
             return "waiting_workers"
-        if any(action.action in {"continue_context", "deliver_user_message", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
+        if any(action.action in {"continue_context", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
             return "dispatching"
         return "idle"
 

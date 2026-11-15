@@ -3,7 +3,7 @@ r"""本文件对外提供 ClarificationFacts、ClarificationFactsReader 和 Clar
 输入为类型化 wait_for_user 提案及冻结 observation 或 Kernel 当前 Mission/grant/gate/预算事实；输出为准入结果
 或包含合法 cause/证据 identity 的 read_view。具体工作流为 Reader 在当前事务校验同 Observation 的 assessment 补充，
 不存在补充时兼容基础 envelope；当前授权、预算、gate 与 Run 仍由权威事实组装。Policy 的读面与验证共享证据资格，
-Kernel 另核对尚未交付 Mission 的 Primary 授权缺口。完整 Mission、安全继续及没有派生机会不能构成缺失目标等待。
+完整 Mission、安全继续及没有派生机会不能构成缺失目标等待。
 示例：`view = ClarificationAdmissionPolicy.read_view(facts)`；`ClarificationAdmissionPolicy().validate(action, facts)`。
 workspace 不以缺少 outcome/checks 索取补表，可由冻结用户输入证明具体缺口，活动安全工作不阻止独立信息请求。
 """
@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.patrol.agent_loop.resources.budgets import LoopBudgetGuard
 from backend.app.desktop.patrol.agent_loop.decisions.decision_context import DecisionSupplementRepository
-from backend.app.desktop.patrol.agent_loop.missions.mission_bootstrap import MissionBootstrapStage
 from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
 from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopGoalRevision, LoopObservation, LoopPendingDecision, LoopRound
@@ -104,12 +103,8 @@ class ClarificationFactsReader:
         permissions = frozenset(grant.permission_scope or ()) if grant is not None else frozenset()
         scope = frozenset(grant.context_scope or ()) if grant is not None else frozenset()
         safe = "continue_context" in capabilities and loop.initial_context_id in scope and not gates and not exhausted and not external and active is None
-        bootstrap = await MissionBootstrapStage().assess(session, loop, round_row)
-        bootstrap_need = MissionBootstrapStage.permission_identity(bootstrap.reason or "") if bootstrap.state == "blocked" else None
         assessment = await self._expansion_assessment(session, observation)
         permission_needs = ClarificationAdmissionPolicy.permission_needs(assessment, capabilities, permissions)
-        if bootstrap_need is not None:
-            permission_needs = permission_needs | {bootstrap_need}
         return ClarificationFacts(
             workspace_patrol=loop.interaction_mode == "workspace_patrol",
             user_input_ids=frozenset(item["intent_id"] for item in (observation.envelope if observation else {}).get("user_intents", ())

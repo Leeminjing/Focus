@@ -1,3 +1,13 @@
+# 2026-11-15 旧 Context Loop 启动线退役决定
+
+用户明确要求彻底废弃旧 Context 启动线，移除相关接口、专属代码和测试，保留 Workspace Patrol 的共享能力。自动 Loop 统一通过工作区首输入建立，终态继续使用工作区显式 restart；普通 Context/Main Run 和 Session Patrol 保留。
+
+此前“后端保留业务、桌面入口待承接”的记录由本决定取代。移除旧创建、激活检查、Mission 表单修改和 intervention 接口及专属 Mission bootstrap；保留工作区使用的授权、预算、控制、等待恢复、完成、执行、Live 与历史查询。旧 context_loop 停止创建及自动调度，历史数据和必要的账务读模型保留。完整边界见 [旧 Context Loop 启动线退役](docs/context-loop-retirement.md)。
+
+下文为历史设计及验收记录，其中旧入口和测试结果不表示现行功能，也不代替本次改动验证。
+
+---
+
 # 2026-10-17 首发后续工作优先级
 
 后续工作按以下顺序推进；本节记录排期，不代表这些能力已完成验收。

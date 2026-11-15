@@ -4,7 +4,6 @@
 具体工作流为锁定控制版本、校验权威 Directive 或用户 intent 来源，保存授权快照；父链由准入层独立校验。
 实时检查使用所属 Round 的成功决策与授权版本；暂停、撤权和明确取消使执行失效，新 Mission 不撤销旧轮权限。
 示例：await RunOwnershipPolicy().admit(session, run) 在 durable admission 事务内调用。
-类型 direct_message 禁止仅凭 user_intent_id 受理裸 Run，必须同时有当前已授权 Directive 和一致的用户来源。
 新 Run 缺少本轮授权快照时仅从服务端已验证的 Directive/Decision 补齐，已有快照仍按原值校验，不修正伪造或失效绑定。
 """
 
@@ -12,7 +11,6 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from backend.app.desktop.persistence.models import DesktopRun
 
 
 class RunOwnershipPolicy:
@@ -22,6 +20,10 @@ class RunOwnershipPolicy:
         if run.loop_id is None:
             if run.round_id is not None:
                 raise ValueError("Run Round 缺少 Loop")
+            if run.kind == "main":
+                from backend.app.desktop.patrol.agent_loop.inputs.context_main_guard import ensure_context_main_input_allowed
+
+                await ensure_context_main_input_allowed(session, run.task_id, lock=True)
             return None
         loop, grant = await self._current(session, run)
         round_row = await session.get(LoopRound, run.round_id)
@@ -33,19 +35,12 @@ class RunOwnershipPolicy:
                 raise ValueError("Run Directive Context 或 Mission 来源不匹配")
             if source.lifecycle_state not in {"authorized", "delivering", "delivered", "run_started"}:
                 raise ValueError("Run Directive 已终止")
-            if source.origin_kind == "direct_user":
-                user = await session.get(LoopUserIntent, source.correlation_id)
-                if (user is None or user.intent_kind != "direct_message" or run.user_intent_id != user.intent_id
-                        or user.loop_id != run.loop_id or user.target_context_id != run.task_id
-                        or user.delivery_state not in {"observed", "delivered"}
-                        or user.resulting_run_id not in {None, run.run_id}):
-                    raise ValueError("Run 用户消息交付身份不匹配")
         elif run.user_intent_id:
             source = await session.get(LoopUserIntent, run.user_intent_id)
             if source is None or source.loop_id != run.loop_id:
                 raise ValueError("Run 用户 intent 来源不匹配")
-            if source.intent_kind == "direct_message":
-                raise ValueError("Loop 用户消息必须经过冻结和 Patrol Directive 授权")
+            if source.intent_kind != "workspace_input":
+                raise ValueError("Loop Run 只能关联工作区输入")
         else:
             raise ValueError("Loop Run 缺少权威来源，须经 Context/Kernel 派生")
         if not set((run.equipment or {}).get("permissions") or ()).issubset(set(grant.permission_scope)):
@@ -96,7 +91,7 @@ class RunOwnershipPolicy:
 
         loop = await session.get(AgentLoop, run.loop_id, with_for_update=True)
         round_row = await session.get(LoopRound, run.round_id)
-        if (loop is None or loop.status != "running" or round_row is None
+        if (loop is None or loop.interaction_mode != "workspace_patrol" or loop.status != "running" or round_row is None
             or round_row.loop_id != loop.loop_id or round_row.status in {"settled", "error", "superseded"}):
             raise ValueError("Run Loop/Round 控制已失效")
         if run.directive_id:

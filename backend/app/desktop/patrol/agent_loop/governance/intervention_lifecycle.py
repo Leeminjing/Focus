@@ -1,9 +1,9 @@
 r"""本文件对外提供 InterventionLifecycleRepository 与 InterventionTransitionRejected。
 
 输入为真实 user intent、目标 delivery state、可选 Run 与失败原因；输出为递增 revision、不可变 transition 与规范事件。
-具体工作流为 register 记录 submitted，随后按 user→Context 的 delivery/run 链或 user→Patrol 的 observed/addressed 链推进，
-两条路径均保留 origin=user 且不修改 Mission。示例：`await repository.transition(session, intent_id, "accepted")`。
-类型 direct_message 必须 accepted→observed→delivered→run_started→settled/failed；普通 Patrol 意见只走 observed→addressed，终止更新对应业务状态。
+具体工作流为 register 记录 submitted，工作区输入沿 user→Patrol 的 observed/addressed 链推进，
+保留 origin=user 且不修改 Mission。示例：`await repository.transition(session, intent_id, "accepted")`。
+旧 direct_message 的状态边仅供退役取消和历史 Run 结算使用；不提供新的定向消息受理入口。
 """
 
 from __future__ import annotations

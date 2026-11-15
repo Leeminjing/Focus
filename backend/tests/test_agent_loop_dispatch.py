@@ -10,6 +10,9 @@ r"""本文件对外提供 Loop directive 并发认领与直接用户 Run 工作�
 
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+from loop_run_boundary_support import commit_patrol
+
 import asyncio
 import os
 import uuid
@@ -21,17 +24,7 @@ from langchain_core.messages import ToolMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop import (
-    AgentLoopRecovery,
-    AgentLoopService,
-    LoopCoordinator,
-    LoopCoordinatorRuntime,
-    LoopCreateRequest,
-    LoopKernel,
-    LoopRunWorkspaceBinder,
-    LoopWaveDispatcher,
-    PatrolDecisionIntent,
-)
+from backend.app.desktop.patrol.agent_loop import AgentLoopRecovery, AgentLoopService, LoopCoordinator, LoopCoordinatorRuntime, LoopRunWorkspaceBinder, LoopWaveDispatcher, PatrolDecisionIntent
 from backend.app.desktop.patrol.agent_loop.execution.directive_causality import (
     DirectiveCausalityQuery,
     DirectiveCausalityRecorder,
@@ -159,24 +152,9 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                 session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
 
             service = AgentLoopService(sessions)
-            snapshot = await service.start(
-                LoopCreateRequest(
-                    loop_id=loop_id,
-                    workspace_id=workspace_id,
-                    initial_context_id=context_id,
-                    initial_run_id=f"initial-{suffix}",
-                    holder_id="patrol-1",
-                    goal="Finish the task",
-                    task_contract="Stay in scope",
-                    acceptance_criteria=(
+            snapshot = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-1", goal="Finish the task", task_contract="Stay in scope", acceptance_criteria=(
                         {"criterion_id": "done", "text": "work is complete"},
-                    ),
-                    capabilities=("continue_context", "request_completion"),
-                    context_scope=(context_id,),
-                    permission_scope=("read",),
-                    equipment={"permissions": ["read"]},
-                )
-            )
+                    ), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read",), equipment={"permissions": ["read"]})
             async with sessions() as session:
                 round_row = await session.get(LoopRound, snapshot["current_round_id"])
             intent = PatrolDecisionIntent(
@@ -201,7 +179,7 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                     },
                 ),
             )
-            committed = await LoopKernel(sessions).commit(intent)
+            committed = await commit_patrol(sessions, intent)
             calls = []
 
             async def launch(directive, message, _slot_id):
@@ -378,6 +356,15 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
             }
             assert chain["runs"][-1]["run_id"] == causal_run_id
 
+            # Arrange the next observation after the settled causal Run. The
+            # coordinator's background preparation is outside this focused test.
+            from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import create_observation_round, current_frontier_hash
+            async with sessions.begin() as session:
+                loop = await session.get(AgentLoop, loop_id, with_for_update=True)
+                prior = await session.get(LoopRound, loop.current_round_id)
+                next_round = await create_observation_round(session, loop, prior, await current_frontier_hash(session, loop_id))
+                session.add(next_round)
+                loop.current_round_id = next_round.round_id
             next_snapshot = await service.get(loop_id)
             async with sessions() as session:
                 next_round = await session.get(LoopRound, next_snapshot["current_round_id"])
@@ -396,7 +383,7 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                 rationale="Attempt a delivery that will fail before Run start.",
                 actions=({"action": "continue_context", "context_id": context_id, "context_revision_id": revision_id, "message": "Continue."},),
             )
-            failing = await LoopKernel(sessions).commit(failing_intent)
+            failing = await commit_patrol(sessions, failing_intent)
             async with sessions.begin() as session:
                 directive = await session.get(LoopDirective, failing.directive_ids[0], with_for_update=True)
                 directive.max_attempts = 1

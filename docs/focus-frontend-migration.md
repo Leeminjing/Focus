@@ -4,7 +4,7 @@
 
 阅读基线：2026-10-09，源码 HEAD `250875a`。已有 `docs/synthesis-support-repair.md` 的工作区修改与本改造无关，保留原样。
 
-2026-11-15 源码复核补记：保留上述历史基线和验收记录；下文 M14—M16、兼容范围和源码位置按当前实现纠正。旧 Portfolio Map 控制台、legacy Live connector 与旧轮询界面已退役；共享图组件、统一 Live API 及诊断/历史查询仍有用途。task-based Context Loop 的后端契约仍保留，但当前桌面未承接其创建、激活检查和 Mission 修改入口；本次文档纠正没有补回这些 UI，也不宣告该业务废弃。
+2026-11-15 退役决定：用户已明确要求彻底废弃旧 Context Loop 启动线。下文 M14/M15 按该决定更新；旧创建、激活检查、Mission 表单修改和 intervention 接口及其专属执行路径移除，不再作为待承接入口。Workspace Patrol 是唯一的自动 Loop 启动方式。旧 Portfolio Map 控制台、legacy Live connector 与旧轮询界面此前已退役；共享图组件、统一 Live API、控制、授权、预算、等待恢复及诊断/历史查询继续保留。历史基线与验收记录不代表当前功能，完整边界见 [Context Loop 退役说明](context-loop-retirement.md)。
 
 需求来源：用户指定的 ChatGPT 对话「Focus前端设计重构」，conversation `6ac8e5c5-fc28-83ec-aec9-04e5185408f1`。已通过 read_thread 读取该对话的用户要求和交付说明。原对话 ZIP、HTML、总体图和细节图目前只有 `sandbox:/mnt/data/...` 链接，当前会话没有其文件内容；不能宣称已看过原图或已验证视觉一致。实施前须取得原包并完成图文对应确认，优先上传 `Focus-frontend.zip`。
 
@@ -28,7 +28,7 @@
 
 | ID | 已有能力与现有入口 | 处理 | 新界面承接位置及真实接入方式 | 验收方法 |
 | --- | --- | --- | --- | --- |
-| M01 | index.html 九项主导航及设置、app.js render/handleDocumentClick | 合并 | 六项主导航；上下文、代理、Agent Loop 的业务入口迁入任务检查器及工作详情；设置不消失 | 六页逐一进入；原三入口全部有等价可达路径；空库也能访问插件、记忆库、无工作区模式 |
+| M01 | index.html 九项主导航及设置、app.js render/handleDocumentClick | 合并 | 六项主导航；保留的上下文、代理与 Workspace Patrol 能力进入任务检查器及工作详情；设置不消失 | 六页逐一进入；保留能力有等价可达路径；空库也能访问插件、记忆库、无工作区模式 |
 | M02 | bootstrap、连接失败重试、动态 loopback/session/CSP | 保留 | 原 bootstrap API、HttpResponse decoder、preload 白名单；启动默认 Patrol，不隐式选择任务作为发送对象 | 后端不可用→重试恢复；错误保留因果；Electron 桥及 CSP 不放宽 |
 | M03 | workspace-patrol-picker 原生文件夹选择、确认、取消 | 调整 | 输入框内工作区按钮打开选择/确认浮层；沿 selectWorkspace→POST /workspaces；无原生桥的浏览器入口明确提示宿主能力缺失 | 选择不启动执行；确认仅登记绑定；取消不丢原绑定；迟到响应不能覆盖新页面 |
 | M04 | 工作区 Patrol 当前绑定、首次输入创建、终态重新启用 | 保留 | GET /agent-loops/workspace/{workspace_id}、POST /inputs、POST /restart；入口仍在 Patrol 输入区/详情控制 | 首输入前无虚构 Run；终态显式重启；旧输入/成果可追溯 |
@@ -41,8 +41,8 @@
 | M11 | Context 完整会话、版本快照、消息 provenance | 调整 | 概要/会话/来源与版本抽屉；/contexts/{id}/conversation、/contexts/{id}/revisions、/context-revisions/{id}、/message-provenance | 完整分页与版本固定；检查任意 Context 后发送仍走工作区 intake；显式打开任务才改变模式 |
 | M12 | LoopFact 类型/状态/Context 筛选、分页及详情接口 | 调整 | Patrol 详情下方紧凑列表与证据抽屉；复用 facts view/selectors 和 /facts、/facts/{fact_id} | 排除 tool 主列表；unknown 不计成功；超过缓存上限可分页；来源详情可追溯且遵守权限 |
 | M13 | Loop 暂停、继续、停止、撤权、budget/grant 修订、等待恢复 | 合并 | Patrol 工作详情「控制与授权」；复用 control/grant/wait-requests/responses/resume-with-current-mission | 请求中状态与生效状态分开；预算不足、冲突、过期、失败可处理；收口不能伪报完成 |
-| M14 | Task-based Agent Loop 激活、Mission 编辑、验收、终态退出及后继 | 保留业务；入口待承接 | 后端 start/by-context/activation-eligibility/override/missions 契约仍在；当前 loop-api 未导出创建、激活检查和 Mission 修改调用，桌面未找到「持续推进」入口；task loop 身份不改为 workspace Patrol | 后续需逐项验证激活、授权、沿用 Mission、退出/后继可达；当前不记为 UI 验收通过 |
-| M15 | Loop 三种 intervention：Context 直接消息、Context 意见、Portfolio 意见 | 保留业务；高级入口待承接 | workspace intake 与任务 Main 发送继续区分；后端 interventions 契约保留，当前 loop-api 未导出 intervention 调用，不能声称旧控制台高级操作仍可达 | 直接消息回执与意见 scope 分别核验；当前不以接受/交付协议回归替代三类高级入口验收 |
+| M14 | Task-based Agent Loop 激活、Mission 编辑及后继 | 已按用户决定退役 | 移除根路径创建、by-context、activation-eligibility、override、POST missions 和专属 Mission bootstrap；自动 Loop 由工作区首输入建立，终态后继走工作区 restart | 旧启动契约不再公开；Workspace Patrol 首输入、连续输入、终态 restart、授权、预算、完成与恢复继续验证 |
+| M15 | 旧 Loop intervention 高级入口 | 已按用户决定退役 | 移除 POST interventions；工作区信息、目标、边界和完成检查走统一 intake，任务 Main 普通发送保留 | 旧 intervention 不可提交；任务 Main 与 workspace intake 的目标及回执继续分别验证 |
 | M16 | Portfolio、Expansion/Curator、adoption、压缩与用量审计 | 保留查询；按现入口核验 | 当前全图仍读取 console/lineage，Patrol 使用 Live 及事实/Observation/Progress 读面；后端 audit/program/slots 等查询保留，旧控制台高级页已退役 | 保留 ready/committed/applied 差别、未采用结果、失败与用量；查询存在不等于旧高级页全部可达 |
 | M17 | 任务新建、列表、切换、Context family 与 ui-state | 调整 | 任务页左栏；POST /tasks、GET /tasks、GET /tasks/{id}、PUT /ui-state；派生任务仍可显式进入 | 空任务/加载/失败；多任务草稿与滚动隔离；切换不误停后台 Run |
 | M18 | Main 发送、材料/技能/权限装备、幂等与 SSE | 调整 | 任务会话及 composer；复用 /tasks/{id}/main/runs 与 /runs/{id}/stream、TaskRunOperations | 普通 Run 与 Loop user_message 回执分开；accepted 不当 running；发送失败保留草稿；实际 Run 与 UI 一致 |
@@ -94,11 +94,11 @@
 
 ## 旧实现清理和兼容范围
 
-- 主导航中的上下文、代理、Agent Loop 合并入口，不删除 Context 编辑、协作、task Loop 或诊断能力。
+- 主导航中的上下文、代理和 Workspace Patrol 能力合并入口，保留 Context 编辑、协作及诊断能力；旧 task-based Context Loop 按本次用户决定退役。
 - 调整 workspace-patrol-* 原模块，不在旁边长期保留新版第二套 Patrol 控制器/输入 Store。
 - 复用 Live reducer/connection、conversation、材料、Session Patrol 与插件接口；移出 app.js 的实现须删除原副本和对应 handler。
 - legacy Live connector、旧 Portfolio Map 控制台及旧轮询界面已退役，当前前端只使用 Snapshot + Live SSE + Replay，不提供旧连接器回退。`FOCUS_LOOP_LIVE_API` 仍控制新版 Live API；关闭后返回不可用，不恢复旧前端。`/console`、`/conversation`、`/facts` 等诊断/历史查询仍保留，不能与退役连接器一并删除；边界见 [Live 发布与回滚](loop-live-rollout.md)。
-- 原 task-based Loop 和 workspace Patrol 的交互模式仍是两个合法业务身份，后端兼容契约保留；当前桌面缺少 M14/M15 所述部分入口，需如实记录承接缺口。同一领域数据的 UI 呈现可以合并，共享组件不代表混用 owner，也不能据 UI 不可达认定业务已废弃。
+- 新的自动 Loop 仅通过 workspace Patrol 创建；旧 context_loop 不再创建或继续自动调度。既有历史记录及必要的账务读取保留，不把旧身份自动转换成工作区 Patrol。普通 Context/Main Run 与 Session Patrol 不属于此次退役范围。
 - 任何删除以已完成迁移行、caller 证据、受影响检查通过为前提，不能以「图里没画」或「目前没挂载」为理由。
 
 ## 验收与交付记录
@@ -118,6 +118,6 @@
 - desktop/src/renderer/features/map/portfolio-map-view.js（共享图组件）；desktop/src/renderer/features/context/context-inspector.js；desktop/src/renderer/features/loop/loop-{facts-view,wait-request-view,grant-view,wait-recovery,expansion-budget}.js。旧 loop-console-controller/loop-console-store/loop-mission-editor 不在当前源码中，不再列作已承接 UI。
 - desktop/src/renderer/features/conversation/conversation-{render,events,reconciler,view}.js；desktop/src/renderer/features/materials/run-material-picker.js；desktop/src/renderer/features/materials/material-content-loader.js；desktop/src/renderer/features/materials/material-grouping.js。
 - desktop/src/renderer/features/patrol/editor/patrol-workbench.js 和 authoring/document/source/assembly/review/branches；desktop/src/renderer/features/plugins/plugin-view.js；desktop/src/renderer/features/memory/memory.js；desktop/src/preload/preload.cjs 与 desktop/src/main/main.cjs。
-- backend/app/desktop/api/{routes,plugins,memory,model_settings}.py；backend/app/desktop/patrol/agent_loop/{routes,service,schemas,feature_flags}.py、queries/query_routes.py、live/{live_routes,live_access}.py、task_progress/query.py；backend/app/desktop/patrol/session_patrol/deployment.py 与 backend/app/desktop/runs/orchestration。Context Loop 的后端创建/激活检查/Mission 修改见 routes.py 与 service.py；当前桌面 API 导出以 loop-api.js 为准。
+- backend/app/desktop/api/{routes,plugins,memory,model_settings}.py；backend/app/desktop/patrol/agent_loop/{routes,service,schemas,feature_flags}.py、queries/query_routes.py、live/{live_routes,live_access}.py、task_progress/query.py；backend/app/desktop/patrol/session_patrol/deployment.py 与 backend/app/desktop/runs/orchestration。工作区创建和后继见 workspaces/workspace_patrol.py 与 workspace_successor.py；当前桌面 API 导出以 loop-api.js 为准。
 
 本清单建立完成后，才创建本次 OpenSpec proposal/design/specs/tasks；清单属于它们共同的业务保留依据。

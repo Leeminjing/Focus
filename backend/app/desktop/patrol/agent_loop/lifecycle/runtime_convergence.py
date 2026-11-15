@@ -4,7 +4,6 @@ r"""本文件对外提供 LoopRuntimeConvergence。
 具体工作流为同一事务终结未提交 round/decision、取消 Curator 与 directive、打断活动 Run、记录 Patrol 终态，
 业务终止不填写 Run settled_at，消费与工作区清理由真实 finalizer 完成；Round 终态同事务发布规范事件，再追加一个不覆盖 Loop 投影主体的规范活动事件。
 示例：`run_ids = await convergence.converge(session, loop, "loop_paused")`。
-已授权直接用户消息随其 Directive 取消；尚未交付的消息可跨暂停或新发言保留，撤权/终止/Mission 修订明确取消，不让迟到结算恢复。
 安全等待同事务通过既有服务终结；信息等待跨非终态控制保留，终态时一起 cancelled。
 历史请求与规范事件保留，晚到响应不能再控制后继 Round，也不能阻塞新等待请求的唯一活动槽。
 workspace 信息型澄清跨显式暂停保留；暂停输入不恢复执行，专用安全 gate 仍沿原终结协议。
@@ -24,11 +23,9 @@ from backend.app.desktop.patrol.agent_loop.curation.curator_assignments import C
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDecision,
-    LoopDirective,
     LoopPatrolAttempt,
     LoopRound,
     LoopWorkerRequest,
-    LoopUserIntent,
 )
 from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopCuratorAssignment, LoopPatrolSession
 from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_repository import PatrolSessionRepository
@@ -56,7 +53,7 @@ class LoopRuntimeConvergence:
             if request.scope.get("information_only") and loop.status not in {"completed", "stopped", "failed"}:
                 continue
             await self._waits.cancel(session, request.request_id,
-                superseded=reason in {"direct_user_message", "mission_revision", "authority_changed"})
+                superseded=reason in {"mission_revision", "authority_changed"})
             loop.waiting_reason = None
         terminated_rounds = tuple((await session.scalars(
             update(LoopRound)
@@ -125,7 +122,6 @@ class LoopRuntimeConvergence:
                 terminal_outcome={"status": "interrupted", "reason": reason},
             )
         await self._directives.cancel_active(session, loop.loop_id, reason)
-        await self._cancel_user_deliveries(session, loop, reason)
         await session.execute(
             update(LoopPatrolAttempt)
             .where(
@@ -163,17 +159,3 @@ class LoopRuntimeConvergence:
             ),
         )
         return run_ids
-
-    @staticmethod
-    async def _cancel_user_deliveries(session, loop, reason):
-        from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository
-
-        intents = tuple((await session.scalars(select(LoopUserIntent).where(
-            LoopUserIntent.loop_id == loop.loop_id, LoopUserIntent.intent_kind == "direct_message",
-            LoopUserIntent.delivery_state.in_(("accepted", "observed", "delivered", "run_started"))
-        ).with_for_update())).all())
-        for intent in intents:
-            directive = await session.scalar(select(LoopDirective.directive_id).where(
-                LoopDirective.origin_kind == "direct_user", LoopDirective.correlation_id == intent.intent_id))
-            if directive is not None or reason not in {"direct_user_message", "loop_paused"}:
-                await InterventionLifecycleRepository().transition(session, intent.intent_id, "cancelled", reason=reason)

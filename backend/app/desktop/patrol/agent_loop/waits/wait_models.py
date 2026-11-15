@@ -4,7 +4,7 @@ r"""本文件对外提供 LoopWaitRequest 与 LoopWaitResponse 持久化实体�
 至多一个已提交响应的数据库状态。具体工作流为请求随 Loop 进入 waiting_user 原子创建，响应以 idempotency key
 去重并引用请求 revision，随后请求转入 resolved、cancelled 或 superseded。示例：`LoopWaitRequest(kind="clarification", ...)`。
 workspace 的 information_only 请求可在 Loop 继续安全工作时独立保持开放；专用 gate/recovery/action 仍沿原状态协议。
-信息与安全等待按现有 scope.information_only 分区各保留一个开放请求；普通 Context Loop 的原单等待约束保持。
+信息与安全等待按现有 scope.information_only 分区各保留一个开放请求；历史 Context Loop 保留原等待记录约束。
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ decision/action 记录判断与异步发布尝试，recovery opportunity 冻结�
 directive/provenance 以可见排队原因驱动 Run，fencing counter 拒绝旧 owner，completion/outbox 收敛生命周期。
 示例：`loop = AgentLoop(loop_id="l1", status="running", ...)`。
 用户 intent 显式区分 patrol_opinion/direct_message/workspace_input，request_payload 保留原文类型、稳定 hash 和定向回答；旧数据默认普通意见，不补造历史决策。
-interaction_mode 区分 Context Loop 和工作区 Patrol，同一工作区最多一个非终态 Patrol。
+新建 Loop 仅使用 workspace_patrol；context_loop 只保留已退役实例的历史身份，同一工作区最多一个非终态 Patrol。
 同轮不可变 Observation 按 generation 编号，Round 当前指针和成功 Decision 唯一约束分开；输入保留引入版本，认知记录绑定精确观察。
 """
 
@@ -33,7 +33,7 @@ class AgentLoop(Base):
     )
 
     loop_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    interaction_mode: Mapped[str] = mapped_column(String(24), nullable=False, default="context_loop", server_default="context_loop")
+    interaction_mode: Mapped[str] = mapped_column(String(24), nullable=False, default="workspace_patrol", server_default="workspace_patrol")
     workspace_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_workspaces.workspace_id", ondelete="CASCADE"), nullable=False, index=True)
     initial_context_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False, index=True)
     program_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("curation_programs.program_id", ondelete="SET NULL"), nullable=True)

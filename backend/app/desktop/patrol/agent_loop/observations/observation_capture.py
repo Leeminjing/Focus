@@ -687,7 +687,7 @@ class LoopObservationService:
                     select(LoopUserIntent)
                     .where(
                         workspace_input_scope(loop) if workspace_mode else LoopUserIntent.loop_id == loop_id,
-                        ((LoopUserIntent.status == "pending") | ((LoopUserIntent.intent_kind.in_(("direct_message", "workspace_input"))) &
+                        ((LoopUserIntent.status == "pending") | ((LoopUserIntent.intent_kind == "workspace_input") &
                          (LoopUserIntent.status == "observed") & (LoopUserIntent.delivery_state == "observed"))),
                     )
                     .order_by(LoopUserIntent.created_at, LoopUserIntent.intent_id)

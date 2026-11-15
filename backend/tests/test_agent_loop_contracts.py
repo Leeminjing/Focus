@@ -25,7 +25,7 @@ from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import (
     PatrolDecisionProposal,
     PatrolReadRequest,
 )
-from backend.app.desktop.patrol.agent_loop.schemas import LoopBudgetContract, LoopInterventionRequest, PATROL_ACTION_ADAPTER
+from backend.app.desktop.patrol.agent_loop.schemas import LoopBudgetContract, PATROL_ACTION_ADAPTER
 from backend.app.desktop.patrol.agent_loop.facts.fact_projection import LoopFactProjectionService
 from backend.app.desktop.runs.evidence.identity import canonical_hash
 
@@ -154,7 +154,7 @@ def test_patrol_proposal_references_mission_by_semantic_role() -> None:
         mission_references=({"role": "completion_check", "reference_id": "tests"},),
         actions=({"action": "request_completion_verifier", "candidate_context_ids": ["context-1"]},),
     )
-    observation = SimpleNamespace(mission={"completion_checks": [{"check_id": "tests"}]}, expansion_assessment=None, user_intents=(), completion_admission=None)
+    observation = SimpleNamespace(mission={"outcome": "Finish the scoped task", "boundaries": {"in_scope": ["Current workspace"]}, "completion_checks": [{"check_id": "tests"}]}, expansion_assessment=None, expansion_obligations=(), user_intents=(), completion_admission=None, evolution_strategies=(), interaction_mode="workspace_patrol")
     contract = PatrolDecisionContract()
 
     contract.validate(actions=normal.actions, mission_references=normal.mission_references, observation=observation)
@@ -253,22 +253,6 @@ def test_default_budgets_allow_large_usage_but_retain_system_ceilings() -> None:
     assert guard.evaluate({"rounds": 1000}, budgets, "dispatch").status == "exhausted"
     assert guard.evaluate({"no_progress_count": 20}, budgets, "continue_context").status == "change_direction"
     assert guard.evaluate(usage, {**budgets, "max_model_calls": 10}, "dispatch").status == "exhausted"
-
-
-def test_user_intervention_preserves_external_scope() -> None:
-    context = LoopInterventionRequest(
-        mode="patrol_context_intent",
-        context_id="context-1",
-        content="保留测试方向，但停止扩展实现范围。",
-    )
-    portfolio = LoopInterventionRequest(
-        mode="patrol_portfolio_intent",
-        content="合并重复 Lane，并保留独立架构审查。",
-    )
-
-    assert context.scope() == "context"
-    assert portfolio.scope() == "portfolio"
-    assert "Patrol" not in context.content
 
 
 def test_fact_projection_only_claims_explicit_test_counts() -> None:

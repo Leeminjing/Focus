@@ -2,7 +2,7 @@
 
 基线：250875a6686603d559ee0e694d24639d3559b2aa。2026-10-10，在用户提供源包并调用 apply 后实施。原有 docs/synthesis-support-repair.md 修改保留；没有 commit、部署、安装版重启或用户业务数据测试。
 
-2026-11-15 源码复核纠正：下文 2026-10-10 的测试编号、数量与执行记录保留为历史证据，不表示当前每个旧入口仍存在。M14—M16 和文末兼容表已按当前源码修正：Context Loop 后端契约仍在，桌面创建/激活检查/Mission 修改及旧 intervention 高级入口尚未承接；旧控制台和 legacy 连接器已退役。本次仅纠正文档，不把历史协议测试记作当前 UI 已补回或业务已废弃。
+2026-11-15 退役决定：用户已明确废弃旧 Context Loop 启动线；M14/M15 及文末兼容范围按此更新。旧创建、激活检查、Mission 表单修改、intervention 接口及专属执行路径移除，Workspace Patrol 是唯一的自动 Loop 启动方式。下文 2026-10-10 的测试编号、数量与执行记录保留为历史证据，不证明已退役功能仍存在，也不作为本次退役改动的验证结果。共享能力与历史数据边界见 [Context Loop 退役说明](context-loop-retirement.md)。
 
 ## 实现边界
 
@@ -51,8 +51,8 @@ TaskProgress 精确历史参数、事实 outcome_status 过滤和统一当前脱
 | M11 | Context 三页签/来源/任务打开，调整 | U1 / U2，检查不变发送身份；显式任务回调使用原 switchTask |
 | M12 | facts/filter/分页/详情，调整 | B1 / U2，验证状态与业务结果分别查询，unknown 不计成功 |
 | M13 | 当前工作区控制/授权/等待，合并 | U1 / U2 / B4，共用原 grant/wait/recovery API |
-| M14 | task Loop 后端保留；当前桌面入口未承接 | routes.py 保留创建/激活检查/override/missions；当前 loop-api.js 无对应创建/激活检查/Mission 修改调用，桌面未找到「持续推进」入口。历史 R1 / B4 不证明这些 UI 当前可达，全生命周期 UI 不记为通过 |
-| M15 | intervention 后端保留；高级入口未承接 | 后端 interventions 仍在，当前 loop-api.js 无 intervention 调用；任务 Main 的直接消息回执链与意见入口分别看待。历史 R1 的接受/交付语义不证明旧控制台三类高级操作当前可达 |
+| M14 | 旧 Context Loop 启动线已按用户决定退役 | 移除创建/激活检查/by-context/override/POST missions 及专属 Mission bootstrap；当前自动 Loop 仅经工作区首输入或工作区终态 restart 建立。历史 R1 / B4 不作为退役改动的验证证据 |
+| M15 | 旧 intervention 高级入口已按用户决定退役 | 移除 POST interventions；Workspace Patrol 统一输入与任务 Main 普通发送保留。历史 R1 的旧 intervention 接受/交付检查仅记录当时行为 |
 | M16 | 诊断与历史查询保留；旧控制台高级页已退役 | 当前全图使用 console/lineage，Patrol 使用 Live/事实/Observation/Progress；后端 audit/program/slots 等查询保留。历史 R1 不作为旧高级页当前存在或所有审计操作可达的证据 |
 | M17 | 左任务列表/新建/切换，调整 | U1 / U3 / composer 回归，多任务草稿与旧 ui-state |
 | M18 | Main/材料/技能/幂等/SSE，调整 | U1 受理不造 Run，U3 真 Run/使用记录，B3 |
@@ -134,6 +134,6 @@ openspec validate refactor-focus-patrol-first-frontend --strict
 
 | 保留路径 | 原因与退出条件 |
 | --- | --- |
-| task-based Loop / workspace Patrol | 两种合法 owner 与交互身份，后端契约仍保留；Patrol 输入可达，当前桌面缺少 M14/M15 部分 task Loop 入口，不能宣称各入口已完成承接。若未来取消一种身份，需明确退役范围并处理存量数据 |
+| Workspace Patrol / 旧 Context Loop 历史 | Workspace Patrol 保留首输入、连续输入和终态后继；旧 Context Loop 停止创建与自动调度，历史数据和必要账务读取保留，不自动改写 owner。普通 Context/Main Run、控制、授权、预算、完成与等待恢复仍保留 |
 | 新版 Live API 开关 / 诊断与历史读取 | `FOCUS_LOOP_LIVE_API` 仍控制新版 Snapshot/SSE；`/console`、`/conversation`、`/facts` 等查询仍有诊断/历史用途。legacy connector、旧控制台及旧轮询已退役，关掉新版 Live API 不会恢复旧前端，详见 [Live 发布与回滚](loop-live-rollout.md) |
 | 树/卡片/Context 编辑/Session Patrol/代理/材料高级页 | 原图没有画出的真实能力仍需承接，通过明确次级入口复用原模块；不能以本次导航收敛为删除条件 |

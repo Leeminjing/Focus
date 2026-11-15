@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
+
 import asyncio
 import os
 import uuid
@@ -16,7 +18,6 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
 from backend.app.desktop.patrol.agent_loop.execution.directive_causality import DirectiveCausalityQuery, DirectiveCausalityRecorder
 from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
@@ -38,13 +39,13 @@ def test_execution_details_read_complete_persisted_causality(tmp_path):
         workspace_id, context_id, revision_id, loop_id, initial_run_id, run_id, slot_id = (uuid.uuid4().hex for _ in range(7))
         try:
             await _seed_contexts(sessions, tmp_path, workspace_id, (context_id,), (revision_id,), initial_run_id, "causality")
-            snapshot = await AgentLoopService(sessions).start(LoopCreateRequest(
+            snapshot = await seed_workspace_patrol_loop(sessions,
                 loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id,
                 initial_run_id=initial_run_id, holder_id="patrol-1", goal="检查结果",
                 task_contract="仅查询因果链", acceptance_criteria=({"criterion_id": "done", "text": "通过"},),
                 capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read",),
                 equipment={"permissions": ["read"]},
-            ))
+            )
             round_id = snapshot["current_round_id"]
             directive_id, decision_id, action_id = (uuid.uuid4().hex for _ in range(3))
             async with sessions.begin() as session:

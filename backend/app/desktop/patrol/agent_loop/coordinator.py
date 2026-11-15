@@ -52,7 +52,6 @@ from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle imp
 )
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
-    LoopAction,
     LoopBudgetUsage,
     LoopContextMembership,
     LoopCoordinatorFence,
@@ -89,9 +88,7 @@ from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
 from backend.app.desktop.patrol.agent_loop.journal.user_run_events import LoopUserRunEventRecorder
 from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.persistence.models import ModelAttemptAudit
-from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import RoundConsequenceReader
 from backend.app.desktop.runs.orchestration import RunOutboxConsumer
-from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 from backend.app.desktop.patrol.agent_loop.resources.request_admission import RequestAdmission
 
 
@@ -174,6 +171,7 @@ class LoopCoordinator:
             .outerjoin(LoopCoordinatorLease, LoopCoordinatorLease.round_id == LoopRound.round_id)
             .where(
                 AgentLoop.status == "running",
+                AgentLoop.interaction_mode == "workspace_patrol",
                 LoopRound.status.in_(CLAIMABLE_ROUND_STATUSES),
                 or_(LoopCoordinatorLease.lease_id.is_(None), LoopCoordinatorLease.expires_at <= now),
             )
@@ -191,7 +189,7 @@ class LoopCoordinator:
 
     async def running_loop_ids(self) -> tuple[str, ...]:
         async with self._sessions() as session:
-            return tuple((await session.scalars(select(AgentLoop.loop_id).where(AgentLoop.status == "running").order_by(AgentLoop.loop_id))).all())
+            return tuple((await session.scalars(select(AgentLoop.loop_id).where(AgentLoop.status == "running", AgentLoop.interaction_mode == "workspace_patrol").order_by(AgentLoop.loop_id))).all())
 
     async def _claim(self, owner_id: str, loop_id: str | None) -> CoordinatorClaim | None:
         now = datetime.now(UTC)
@@ -274,7 +272,7 @@ class LoopCoordinator:
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
             loops = tuple(await session.scalars(select(AgentLoop).where(
-                AgentLoop.status == "running").with_for_update(skip_locked=True)))
+                AgentLoop.status == "running", AgentLoop.interaction_mode == "workspace_patrol").with_for_update(skip_locked=True)))
             from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import settle_round
 
             for loop in loops:
@@ -329,7 +327,8 @@ class LoopCoordinator:
             (
                 await session.scalars(
                     select(LoopDirective)
-                    .where(LoopDirective.status == "launching")
+                    .join(AgentLoop, AgentLoop.loop_id == LoopDirective.loop_id)
+                    .where(LoopDirective.status == "launching", AgentLoop.interaction_mode == "workspace_patrol")
                     .order_by(LoopDirective.directive_id)
                     .with_for_update()
                 )
@@ -386,7 +385,7 @@ class LoopCoordinator:
                 )
             ) if loop else None
             usage = await session.get(LoopBudgetUsage, claim.loop_id) if loop else None
-        if (loop is None or loop.status != "running" or round_row is None
+        if (loop is None or loop.interaction_mode != "workspace_patrol" or loop.status != "running" or round_row is None
                 or round_row.status not in {"ready", "running"}):
             return None
         usage_values = {
@@ -421,7 +420,7 @@ class LoopCoordinator:
         async with self._sessions.begin() as session:
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True, populate_existing=True)
             current = await session.get(LoopRound, claim.round_id, with_for_update=True, populate_existing=True)
-            if (current is None or loop is None or loop.status != "running"
+            if (current is None or loop is None or loop.interaction_mode != "workspace_patrol" or loop.status != "running"
                     or current.status not in {"ready", "running"}):
                 return False
             queued = int(
@@ -529,14 +528,14 @@ class LoopCoordinator:
             LoopUsageLedger.apply(usage, LoopUsageDelta(model_calls=int(run.model_call_count or 0),
                 input_tokens=int(run.prompt_input_tokens or 0), output_tokens=int(run.prompt_output_tokens or 0)))
             run.equipment = {**(run.equipment or {}), "_loop_settlement_usage_reported": True}
-        if loop.status != "running":
+        if loop.interaction_mode != "workspace_patrol" or loop.status != "running":
             return
         if round_row.status != "running":
             return
         await self._advance_from_run(session, loop, round_row, run, event)
 
     async def _advance_from_run(self, session, loop, round_row, run, event):
-        if loop.status != "running" or round_row.status != "running":
+        if loop.interaction_mode != "workspace_patrol" or loop.status != "running" or round_row.status != "running":
             return
         usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
         projected_gate = None
@@ -577,6 +576,8 @@ class LoopCoordinator:
         await LoopLifecycleEventRecorder().record(session, loop)
 
     async def _continue_settled_round(self, session, loop, round_row, run=None):
+        if loop.interaction_mode != "workspace_patrol":
+            return
         from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import advance_settled_round
 
         next_round = await advance_settled_round(session, loop, round_row)

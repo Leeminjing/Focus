@@ -4,12 +4,14 @@ r"""本文件对外提供 Agent Loop round 活性契约测试：领取公平性�
 attempt 计数、legacy 落定 decision 与 Kernel/Coordinator/Recovery 真实调用；输出为"队头被占用仍顺延领取"
 "过期租约即时清除""拒绝保留未决 round 并交回用户""已有落定 decision 的 round 零认知调用收敛""看门狗收敛
 停滞队头而不误伤健康 round""在飞决策的 round 不被看门狗收敛""恢复保留失败候选审计且不误认成功提交""终结事件只追加一次且控制台可读原因"断言。
-具体工作流为播种最小 Context revision 与已 settle 初始 Run、经 AgentLoopService.start 建 Loop，再直接驱动
+具体工作流为播种最小 Workspace Patrol 和 Context revision 测试状态，再直接驱动
 coordinator/orchestrator/kernel/recovery 并读取只读控制台投影。
 示例：`python -m pytest backend/tests/test_agent_loop_round_liveness.py -q`。
 """
 
 from __future__ import annotations
+
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop, advance_workspace_mission
 
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -23,14 +25,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import backend.app.desktop.persistence.registry
-from backend.app.desktop.patrol.agent_loop import (
-    AgentLoopRecovery,
-    AgentLoopService,
-    LoopCoordinator,
-    LoopCreateRequest,
-    LoopKernel,
-    PatrolDecisionIntent,
-)
+from backend.app.desktop.patrol.agent_loop import AgentLoopRecovery, AgentLoopService, LoopCoordinator, LoopKernel, PatrolDecisionIntent
 from backend.app.desktop.patrol.agent_loop.queries.console_query import LoopConsoleQueryService
 from backend.app.desktop.patrol.agent_loop.coordinator import CoordinatorClaim
 from backend.app.desktop.patrol.agent_loop.models import (
@@ -116,22 +111,7 @@ async def _seed_loop(sessions, tmp_path: Path, *, label: str, started_at: dateti
             )
         )
     service = AgentLoopService(sessions)
-    snapshot = await service.start(
-        LoopCreateRequest(
-            loop_id=loop_id,
-            workspace_id=workspace_id,
-            initial_context_id=context_id,
-            initial_run_id=initial_run_id,
-            holder_id=f"patrol-{label}",
-            goal=f"Deliver the {label} change",
-            task_contract="Stay in scope and pass the focused tests",
-            acceptance_criteria=({"criterion_id": "tests", "text": "focused tests pass"},),
-            capabilities=("continue_context", "request_completion"),
-            context_scope=(context_id,),
-            permission_scope=("read", "write"),
-            budgets=budgets or {},
-        )
-    )
+    snapshot = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=initial_run_id, holder_id=f"patrol-{label}", goal=f"Deliver the {label} change", task_contract="Stay in scope and pass the focused tests", acceptance_criteria=({"criterion_id": "tests", "text": "focused tests pass"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "write"), budgets=budgets or {})
     round_id = snapshot["current_round_id"]
     async with sessions.begin() as session:
         await session.execute(update(LoopRound).where(LoopRound.round_id == round_id).values(started_at=started_at))
@@ -449,12 +429,7 @@ def test_superseded_decision_leaves_current_round_undecided(tmp_path: Path) -> N
         fixture = None
         try:
             fixture = await _seed_loop(sessions, tmp_path, label="supersede", started_at=datetime.now(UTC) - timedelta(hours=9))
-            overridden = await fixture["service"].override(
-                fixture["loop_id"],
-                "Prioritize correctness",
-                "Keep the implementation lane authoritative",
-                [{"criterion_id": "tests", "text": "focused tests pass"}],
-            )
+            overridden = await advance_workspace_mission(sessions, fixture["loop_id"], "Prioritize correctness", "Keep the implementation lane authoritative", [{"criterion_id": "tests", "text": "focused tests pass"}])
             stale_round_id = overridden["current_round_id"]
             async with sessions() as session:
                 round_row = await session.get(LoopRound, stale_round_id)

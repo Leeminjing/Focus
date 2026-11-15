@@ -1,15 +1,13 @@
 """本文件对外提供工作区 Patrol 的缺省 Mission、空验收与共享进度查询合同回归。
 
 输入为独立的用户要求及原始类型化输入，输出为缺省分区、稳定任务来源和禁止空验收的断言。
-具体工作流为不调用网络或用户数据库，验证普通会话既有完整合同与新缺省合同共存，
+具体工作流为不调用网络或用户数据库，验证工作区缺省合同，
 再挂载两个生产 Loop router，通过进程内 HTTP 核对唯一进度入口与查询响应。
 示例：python -m pytest backend/tests/test_workspace_patrol_contracts.py -q。
 """
 
 from backend.app.desktop.patrol.agent_loop.missions.mission_contract import LoopMissionContract
 from backend.app.desktop.patrol.agent_loop.task_progress.consolidation import initial_progress
-from backend.app.desktop.patrol.agent_loop.schemas import LoopCreateRequest
-from pydantic import ValidationError
 import pytest
 
 
@@ -102,18 +100,3 @@ def test_mission_sections_can_be_independently_absent():
 def test_absent_mission_does_not_create_a_fabricated_task():
     progress = initial_progress({"outcome": None, "completion_checks": []}, 1)
     assert progress.items == ()
-
-
-def test_context_loop_keeps_its_full_mission_start_contract():
-    with pytest.raises(ValidationError, match="旧 Context Loop 启动仍需"):
-        LoopCreateRequest(
-            loop_id="old",
-            workspace_id="workspace",
-            initial_context_id="context",
-            initial_run_id="run",
-            holder_id="patrol",
-            context_scope=["context"],
-            capabilities=["continue_context"],
-            permission_scope=["read"],
-            mission=LoopMissionContract(),
-        )

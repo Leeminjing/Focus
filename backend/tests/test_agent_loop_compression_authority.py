@@ -1,3 +1,4 @@
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop, advance_workspace_mission
 r"""本文件对外提供 Patrol 自主压缩的领域契约、候选/结果证据、事务提交、迁移往返与用户优先级回归测试。
 
 输入为消息协议组、保护锚点、版本化授权 facts、并发 Kernel intent 与隔离 PostgreSQL；输出为 bounded
@@ -13,7 +14,6 @@ import asyncio
 import importlib
 import os
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -38,7 +38,7 @@ from backend.app.desktop.patrol.agent_loop.compression_authority.resolution impo
 from backend.app.desktop.patrol.agent_loop.governance.gates import PendingDecisionProjector
 from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopPendingDecision, LoopRound
-from backend.app.desktop.patrol.agent_loop.schemas import LoopCreateRequest, PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
 from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
 from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
 from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
@@ -513,21 +513,7 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="a" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.ROOT, created_at=datetime.now(UTC)))
                 await ContextRevisionRepository().switch_current(session, ref, None)
                 session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", origin_message_id="direct-message", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
-            snapshot = await service.start(LoopCreateRequest(
-                loop_id=loop_id,
-                workspace_id=workspace_id,
-                initial_context_id=context_id,
-                initial_run_id=f"initial-{suffix}",
-                holder_id=f"patrol:{loop_id}",
-                goal="Finish the long task",
-                task_contract="Preserve user constraints",
-                acceptance_criteria=({"criterion_id": "done", "text": "done"},),
-                capabilities=("continue_context", "apply_context_compression", "request_completion", "wait_for_user", "stop_loop"),
-                context_scope=(context_id,),
-                permission_scope=("read", "write"),
-                delegable_gates=("compression",),
-                compression_policy=AutonomousCompressionPolicy(min_reduction_tokens=100),
-            ))
+            snapshot = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id=f"patrol:{loop_id}", goal="Finish the long task", task_contract="Preserve user constraints", acceptance_criteria=({"criterion_id": "done", "text": "done"},), capabilities=("continue_context", "apply_context_compression", "request_completion", "wait_for_user", "stop_loop"), context_scope=(context_id,), permission_scope=("read", "write"), delegable_gates=("compression",), compression_policy=AutonomousCompressionPolicy(min_reduction_tokens=100))
             async def recovery(*_args):
                 return {"status": "resumable", "request": {"type": "compression_request", "usage": 120000}}
 
@@ -636,7 +622,7 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 context = await session.get(DesktopThread, context_id)
                 assert resolution.status == "committed"
                 assert context.current_revision_id == revision_id
-            await service.override(loop_id, "User changed direction", "New contract", [{"criterion_id": "new", "text": "new"}])
+            await advance_workspace_mission(sessions, loop_id, "User changed direction", "New contract", [{"criterion_id": "new", "text": "new"}])
             async with sessions() as session:
                 resolution = await session.scalar(select(LoopCompressionResolution).where(LoopCompressionResolution.loop_id == loop_id))
                 candidate = await session.get(LoopCompressionCandidate, candidate.candidate_id)

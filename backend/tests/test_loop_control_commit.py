@@ -1,6 +1,6 @@
 """本文件对外提供 Loop 控制事实提交与执行器取消的原子边界验证。
 
-输入为隔离 PostgreSQL、正式受理的 Run、暂停/停止/撤权/新 Mission/用户消息入口；输出为回滚无外部取消及提交后才通知的断言。
+输入为隔离 PostgreSQL、正式受理的 Run、暂停/停止/撤权入口；输出为回滚无外部取消及提交后才通知的断言。
 具体工作流为在末尾事件发布处制造事务失败，再重试真实服务调用；取消回调使用独立连接读取已提交状态，核对旧 Round 与 Directive 收敛。
 示例：pytest backend/tests/test_loop_control_commit.py；不使用假账本或改变历史执行身份。
 """
@@ -28,7 +28,7 @@ from test_loop_execution_ownership import _seed_launching_directive, _admit_run
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
-@pytest.mark.parametrize("command", ["pause", "stop", "revoke", "mission", "message"])
+@pytest.mark.parametrize("command", ["pause", "stop", "revoke"])
 def test_control_rollback_does_not_cancel_and_committed_control_is_visible_to_executor(tmp_path, monkeypatch, command):
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -61,11 +61,6 @@ def test_control_rollback_does_not_cancel_and_committed_control_is_visible_to_ex
             async def invoke():
                 if command == "revoke":
                     return await authority.mutate(fixture["loop_id"], RevokeLoopGrantRequest(command="revoke"))
-                if command == "mission":
-                    return await service.override(fixture["loop_id"], goal="Revised goal", task_contract="fixture only",
-                        acceptance_criteria=({"criterion_id": "done", "text": "tests pass"},))
-                if command == "message":
-                    return await service.user_message(fixture["context_id"], "授权内继续")
                 return await service.control(fixture["loop_id"], command)
 
             monkeypatch.setattr(target, "_append_event", reject)

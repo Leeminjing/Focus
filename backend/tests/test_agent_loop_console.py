@@ -1,13 +1,15 @@
-r"""本文件验证 Loop Control Console 的拓扑、完整会话、事实投影与不改写 Mission 的用户介入闭环。
+r"""验证共享 Loop 查询的拓扑、完整会话、事实投影与工作区输入观察。
 
 输入为真实 PostgreSQL Loop、不可变 Context revision、模拟 checkpoint 和 Portfolio 用户意见；输出为
 轻量节点图、可分页 Human/Tool 会话、精确测试事实、Mission 恒等及 observation 中外置 user_intent 的断言。
-具体工作流为启动 Loop、读取三个 query service、提交临时 Portfolio 意见并冻结下一轮观察。
+具体工作流为播种 Workspace Patrol、读取三个 query service、提交工作区反馈并冻结观察。
 示例：`pytest test_agent_loop_console.py`。
 公共事实排除 Tool，但完整会话仍保留原始工具消息。
 """
 
 from __future__ import annotations
+
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
 
 import asyncio
 import os
@@ -21,19 +23,19 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCreateRequest
+from backend.app.desktop.patrol.agent_loop import AgentLoopService
 from backend.app.desktop.patrol.agent_loop.queries.console_query import LoopConsoleQueryService
 from backend.app.desktop.patrol.agent_loop.queries.conversation_query import (
     ContextConversationQueryService,
 )
 from backend.app.desktop.patrol.agent_loop.facts.fact_projection import LoopFactProjectionService
-from backend.app.desktop.patrol.agent_loop.governance.interventions import LoopInterventionService
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolService
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
 from backend.app.desktop.patrol.agent_loop.models import (
     LoopInterventionTransition,
     LoopUserIntent,
 )
 from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopObservationService
-from backend.app.desktop.patrol.agent_loop.schemas import LoopInterventionRequest
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -147,21 +149,7 @@ def test_console_queries_and_portfolio_intent_reach_next_observation(tmp_path) -
                     )
                 )
             service = AgentLoopService(sessions)
-            started = await service.start(
-                LoopCreateRequest(
-                    loop_id=loop_id,
-                    workspace_id=workspace_id,
-                    initial_context_id=context_id,
-                    initial_run_id=f"initial-{suffix}",
-                    holder_id=f"patrol-{suffix}",
-                    goal="Verify the implementation",
-                    task_contract="Use evidence",
-                    acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},),
-                    capabilities=("continue_context", "request_completion"),
-                    context_scope=(context_id,),
-                    permission_scope=("read",),
-                )
-            )
+            started = await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id=f"patrol-{suffix}", goal="Verify the implementation", task_contract="Use evidence", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read",))
             async with sessions() as session:
                 console = await LoopConsoleQueryService().read(session, loop_id)
                 conversation = await ContextConversationQueryService(checkpointer).read(
@@ -226,14 +214,14 @@ def test_console_queries_and_portfolio_intent_reach_next_observation(tmp_path) -
             assert all(item["evidence"]["run_id"] == f"initial-{suffix}" for item in all_facts["facts"])
             assert foreign_error.value.status_code == 404
 
-            result = await LoopInterventionService(sessions).submit(
-                loop_id,
-                LoopInterventionRequest(
-                    mode="patrol_portfolio_intent",
+            result = await WorkspacePatrolService(sessions, SimpleNamespace(checkpointer=checkpointer)).submit(
+                workspace_id,
+                PatrolInputRequest(
+                    submission_id=f"portfolio-feedback-{suffix}",
+                    access_mode="read-only",
                     content="保留测试 Lane，暂停重复实现 Lane。",
                 ),
             )
-            assert result["round_id"] != started["current_round_id"]
             after_intent = await service.get(loop_id)
             assert after_intent["goal_revision"] == started["goal_revision"]
             assert after_intent["mission"] == started["mission"]
@@ -249,6 +237,7 @@ def test_console_queries_and_portfolio_intent_reach_next_observation(tmp_path) -
                 lifecycle = tuple((await session.scalars(select(LoopInterventionTransition).where(LoopInterventionTransition.intent_id == intent.intent_id).order_by(LoopInterventionTransition.revision))).all())
                 assert intent.status == "observed"
                 assert intent.origin_kind == "user"
+                assert intent.intent_kind == "workspace_input"
                 assert intent.delivery_state == "observed"
                 assert [item.to_state for item in lifecycle] == ["submitted", "accepted", "observed"]
                 assert intent.observed_round_id == result["round_id"]

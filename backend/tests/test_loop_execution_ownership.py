@@ -30,9 +30,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import backend.app.desktop.persistence.registry
 from backend.app.desktop.composition import service as desktop_service_module
 from backend.app.desktop.patrol.agent_loop.models import LoopAction, LoopDecision, LoopDelegationGrant, LoopDirective
-from backend.app.desktop.patrol.agent_loop.models import LoopUserIntent
-from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
 from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
 from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopRunWorkspaceBinder
 from backend.app.desktop.patrol.agent_loop.execution.run_execution import LoopRunExecutionBoundary
@@ -523,61 +520,6 @@ def test_occupied_planned_writer_slot_fails_without_workspace_fallback(tmp_path:
             assert stored.workspace_anchor["slot_id"] == owner_lease.slot_id
             assert prepared_paths == [planned_root]
         finally:
-            if fixture is not None:
-                await _stop(fixture["service"], fixture["loop_id"])
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_direct_user_loop_run_binds_after_actual_start(tmp_path: Path) -> None:
-    from backend.tests.test_loop_user_message_transaction import authorize_message
-    from backend.tests.test_loop_failure_repair_transaction import _launch, _finish
-    from focus.runtime.runs.schemas import RunStatus
-
-    async def run() -> None:
-        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        fixture = None
-        record = None
-        try:
-            fixture = await _seed_loop(sessions, tmp_path, label="user-entry", started_at=datetime.now(UTC))
-            accepted = await fixture["service"].user_message(fixture["context_id"], "Continue this Context")
-            coordinator = LoopCoordinator(sessions)
-            claim = await coordinator.claim_for_loop(fixture["loop_id"], "user-entry")
-            observation, decision = await authorize_message(sessions, fixture, claim, accepted["intent_id"])
-            async with sessions() as session:
-                intent = await session.get(LoopUserIntent, accepted["intent_id"])
-                assert intent.delivery_state == "observed" and intent.resulting_run_id is None
-            record = await _launch(sessions, fixture, coordinator, claim)
-            async with sessions() as session:
-                intent = await session.get(LoopUserIntent, accepted["intent_id"])
-                directive = await session.get(LoopDirective, decision.directive_ids[0])
-                started_event = await session.scalar(select(LoopJournalEvent).where(
-                    LoopJournalEvent.loop_id == fixture["loop_id"],
-                    LoopJournalEvent.kind == "context.run.started",
-                    LoopJournalEvent.entity_id == record.run_id,
-                ))
-                assert intent.delivery_state == "run_started"
-                assert intent.resulting_run_id == record.run_id == directive.launched_run_id
-                assert started_event is not None
-                assert directive.round_id == observation.round_id
-            record.status = RunStatus.success
-            await _finish(sessions, fixture, coordinator, record, [])
-            async with sessions() as session:
-                intent = await session.get(LoopUserIntent, accepted["intent_id"])
-                settled_event = await session.scalar(select(LoopJournalEvent).where(
-                    LoopJournalEvent.loop_id == fixture["loop_id"],
-                    LoopJournalEvent.kind == "context.run.settled",
-                    LoopJournalEvent.entity_id == record.run_id,
-                ))
-                assert intent.delivery_state == "settled"
-                assert settled_event is not None
-        finally:
-            if record is not None and not record.task.done():
-                record.task.cancel()
-                await asyncio.gather(record.task, return_exceptions=True)
-                await record.loop_activity_task
             if fixture is not None:
                 await _stop(fixture["service"], fixture["loop_id"])
             await engine.dispose()
