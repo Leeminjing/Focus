@@ -155,12 +155,11 @@ test("a failed derive leaves edits available, and cancellation creates no branch
   assert.ok(requests.every(request => !request.url.endsWith("/main/runs")));
 });
 
-test("replay rebinds attachments to the new task with notes, must-view intent and reading mode", async () => {
+test("replay rebinds attachments with notes and must-view intent without retired policies", async () => {
   const { context, run, button, requests } = setup();
   const originalApi = context.api;
   context.api = async (url, options) => {
     if (url === '/desktop/api/tasks/source/material-history') return [{ message_id: 'q2', material_id: 'old-image', current_available: true, relative_path: 'image.png', ordinal: 0, note: 'read the labels', must_view_requested: true }];
-    if (url === '/desktop/api/tasks/source/materials') return [{ material_id: 'old-image', reading_mode: 'rough', instruction_mode: 'strict' }];
     if (url === '/desktop/api/tasks/branch/materials') { requests.push({ url, ...options }); return { material_id: 'branch-image' }; }
     return originalApi(url, options);
   };
@@ -168,7 +167,7 @@ test("replay rebinds attachments to the new task with notes, must-view intent an
   await run('openMessageRetry(button, true)');
   await run('submitMessageRetry()');
   const material = JSON.parse(requests.find(request => request.url.endsWith('/branch/materials')).body);
-  assert.deepEqual(material, { path: 'image.png', reading_mode: 'rough', instruction_mode: 'strict' });
+  assert.deepEqual(material, { path: 'image.png' });
   const main = JSON.parse(requests.find(request => request.url.endsWith('/main/runs')).body);
   assert.deepEqual(main.material_inputs, [{ material_id: 'branch-image', note: 'read the labels' }]);
   assert.deepEqual(main.must_view_material_ids, ['branch-image']);

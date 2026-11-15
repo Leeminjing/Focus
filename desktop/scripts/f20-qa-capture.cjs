@@ -102,15 +102,15 @@ async function capture(size, outputDir) {
       render();
     } else if (target === 'materials') {
       state.materials.set(state.activeTaskId, [
-        { material_id: 'm1', relative_path: 'specs/product-direction.md', reading_mode: 'full', instruction_mode: 'strict', retention: 'irreplaceable', needs_confirmation: true },
-        { material_id: 'm2', relative_path: 'research/competitive-notes.txt', reading_mode: 'rough', instruction_mode: 'reference', retention: 'removable', needs_confirmation: false }
+        { material_id: 'm1', relative_path: 'specs/product-direction.md', retention: 'irreplaceable', needs_confirmation: true },
+        { material_id: 'm2', relative_path: 'research/competitive-notes.txt', retention: 'removable', needs_confirmation: false }
       ]);
       state.inspector.open = true;
       state.inspector.tab = 'materials';
       render();
     } else if (target === 'file' || target === 'file-docx') {
       const fileName = target === 'file-docx' ? 'reports/research-draft.docx' : 'specs/product-direction.md';
-      const material = { material_id: 'm-file', relative_path: fileName, reading_mode: 'full', instruction_mode: 'strict', retention: 'irreplaceable', needs_confirmation: false };
+      const material = { material_id: 'm-file', relative_path: fileName, retention: 'irreplaceable', needs_confirmation: false };
       state.materials.set(state.activeTaskId, [material]);
       state.filesPanel = material;
       state.panelWidth = Math.min(520, Math.max(380, Math.round(window.innerWidth * 0.42)));

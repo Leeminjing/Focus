@@ -175,8 +175,6 @@ class RunMaterialResolver:
             digest=digest,
             material_kind=kind,
             delivery_mode="image" if kind == "image" else "reference",
-            reading_mode=material.reading_mode,
-            instruction_mode=material.instruction_mode,
             size_bytes=size,
             note=request.note,
         )

@@ -236,7 +236,7 @@ def test_accepted_workspace_material_cannot_be_deleted_or_mutated(tmp_path, froz
         assert client.delete(f"/desktop/api/materials/{identity}", headers=SESSION).status_code == 409
         assert client.post(f"/desktop/api/materials/{identity}/clear", headers=SESSION).status_code == 409
         response = client.put(f"/desktop/api/materials/{identity}", headers=SESSION,
-            json={"reading_mode": "full", "instruction_mode": "reference", "retention": "removable"})
+            json={"retention": "removable"})
         assert response.status_code == 409
         Path(material["path"]).write_bytes(b"external change")
         assert client.get(f"/desktop/api/workspaces/{workspace['workspace_id']}/materials/{identity}/content", headers=SESSION).status_code == 409

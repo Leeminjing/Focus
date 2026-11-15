@@ -122,8 +122,8 @@ async function run() {
         state.view = 'compress'; render();
       } else if (target === 'materials') {
         state.materials.set(task.task_id, [
-          { material_id: 'm1', relative_path: 'specs/product-direction.md', reading_mode: 'full', instruction_mode: 'strict', retention: 'irreplaceable', needs_confirmation: true },
-          { material_id: 'm2', relative_path: 'research/notes.txt', reading_mode: 'rough', instruction_mode: 'reference', retention: 'removable', needs_confirmation: false },
+          { material_id: 'm1', relative_path: 'specs/product-direction.md', retention: 'irreplaceable', needs_confirmation: true },
+          { material_id: 'm2', relative_path: 'research/notes.txt', retention: 'removable', needs_confirmation: false },
         ]);
         state.view = 'focus'; state.inspector.open = true; state.inspector.tab = 'materials'; render();
       } else if (target === 'plugins') {
@@ -139,7 +139,7 @@ async function run() {
         };
         state.view = 'plugins'; render();
       } else if (target === 'file') {
-        const material = { material_id: 'm-file', relative_path: 'specs/product-direction.md', reading_mode: 'full', instruction_mode: 'strict', retention: 'irreplaceable' };
+        const material = { material_id: 'm-file', relative_path: 'specs/product-direction.md', retention: 'irreplaceable' };
         state.materials.set(task.task_id, [material]);
         state.filesPanel = material;
         state.panelWidth = 520;

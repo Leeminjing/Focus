@@ -475,12 +475,6 @@ class DesktopMaterial(Base):
     )
     intake_upload_key: Mapped[str | None] = mapped_column(String(65), nullable=True)
     relative_path: Mapped[str] = mapped_column(Text, nullable=False)
-    reading_mode: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="full"
-    )
-    instruction_mode: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="reference"
-    )
     retention: Mapped[str] = mapped_column(
         String(20), nullable=False, default="removable"
     )

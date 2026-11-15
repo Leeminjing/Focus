@@ -130,8 +130,6 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
             "digest": "legacy",
             "material_kind": "image",
             "delivery_mode": "image",
-            "reading_mode": "full",
-            "instruction_mode": "reference",
             "size_bytes": 80,
             "note": "逐像素核对",
             "source_bytes": 80,

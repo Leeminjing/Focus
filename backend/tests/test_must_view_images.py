@@ -454,29 +454,6 @@ def test_compression_gate_triggers_on_image_usage():
     assert text_calls, "同样窗口下的纯文本短消息不应触发压缩门"
 
 
-# === N2 材料清单按类型分流 ===
-
-
-def test_material_policy_line_marks_images_without_text_policies():
-    from backend.app.desktop.materials.policy import _material_policy_line
-
-    line = _material_policy_line(Path("/w/.focus/attachments/a.png"), "full", "strict")
-    assert "图片材料" in line
-    assert "优先完整阅读" not in line
-    assert "严格遵守" not in line
-
-
-def test_material_policy_line_keeps_text_policies_unchanged():
-    from backend.app.desktop.materials.policy import _material_policy_line
-
-    assert _material_policy_line(Path("/w/notes.md"), "full", "strict").endswith(
-        "| 优先完整阅读 | 严格遵守"
-    )
-    assert _material_policy_line(Path("/w/notes.md"), "rough", "reference").endswith(
-        "| 优先粗略阅读，需要时仍可完整读取 | 仅供参考"
-    )
-
-
 # === D17 dsh-eyes 残骸已清除 ===
 
 

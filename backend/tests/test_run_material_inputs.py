@@ -17,7 +17,7 @@ from langchain_core.messages import HumanMessage
 from backend.app.desktop.materials.context import MaterialContextProjector
 from backend.app.desktop.materials.kinds import MaterialKindClassifier
 from backend.app.desktop.materials.snapshots import MaterialSnapshotVerifier
-from backend.app.desktop.api.schemas import MainRunCreate
+from backend.app.desktop.api.schemas import MainRunCreate, MaterialCreate, MaterialUpdate
 from backend.app.desktop.conversations.inputs import ConversationInputCreate
 from backend.app.desktop.materials.limits import ImageResourceLimits
 from backend.app.desktop.runs.material_message import RunMaterialMessageProjector
@@ -33,8 +33,6 @@ def _item(material_id: str, path: str, kind: str, note: str = "") -> RunMaterial
         digest="a" * 64,
         material_kind=kind,
         delivery_mode="image" if kind == "image" else "reference",
-        reading_mode="full",
-        instruction_mode="reference",
         size_bytes=12,
         note=note,
         source_bytes=12 if kind == "image" else 0,
@@ -112,6 +110,29 @@ def test_request_new_legacy_and_mixing_contract() -> None:
         MainRunCreate(message="x", material_inputs=[], attached_material_ids=[])
     with pytest.raises(ValidationError, match="不能重复"):
         MainRunCreate(message="x", material_inputs=[{"material_id": "m1"}, {"material_id": "m1"}])
+
+
+@pytest.mark.parametrize("field,value", [("reading_mode", "full"), ("instruction_mode", "strict")])
+def test_material_requests_reject_retired_policies(field, value) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        MaterialCreate(path="notes.md", **{field: value})
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        MaterialUpdate(retention="removable", **{field: value})
+
+
+def test_legacy_material_equipment_discards_reading_rules(tmp_path) -> None:
+    legacy = _item("m1", "notes.md", "text", "只看第三章").to_json()
+    legacy.update(reading_mode="full", instruction_mode="strict")
+    inputs = RunMaterialInputs.from_equipment({"run_material_inputs": {
+        "origin_run_id": "old-run", "origin_message_id": "old-message", "attached": [legacy],
+    }})
+    item = inputs.attached[0]
+    assert item.note == "只看第三章"
+    assert "reading_mode" not in item.to_json()
+    assert "instruction_mode" not in item.to_json()
+    projection = MaterialContextProjector.project(inputs, str(tmp_path))
+    assert projection.policy_text == f"- {tmp_path / 'notes.md'}"
+    assert "notes.md" in projection.uploads_tag
 
 
 def test_material_note_limits_reject_without_truncation() -> None:

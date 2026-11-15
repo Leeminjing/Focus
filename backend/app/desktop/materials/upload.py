@@ -204,8 +204,6 @@ class MaterialUploadService:
             material_id=new_desktop_id(),
             task_id=task_id,
             relative_path=final.relative_to(Path(workspace_path)).as_posix(),
-            reading_mode="full",
-            instruction_mode="reference",
             retention="removable",
             digest=_digest_file(final),
             git_ref=f"refs/focus/materials/{new_desktop_id()}",

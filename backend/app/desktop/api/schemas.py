@@ -198,15 +198,11 @@ class ResumeRequest(StrictRequest):
 
 class MaterialCreate(StrictRequest):
     path: str
-    reading_mode: Literal["full", "rough"] = "full"
-    instruction_mode: Literal["reference", "strict"] = "reference"
     retention: Literal["removable", "irreplaceable"] = "removable"
     confirm_git_init: bool = False
 
 
 class MaterialUpdate(StrictRequest):
-    reading_mode: Literal["full", "rough"]
-    instruction_mode: Literal["reference", "strict"]
     retention: Literal["removable", "irreplaceable"]
     confirm_git_init: bool = False
 

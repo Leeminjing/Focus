@@ -19,9 +19,9 @@ const result = harness.vm.runInContext(`(() => {
   state.activeTaskId = "task";
   state.tasks = [{ task_id: "task", title: "T" }];
   state.details.set("task", { ui_state: { material_grouping_mode: "run", collapsed_material_groups: ["run:r1"] } });
-  const text = { material_id: "t1", relative_path: "notes.md", material_kind: "text", is_image: false, size_bytes: 8, reading_mode: "full", instruction_mode: "reference", retention: "removable", first_run_id: "r1" };
+  const text = { material_id: "t1", relative_path: "notes.md", material_kind: "text", is_image: false, size_bytes: 8, retention: "removable", first_run_id: "r1" };
   const image = { material_id: "i1", relative_path: "shot.png", material_kind: "image", is_image: true, size_bytes: 9, first_run_id: "r1" };
-  const idle = { material_id: "t2", relative_path: "idle.md", material_kind: "text", is_image: false, size_bytes: 5, reading_mode: "rough", instruction_mode: "reference", retention: "removable", first_run_id: "r2" };
+  const idle = { material_id: "t2", relative_path: "idle.md", material_kind: "text", is_image: false, size_bytes: 5, retention: "removable", first_run_id: "r2" };
   state.materials.set("task", [text, image, idle]);
   state.materialGroups.set("task", []);
   state.materialSelections.set("task", { bindings: [{ materialId: "t1", note: "第一行\\n第二行" }, { materialId: "i1", note: "对照" }], requiredImageIds: ["i1"], notes: { t1: "第一行\\n第二行", i1: "对照" } });
@@ -67,8 +67,7 @@ assert.doesNotMatch(result.textRow, /必须看/);
 assert.match(result.openRow, /material-selection-row[\s\S]*run-material-note[\s\S]*material-editor/, "备注框必须位于本轮选择控件之后、长期策略详情之前");
 assert.doesNotMatch(result.textRow, /完整阅读|参考材料|可移除|data-field="reading_mode"/);
 assert.match(result.openRow, /<legend>长期规则<\/legend>/);
-assert.match(result.openRow, /<label>阅读方式<select data-field="reading_mode"/);
-assert.match(result.openRow, /<label>指令规则<select data-field="instruction_mode"/);
+assert.doesNotMatch(result.openRow, /完整阅读|粗略阅读|严格遵守|仅供参考|data-field="(?:reading_mode|instruction_mode)"/);
 assert.match(result.openRow, /<label>保留规则<select data-field="retention"/);
 assert.doesNotMatch(result.imageRow, /线程内尚未使用|无备注/);
 

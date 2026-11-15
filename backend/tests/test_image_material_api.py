@@ -67,6 +67,36 @@ def _upload(client: TestClient, task_id: str, name: str, data: bytes, mime: str)
     )
 
 
+def test_material_api_exposes_retention_without_reading_rules(tmp_path):
+    with _client() as client:
+        workspace, task = _workspace_and_task(client, tmp_path / "workspace", "materials")
+        response = _upload(client, task["task_id"], "notes.txt", b"reference text", "text/plain")
+        assert response.status_code == 200, response.text
+        material = response.json()
+        assert "reading_mode" not in material
+        assert "instruction_mode" not in material
+        response = client.put(f"/desktop/api/materials/{material['material_id']}",
+            headers=SESSION, json={"retention": "removable"})
+        assert response.status_code == 200, response.text
+        assert response.json()["retention"] == "removable"
+        for field, value in (("reading_mode", "full"), ("instruction_mode", "strict")):
+            response = client.put(f"/desktop/api/materials/{material['material_id']}",
+                headers=SESSION, json={"retention": "removable", field: value})
+            assert response.status_code == 422, response.text
+            response = client.post(f"/desktop/api/tasks/{task['task_id']}/materials",
+                headers=SESSION, json={"path": material["relative_path"], field: value})
+            assert response.status_code == 422, response.text
+        response = client.get(f"/desktop/api/tasks/{task['task_id']}/materials", headers=SESSION)
+        assert response.status_code == 200, response.text
+        assert all("reading_mode" not in item and "instruction_mode" not in item for item in response.json())
+        policy, uploads = client.portal.call(app.state.desktop_service._material_context, task["task_id"])
+        assert policy == f"- {Path(workspace['path']) / material['relative_path']}"
+        assert material["relative_path"] in uploads
+        image = _upload(client, task["task_id"], "shot.png", _png(), "image/png").json()
+        policy, _ = client.portal.call(app.state.desktop_service._material_context, task["task_id"])
+        assert f"- {Path(workspace['path']) / image['relative_path']} | 图片材料" in policy
+
+
 def _wait_run_status(client: TestClient, run_id: str, status: str) -> dict:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:

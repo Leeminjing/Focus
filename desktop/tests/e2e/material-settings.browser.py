@@ -1,4 +1,4 @@
-"""Verify current material selections, persistent policies and Run-owned diffs.
+"""Verify material selections, retention settings and Run-owned diffs.
 
 Run: python desktop/tests/e2e/material-settings.browser.py [screenshot directory]
 Uses production UI with deterministic API fixtures, without model or database calls.
@@ -19,10 +19,10 @@ HARNESS = r"""
   const reply = value => new Response(JSON.stringify(value), {headers: {'Content-Type': 'application/json'}});
   window.materialHarness = {calls: [], run: 'run-material-123456789', materials: [
     {material_id:'protected',relative_path:'rules.md',material_kind:'text',size_bytes:100,
-      reading_mode:'full',instruction_mode:'strict',retention:'irreplaceable',needs_confirmation:true},
+      retention:'irreplaceable',needs_confirmation:true},
     {material_id:'image',relative_path:'diagram.png',material_kind:'image',is_image:true,size_bytes:68,retention:'irreplaceable'},
     {material_id:'optional',relative_path:'notes.txt',material_kind:'text',size_bytes:40,
-      reading_mode:'rough',instruction_mode:'reference',retention:'removable'}]};
+      retention:'removable'}]};
   window.fetch = async (url, options={}) => {
     const path = new URL(String(url), 'http://focus.test').pathname;
     const body = options.body ? JSON.parse(options.body) : null;
@@ -78,27 +78,27 @@ with sync_playwright() as p:
 
         protected.get_by_role('button', name='材料设置', exact=True).click()
         rules = protected.get_by_role('group', name='长期规则', exact=True)
-        expect(rules.get_by_label('阅读方式')).to_have_value('full')
-        expect(rules.get_by_label('指令规则')).to_have_value('strict')
+        expect(rules.get_by_label('阅读方式')).to_have_count(0)
+        expect(rules.get_by_label('指令规则')).to_have_count(0)
+        expect(rules.get_by_role('combobox')).to_have_count(1)
         expect(rules.get_by_label('保留规则')).to_have_value('irreplaceable')
         expect(protected.get_by_role('button', name='删除', exact=True)).to_have_count(0)
-        rules.get_by_label('阅读方式').select_option('rough')
         page.locator('#mainInput').fill('保留这份会话草稿')
         protected.get_by_role('button', name='本轮使用', exact=False).click()
         expect(protected.locator('[data-action="toggle-run-material"]')).to_have_attribute('aria-pressed','true')
         expect(protected.locator('[data-action="toggle-run-material"]')).to_be_focused()
-        expect(rules.get_by_label('阅读方式')).to_have_value('rough')
+        expect(rules.get_by_label('保留规则')).to_have_value('irreplaceable')
         protected.get_by_role('textbox', name='本轮备注', exact=True).fill('只对本轮生效')
         protected.locator('[data-action="toggle-run-material"]').click()
         expect(protected.get_by_role('textbox', name='本轮备注', exact=True)).to_have_count(0)
-        expect(rules.get_by_label('阅读方式')).to_have_value('rough')
+        expect(rules.get_by_label('保留规则')).to_have_value('irreplaceable')
         assert not page.evaluate("materialHarness.calls.some(c=>c.method==='DELETE'||c.method==='PUT')")
         protected.locator('[data-action="toggle-run-material"]').click()
         expect(protected.get_by_role('textbox', name='本轮备注', exact=True)).to_have_value('只对本轮生效')
         protected.get_by_role('button',name='保存规则',exact=True).click()
         page.wait_for_function("() => materialHarness.calls.some(c=>c.method==='PUT')")
         assert page.evaluate("materialHarness.calls.find(c=>c.method==='PUT').body") == {
-            'reading_mode':'rough','instruction_mode':'strict','retention':'irreplaceable'}
+            'retention':'irreplaceable'}
         expect(protected.locator('[data-action="toggle-run-material"]')).to_have_attribute('aria-pressed','true')
         expect(page.locator('#mainInput')).to_have_value('保留这份会话草稿')
         expect(protected).not_to_contain_text('无备注')

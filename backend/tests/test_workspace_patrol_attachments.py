@@ -101,7 +101,7 @@ def test_accept_freezes_order_source_pixels_and_replay(tmp_path, git):
                 assert [item["material_id"] for item in frozen] == [image.material_id, text.material_id]
                 assert row.envelope["user_intents"][-1]["attachments"] == frozen
                 assert intent.content == "解释这些内容"
-                assert all(item["instruction_mode"] == "reference" for item in frozen)
+                assert all("instruction_mode" not in item and "reading_mode" not in item for item in frozen)
                 observation = LoopObservationEnvelope.model_validate(row.envelope)
                 context_id = loop.initial_context_id
             projected = await WorkspaceAttachments().project(sessions, observation, _model(), [HumanMessage(content="user instruction")])
@@ -253,7 +253,7 @@ def test_image_capacity_uses_pixels_without_base64_text_cost():
 
 def test_frozen_version_rejects_missing_source_and_execution_collision(tmp_path):
     raw = b"reference"
-    item = RunMaterialInput("m", "reference.txt", hashlib.sha256(raw).hexdigest(), "text", "reference", "full", "reference", len(raw))
+    item = RunMaterialInput("m", "reference.txt", hashlib.sha256(raw).hexdigest(), "text", "reference", len(raw))
     verifier = MaterialSnapshotVerifier()
     with pytest.raises(OSError):
         verifier.read(item, str(tmp_path))
@@ -272,8 +272,7 @@ def test_frozen_material_fits_windows_path_after_long_workspace_root(tmp_path):
     source.write_bytes(raw)
     execution = tmp_path / ("w" * max(1, 145 - len(str(tmp_path)) - 1))
     execution.mkdir()
-    item = RunMaterialInput("m" * 32, source.name, hashlib.sha256(raw).hexdigest(), "image", "image",
-        "full", "reference", len(raw))
+    item = RunMaterialInput("m" * 32, source.name, hashlib.sha256(raw).hexdigest(), "image", "image", len(raw))
     old_path = execution / ".focus" / "attachments" / f"frozen-{item.material_id}-{item.digest}.png"
     assert len(str(old_path)) >= 260
     frozen = MaterialSnapshotVerifier().materialize(item, str(tmp_path), str(execution))

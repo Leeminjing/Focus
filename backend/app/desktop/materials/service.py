@@ -26,7 +26,6 @@ from backend.app.desktop.materials.ownership import (
     load_material,
     lock_material_upload,
 )
-from backend.app.desktop.materials.policy import _material_policy_line
 from backend.app.desktop.materials.snapshots import MaterialSnapshotVerifier
 from backend.app.desktop.materials.watch import (
     MaterialFileMonitor,
@@ -89,8 +88,6 @@ class MaterialService:
                 material_id=new_id(),
                 task_id=task.task_id,
                 relative_path=relative,
-                reading_mode=body.reading_mode,
-                instruction_mode=body.instruction_mode,
                 retention=body.retention,
                 digest=self._digest(path),
                 git_ref=f"refs/focus/materials/{new_id()}",
@@ -192,8 +189,6 @@ class MaterialService:
                 await self._save_material_version(
                     session, material, workspace.path, "protect"
                 )
-            material.reading_mode = body.reading_mode
-            material.instruction_mode = body.instruction_mode
             material.retention = body.retention
             await session.commit()
             return self._material_payload(material, workspace.path)
@@ -283,13 +278,8 @@ class MaterialService:
         lines = []
         upload_names: list[str] = []
         for material in materials:
-            lines.append(
-                _material_policy_line(
-                    resolve_material_path(workspace.path, material.relative_path),
-                    material.reading_mode,
-                    material.instruction_mode,
-                )
-            )
+            marker = " | 图片材料" if is_image_name(material.relative_path) else ""
+            lines.append(f"- {resolve_material_path(workspace.path, material.relative_path)}{marker}")
             upload_names.append(material.relative_path)
         uploads_tag = (
             "<current_uploads>\n" + "\n".join(upload_names) + "\n</current_uploads>"
@@ -583,8 +573,6 @@ class MaterialService:
             ),
             "path": str(path),
             "relative_path": material.relative_path,
-            "reading_mode": material.reading_mode,
-            "instruction_mode": material.instruction_mode,
             "retention": material.retention,
             "digest": material.digest,
             "sha256": material.digest,

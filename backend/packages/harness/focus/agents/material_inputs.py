@@ -41,8 +41,6 @@ class RunMaterialInput:
     digest: str
     material_kind: str
     delivery_mode: str
-    reading_mode: str
-    instruction_mode: str
     size_bytes: int
     note: str = ""
     source_bytes: int = 0
@@ -61,8 +59,6 @@ class RunMaterialInput:
             digest=str(value["digest"]),
             material_kind=str(value["material_kind"]),
             delivery_mode=str(value.get("delivery_mode") or "reference"),
-            reading_mode=str(value.get("reading_mode") or "full"),
-            instruction_mode=str(value.get("instruction_mode") or "reference"),
             size_bytes=max(0, int(value.get("size_bytes") or 0)),
             note=str(value.get("note") or ""),
             source_bytes=max(0, int(value.get("source_bytes") or 0)),
@@ -137,8 +133,6 @@ class RunMaterialInputs:
                 digest=item.digest or "legacy",
                 material_kind="image",
                 delivery_mode="image",
-                reading_mode="full",
-                instruction_mode="reference",
                 size_bytes=item.source_bytes,
                 source_bytes=item.source_bytes,
                 model_bytes=item.model_bytes,

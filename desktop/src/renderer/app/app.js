@@ -2440,10 +2440,7 @@ async function submitMessageRetry() {
     }) });
     const context = draft.context;
     if (!["valid", "repaired", "approved"].includes(context.projection_status)) throw new Error(localize("该历史上下文需要先处理安全执行投影，请在上下文与派生中查看"));
-    const [history, materials] = await Promise.all([
-      api(`/desktop/api/tasks/${draft.task.task_id}/material-history`),
-      api(`/desktop/api/tasks/${draft.task.task_id}/materials`),
-    ]);
+    const history = await api(`/desktop/api/tasks/${draft.task.task_id}/material-history`);
     const localBindings = history.filter(item => item.message_id === (draft.turn.message.id || draft.turn.message.message_id));
     const inheritedBindings = FocusMessageRetry.materialBindings(draft.turn.message);
     const bindings = (inheritedBindings.length ? inheritedBindings.map(item => localBindings.find(local => local.material_id === item.material_id) || item) : localBindings).sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
@@ -2451,8 +2448,7 @@ async function submitMessageRetry() {
     // notes/must-view intent; never silently drop an unavailable attachment.
     for (const binding of bindings) {
       if (binding.current_available === false) throw new Error(localize`原提问的材料已不可用：${binding.relative_path}`);
-      const original = materials.find(item => item.material_id === binding.material_id);
-      if (!draft.materials.has(binding.material_id)) draft.materials.set(binding.material_id, await api(`/desktop/api/tasks/${context.context_id}/materials`, { method: "POST", body: JSON.stringify({ path: binding.relative_path, reading_mode: original?.reading_mode || "full", instruction_mode: original?.instruction_mode || "reference" }) }));
+      if (!draft.materials.has(binding.material_id)) draft.materials.set(binding.material_id, await api(`/desktop/api/tasks/${context.context_id}/materials`, { method: "POST", body: JSON.stringify({ path: binding.relative_path }) }));
     }
     let content = FocusMessageRetry.replayContent(draft.turn.message, editedText);
     const remap = text => {
@@ -2720,8 +2716,6 @@ function renderMaterialSettings(material) {
   if (state.openMaterial !== material.material_id) return `<section id="material-settings-${escapeHtml(material.material_id)}" hidden></section>`;
   return localize`<section class="material-editor" id="material-settings-${escapeHtml(material.material_id)}" aria-label="材料设置：${escapeHtml(material.relative_path)}">
     ${!material.is_image ? localize`<fieldset class="material-rules"><legend>长期规则</legend>
-      <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
-      <label>指令规则<select data-field="instruction_mode"><option value="reference" ${material.instruction_mode === "reference" ? "selected" : ""}>仅供参考</option><option value="strict" ${material.instruction_mode === "strict" ? "selected" : ""}>严格遵守</option></select></label>
       <label>保留规则<select data-field="retention"><option value="removable" ${material.retention === "removable" ? "selected" : ""}>可移除</option><option value="irreplaceable" ${material.retention === "irreplaceable" ? "selected" : ""}>不可遗失</option></select></label>
       <button class="primary" data-action="save-material">保存规则</button>
     </fieldset>` : ""}

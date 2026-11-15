@@ -12,14 +12,14 @@ const recording=process.env.FOCUS_PATROL_RECORD==='1';
 const task={task_id:'fixture-task',workspace_id:'fixture-workspace',workspace_name:'验收工作区',title:'上下文架构检查',lifecycle:'active',harness_mode:'workspace'};
 let draft={draft_id:'fixture-draft',draft_revision:0,task_id:task.task_id,mode:'standard',source_checkpoint_id:'fixture-checkpoint',token_estimate:0,equipment:{model_name:'fixture-model',permissions:['read'],skills:[],access_mode:'read-only'},authoring_document:{schema_version:3,instructions:'检查来源、区分事实与示例，给出可验证的结论。',entries:[],transformations:[]}};
 const equipment={models:[{name:'fixture-model',display_name:'验收模型',context_window:128000}],tools:[],skills:[],permissions:['read','write','host_command']};
-let materials=[{material_id:'protected-material',relative_path:'rules.txt',reading_mode:'rough',instruction_mode:'reference',retention:'irreplaceable',size_bytes:100},
- {material_id:'removable-material',relative_path:'notes.txt',reading_mode:'rough',instruction_mode:'reference',retention:'removable',size_bytes:100}];
+let materials=[{material_id:'protected-material',relative_path:'rules.txt',retention:'irreplaceable',size_bytes:100},
+ {material_id:'removable-material',relative_path:'notes.txt',retention:'removable',size_bytes:100}];
 const sourceEntries=[{entry_id:'source-user',kind:'message',payload:{role:'user',content:'补充来源：先验证当前架构，再编排需要的上下文。'}},
  {entry_id:'source-call',kind:'function_call',payload:{name:'read_file',call_id:'source-read',arguments:'{\"path\":\"architecture.md\"}'}},
  {entry_id:'source-output',kind:'function_call_output',payload:{call_id:'source-read',output:'来源记录：工具调用与结果独立保留。'}}];
 let server;
 async function api(url,method,body){
- if(url.endsWith('/materials/upload')){materials.push({material_id:'uploaded-material',relative_path:'upload.txt',reading_mode:'rough',instruction_mode:'reference',retention:'removable',size_bytes:100});return {};}
+ if(url.endsWith('/materials/upload')){materials.push({material_id:'uploaded-material',relative_path:'upload.txt',retention:'removable',size_bytes:100});return {};}
  if(url.endsWith('/fixture-task/materials'))return materials;
  const material=materials.find(item=>url.includes('/materials/'+item.material_id));
  if(material){
@@ -134,14 +134,14 @@ async function run(){
   const root=wb.root,worker=wb.worker,body=wb.viewport.cache.get('m0').fieldEditor('content'),text=body.value;
   const card=id=>document.querySelector('#appInspector [data-material-id="'+id+'"]');
   card('protected-material').querySelector('[data-action="toggle-material"]').click();
-  await until(()=>card('protected-material').querySelector('[data-field="reading_mode"]'));
+  await until(()=>card('protected-material').querySelector('[data-field="retention"]'));
   assert(wb.root===root&&root.isConnected&&wb.worker===worker&&wb.active,'material sidebar expansion preserves patrol mount');
   const stale=async(label)=>{
    await until(()=>wb.review.state==='stale');
    assert(!wb.previewPlan&&document.querySelector('[data-action="deploy"]').disabled&&wb.view.budget.textContent.includes('过期预算'),label+' invalidates budget and deployment');
    assert(wb.root===root&&root.isConnected&&wb.worker===worker&&wb.viewport.cache.get('m0').fieldEditor('content')===body&&body.value===text,label+' preserves editor mount and buffer');
   };
-  const rules=card('protected-material');rules.querySelector('[data-field="reading_mode"]').value='full';rules.querySelector('[data-field="instruction_mode"]').value='strict';
+  const rules=card('protected-material');assert(!rules.querySelector('[data-field="reading_mode"], [data-field="instruction_mode"]'),'retired reading rules are absent');
   body.focus();body.setSelectionRange(2,4);rules.querySelector('[data-action="save-material"]').click();await stale('material rules');
   assert(document.activeElement===body&&body.selectionStart===2&&body.selectionEnd===4,'material rules response preserves caret and focus');
   await wb.preview();assert(wb.previewPlan?.executable&&!document.querySelector('[data-action="deploy"]').disabled,'material recheck restores deployment');wb.review.close();

@@ -1,7 +1,7 @@
 """本文件对外提供 desktop_contexts 与 skill_catalog_records 装配投影。
 
-输入为 Run 已持久化装备、材料读取规则和当前能力目录；输出为 Harness FrozenContext 与轻量 catalog。
-具体工作流为核验记忆冻结记录、绑定 Skill 正文内容哈希，将材料读取规则独立为执行 policy。
+输入为 Run 已持久化装备、材料路径与快照引用和当前能力目录；输出为 Harness FrozenContext 与轻量 catalog。
+具体工作流为核验记忆冻结记录、绑定 Skill 正文内容哈希，将材料引用及独立图片必看要求装入执行 policy。
 示例：contexts = desktop_contexts(run.equipment, material_policy)。本模块不读取数据库或磁盘。
 """
 
