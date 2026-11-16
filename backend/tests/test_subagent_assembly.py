@@ -8,28 +8,32 @@
 示例：python -m pytest backend/tests/test_subagent_assembly.py。
 """
 
-import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
-
-import focus.tools.tools as _discovery_tools
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
-
-
-import base64
 import asyncio
+import base64
 import os
 import uuid
 
+import focus.tools.tools as _discovery_tools
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from sqlalchemy import delete
 
-os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
-pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
-from backend.app.desktop.persistence.models import AgentMessage, DesktopRun, DesktopThread, DesktopWorkspace, SwarmAgent
+os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
+pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
+
 from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.persistence.models import (
+    AgentMessage,
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+    SwarmAgent,
+)
 from backend.app.gateway.app import app
 from backend.tests.patrol_draft_support import save_patrol_draft
 
@@ -63,7 +67,6 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
 
     仅替换 make_lead_agent 为捕获型 fake 图，其余（start_run/worker/StreamBridge/DB）全真实。
     """
-    import backend.app.desktop.composition.service as svc
 
     captured: list[dict] = []
 

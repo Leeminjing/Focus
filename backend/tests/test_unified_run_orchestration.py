@@ -13,26 +13,33 @@ V2 authored 只保存定义，真实调用仍保留在 display/checkpoint，合�
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from types import SimpleNamespace
 import os
 import uuid
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
+from focus.runtime.runs.events import serialize_message, validate_messages
+from focus.runtime.runs.manager import RunRecord
+from focus.runtime.runs.schemas import DisconnectMode, RunStatus
+from langchain_core.messages import AIMessage, ToolMessage
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from langchain_core.messages import AIMessage, ToolMessage
 
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
     ContextRevisionProjectionStatus,
+    ContextRevisionReader,
     ContextRevisionRef,
     ContextRevisionRepository,
-    ContextRevisionReader,
 )
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+)
 from backend.app.desktop.runs.evidence.models import DesktopDomainResult
 from backend.app.desktop.runs.orchestration import (
     RunLauncher,
@@ -45,10 +52,6 @@ from backend.app.desktop.runs.orchestration import (
     RunRegistrationConflict,
     RunRegistrationRequest,
 )
-from focus.runtime.runs.manager import RunRecord
-from focus.runtime.runs.events import serialize_message, validate_messages
-from focus.runtime.runs.schemas import DisconnectMode, RunStatus
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -267,6 +270,16 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
             assert settlement.context_publication == "published"
             assert again.idempotent is True
             assert again.event_id == settlement.event_id
+            async with sessions() as session:
+                from backend.app.desktop.contexts.evolution.repository import (
+                    ContextRevisionNotFound,
+                )
+
+                persisted = await session.get(DesktopRun, run_id)
+                assert "context_snapshot" not in persisted.equipment
+                assert "resume_context_snapshot" not in persisted.equipment
+                with pytest.raises(ContextRevisionNotFound):
+                    await ContextRevisionRepository().get(session, ref)
             async with sessions.begin() as session:
                 event = await session.get(RunOutboxEvent, settlement.event_id)
                 event.status = "claimed"
@@ -339,6 +352,17 @@ def test_settled_approval_is_visible_after_restart_without_reading_checkpoints()
                 run_id=run_id, thread_id=ref.execution_thread_id,
                 status=RunStatus.interrupted, on_disconnect=DisconnectMode.cancel,
             ))
+            async with sessions() as session:
+                from backend.app.desktop.runs.context_snapshot import (
+                    read_context_snapshot,
+                )
+
+                persisted = await session.get(DesktopRun, run_id)
+                resume_source, _ = read_context_snapshot(persisted.equipment["resume_context_snapshot"])
+                assert resume_source.ref.checkpoint_id == "approval-checkpoint"
+                assert resume_source.origin_id == run_id
+                assert resume_source.ref != ref
+                assert (await ContextRevisionRepository().get(session, ref)).ref == ref
             restarted = DesktopService.__new__(DesktopService)
             restarted.session_factory = sessions
             summary = next(item for item in await restarted.list_tasks() if item["task_id"] == context_id)
@@ -400,7 +424,9 @@ def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoin
             assert execution.messages[-1]["focus_interruption_status"] == "interrupted"
             assert contract.repair_manifest[0]["source_run_id"] == run_id
             assert contract.repair_manifest[0]["cause"] == "interrupted"
-            from backend.app.desktop.runs.orchestration.execution_history import repaired_execution_for_run
+            from backend.app.desktop.runs.orchestration.execution_history import (
+                repaired_execution_for_run,
+            )
 
             async with sessions() as session:
                 next_run = SimpleNamespace(kind="main", context_revision_id=contract.ref.revision_id,
@@ -515,14 +541,30 @@ def test_later_provider_error_cannot_repair_call_in_source_checkpoint(source_che
                 )
             )
             assert settlement.context_publication == "approval_required"
+            assert settlement.context_revision is None
             async with sessions() as session:
+                from backend.app.desktop.contexts.evolution.models import (
+                    ContextInputSnapshot,
+                )
+
                 repository = ContextRevisionRepository()
                 current = await repository.current(session, context_id)
-                proposed = await repository.get(session, settlement.context_revision)
+                persisted = await session.get(DesktopRun, run_id)
+                snapshots = list(await session.scalars(
+                    select(ContextInputSnapshot).where(ContextInputSnapshot.context_id == context_id)
+                ))
+                diagnostic = persisted.workspace_result["context_protocol_diagnostic"]
             assert current.ref == ref
-            assert proposed.projection_status is ContextRevisionProjectionStatus.APPROVAL_REQUIRED
-            assert proposed.repair_manifest[0]["cause"] == "ambiguous"
-            assert proposed.repair_manifest[0]["source_run_id"] is None
+            assert snapshots == []
+            assert "context_snapshot" not in persisted.equipment
+            assert diagnostic["checkpoint_id"] == "provider-error-checkpoint"
+            assert diagnostic["status"] == "unresolved"
+            assert diagnostic["issues"][0]["kind"] == "unresolved_tool_call"
+            assert diagnostic["repairs"][0]["cause"] == "ambiguous"
+            assert diagnostic["repairs"][0]["source_run_id"] is None
+            assert "original" not in diagnostic["issues"][0]
+            assert "proposed" not in diagnostic["issues"][0]
+            assert "message" not in diagnostic["repairs"][0]
         finally:
             async with sessions.begin() as session:
                 await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == context_id))

@@ -1,7 +1,9 @@
-"""已发布 Revision 的低优先级局部准备；只写局部缓存，共用真实授权与消费账本。
+"""本文件对外提供 LocalIndexPrewarmer、PrewarmUsage 与 validate_prewarm_owner。
 
-监督器按活动 Loop 轮询，缓存可跨重启恢复。失败版本在本进程不自动反复消费；
-新 Revision、授权或模型合同可再次准备。整体解释始终由当前冻结 Observation 构建。
+输入为活动 Loop、当前 Context 输入、有效授权和索引模型端口；输出为可复用局部 proof 缓存及消费回执。
+具体工作流为低优先级轮询当前输入并验证授权，只准备局部段缓存，不发布完整索引；失败输入在本进程不反复消费。
+新输入、授权或模型合同可再次准备，整体解释始终由本轮冻结 Observation 构建。
+示例：await LocalIndexPrewarmer(sessions, index_service).drain(loop_id)。
 """
 
 import asyncio
@@ -9,9 +11,12 @@ import logging
 
 from sqlalchemy import select
 
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopContextMembership
+from backend.app.desktop.contexts.evolution.repository import ContextRevisionRepository
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopContextMembership,
+)
 from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
-from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt, ContextRevision
 
 from .contracts import stable_expansion_hash
 from .index_budget_repository import IndexBudgetReservationRepository
@@ -27,11 +32,10 @@ async def validate_prewarm_owner(session, loop, grant, owner):
         LoopContextMembership.context_id == context_id,
         LoopContextMembership.status == "active",
     ))
-    revision = await session.get(ContextRevision, owner.get("owner_id"))
-    publication = await session.get(ContextPublicationReceipt, owner.get("owner_id"))
+    revision = await ContextRevisionRepository().current(session, context_id)
     if (member is None or (grant.context_scope and context_id not in grant.context_scope)
-        or revision is None or revision.context_id != context_id or publication is None
-        or publication.context_id != context_id or revision.projection_status != "valid"
+        or revision is None or revision.ref.revision_id != owner.get("owner_id")
+        or revision.projection_status != "valid"
         or revision.deleted_at is not None or revision.content_hash != owner.get("content_hash")):
         raise IndexBudgetExceeded("index prewarm source 未发布、已失效或超出授权 scope")
 

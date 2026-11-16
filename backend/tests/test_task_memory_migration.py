@@ -8,9 +8,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 
 from alembic import command
@@ -18,11 +18,9 @@ from alembic.config import Config
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from test_agent_loop_round_liveness import _seed_loop
 from test_patrol_session import _observation_envelope
 
-from backend.app.desktop.patrol.agent_loop.models import LoopObservation
-from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt
+from backend.app.desktop.persistence.models import DesktopThread
 
 
 def test_additive_migration_preserves_historical_observation(tmp_path, monkeypatch):
@@ -42,25 +40,22 @@ def test_additive_migration_preserves_historical_observation(tmp_path, monkeypat
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
-            fixture = await _seed_loop(
-                sessions, tmp_path, label="migration", started_at=datetime.now(UTC)
-            )
+            # Seed the historical schema with its own SQL contract. Current-state
+            # publishers intentionally cannot write the retired archive tables.
+            fixture = {key: uuid.uuid4().hex for key in ("workspace_id", "context_id", "loop_id", "round_id", "revision_id")}
+            async with sessions.begin() as session:
+                await session.execute(text("INSERT INTO desktop_workspaces(workspace_id,path,display_name) VALUES (:workspace_id,:path,'Migration')"), {**fixture, "path": str(tmp_path / fixture["workspace_id"])})
+                await session.execute(text("INSERT INTO desktop_threads(task_id,workspace_id,thread_id,title) VALUES (:context_id,:workspace_id,:context_id,'Migration')"), fixture)
+                await session.execute(text("INSERT INTO desktop_context_revisions (revision_id,context_id,generation,execution_thread_id,checkpoint_id,payload_mode,content_hash,projection_status,origin_kind) VALUES (:revision_id,:context_id,1,:context_id,'checkpoint','checkpoint',:content_hash,'valid','root')"), {**fixture, "content_hash": "a" * 64})
+                await session.execute(text("UPDATE desktop_threads SET current_revision_id=:revision_id WHERE task_id=:context_id"), fixture)
+                await session.execute(text("INSERT INTO agent_loops(loop_id,workspace_id,initial_context_id,holder_id,status) VALUES (:loop_id,:workspace_id,:context_id,'migration','running')"), fixture)
+                await session.execute(text("INSERT INTO loop_rounds(round_id,loop_id,number,status,authority_revision,goal_revision,frontier_hash,workspace_revision) VALUES (:round_id,:loop_id,1,'observed',1,1,:frontier_hash,1)"), {**fixture, "frontier_hash": "a" * 64})
             envelope = _observation_envelope(
                 fixture["loop_id"], fixture["round_id"]
             ).model_dump(mode="json")
             observation_id = uuid.uuid4().hex
             async with sessions.begin() as session:
-                session.add(
-                    LoopObservation(
-                        observation_id=observation_id,
-                        loop_id=fixture["loop_id"],
-                        round_id=fixture["round_id"],
-                        envelope=envelope,
-                        envelope_hash="b" * 64,
-                        projection_sequence=0,
-                        base_entity_revisions={},
-                    )
-                )
+                await session.execute(text("INSERT INTO loop_observations(observation_id,loop_id,round_id,envelope,envelope_hash,projection_sequence,base_entity_revisions) VALUES (:observation_id,:loop_id,:round_id,CAST(:envelope AS jsonb),:envelope_hash,0,'{}'::jsonb)"), {**fixture, "observation_id": observation_id, "envelope": json.dumps(envelope), "envelope_hash": "b" * 64})
             return observation_id, envelope, fixture["context_id"]
         finally:
             await engine.dispose()
@@ -69,13 +64,9 @@ def test_additive_migration_preserves_historical_observation(tmp_path, monkeypat
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         try:
             async with async_sessionmaker(engine)() as session:
-                row = await session.get(LoopObservation, observation_id)
-                assert row.envelope == envelope and row.envelope_hash == "b" * 64
-                assert await session.scalar(
-                    select(ContextPublicationReceipt.revision_id).where(
-                        ContextPublicationReceipt.context_id == context_id
-                    )
-                )
+                row = (await session.execute(text("SELECT envelope,envelope_hash FROM loop_observations WHERE observation_id=:identity"), {"identity": observation_id})).mappings().one()
+                assert row["envelope"] == envelope and row["envelope_hash"] == "b" * 64
+                assert await session.scalar(select(DesktopThread.current_revision_id).where(DesktopThread.task_id == context_id))
         finally:
             await engine.dispose()
 
@@ -91,10 +82,10 @@ def test_additive_migration_preserves_historical_observation(tmp_path, monkeypat
                 hide_password=False
             ),
         )
-        command.upgrade(config, "head")
+        command.upgrade(config, "8c9d0e1f2a3b")
         identity = asyncio.run(seed())
         command.downgrade(config, "7b8c9d0e1f2a")
-        command.upgrade(config, "head")
+        command.upgrade(config, "8c9d0e1f2a3b")
         asyncio.run(verify(*identity))
     finally:
         if created:

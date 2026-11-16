@@ -125,26 +125,24 @@
     const id = page.context_id || node?.context_id;
     const manifest = options.manifest || { nodes: [], edges: [] };
     const revisionId = page.revision?.revision_id || options.revisionId || node?.current_revision_id;
-    const identity = localize`<details class="context-identity"><summary>精确身份</summary><dl><dt>Context</dt><dd>${escape(id)}</dd><dt>Revision</dt><dd>${escape(revisionId || "—")}</dd></dl></details>`;
-    const generation = page.revision?.generation ?? manifest.revisions?.find(item => item.revision_id === revisionId)?.generation
-      ?? (revisionId && revisionId === node?.revision?.revision_id ? node.revision.generation : undefined);
-    const version = revisionId ? `${generation == null ? "" : `R${escape(generation)} · `}${escape(revisionId)}` : localize("正在读取已提交版本");
+    const identity = localize`<details class="context-identity"><summary>内容身份</summary><dl><dt>Context</dt><dd>${escape(id)}</dd><dt>当前状态标识</dt><dd>${escape(revisionId || "—")}</dd><dt>内容 hash</dt><dd data-context-content-hash>${escape(page.content_hash || "—")}</dd></dl></details>`;
+    const version = page.revision ? localize("当前内容") : localize("正在读取当前内容");
     const heading = localize`<header><div><h2 title="${escape(node?.title || page.title || id)}">${escape(node?.title || page.title || id)}</h2><small class="workbench-context-meta" data-patrol-context-version>${version}</small></div><button data-patrol-context-close aria-label="关闭 Context 检查">×</button></header>`;
-    const tabs = localize`<nav class="patrol-tabs" aria-label="工作线详情">${[["overview", localize("概要")], ["conversation", localize("会话")], ["sources", localize("来源与版本")]].map(([key, label]) => `<button data-patrol-context-tab="${key}" aria-pressed="${tab === key}">${label}</button>`).join("")}</nav>`;
+    const tabs = localize`<nav class="patrol-tabs" aria-label="工作线详情">${[["overview", localize("概要")], ["conversation", localize("会话")], ["sources", localize("来源")]].map(([key, label]) => `<button data-patrol-context-tab="${key}" aria-pressed="${tab === key}">${label}</button>`).join("")}</nav>`;
     const footer = localize`<footer><button data-patrol-open-task="${escape(id)}">在任务中打开 ↗</button></footer>`;
+    const currentSources = page.sources || manifest.edges.filter(edge => edge.target_context_id === id).map(edge => ({ context_id: edge.source_context_id }));
+    const sourceList = `<ul class="workbench-source-list">${currentSources.map(item => {
+      const contextId = item.context_id || item.source?.context_id;
+      const source = manifest.nodes.find(node => node.context_id === contextId);
+      return `<li><button data-context-related="${escape(contextId)}"><span>${escape(source?.title || contextId)}</span><small>${localize("查看当前内容")}</small></button></li>`;
+    }).join("") || localize("<li>当前内容没有外部来源</li>")}</ul>`;
     if (options.presentation === "workbench" && tab === "overview") {
-      const selectedRevision = manifest.nodes.find(item => item.context_id === id);
-      const sources = manifest.edges.filter(edge => edge.target_context_id === id && edge.target_revision_id === revisionId);
-      const consumers = new Set(manifest.edges.filter(edge => edge.source_context_id === id && edge.source_revision_id === revisionId).map(edge => edge.target_context_id));
-      const status = node?.status || page.revision?.projection_status;
-      return localize`${heading}${tabs}<div class="patrol-context-body"><p class="workbench-context-sources">${status ? `<span data-patrol-context-status>${escape(status)}</span> · ` : ""}${new Set(sources.map(edge => edge.source_context_id)).size} 个直接来源</p>${selectedRevision?.current_revision_id && selectedRevision.current_revision_id !== revisionId ? localize('<p class="workbench-version-note">正在检查历史版本；已有更新版本。<button data-patrol-inspect-revision="') + escape(selectedRevision.current_revision_id) + localize('">查看新版本</button></p>') : ""}<ul class="workbench-source-list">${sources.map(edge => {
-        const source = manifest.nodes.find(item => item.context_id === edge.source_context_id);
-        const sourceRevision = manifest.revisions?.find(item => item.revision_id === edge.source_revision_id);
-        return `<li><button data-context-related="${escape(edge.source_context_id)}" data-revision-id="${escape(edge.source_revision_id)}" title="${escape(edge.source_revision_id)}"><span>${escape(source?.title || edge.source_context_id)}</span><small>${escape(sourceRevision ? `R${sourceRevision.generation}` : edge.source_revision_id.slice(0, 8))}</small></button></li>`;
-      }).join("") || localize('<li>本版本没有外部来源</li>')}</ul><small>被 ${consumers.size} 条工作线采用</small><small class="workbench-scope">当前已返回的已提交关系范围</small>${identity}</div>${footer}`;
+      const consumers = new Set(manifest.edges.filter(edge => edge.source_context_id === id).map(edge => edge.target_context_id));
+      const status = node?.status || page.projection_status;
+      return localize`${heading}${tabs}<div class="patrol-context-body"><p class="workbench-context-sources">${status ? `<span data-patrol-context-status>${escape(status)}</span> · ` : ""}${new Set(currentSources.map(item => item.context_id || item.source?.context_id)).size} 个直接来源</p>${sourceList}<small>被 ${consumers.size} 条工作线采用</small><small class="workbench-scope">当前已返回的已提交关系范围</small>${identity}</div>${footer}`;
     }
-    const overview = localize`${page.revision ? "" : localize('<p role="status">正在读取已提交版本</p>')}<h3>这条工作线要解决什么</h3><p>${escape(node?.purpose || localize("暂无独立目的说明"))}</p><h3>当前做到哪里了</h3><p>${escape(node?.status || page.revision?.projection_status || localize("以真实运行与版本为准"))}</p><p>正在检查 Revision ${escape(page.revision?.revision_id || "—")}</p>${identity}`;
-    const sources = localize`<h3>精确来源与版本</h3><p>正在检查 ${escape(page.revision?.revision_id || localize("当前版本"))}</p>${(page.versions || []).map(item => `<button data-patrol-inspect-revision="${escape(item.revision_id)}" aria-pressed="${item.revision_id === page.revision?.revision_id}">R${escape(item.generation)} · ${escape(item.origin_kind)}${item.current ? localize(" · 当前") : ""}</button>`).join("")}<h3>本版本精确来源</h3>${page.sources ? page.sources.map(item => `<p><button data-context-related="${escape(item.source?.context_id || item.context_id)}" data-revision-id="${escape(item.source?.revision_id || item.revision_id)}">${escape(item.source?.context_id || item.context_id)} · ${escape(item.source?.revision_id || item.revision_id)}</button></p>`).join("") || localize("<p>本版本没有外部来源</p>") : localize("<p>正在按需读取来源与版本</p>")}`;
+    const overview = localize`${page.revision ? "" : localize('<p role="status">正在读取当前内容</p>')}<h3>这条工作线要解决什么</h3><p>${escape(node?.purpose || localize("暂无独立目的说明"))}</p><h3>当前做到哪里了</h3><p>${escape(node?.status || page.projection_status || localize("以真实运行为准"))}</p>${identity}`;
+    const sources = localize`<h3>当前内容来源</h3>${sourceList}${identity}`;
     return localize`${heading}${tabs}<div class="patrol-context-body">${tab === "conversation" ? root.FocusContextInspectionView.renderInspection(page) : tab === "sources" ? sources : overview}</div>${footer}`;
   }
   return Object.freeze({ skeleton, composer, history, progress, requests, lineageManifest, lineage, context, projectionFailures, escape, delivery: feedback.delivery });

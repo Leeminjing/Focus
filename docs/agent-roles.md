@@ -9,8 +9,8 @@
 | **持久队友：`teammate`** | 持续负责一条委派工作线，独立实施并汇报；向 Main 请求计划审批或结束工作，可被再次唤醒继续。 | `read_file`、`discover_files`、`write_file`、`edit_file`、`shell`、dictincet-browser工具、`web_search`、`web_fetch`、`send_message`、`request_plan_approval`、`request_shutdown` |
 | **持久工蜂：`worker`** | 从任务板认领明确任务，完成实施与验证，提交任务结果；可持续领取后续任务。 | `read_file`、`discover_files`、`write_file`、`edit_file`、`shell`、dictincet-browser工具、`web_search`、`web_fetch`、`send_message`、`claim_task`、`complete_task` |
 | **装配 Agent** | 配置 Focus 自身，包括 MCP、Skill、插件和配置文件；支持全局范围或指定工作区范围。 | 与 Main Agent 相同 |
-| **Session Patrol：`patrol` / `standard`** | 按用户编写的指令和冻结上下文执行独立任务；支持重跑、从 checkpoint 继续和恢复中断。 | `read_file`、`discover_files`、`write_file`、`edit_file`、`shell`、dictincet-browser工具、`web_search`、`web_fetch` |
-| **Context Curator：`context_curator`** | 持续跟踪根会话的稳定版本，保留目标、约束、决策、证据和未完成事项，整理为可接手工作的精炼 Context。 | 无 |
+| **Session Patrol：`patrol` / `standard`** | 保留用户自定义执行上下文编辑，按用户编写的指令和冻结输入执行独立任务；支持重跑、从 checkpoint 继续和恢复中断。 | `read_file`、`discover_files`、`write_file`、`edit_file`、`shell`、dictincet-browser工具、`web_search`、`web_fetch` |
+| **Context Curator：`context_curator`** | 持续跟踪根会话的最新稳定状态，保留目标、约束、决策、证据和未完成事项，整理为可接手工作的精炼 Context。 | 无 |
 
 ## Patrol Loop 模式
 

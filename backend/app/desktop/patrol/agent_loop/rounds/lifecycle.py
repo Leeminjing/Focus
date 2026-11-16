@@ -20,35 +20,40 @@ advance_settled_round 是 Worker/协调者/维护流程共用的唯一推进事�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from collections.abc import Collection
-from typing import Literal
 import hashlib
 import json
 import uuid
+from collections.abc import Collection
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
+    LoopIndexBudgetReservation,
+)
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
+    LoopJournalEvent,
+)
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
-    LoopCoordinatorLease,
     LoopContextMembership,
+    LoopCoordinatorLease,
     LoopDecision,
     LoopEventOutbox,
     LoopPatrolAttempt,
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
-from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopPatrolPhaseTransition
-from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
-from backend.app.desktop.persistence.models import DesktopThread
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import (
+    LoopPatrolPhaseTransition,
+)
 from backend.app.desktop.patrol.agent_loop.waits.wait_requests import open_recovery_wait
-
+from backend.app.desktop.persistence.models import DesktopThread
+from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
 CLAIMABLE_ROUND_STATUSES = ("observed", "curated", "adopting", "ready")
 STALL_SCAN_ROUND_STATUSES = ("observed", "curated", "publishing", "adopting")
@@ -61,9 +66,12 @@ _WAITING_REASON_LIMIT = 2000
 
 
 async def settle_round(session: AsyncSession, loop: AgentLoop, round_row: LoopRound) -> bool:
-    from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import RoundConsequenceReader
+    from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import (
+        RoundConsequenceReader,
+    )
 
     if round_row.status == "settled":
+        await _release_context_inputs(session, round_row)
         return True
     if round_row.status in {"error", "superseded"}:
         return False
@@ -81,10 +89,13 @@ async def settle_round(session: AsyncSession, loop: AgentLoop, round_row: LoopRo
         return False
     round_row.status = "settled"
     round_row.settled_at = datetime.now(UTC)
+    await _release_context_inputs(session, round_row)
     usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
     if usage is not None and round_row.observation_id and round_row.decision_id:
         usage.rounds += 1
-    from backend.app.desktop.patrol.agent_loop.journal.round_events import RoundStateEventRecorder
+    from backend.app.desktop.patrol.agent_loop.journal.round_events import (
+        RoundStateEventRecorder,
+    )
 
     await RoundStateEventRecorder().record(session, round_row)
     if loop.waiting_reason and loop.waiting_reason.startswith("round_consequences:"):
@@ -246,6 +257,7 @@ async def terminate_round(
         if decision is not None and decision.authority_committed_at is not None:
             round_row.decision_id = decision_id
     await _terminate_patrol(session, round_row, category, reason)
+    await _release_context_inputs(session, round_row)
     if wait_for_user and loop is not None and loop.status == "running" and loop.current_round_id == round_row.round_id:
         loop.health = "degraded"
         await open_recovery_wait(
@@ -256,12 +268,23 @@ async def terminate_round(
             round_id=round_row.round_id,
             scope={"category": category, "decision_id": decision_id, **(wait_scope or {})},
         )
-    from backend.app.desktop.patrol.agent_loop.journal.round_events import RoundStateEventRecorder
+    from backend.app.desktop.patrol.agent_loop.journal.round_events import (
+        RoundStateEventRecorder,
+    )
 
     await RoundStateEventRecorder().record(session, round_row)
     await _append_termination_event(session, round_row.loop_id, round_row.round_id, category, reason,
         authority_committed=round_row.decision_id is not None)
     return True
+
+
+async def _release_context_inputs(session: AsyncSession, round_row: LoopRound) -> None:
+    from backend.app.desktop.contexts.evolution.repository import (
+        ContextRevisionRepository,
+    )
+
+    await session.flush()
+    await ContextRevisionRepository().release(session, "round", round_row.round_id)
 
 
 async def suspend_round(session, loop, round_row, *, category, reason, wait_scope=None):
@@ -273,18 +296,32 @@ async def suspend_round(session, loop, round_row, *, category, reason, wait_scop
     await open_recovery_wait(session, loop, reason[:_WAITING_REASON_LIMIT], source="round-recovery",
         round_id=round_row.round_id, scope={"category": category,
             "observation_id": round_row.observation_id, **(wait_scope or {})})
-    from backend.app.desktop.patrol.agent_loop.journal.round_events import RoundStateEventRecorder
+    from backend.app.desktop.patrol.agent_loop.journal.round_events import (
+        RoundStateEventRecorder,
+    )
 
     await RoundStateEventRecorder().record(session, round_row)
     return True
 
 
 async def advance_settled_round(session: AsyncSession, loop: AgentLoop, round_row: LoopRound) -> LoopRound | None:
-    from backend.app.desktop.patrol.agent_loop.rounds.round_progress import RoundProgressReader
-    from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import RoundConsequenceReader
-    from backend.app.desktop.patrol.agent_loop.journal.lifecycle_events import LoopLifecycleEventRecorder
-    from backend.app.desktop.patrol.agent_loop.task_progress.work_queue import TaskProgressQueue
-    from backend.app.desktop.patrol.agent_loop.models import LoopAction, LoopPendingDecision, LoopUserIntent
+    from backend.app.desktop.patrol.agent_loop.journal.lifecycle_events import (
+        LoopLifecycleEventRecorder,
+    )
+    from backend.app.desktop.patrol.agent_loop.models import (
+        LoopAction,
+        LoopPendingDecision,
+        LoopUserIntent,
+    )
+    from backend.app.desktop.patrol.agent_loop.rounds.round_consequences import (
+        RoundConsequenceReader,
+    )
+    from backend.app.desktop.patrol.agent_loop.rounds.round_progress import (
+        RoundProgressReader,
+    )
+    from backend.app.desktop.patrol.agent_loop.task_progress.work_queue import (
+        TaskProgressQueue,
+    )
     from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
 
     await session.flush()
@@ -337,9 +374,16 @@ async def advance_settled_round(session: AsyncSession, loop: AgentLoop, round_ro
 
 
 async def _terminate_patrol(session, round_row, category, reason) -> None:
-    from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopPatrolSession
-    from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_repository import PatrolSessionRepository
-    from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import PatrolActivity, PatrolPhase
+    from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import (
+        LoopPatrolSession,
+    )
+    from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_repository import (
+        PatrolSessionRepository,
+    )
+    from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import (
+        PatrolActivity,
+        PatrolPhase,
+    )
 
     patrol = await session.scalar(select(LoopPatrolSession).where(LoopPatrolSession.observation_id == round_row.observation_id).with_for_update())
     if patrol is None or patrol.status != "active":

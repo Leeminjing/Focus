@@ -1,9 +1,8 @@
-r"""本文件对外提供完整 Context Evolution Graph 与第一父链兼容树查询服务。
+"""本文件对外提供 ContextEvolutionQueryService 的当前来源图与确定性第一父树。
 
-输入为 workspace identity、不可变 revision repository 与调用方 AsyncSession；输出为包含全部
-revision/source 边的图，或每个 Context 当前 revision 的确定性树投影。具体工作流为先加载完整
-workspace revision 集合，图视图原样保留多来源；树视图穿透同 Context 历史到外部来源，并对
-identity 反馈环确定性抑制一条展示边而不删除图证据。示例：`await service.graph(session, workspace_id)`。
+输入为 workspace 与当前状态仓储；输出为每个 Context 唯一的当前节点、直接来源边和展示树。
+具体工作流为只加载 current 状态，保留多来源身份，并为展示树确定性抑制反馈环，不回溯版本父链。
+示例：await ContextEvolutionQueryService(repository).first_parent_tree(session, workspace_id)。
 """
 
 from __future__ import annotations
@@ -77,7 +76,7 @@ class ContextEvolutionQueryService:
             if task.current_revision_id in by_revision
         }
         external = {
-            context_id: self._external_sources(revision, by_revision)
+            context_id: self._external_sources(revision)
             for context_id, revision in current.items()
         }
         proposed = {
@@ -121,26 +120,8 @@ class ContextEvolutionQueryService:
     def _external_sources(
         self,
         revision: ContextRevisionContract,
-        by_revision: dict[str, ContextRevisionContract],
     ) -> tuple[ContextRevisionRef, ...]:
-        found: list[ContextRevisionRef] = []
-        visited: set[str] = set()
-
-        def visit(candidate: ContextRevisionContract) -> None:
-            if candidate.ref.revision_id in visited:
-                return
-            visited.add(candidate.ref.revision_id)
-            for edge in candidate.sources:
-                if edge.source.context_id != revision.ref.context_id:
-                    if edge.source.revision_id not in {item.revision_id for item in found}:
-                        found.append(edge.source)
-                    continue
-                previous = by_revision.get(edge.source.revision_id)
-                if previous is not None:
-                    visit(previous)
-
-        visit(revision)
-        return tuple(found)
+        return tuple(edge.source for edge in revision.sources if edge.source.context_id != revision.ref.context_id)
 
     @staticmethod
     def _acyclic_parents(

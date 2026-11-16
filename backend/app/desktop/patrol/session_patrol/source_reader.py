@@ -1,22 +1,33 @@
 """本文件对外提供 PatrolSourceReader 的精确来源读取端口 read。
 
-输入为调用方独占的 AsyncSession 和 Context Revision、Run/checkpoint、文件或材料版本引用；
+输入为调用方独占的 AsyncSession 和当前 Context、Run/checkpoint、文件或材料版本引用；
 输出为完整 canonical records 与服务端确认的来源身份，不修改草稿或创建冻结引用。
-具体工作流为按来源类型校验归属和精确身份，读取历史/工作区内容，再返回可投影记录；不存在时不追随 latest。
-示例：records, source = await reader.read(session, {"kind": "context", "revision_id": "r1"})。
+Context 只读取当前内容并检查预览 hash；Run、文件与材料校验精确身份，再返回可投影记录。
+示例：records, source = await reader.read(session, {"kind": "context", "context_id": "c1"})。
 """
-from copy import deepcopy
 import asyncio
 import base64
 import mimetypes
 import subprocess
+from copy import deepcopy
 
 from fastapi import HTTPException
-from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace, DesktopRun, PatrolAgent, DesktopMaterial, MaterialVersion
-from backend.app.desktop.contexts.evolution.repository import ContextRevisionRepository, ContextRevisionRepositoryError
-from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
-from backend.app.desktop.materials.files import resolve_material_path
 from focus.history import serialize_history_message
+
+from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
+from backend.app.desktop.contexts.evolution.repository import (
+    ContextRevisionRepository,
+    ContextRevisionRepositoryError,
+)
+from backend.app.desktop.materials.files import resolve_material_path
+from backend.app.desktop.persistence.models import (
+    DesktopMaterial,
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+    MaterialVersion,
+    PatrolAgent,
+)
 
 
 class PatrolSourceReader:
@@ -38,14 +49,21 @@ class PatrolSourceReader:
             raise HTTPException(422, {"code": "source_unavailable", "message": str(exc)}) from exc
 
     async def _context(self, session, request):
-        revision = await self._repository.get_by_id(session, request["revision_id"])
-        task = await session.get(DesktopThread, revision.ref.context_id)
+        if request.get("revision_id"):
+            raise HTTPException(422, {"code": "context_history_removed", "message": "Context 来源仅支持当前内容，请按会话重新选择"})
+        context_id = request.get("context_id")
+        task = await session.get(DesktopThread, context_id) if context_id else None
         if task is None or task.deleted_at is not None:
             raise HTTPException(404, "来源 Context 不存在")
-        if request.get("context_id", revision.ref.context_id) != revision.ref.context_id:
-            raise HTTPException(409, "来源 Context 身份不匹配")
+        revision = await self._repository.current(session, context_id)
+        if revision is None:
+            raise HTTPException(404, "来源 Context 尚无稳定内容")
+        if request.get("context_hash") not in {None, revision.content_hash}:
+            raise HTTPException(409, {"code": "source_changed", "message": "会话来源已变化，请刷新预览后重新确认"})
         view = await self._reader.read(session, revision.ref, "execution")
-        source = {"kind": "context", "title": task.title, **revision.ref.model_dump(mode="json")}
+        source = {"kind": "context", "title": task.title, "context_id": context_id,
+                  "context_hash": revision.content_hash, "execution_thread_id": revision.ref.execution_thread_id,
+                  "checkpoint_ns": revision.ref.checkpoint_ns, "checkpoint_id": revision.ref.checkpoint_id}
         records = ([item.model_dump(mode="json") for item in revision.history_payload.execution_items]
                    if revision.history_payload is not None else list(view.messages))
         return records, source

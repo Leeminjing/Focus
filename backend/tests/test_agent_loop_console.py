@@ -9,8 +9,6 @@ r"""验证共享 Loop 查询的拓扑、完整会话、事实投影与工作区�
 
 from __future__ import annotations
 
-from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
-
 import asyncio
 import os
 import uuid
@@ -23,19 +21,6 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop import AgentLoopService
-from backend.app.desktop.patrol.agent_loop.queries.console_query import LoopConsoleQueryService
-from backend.app.desktop.patrol.agent_loop.queries.conversation_query import (
-    ContextConversationQueryService,
-)
-from backend.app.desktop.patrol.agent_loop.facts.fact_projection import LoopFactProjectionService
-from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolService
-from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import PatrolInputRequest
-from backend.app.desktop.patrol.agent_loop.models import (
-    LoopInterventionTransition,
-    LoopUserIntent,
-)
-from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import LoopObservationService
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -44,7 +29,35 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.patrol.agent_loop import AgentLoopService
+from backend.app.desktop.patrol.agent_loop.facts.fact_projection import (
+    LoopFactProjectionService,
+)
+from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import (
+    PatrolInputRequest,
+)
+from backend.app.desktop.patrol.agent_loop.models import (
+    LoopInterventionTransition,
+    LoopUserIntent,
+)
+from backend.app.desktop.patrol.agent_loop.queries.console_query import (
+    LoopConsoleQueryService,
+)
+from backend.app.desktop.patrol.agent_loop.queries.conversation_query import (
+    ContextConversationQueryService,
+)
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import (
+    LoopObservationService,
+)
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import (
+    WorkspacePatrolService,
+)
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+)
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -198,6 +211,8 @@ def test_console_queries_and_portfolio_intent_reach_next_observation(tmp_path) -
             assert console["nodes"][0]["topic"] == "Primary execution"
             assert conversation["total"] == 148
             assert conversation["has_more"] is True
+            assert conversation["content_hash"] == "c" * 64
+            assert conversation["sources"] == []
             assert conversation["messages"][0]["message"]["id"] == "m-tool"
             assert [item["index"] for item in full_conversation["messages"]] == list(range(148))
             compressed = next(item for item in full_conversation["messages"] if item["message"]["id"] == "m-compressed")
@@ -241,6 +256,39 @@ def test_console_queries_and_portfolio_intent_reach_next_observation(tmp_path) -
                 assert intent.delivery_state == "observed"
                 assert [item.to_state for item in lifecycle] == ["submitted", "accepted", "observed"]
                 assert intent.observed_round_id == result["round_id"]
+
+            # Other owners may retain an old input for internal recovery; that
+            # does not authorize the public conversation to browse it.
+            from backend.app.desktop.contexts.evolution.history import (
+                build_revision_history,
+            )
+
+            async with sessions.begin() as session:
+                repository = ContextRevisionRepository()
+                previous = await repository.current(session, context_id)
+                await repository.freeze(session, previous.ref, owner_kind="observation", owner_id="conversation-retained-" + suffix)
+                current_ref = previous.ref.model_copy(update={
+                    "revision_id": uuid.uuid4().hex, "generation": previous.ref.generation + 1,
+                    "checkpoint_id": "new-checkpoint-" + suffix,
+                })
+                history = build_revision_history((), ({"role": "human", "id": "new-message", "content": "new current content"},))
+                current = previous.model_copy(update={"ref": current_ref, "history_payload": history,
+                    "content_hash": "d" * 64, "execution_messages": (), "authored_messages": ()})
+                await repository.insert(session, current)
+                await repository.switch_current(session, current_ref, previous.ref)
+            async with sessions() as session:
+                pinned = await repository.get_by_id(session, previous.ref.revision_id)
+                assert pinned.ref == previous.ref
+                query = ContextConversationQueryService(checkpointer)
+                for before in (None, conversation["next_before"]):
+                    with pytest.raises(HTTPException) as stale:
+                        await query.read(session, loop_id, context_id, revision_id=previous.ref.revision_id, before=before, limit=20)
+                    assert stale.value.status_code == 409 and "刷新" in stale.value.detail
+                refreshed = await query.read(session, loop_id, context_id, revision_id=None, before=None, limit=20)
+                assert refreshed["revision"]["revision_id"] == current_ref.revision_id
+                assert refreshed["messages"][0]["message"]["content"] == "new current content"
+                page = await query.read(session, loop_id, context_id, revision_id=current_ref.revision_id, before=None, limit=20)
+                assert page["messages"] == refreshed["messages"]
         finally:
             await engine.dispose()
 

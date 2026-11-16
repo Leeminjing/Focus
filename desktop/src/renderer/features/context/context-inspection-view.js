@@ -1,7 +1,7 @@
 /*
- * 本文件对外提供 Patrol Context 的固定 Revision 只读会话检查。
- * 输入为分页会话与固定 Revision，输出为安全 Markdown 正文、工具及来源审计。
- * 具体工作流为复用共享消息阅读器，压缩来源只读展示，历史页通过 Patrol 检查器读取。
+ * 本文件对外提供 Patrol Context 的当前内容只读会话检查。
+ * 输入为分页会话及内容身份，输出为安全 Markdown 正文、工具及来源审计。
+ * 具体工作流为复用共享消息阅读器，压缩来源只读展示，前序消息通过 Patrol 检查器分页读取。
  * 示例：FocusContextInspectionView.renderInspection(conversation)。
  */
 (function (root, factory) {
@@ -31,7 +31,7 @@
 
   function renderInspection(conversation) {
     const messages = conversation?.messages || [];
-    return localize`<section class="context-conversation is-inspection"><p>Context 检查 · 固定 Revision · ${escape(conversation?.total || 0)} 条消息</p><div class="loop-transcript">${messages.map(item => messageCard({ ...item, context_id: conversation.context_id || item.context_id }, conversation.revision)).join("") || localize("暂无消息")}</div>${conversation?.has_more ? localize`<button data-patrol-context-older>加载更早消息</button>` : ""}</section>`;
+    return localize`<section class="context-conversation is-inspection"><p>Context 检查 · 当前内容 · ${escape(conversation?.total || 0)} 条消息</p><div class="loop-transcript">${messages.map(item => messageCard({ ...item, context_id: conversation.context_id || item.context_id }, conversation.revision)).join("") || localize("暂无消息")}</div>${conversation?.has_more ? localize`<button data-patrol-context-older>加载更早消息</button>` : ""}</section>`;
   }
 
   return Object.freeze({ renderInspection });

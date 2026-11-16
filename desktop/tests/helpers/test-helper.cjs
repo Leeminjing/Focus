@@ -170,7 +170,7 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/vendor/markdown-it.min.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/shared/markdown/message-reading.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/skills/skill-picker.js"), "utf8"), context);
-  vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/context/context-editor.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/context/context-navigation.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/context/compression-panel.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/context/context-curator-presentation.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/keyword-command.js"), "utf8"), context);
@@ -191,7 +191,7 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/settings/session-controls.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/composer-files.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/conversation-reference.js"), "utf8"), context);
-  vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/message-retry.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/message-materials.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/task-run-operations.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/conversation-inputs.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/shared/runtime/run-stream-subscriptions.js"), "utf8"), context);

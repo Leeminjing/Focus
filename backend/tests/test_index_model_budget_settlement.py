@@ -8,15 +8,21 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
-from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
 from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import (
     BudgetedIndexModel,
     IndexBudgetExceeded,
     IndexModelBudget,
 )
-from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import resolve_expansion_resources
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import (
+    resolve_expansion_resources,
+)
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import (
+    unlimited_loop_budgets,
+)
 from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
+    RoleBoundStructuredModel,
+)
 from backend.tests.config_helpers import app_config_for
 
 
@@ -28,6 +34,14 @@ def _legacy_finite_budgets():
 
 class Answer(BaseModel):
     answer: str
+
+
+class ProviderRequest:
+    """Expose the prompt-JSON request for the production budget preflight."""
+
+    @staticmethod
+    def _get_request_payload(messages, **options):
+        return {"model": "budget-test", "messages": messages, **options}
 
 
 class Receipts:
@@ -48,7 +62,7 @@ class Receipts:
 
 def test_legacy_finite_budget_releases_each_reported_production_attempt(monkeypatch):
     async def run():
-        class Provider:
+        class Provider(ProviderRequest):
             async def ainvoke(self, messages, config):
                 config["callbacks"][0].usage_metadata["budget-test"] = {
                     "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
@@ -80,7 +94,7 @@ def test_each_reported_retry_is_released_before_the_next_attempt(monkeypatch, va
     async def run():
         calls = 0
 
-        class Provider:
+        class Provider(ProviderRequest):
             async def ainvoke(self, messages, config):
                 nonlocal calls
                 calls += 1
@@ -246,14 +260,27 @@ def test_refund_preserves_frozen_usage_unlimited_and_actual_overruns(unlimited):
 def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeypatch, production_model):
     from sqlalchemy import select
 
-    from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import RevisionInterpretationProposal
-    from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-    from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import PortfolioSemanticIndexService
+    from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import (
+        RevisionInterpretationProposal,
+    )
+    from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
+        LoopIndexBudgetReservation,
+    )
+    from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
+        PortfolioSemanticIndexService,
+    )
     from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
-        SemanticClaimSupportProposal, SemanticProjectionProposal,
+        SemanticClaimSupportProposal,
+        SemanticProjectionProposal,
     )
     from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
-    from backend.tests.incremental_index_support import Checkpoints, ModelProbe, messages, observation, revision
+    from backend.tests.incremental_index_support import (
+        Checkpoints,
+        ModelProbe,
+        messages,
+        observation,
+        revision,
+    )
     from backend.tests.test_incremental_index_real_model import observed_model_factory
     from backend.tests.test_incremental_revision_index import exercise
 
@@ -266,7 +293,7 @@ def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeyp
             config = app_config_for("budget-test", None)
             config.models[0].curation_output_method = "prompt_json"
 
-            class Provider:
+            class Provider(ProviderRequest):
                 async def ainvoke(self, request, config):
                     content = request[-1].content
                     payload = json.loads(content.split("<worker_input>", 1)[1].split("</worker_input>", 1)[0])
@@ -297,7 +324,8 @@ def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeyp
         target = await revision(sessions, seed["context_id"], history + messages(1, 37), parent=first)
         appended = await service.build(observation(seed, target, budget=budgets))
         assert appended.blocker_code is None, appended.blocker_summary
-        assert appended.indexes[0].inheritance.reused_segment_ids
+        assert appended.indexes[0].inheritance.baseline_index_id is None
+        assert len(set(cold.indexes[0].inheritance.record_ids).intersection(appended.indexes[0].inheritance.record_ids)) == 3
         count = len(probe.calls)
         cached = await service.build(observation(seed, target, budget=budgets))
         assert cached.indexes == appended.indexes and len(probe.calls) == count

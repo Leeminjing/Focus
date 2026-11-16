@@ -69,7 +69,7 @@ async function run(){
     switchedCard.fieldsBase=structuredClone(switched);switchedCard.structureEditor.value=JSON.stringify({...switched,payload:{...switched.payload,content:'plain again'}});switchedCard.structureEditor.element.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);
     const restoredEditor=switchedCard.fieldEditor('content');restoredEditor.value='plain again edited';restoredEditor.element.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);await wb.flush();
     assert(switched.payload.content==='plain again edited'&&!switched.content_error&&restoredEditor===switchedEditor,'switchedBlocks to text editing keeps editor identity and text mode');wb.doc.remove(switched.entry_id);wb.renderList();
-    assert(wb.sourceView.node.querySelector('[aria-label="精确来源版本"]'),'source picker');
+    assert(wb.sourceView.node.querySelector('[aria-label="来源会话或运行"]'),'source picker');
     await wb.sourceController.choose({kind:'file',context_id:fixture.draft.task_id,path:'ui-source.txt'});
     const sourceRow=wb.sourceController.rows[0];wb.sourceController.select(sourceRow.source_row_id,true);await wb.interactions.importSelected();
     const source=wb.doc.value.entries[0];assert(source.payload.content==='界面来源','frozen source');wb.select(source.entry_id);

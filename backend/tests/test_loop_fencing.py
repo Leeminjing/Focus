@@ -7,28 +7,50 @@ token 增长及规范 interrupted 事件断言。具体工作流为创建最小 
 
 from __future__ import annotations
 
-from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
-
 import asyncio
-from datetime import UTC, datetime, timedelta
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence.registry
-from backend.app.desktop.patrol.agent_loop import AgentLoopService, LoopCoordinator, LoopKernel, PatrolDecisionIntent
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopCoordinatorLease, LoopRound
-from backend.app.desktop.patrol.agent_loop.governance.ownership import KernelFencingRejected, LoopFencingGuard
-from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
+from backend.app.desktop.patrol.agent_loop import (
+    AgentLoopService,
+    LoopCoordinator,
+    LoopKernel,
+    PatrolDecisionIntent,
+)
+from backend.app.desktop.patrol.agent_loop.governance.ownership import (
+    KernelFencingRejected,
+    LoopFencingGuard,
+)
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
+    LoopJournalEvent,
+)
+from backend.app.desktop.patrol.agent_loop.models import (
+    LoopCoordinatorLease,
+    LoopRound,
+)
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+)
 from backend.tests.loop_run_boundary_support import freeze_patrol_intent
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
 
-
-pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+# Restart recovery scans every Loop in its database, including stale directives.
+pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
 
 def test_monotonic_token_and_commit_time_rejection(tmp_path) -> None:
@@ -74,8 +96,10 @@ def test_monotonic_token_and_commit_time_rejection(tmp_path) -> None:
             kernel = LoopKernel(sessions, require_fencing=True)
             intent = await freeze_patrol_intent(sessions, intent)
             from backend.app.desktop.patrol.agent_loop.models import LoopObservation
-            from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
             from backend.app.desktop.patrol.agent_loop.patrol import PortfolioPatrol
+            from backend.app.desktop.patrol.agent_loop.schemas import (
+                LoopObservationEnvelope,
+            )
 
             async with sessions() as session:
                 observation = LoopObservationEnvelope.model_validate((await session.get(LoopObservation, intent.observation_id)).envelope)

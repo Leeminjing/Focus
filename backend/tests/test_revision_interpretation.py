@@ -234,7 +234,8 @@ def test_append_discovery_prefills_nonadjacent_originals_and_refreshes_empty_res
         current = await service.build(observation(seed, target))
         assert current.blocker_code is None, current.blocker_summary
         index = current.indexes[0]
-        assert len(index.inheritance.reused_segment_ids) == 2 + gap
+        assert index.inheritance.baseline_index_id is None
+        assert index.inheritance.reused_segment_ids == ()
         assert len(probe.local_calls) == 5
         assert len(probe.interpretation_calls) == 1
         initial = probe.interpretation_calls[0][1]
@@ -579,7 +580,7 @@ def test_changed_interpretation_model_reuses_compatible_local_prefix(tmp_path):
         )
         result = await b.build(observation(seed, target))
         assert result.blocker_code is None, result.blocker_summary
-        assert len(result.indexes[0].inheritance.reused_segment_ids) == 3
+        assert result.indexes[0].inheritance.baseline_index_id is None
         assert (
             len(local.local_calls) == 2
             and len(next_interpreter.interpretation_calls) == 1
@@ -761,10 +762,12 @@ def test_curator_receives_an_already_synthesized_joint_diagnosis(tmp_path):
         from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
             SemanticDerivationArtifactRepository,
         )
+        from backend.app.desktop.patrol.agent_loop.schemas import (
+            LoopObservationEnvelope,
+        )
         from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
             CuratorCoordinationStage,
         )
-        from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
         target = await revision(sessions, seed["context_id"], NARRATIVE)
         frozen = observation(seed, target)
@@ -902,7 +905,7 @@ def test_later_denial_replaces_an_unchanged_earlier_overall_diagnosis(tmp_path):
         assert old_statement not in {u.statement for u in current.semantic_units}
         assert new_statement in {u.statement for u in current.semantic_units}
         assert old.interpretation.record_id != current.interpretation.record_id
-        assert len(current.inheritance.reused_segment_ids) == 1
+        assert current.inheritance.baseline_index_id is None
 
     exercise(tmp_path, run)
 

@@ -291,7 +291,76 @@ class RunRecoveryService:
             },
         )
         run.equipment = equipment
+        if identity.get("context_revision_id") is not None:
+            from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+
+            repository = ContextRevisionRepository()
+            source = await repository.get_by_id(session, identity["context_revision_id"])
+            await repository.get_input(session, source.ref)
+            ref = source.ref
+            if (ref.context_id, ref.checkpoint_id, ref.execution_thread_id, ref.checkpoint_ns) != (
+                task.task_id, identity.get("context_checkpoint_id"), execution_identity.thread_id, execution_identity.checkpoint_ns,
+            ):
+                raise ValueError("Recovery input does not match its pinned Context checkpoint")
+            run.context_revision_id = ref.revision_id
+            run.context_checkpoint_id = ref.checkpoint_id
+            equipment.pop("context_snapshot", None)
+        elif equipment.get("resume_context_snapshot") is not None:
+            from backend.app.desktop.runs.context_snapshot import read_context_snapshot
+
+            source, _ = read_context_snapshot(equipment["resume_context_snapshot"])
+            ref = source.ref
+            if (ref.context_id, ref.execution_thread_id, ref.checkpoint_ns, ref.checkpoint_id) != (
+                task.task_id, execution_identity.thread_id, execution_identity.checkpoint_ns,
+                interrupted_run.final_checkpoint_id if interrupted_run is not None else None,
+            ):
+                raise ValueError("Recovery snapshot does not match the interrupted checkpoint")
+            run.context_revision_id = ref.revision_id
+            run.context_checkpoint_id = ref.checkpoint_id
+            equipment["context_snapshot"] = equipment.pop("resume_context_snapshot")
+        elif interrupted_run is not None and interrupted_run.final_checkpoint_id is not None:
+            from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+
+            repository = ContextRevisionRepository()
+            source = await repository.find_by_checkpoint(session, task.task_id, interrupted_run.final_checkpoint_id)
+            if source is None or source.origin_id != interrupted_run.run_id:
+                raise HTTPException(409, "中断运行的精确恢复输入已不可用")
+            await repository.get_input(session, source.ref)
+            if (source.ref.execution_thread_id, source.ref.checkpoint_ns) != (
+                execution_identity.thread_id, execution_identity.checkpoint_ns,
+            ):
+                raise ValueError("Recovery checkpoint belongs to another execution")
+            run.context_revision_id = source.ref.revision_id
+            run.context_checkpoint_id = source.ref.checkpoint_id
+            equipment.pop("context_snapshot", None)
+        if run.context_revision_id and "context_snapshot" not in equipment:
+            from backend.app.desktop.contexts.evolution import (
+                ContextRevisionReader,
+                ContextRevisionRepository,
+            )
+            from backend.app.desktop.runs.context_snapshot import (
+                capture_context_snapshot,
+            )
+
+            repository = ContextRevisionRepository()
+            source = await repository.get_by_id(session, run.context_revision_id)
+            await repository.get_input(session, source.ref)
+            frozen = await repository.freeze(session, source.ref, owner_kind="run", owner_id=run.run_id)
+            equipment["context_snapshot"] = await capture_context_snapshot(
+                session, ContextRevisionReader(repository, ports.checkpointer), frozen
+            )
+            run.equipment = dict(equipment)
+        equipment.pop("resume_context_snapshot", None)
+        run.equipment = dict(equipment)
         session.add(run)
+        if interrupted_run is not None and interrupted_run.run_id != run.run_id:
+            from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+
+            interrupted_run.equipment = {
+                key: value for key, value in (interrupted_run.equipment or {}).items()
+                if key not in {"context_snapshot", "resume_context_snapshot"}
+            }
+            await ContextRevisionRepository().release(session, owner_kind="run", owner_id=interrupted_run.run_id)
         await session.commit()
         projection = MaterialContextProjector.project(run_materials, workspace.path)
         material_context = projection.policy_text
@@ -388,5 +457,15 @@ class RunRecoveryService:
                         if item["kind"] != "commitment"
                     ]
                     latest.workspace_result = result
+                if not result.get("task_attention"):
+                    from backend.app.desktop.contexts.evolution import (
+                        ContextRevisionRepository,
+                    )
+
+                    latest.equipment = {
+                        key: value for key, value in (latest.equipment or {}).items()
+                        if key not in {"context_snapshot", "resume_context_snapshot"}
+                    }
+                    await ContextRevisionRepository().release(session, owner_kind="run", owner_id=latest.run_id)
         getattr(ports, "_task_attention_cache", {}).clear()
         return {"ok": True, "thread_id": thread_id}

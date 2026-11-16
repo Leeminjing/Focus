@@ -1,7 +1,7 @@
-r"""本文件对外提供 Revision 继承索引的真实 PostgreSQL 合同测试。
+r"""本文件对外提供 Context 局部段缓存索引的真实 PostgreSQL 合同测试。
 
-输入为已迁移隔离数据库、真实来源边及计数模型；输出为追加继承、来源重绑定、回退、质量、预算与原子竞争断言。
-具体工作流为先通过 Observation 服务冻结模型调用来源，再发布 R1／R2，经局部继承及必需综合构建，从新 session 检查 index／record、分阶段成本和 Loop 用量；历史 v3/v4 按原身份恢复。
+输入为已迁移隔离数据库、真实来源边及计数模型；输出为无祖先段复用、来源重绑定、质量、预算与原子竞争断言。
+具体工作流为先通过 Observation 服务冻结模型调用来源，再发布 R1／R2，经独立段缓存及必需综合构建，从新 session 检查 index／record、分阶段成本和 Loop 用量；历史 v3/v4 按原身份恢复。
 示例：python -m pytest backend/tests/test_incremental_revision_index.py -q。
 """
 
@@ -28,9 +28,13 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer im
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage, LoopDelegationGrant
-from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
-from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt
+from backend.app.desktop.patrol.agent_loop.models import (
+    LoopBudgetUsage,
+    LoopDelegationGrant,
+)
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
+    LoopObservationService,
+)
 from backend.tests.incremental_index_support import (
     Checkpoints,
     ModelProbe,
@@ -114,8 +118,10 @@ def test_long_history_reuses_100_segments_and_rebinds_all_evidence(tmp_path):
         assert result.blocker_code is None, result.blocker_summary
         current = result.indexes[0]
         incremental_calls = tuple(probe.calls)
-        assert current.inheritance.mode == "incremental"
-        assert len(current.inheritance.reused_segment_ids) == 100
+        assert current.inheritance.mode == "full"
+        assert current.inheritance.baseline_index_id is None
+        assert current.inheritance.reused_segment_ids == ()
+        assert len(current.inheritance.record_ids) == 101
         assert len(probe.local_calls) == 2
         assert [
             m["message_id"] for m in probe.calls[0][1]["segments"][0]["messages"]
@@ -128,7 +134,7 @@ def test_long_history_reuses_100_segments_and_rebinds_all_evidence(tmp_path):
         assert current.coverage.covered_message_count == 1202
         async with sessions() as session:
             old_row = await session.get(LoopSemanticIndexArtifact, old.index_id)
-            assert RevisionSemanticIndex.model_validate(old_row.payload) == old
+            assert old_row is None  # unowned complete payloads are not a history archive
             usage = await session.get(LoopBudgetUsage, seed["loop_id"])
             assert usage.model_calls == 204
         probe.calls.clear()
@@ -207,10 +213,9 @@ def test_append_tail_boundaries(tmp_path, count, append, reused, recomputed):
         result = await service.build(observation(seed, new))
         assert result.blocker_code is None, result.blocker_summary
         receipt = result.indexes[0].inheritance
-        assert (
-            len(receipt.reused_segment_ids),
-            len(receipt.recomputed_segment_ids),
-        ) == (reused, recomputed)
+        assert receipt.baseline_index_id is None
+        assert receipt.reused_segment_ids == ()
+        assert len(receipt.record_ids) == reused + recomputed
         assert len(probe.local_calls) == recomputed * 2
 
     exercise(tmp_path, run)
@@ -225,10 +230,12 @@ def test_curator_retrieves_inherited_failure_and_new_fix(tmp_path):
             RetrievalBudget,
             SemanticRetrievalQuery,
         )
+        from backend.app.desktop.patrol.agent_loop.schemas import (
+            LoopObservationEnvelope,
+        )
         from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
             CuratorCoordinationStage,
         )
-        from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
         probe = ModelProbe()
         service = probe.service(sessions)
@@ -256,8 +263,9 @@ def test_curator_retrieves_inherited_failure_and_new_fix(tmp_path):
                 session, payload["semantic_index_ids"]
             )
         current = indexes[0]
-        assert current.inheritance.mode == "incremental"
-        assert len(current.inheritance.reused_segment_ids) == 1
+        assert current.inheritance.mode == "full"
+        assert current.inheritance.baseline_index_id is None
+        assert current.inheritance.reused_segment_ids == ()
         assert current.coverage.covered_message_count == 13
         catalog = PortfolioIndexCatalog.model_validate(
             payload["portfolio_index_catalog"]
@@ -325,10 +333,13 @@ def test_same_ids_do_not_authorize_changed_prefix(tmp_path, change):
                 role="assistant", tool_calls=[{"id": "t1", "name": "read", "args": {}}]
             )
             changed[1].update(role="tool", tool_call_id="t1")
+        probe.calls.clear()
         new = await revision(sessions, seed["context_id"], changed, parent=first)
         result = await service.build(observation(seed, new))
         assert result.blocker_code is None, result.blocker_summary
-        assert result.indexes[0].inheritance.full_build_reason == "non_append_history"
+        assert result.indexes[0].inheritance.full_build_reason == "current_snapshot"
+        assert len(probe.local_calls) == 2
+        assert len(probe.interpretation_calls) == 1
 
     exercise(tmp_path, run)
 
@@ -336,45 +347,20 @@ def test_same_ids_do_not_authorize_changed_prefix(tmp_path, change):
 @pytest.mark.parametrize(
     "origin", ["compression", "compression_restore", "curation", "definition_update"]
 )
-def test_non_append_evolution_boundaries_are_full(tmp_path, origin):
+def test_snapshot_origin_does_not_require_ancestor_index(tmp_path, origin):
     async def run(sessions, seed):
         probe = ModelProbe()
         service = probe.service(sessions)
         first = await revision(sessions, seed["context_id"], messages(12))
         await service.build(observation(seed, first))
+        probe.calls.clear()
         new = await revision(
             sessions, seed["context_id"], messages(13), parent=first, origin=origin
         )
         result = await service.build(observation(seed, new))
         assert result.blocker_code is None, result.blocker_summary
-        assert result.indexes[0].inheritance.full_build_reason == "evolution_boundary"
-
-    exercise(tmp_path, run)
-
-
-def test_skipped_unindexed_revisions_and_uncommitted_source(tmp_path):
-    async def run(sessions, seed):
-        probe = ModelProbe()
-        service = probe.service(sessions)
-        first = await revision(sessions, seed["context_id"], messages(12))
-        await service.build(observation(seed, first))
-        middle = await revision(
-            sessions, seed["context_id"], messages(13), parent=first
-        )
-        new = await revision(sessions, seed["context_id"], messages(14), parent=middle)
-        result = await service.build(observation(seed, new))
-        assert result.indexes[0].inheritance.mode == "incremental"
-        async with sessions.begin() as session:
-            await session.execute(
-                delete(ContextPublicationReceipt).where(
-                    ContextPublicationReceipt.revision_id == middle.ref.revision_id
-                )
-            )
-        newest = await revision(
-            sessions, seed["context_id"], messages(15), parent=middle
-        )
-        result = await service.build(observation(seed, newest))
-        assert result.indexes[0].inheritance.full_build_reason == "uncommitted_source"
+        assert result.indexes[0].inheritance.full_build_reason == "current_snapshot"
+        assert len(probe.local_calls) == 2
 
     exercise(tmp_path, run)
 
@@ -435,11 +421,17 @@ def test_fatal_boundaries_never_publish_partial_indexes(tmp_path, kind):
         result = await service.build(obs)
         assert result.blocker_code is not None
         async with sessions() as session:
-            assert not await session.scalar(
-                select(LoopSemanticIndexArtifact.index_id).where(
+            stored = await session.scalar(
+                select(LoopSemanticIndexArtifact).where(
                     LoopSemanticIndexArtifact.revision_id == target.ref.revision_id
                 )
             )
+            # Catalog admission follows independent complete Context commits.
+            # It must not revoke a complete cache, or expose a partial one.
+            assert bool(stored) == (kind == "overflow")
+            if stored is not None:
+                assert stored.status == "ready"
+                assert RevisionSemanticIndex.model_validate(stored.payload).interpretation.completed
             partial_record = await session.scalar(
                 select(LoopSegmentProjectionRecord.record_id).where(
                     LoopSegmentProjectionRecord.context_id == target.ref.context_id
@@ -579,6 +571,11 @@ def test_service_model_limit_is_shared_across_concurrent_builds(tmp_path):
             await asyncio.sleep(0.01)
 
         first = await revision(sessions, seed["context_id"], messages(48))
+        # Concurrent work explicitly owns its old input while current advances.
+        from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+        repository = ContextRevisionRepository()
+        async with sessions.begin() as session:
+            await repository.freeze(session, first.ref, owner_kind="round", owner_id=seed["round_id"])
         second = await revision(sessions, seed["context_id"], messages(48, 48), parent=first)
         probe = ModelProbe(gate=gate)
         service = probe.service(sessions, concurrency=2)
@@ -591,6 +588,8 @@ def test_service_model_limit_is_shared_across_concurrent_builds(tmp_path):
         assert len(probe.local_calls) == 16 and len(probe.interpretation_calls) == 2
         async with sessions() as session:
             assert (await session.get(LoopBudgetUsage, seed["loop_id"])).model_calls == 18
+        async with sessions.begin() as session:
+            await repository.release(session, "round", seed["round_id"])
 
     exercise(tmp_path, run)
 
@@ -677,7 +676,7 @@ def test_effective_configuration_changes_force_full_build(
     exercise(tmp_path, run)
 
 
-def test_missing_proofs_and_records_trigger_full_build(tmp_path):
+def test_missing_segment_record_is_rebuilt_from_current_input(tmp_path):
     async def run(sessions, seed):
         probe = ModelProbe()
         service = probe.service(sessions)
@@ -694,33 +693,8 @@ def test_missing_proofs_and_records_trigger_full_build(tmp_path):
         result = await service.build(observation(seed, new))
         assert (
             result.indexes[0].inheritance.full_build_reason
-            == "missing_projection_records"
+            == "current_snapshot"
         )
-
-    exercise(tmp_path, run)
-
-
-def test_bounded_search_and_multi_source_do_not_inherit(tmp_path):
-    async def run(sessions, seed):
-        probe = ModelProbe()
-        service = probe.service(sessions)
-        first = await revision(sessions, seed["context_id"], messages(12))
-        await service.build(observation(seed, first))
-        parent = first
-        for _ in range(65):
-            parent = await revision(
-                sessions, seed["context_id"], messages(12), parent=parent
-            )
-        result = await service.build(observation(seed, parent))
-        assert (
-            result.indexes[0].inheritance.full_build_reason
-            == "ancestry_search_exhausted"
-        )
-        target = await revision(
-            sessions, seed["context_id"], messages(13), sources=[first.ref, parent.ref]
-        )
-        result = await service.build(observation(seed, target))
-        assert result.indexes[0].inheritance.full_build_reason == "evolution_boundary"
 
     exercise(tmp_path, run)
 
@@ -930,6 +904,10 @@ def test_frozen_revision_and_control_memories_are_unchanged_by_indexing(tmp_path
 
         first = await revision(sessions, seed["context_id"], messages(12))
         captured = observation(seed, first)
+        async with sessions.begin() as session:
+            await ContextRevisionRepository().freeze(
+                session, first.ref, owner_kind="round", owner_id=seed["round_id"]
+            )
         new = await revision(sessions, seed["context_id"], messages(13), parent=first)
 
         async def snapshot():
@@ -943,9 +921,8 @@ def test_frozen_revision_and_control_memories_are_unchanged_by_indexing(tmp_path
                         )
                     ).all()
                     for t in (
-                        "desktop_context_revisions",
-                        "desktop_context_publications",
-                        "desktop_context_revision_sources",
+                        "desktop_context_states",
+                        "desktop_context_input_snapshots",
                         "loop_task_progress",
                         "loop_progress_heads",
                         "loop_context_memberships",
@@ -1070,7 +1047,7 @@ def test_cross_context_source_and_multi_portfolio_concurrency(tmp_path):
             sessions, seed["context_id"], messages(13), sources=[other.ref]
         )
         result = await service.build(observation(seed, target))
-        assert result.indexes[0].inheritance.full_build_reason == "cross_context_source"
+        assert result.indexes[0].inheritance.full_build_reason == "current_snapshot"
         arrivals = 0
         ready = asyncio.Event()
 

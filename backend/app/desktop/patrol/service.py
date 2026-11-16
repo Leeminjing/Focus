@@ -140,9 +140,12 @@ class PatrolService:
                     ]
                 )
             source = (
-                revision.ref.model_dump(mode="json")
+                {"kind": "context", "context_id": task_id, "context_hash": revision.content_hash,
+                 "execution_thread_id": revision.ref.execution_thread_id,
+                 "checkpoint_ns": revision.ref.checkpoint_ns, "checkpoint_id": checkpoint_id}
                 if revision
                 else {
+                    "kind": "context",
                     "context_id": task_id,
                     "execution_thread_id": task.thread_id,
                     "checkpoint_ns": "",
@@ -288,7 +291,7 @@ class PatrolService:
     ) -> str:
         ports = self._ports
         root_context_id = await ports.contexts.resolve_chat_root(draft.task_id)
-        checkpoint_id = await ports.contexts.current_checkpoint_id(root_context_id)
+        checkpoint_id = await ports.context_patrol.stable_source_checkpoint(root_context_id)
         if checkpoint_id is None:
             raise HTTPException(409, "根 Context 尚无稳定 checkpoint")
         snapshot = await ports.contexts.semantic_snapshot(

@@ -1,23 +1,23 @@
 """本文件对外提供工作区 Patrol 的旧数据升级与受保护回退回归。
 
 输入为隔离数据库中的上一版本 schema 和旧完整 Mission；输出为默认旧模式、原文/hash 保持及新增唯一约束断言。
-工作流为仅在 runtime 测试库回退一代，写真实旧列，再升级并验证；新模式数据存在时回退必须失败关闭。
+工作流为仅在历史迁移专用测试库回退一代，写真实旧列，再升级并验证；新模式数据存在时回退必须失败关闭。
 示例：python -m pytest backend/tests/test_workspace_patrol_migration.py -q。
 """
 
 import os
-from pathlib import Path
 import uuid
+from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
-import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
 
 def test_old_data_is_preserved_and_new_mode_downgrade_is_guarded(
-    tmp_path, runtime_postgres_database
+    tmp_path, isolated_postgres_database
 ):
     configuration = Config(
         str(Path(__file__).parents[1] / "packages/harness/focus/persistence/migrations/alembic.ini")
@@ -56,7 +56,7 @@ def test_old_data_is_preserved_and_new_mode_downgrade_is_guarded(
                 ),
                 {"id": mission, "loop": loop},
             )
-        command.upgrade(configuration, "head")
+        command.upgrade(configuration, "f69c0d1e2f3a")
         with engine.connect() as connection:
             row = connection.execute(
                 text("SELECT interaction_mode,status FROM agent_loops WHERE loop_id=:id"),

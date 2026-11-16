@@ -1,8 +1,8 @@
 """Verify removal of reading rules preserves materials and restores schema defaults on rollback."""
 
 import os
-from pathlib import Path
 import uuid
+from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
@@ -23,7 +23,7 @@ def test_remove_material_reading_rules_preserves_materials(isolated_postgres_dat
                 {"t": task, "w": workspace})
             connection.execute(text("INSERT INTO desktop_materials (material_id,task_id,relative_path,reading_mode,instruction_mode,retention,digest,git_ref) VALUES (:m,:t,'notes.md','rough','strict','irreplaceable',:d,'refs/focus/materials/saved')"),
                 {"m": material, "t": task, "d": "a" * 64})
-        command.upgrade(config, "head")
+        command.upgrade(config, "4a5b6c7d8e9f")
         with engine.connect() as connection:
             columns = {column["name"] for column in inspect(connection).get_columns("desktop_materials")}
             assert "reading_mode" not in columns
@@ -34,7 +34,7 @@ def test_remove_material_reading_rules_preserves_materials(isolated_postgres_dat
         with engine.connect() as connection:
             row = connection.execute(text("SELECT reading_mode,instruction_mode,retention FROM desktop_materials WHERE material_id=:m"), {"m": material}).one()
             assert tuple(row) == ("full", "reference", "irreplaceable")
-        command.upgrade(config, "head")
+        command.upgrade(config, "4a5b6c7d8e9f")
     finally:
         engine.dispose()
 
@@ -57,7 +57,7 @@ def test_remove_image_gate_preserves_material_notes(isolated_postgres_database):
                 run_id=run, task_id=task, agent_id="main:" + task, kind="main", status="success", input_messages=[]))
             connection.execute(text("INSERT INTO desktop_run_material_bindings (binding_id,run_id,task_id,message_id,material_id_snapshot,relative_path_snapshot,digest_snapshot,material_kind_snapshot,note,ordinal,must_view_requested) VALUES (:b,:r,:t,'message','image','shot.png',:d,'image',:n,0,true)"),
                 {"b": binding, "r": run, "t": task, "d": "a" * 64, "n": note})
-        command.upgrade(config, "head")
+        command.upgrade(config, "4a5b6c7d8e9f")
         with engine.connect() as connection:
             columns = {column["name"] for column in inspect(connection).get_columns("desktop_run_material_bindings")}
             assert "must_view_requested" not in columns
@@ -67,6 +67,6 @@ def test_remove_image_gate_preserves_material_notes(isolated_postgres_database):
         with engine.connect() as connection:
             row = connection.execute(text("SELECT must_view_requested,note FROM desktop_run_material_bindings WHERE binding_id=:b"), {"b": binding}).one()
             assert tuple(row) == (False, note)
-        command.upgrade(config, "head")
+        command.upgrade(config, "4a5b6c7d8e9f")
     finally:
         engine.dispose()

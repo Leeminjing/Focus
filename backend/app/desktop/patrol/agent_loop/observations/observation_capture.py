@@ -18,13 +18,10 @@ workspace 输入的 introduced identity 固定原 Oi，observed_round_id 跟随�
 
 from __future__ import annotations
 
-from backend.app.desktop.capabilities.evolution_strategies import freeze_strategies, strategy_catalog
-from backend.app.desktop.capabilities.strategy_snapshots import PatrolStrategyReadRequest, read_strategy_page
-
 import asyncio
 import uuid
-from pathlib import Path
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,16 +29,36 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.patrol.agent_loop.resources.budgets import configured_provider_count
+from backend.app.desktop.capabilities.evolution_strategies import (
+    freeze_strategies,
+    strategy_catalog,
+)
+from backend.app.desktop.capabilities.strategy_snapshots import (
+    PatrolStrategyReadRequest,
+    read_strategy_page,
+)
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionReader,
+    ContextRevisionRepository,
+)
+from backend.app.desktop.contexts.evolution.committed_lineage import (
+    CommittedLineageReader,
+)
 from backend.app.desktop.patrol.agent_loop.context_recovery import (
     ContextRecoveryOpportunityService,
 )
 from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import (
     InterventionLifecycleRepository,
 )
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalSequence
-from backend.app.desktop.patrol.agent_loop.missions.mission_models import LoopMissionRevision
-from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
+    LoopJournalSequence,
+)
+from backend.app.desktop.patrol.agent_loop.missions.mission_models import (
+    LoopMissionRevision,
+)
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import (
+    EffectiveMissionProjector,
+)
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
@@ -58,11 +75,22 @@ from backend.app.desktop.patrol.agent_loop.observations.builder import (
     LoopObservationBuilder,
     observation_hash,
 )
-from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import TERMINAL_ROUND_STATUSES
+from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import (
+    PatrolCausalReadRequest,
+    PatrolReadView,
+    PatrolWorkerReadRequest,
+)
+from backend.app.desktop.patrol.agent_loop.resources.budgets import (
+    configured_provider_count,
+)
+from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import (
+    TERMINAL_ROUND_STATUSES,
+)
 from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.patrol.agent_loop.queries.patrol_read_view import PatrolReadView, PatrolWorkerReadRequest, PatrolCausalReadRequest
 from backend.app.desktop.patrol.agent_loop.task_progress.baseline import legacy_baseline
-from backend.app.desktop.patrol.agent_loop.task_progress.consolidation import initial_progress
+from backend.app.desktop.patrol.agent_loop.task_progress.consolidation import (
+    initial_progress,
+)
 from backend.app.desktop.patrol.agent_loop.task_progress.contracts import (
     RoundDecisionInputs,
     TaskProgressDocument,
@@ -73,13 +101,6 @@ from backend.app.desktop.patrol.agent_loop.task_progress.repository import (
 )
 from backend.app.desktop.patrol.agent_loop.task_progress.source_reader import (
     TaskDeltaSourceReader,
-)
-from backend.app.desktop.contexts.evolution import (
-    ContextRevisionReader,
-    ContextRevisionRepository,
-)
-from backend.app.desktop.contexts.evolution.committed_lineage import (
-    CommittedLineageReader,
 )
 from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
@@ -185,7 +206,9 @@ class LoopObservationService:
             if round_row.trigger_kind != "user_input":
                 await self._progress.require_ready(session, loop_id)
             if refresh_id:
-                from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import current_frontier_hash
+                from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import (
+                    current_frontier_hash,
+                )
 
                 round_row.frontier_hash = await current_frontier_hash(session, loop_id) or round_row.frontier_hash
                 slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == loop.workspace_id,
@@ -199,7 +222,9 @@ class LoopObservationService:
             preemption = await session.scalar(select(LoopEventOutbox.payload).where(
                 LoopEventOutbox.idempotency_key == f"cognition-preempted:{envelope.observation_id}"))
         if preemption is not None:
-            from backend.app.desktop.patrol.agent_loop.decisions.cognition import notify_preemption
+            from backend.app.desktop.patrol.agent_loop.decisions.cognition import (
+                notify_preemption,
+            )
 
             await notify_preemption(preemption)
         return envelope
@@ -262,7 +287,9 @@ class LoopObservationService:
         lineage = await self._lineage.snapshot(
             session, roots, workspace_id=loop.workspace_id
         )
-        from backend.app.desktop.patrol.agent_loop.projections.causal_snapshot import CausalSnapshotReader
+        from backend.app.desktop.patrol.agent_loop.projections.causal_snapshot import (
+            CausalSnapshotReader,
+        )
 
         intervention = await CausalSnapshotReader().capture(session, loop, visible_context)
         envelope = envelope.model_copy(
@@ -278,6 +305,14 @@ class LoopObservationService:
         return envelope
 
     async def freeze_version(self, session, loop, round_row, envelope, *, intent=None):
+        # Keep exact, task-owned inputs without archiving every Context version.
+        # Bodies stay out of the envelope projected into model prompts.
+        for item in envelope.portfolio_frontier:
+            if item.get("revision"):
+                await self._revisions.freeze(
+                    session, self._ref(item["revision"]),
+                    owner_kind="round", owner_id=round_row.round_id,
+                )
         observation_id = uuid.uuid4().hex
         prior_id = round_row.observation_id
         generation = int(await session.scalar(select(func.max(LoopObservation.generation)).where(
@@ -298,7 +333,9 @@ class LoopObservationService:
                 "accepted_at": (intent.created_at or datetime.now(UTC)).isoformat()}
         intents = await self._observe_intents(session, loop.loop_id, round_row.round_id, mark=True)
         if intent is not None:
-            from backend.app.desktop.patrol.agent_loop.projections.causal_read_view import CausalInputReadView
+            from backend.app.desktop.patrol.agent_loop.projections.causal_read_view import (
+                CausalInputReadView,
+            )
 
             prior_chain = await self._causal_chain(session, [row for row in intents if row.intent_id != intent.intent_id])
             read_view = await CausalInputReadView.capture(session, loop.loop_id, pre_state,
@@ -343,11 +380,17 @@ class LoopObservationService:
         round_row.observation_id = row.observation_id
         round_row.barrier = {key: value for key, value in (round_row.barrier or {}).items() if key != "refresh_observation"}
         if intent is not None or prior_id is not None:
-            from backend.app.desktop.patrol.agent_loop.decisions.cognition import preempt_observation
+            from backend.app.desktop.patrol.agent_loop.decisions.cognition import (
+                preempt_observation,
+            )
 
             await preempt_observation(session, loop, round_row, prior_id, observation_id, generation)
-        from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
-        from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+        from backend.app.desktop.patrol.agent_loop.journal.event_contract import (
+            CanonicalEventDraft,
+        )
+        from backend.app.desktop.patrol.agent_loop.journal.event_journal import (
+            LoopEventJournal,
+        )
 
         await LoopEventJournal().append(session, loop.loop_id, CanonicalEventDraft(
             kind="observation.frozen", entity_type="observation", entity_id=observation_id,
@@ -356,7 +399,9 @@ class LoopObservationService:
                      "generation": generation, "observation_hash": row.envelope_hash,
                      "frozen_at": row.created_at.isoformat()},
             idempotency_key=f"observation-frozen:{observation_id}"))
-        from backend.app.desktop.patrol.agent_loop.journal.round_events import RoundStateEventRecorder
+        from backend.app.desktop.patrol.agent_loop.journal.round_events import (
+            RoundStateEventRecorder,
+        )
 
         await RoundStateEventRecorder().record(session, round_row)
         if loop.status == "running" and loop.health != "preparing":
@@ -422,7 +467,9 @@ class LoopObservationService:
                             (revision.ref.revision_id, view)
                         ] = await self._reader.read(session, revision.ref, view)
         if slot is not None:
-            from backend.app.desktop.workspaces.coordination.fingerprints import WorkspaceFingerprinter
+            from backend.app.desktop.workspaces.coordination.fingerprints import (
+                WorkspaceFingerprinter,
+            )
 
             head, dirty = await asyncio.to_thread(WorkspaceFingerprinter.git_state, Path(slot.root_path))
             views["workspace"] = (slot.slot_id, slot.revision, slot.current_fingerprint, head, dirty)
@@ -445,8 +492,12 @@ class LoopObservationService:
             ).all()
         )
         frontier = await self._frontier(session, loop, memberships, views)
-        from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextExpansion
-        from backend.app.desktop.patrol.agent_loop.context_expansion.repository import ContextExpansionRepository
+        from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
+            LoopContextExpansion,
+        )
+        from backend.app.desktop.patrol.agent_loop.context_expansion.repository import (
+            ContextExpansionRepository,
+        )
 
         expansions = await session.scalars(select(LoopContextExpansion).where(
             LoopContextExpansion.loop_id == loop.loop_id, LoopContextExpansion.level == "required"))
@@ -481,10 +532,14 @@ class LoopObservationService:
             WorkspaceAdoption.source_slot_id.in_([item.slot_id for item in isolated_slots])
         ).order_by(WorkspaceAdoption.created_at.desc()))).all()
         adoptions = all_adoptions[:24]
-        from backend.app.desktop.patrol.agent_loop.decisions.evidence import workspace_admission_facts
+        from backend.app.desktop.patrol.agent_loop.decisions.evidence import (
+            workspace_admission_facts,
+        )
 
         adoption_facts = await workspace_admission_facts(session, loop.loop_id, isolated_slots, slot, all_adoptions)
-        from backend.app.desktop.patrol.agent_loop.workspaces.workspace_repair import WorkspaceConflictRepair
+        from backend.app.desktop.patrol.agent_loop.workspaces.workspace_repair import (
+            WorkspaceConflictRepair,
+        )
         recovery = await ContextRecoveryOpportunityService(
             _PreparedContextReader(views)
         ).discover(
@@ -497,10 +552,14 @@ class LoopObservationService:
             runs=tuple(runs),
         )
         journal_sequence = await session.get(LoopJournalSequence, loop.loop_id)
-        from backend.app.desktop.patrol.agent_loop.completion.completion_admission import CompletionRequestAdmission
+        from backend.app.desktop.patrol.agent_loop.completion.completion_admission import (
+            CompletionRequestAdmission,
+        )
 
         completion_admission = await CompletionRequestAdmission().read(session, loop, round_row)
-        from backend.app.desktop.patrol.agent_loop.completion.completion_eligibility import CompletionEligibilityPolicy
+        from backend.app.desktop.patrol.agent_loop.completion.completion_eligibility import (
+            CompletionEligibilityPolicy,
+        )
 
         completion_eligibility = await CompletionEligibilityPolicy().read(session, loop, round_row)
         base_entity_revisions = {
@@ -680,7 +739,9 @@ class LoopObservationService:
     ):
         loop = await session.get(AgentLoop, loop_id)
         workspace_mode = loop.interaction_mode == "workspace_patrol"
-        from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import workspace_input_scope
+        from backend.app.desktop.patrol.agent_loop.inputs.patrol_inputs import (
+            workspace_input_scope,
+        )
         user_intents = list(
             (
                 await session.scalars(
@@ -711,7 +772,10 @@ class LoopObservationService:
 
     @staticmethod
     async def _information_requests(session, loop_id):
-        from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest, LoopWaitResponse
+        from backend.app.desktop.patrol.agent_loop.waits.wait_models import (
+            LoopWaitRequest,
+            LoopWaitResponse,
+        )
         rows = tuple(await session.scalars(select(LoopWaitRequest).where(LoopWaitRequest.loop_id == loop_id,
             LoopWaitRequest.kind == "clarification", LoopWaitRequest.status == "open",
             LoopWaitRequest.scope["information_only"].astext == "true")))
@@ -770,8 +834,10 @@ class LoopObservationService:
                 else None
             )
             messages = self._message_preview(views, revision.ref) if revision else ()
-            from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import resolve_context_equipment
             from backend.app.desktop.contexts.curation.models import CurationLane
+            from backend.app.desktop.patrol.agent_loop.execution.directive_equipment import (
+                resolve_context_equipment,
+            )
 
             lane = await session.get(CurationLane, membership.lane_id) if membership.lane_id else None
             try:
@@ -839,7 +905,9 @@ class LoopObservationService:
                     results.append(await self._strategy_page(session, observation, request))
                     continue
                 if isinstance(request, PatrolCausalReadRequest):
-                    from backend.app.desktop.patrol.agent_loop.projections.causal_snapshot import read_causal_snapshot
+                    from backend.app.desktop.patrol.agent_loop.projections.causal_snapshot import (
+                        read_causal_snapshot,
+                    )
 
                     entry = next((item for item in observation.causal_chain
                         if item["intent_id"] == request.intent_id and item["snapshot_hash"] == request.snapshot_hash), None)
@@ -899,14 +967,18 @@ class LoopObservationService:
             return await self._frozen_worker_sources(session, observation)
 
     async def causal_sources(self, observation) -> tuple[dict, ...]:
-        from backend.app.desktop.patrol.agent_loop.projections.causal_snapshot import read_causal_snapshot
+        from backend.app.desktop.patrol.agent_loop.projections.causal_snapshot import (
+            read_causal_snapshot,
+        )
 
         async with self._sessions() as session:
             return tuple([{**entry, "snapshot": await read_causal_snapshot(session, observation.loop_id, entry)}
                 for entry in observation.causal_chain])
 
     async def _frozen_worker_sources(self, session, observation) -> tuple[dict, ...]:
-        from backend.app.desktop.patrol.agent_loop.decisions.decision_context import DecisionSupplementRepository
+        from backend.app.desktop.patrol.agent_loop.decisions.decision_context import (
+            DecisionSupplementRepository,
+        )
 
         base = await session.get(LoopObservation, observation.observation_id or observation.decision_inputs_ref)
         if base is None:

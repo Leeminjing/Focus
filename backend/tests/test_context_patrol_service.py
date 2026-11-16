@@ -7,27 +7,31 @@
 
 import asyncio
 import os
+import uuid
 from pathlib import Path
 from typing import Any
-import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import HumanMessage
 from sqlalchemy import delete, select
 
-
 os.environ.setdefault("OPENAI_API_KEY", "context-curator-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.desktop.contexts.curator import (  # noqa: E402
+    CuratedContextPlan,
     CurationEngineError,
     CurationEngineResult,
-    CuratedContextPlan,
 )
-from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace, PatrolContextAttempt, PatrolContextBinding, PatrolContextRevision
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopWorkspace,
+    PatrolContextAttempt,
+    PatrolContextBinding,
+    PatrolContextRevision,
+)
 from backend.app.gateway.app import app  # noqa: E402
-
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
 
@@ -129,6 +133,11 @@ async def _set_run_status(service, run_id: str, status: str) -> None:
 
 
 async def _cleanup(service, root_context_id: str, workspace_id: str) -> None:
+    # The published binding becomes visible before the owning Run finishes its
+    # post-publication accounting and input cleanup.
+    tasks = tuple(service.context_patrol._run_tasks)
+    if tasks:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10)
     await service.contexts.delete(root_context_id, cascade=True)
     async with service.session_factory() as session:
         await session.execute(
@@ -230,14 +239,27 @@ def test_direct_curator_deploys_publishes_audits_and_keeps_following(
             f"/desktop/api/contexts/{managed_id}/snapshot",
             headers=SESSION,
             params={"checkpoint_id": initial_checkpoint_id},
+        )
+        assert initial.status_code == 409
+        current = client.get(
+            f"/desktop/api/contexts/{managed_id}/snapshot", headers=SESSION
         ).json()
-        assert [
-            (message["id"], message["role"], message["content"])
-            for message in initial["messages"]
-        ] == [
-            (message["id"], message["role"], message["content"])
-            for message in snapshot["messages"]
-        ]
+        assert current["checkpoint_id"] != initial_checkpoint_id
+        assert current["messages"][0]["content"] == "已策展的核心目标"
+        audit = client.get(
+            f"/desktop/api/agents/{agent_id}/context-curation", headers=SESSION
+        ).json()
+        latest = audit["latest_revision"]
+        assert latest["source_checkpoint_id"] == next_source
+        assert latest["input_released"] is False
+        assert latest["source_payload"]["source_snapshot"]["messages"]
+        old = next(item for item in audit["revisions"] if item["source_checkpoint_id"] != next_source)
+        assert old["input_released"] is True
+        assert old["source_payload"] == {"input_released": True}
+        assert old["authored_messages"] == []
+        assert old["attempts"][0]["raw_response"] == {}
+        assert old["attempts"][0]["parsed_response"] == {}
+        assert old["attempts"][0]["status"] == "success"
         assert client.portal.call(_binding_snapshot, service, agent_id)["control"] == "following"
         client.portal.call(_cleanup, service, task["task_id"], workspace["workspace_id"])
 
@@ -306,6 +328,40 @@ def test_running_managed_context_does_not_stop_following_patrol(
         ]
         assert client.portal.call(_binding_snapshot, service, agent_id)["control"] == "following"
 
+        client.portal.call(_cleanup, service, task["task_id"], workspace["workspace_id"])
+
+
+def test_curator_authoring_uses_published_source_while_main_has_a_new_live_head(
+    tmp_path, monkeypatch, wait_until
+):
+    import backend.app.desktop.contexts.curator.engine as engine_module
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+
+    async def current_ref(service, context_id):
+        async with service.session_factory() as session:
+            return (await ContextRevisionRepository().current(session, context_id)).ref
+
+    monkeypatch.setattr(engine_module.CurationEngine, "curate", _successful_curate)
+    with TestClient(app, client=("127.0.0.1", 51015)) as client:
+        workspace, task, service, run = _create_root_and_curator(client, tmp_path, "stable-source")
+        wait_until(lambda: client.portal.call(_binding_snapshot, service, run["agent_id"])["published"] is not None)
+        base = client.portal.call(current_ref, service, task["task_id"])
+        main_run_id = client.portal.call(_record_main_run, service, task["task_id"], "running")
+        live_head = client.portal.call(_seed_root, service, task["thread_id"], "尚未结算的中间输出")
+        assert live_head != base.checkpoint_id
+        assert client.portal.call(service.context_patrol.stable_source_checkpoint, task["task_id"]) == base.checkpoint_id
+        draft = client.post(f"/desktop/api/tasks/{task['task_id']}/drafts/open", headers=SESSION).json()
+        response = client.put(f"/desktop/api/drafts/{draft['draft_id']}", headers=SESSION, json={
+            "mode": "context_curator",
+            "curation_policy": {"instructions": "只策展稳定来源"},
+            "equipment": {"model_name": service.app_config.resolve_default_model_name(), "permissions": ["read"], "skills": []},
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["source_checkpoint_id"] == base.checkpoint_id
+        assert client.portal.call(current_ref, service, task["task_id"]) == base
+        client.portal.call(service.context_patrol.notify_stable_context_checkpoint, task["task_id"])
+        assert client.portal.call(_binding_snapshot, service, run["agent_id"])["desired"] == base.checkpoint_id
+        client.portal.call(_set_run_status, service, main_run_id, "success")
         client.portal.call(_cleanup, service, task["task_id"], workspace["workspace_id"])
 
 

@@ -1,6 +1,6 @@
 /*
  * 本文件对 F20 全部主要工作台执行真实 Electron 稳定性矩阵。输入为确定性任务/Context/插件数据、
- * 13 类界面状态与 5 组尺寸缩放，输出为未捕获错误、DOM/ARIA、交互嵌套和页面溢出断言。
+ * 12 类界面状态与 5 组尺寸缩放，输出为未捕获错误、DOM/ARIA、交互嵌套和页面溢出断言。
  * 工作流为从默认 Patrol 通过任务导航进入旧工作台，再检查各入口；示例：electron desktop/tests/e2e/f20-view-audit.e2e.cjs。数据由隔离 fixture 提供。
  */
 "use strict";
@@ -25,7 +25,7 @@ const cases = [
   { width: 900, height: 680, zoom: 1 },
   { width: 900, height: 680, zoom: 1.5 },
 ];
-const targets = ["focus", "map", "context", "draft", "agents", "commitment", "compression", "materials", "plugins", "file", "dialog", "empty", "error"];
+const targets = ["focus", "map", "draft", "agents", "commitment", "compression", "materials", "plugins", "file", "dialog", "empty", "error"];
 const qaDir = process.env.FOCUS_QA_DIR ? path.resolve(process.env.FOCUS_QA_DIR) : "";
 const captureAllViewports = process.env.FOCUS_QA_ALL_VIEWPORTS === "1";
 if (qaDir) fs.mkdirSync(qaDir, { recursive: true });
@@ -42,6 +42,7 @@ async function run() {
       contextIsolation: false,
       nodeIntegration: false,
       backgroundThrottling: false,
+      offscreen: true,
     },
   });
   win.webContents.on("console-message", (_event, level, message) => {
@@ -69,7 +70,6 @@ async function run() {
       state.filesPanel = null;
       state.inspector.open = false;
       state.inspector.returnFocus = null;
-      state.contextDraft = null;
       state.commitment.review = null;
       state.commitment.recovery = null;
       state.commitment.stage = 0;
@@ -90,8 +90,6 @@ async function run() {
         state.view = 'focus'; render();
       } else if (target === 'map') {
         state.view = 'map'; render();
-      } else if (target === 'context') {
-        await reopenContextDecision('blocked');
       } else if (target === 'draft') {
         state.equipment = { models: [{ name: 'local-model', display_name: 'Local Model', context_window: 32000 }], tools: [], skills: [], permissions: ['read', 'write', 'host_command'] };
         state.drafts.set(task.task_id, {
@@ -212,7 +210,6 @@ async function run() {
           duplicateContentTitles: document.querySelectorAll('.map-toolbar .workspace-kicker, .draft-heading h1, .compression-heading h1').length,
           mapToolbarHeight: document.querySelector('.map-toolbar')?.getBoundingClientRect().height || 0,
           mapCardsSameRow: mapCards.length === 2 && Math.abs(mapCards[0].top - mapCards[1].top) < 2,
-          contextEditorColumns: document.querySelector('.context-editor-view') ? getComputedStyle(document.querySelector('.context-editor-view')).gridTemplateColumns : '',
           pluginsWorkbenchColumns: document.querySelector('.plugins-workbench') ? getComputedStyle(document.querySelector('.plugins-workbench')).gridTemplateColumns : '',
           fileFocusDisplay: document.querySelector('.focus-view') ? getComputedStyle(document.querySelector('.focus-view')).display : '',
           filePanelWidthDelta: focusShell && filePanel ? Math.abs(focusShell.getBoundingClientRect().width - filePanel.getBoundingClientRect().width) : 0,
@@ -220,7 +217,7 @@ async function run() {
         };
       })()`);
       const problems = Object.entries(result)
-        .filter(([key, value]) => !["appWidth", "appHeight", "errors", "openDialogs", "duplicateContentTitles", "mapToolbarHeight", "mapCardsSameRow", "contextEditorColumns", "pluginsWorkbenchColumns", "fileFocusDisplay", "filePanelWidthDelta"].includes(key) && Number(value) > 0)
+        .filter(([key, value]) => !["appWidth", "appHeight", "errors", "openDialogs", "duplicateContentTitles", "mapToolbarHeight", "mapCardsSameRow", "pluginsWorkbenchColumns", "fileFocusDisplay", "filePanelWidthDelta"].includes(key) && Number(value) > 0)
         .map(([key, value]) => `${key}=${value}`);
       if (target === "dialog" ? result.openDialogs !== 1 : result.openDialogs !== 0) problems.push(`openDialogs=${result.openDialogs}`);
       if (result.appWidth < 300 || result.appHeight < 220) problems.push(`app=${result.appWidth}x${result.appHeight}`);
@@ -228,7 +225,6 @@ async function run() {
       const mapToolbarLimit = result.appWidth <= 900 ? 82 : 48;
       if (target === "map" && result.mapToolbarHeight > mapToolbarLimit) problems.push(`mapToolbarHeight=${result.mapToolbarHeight}`);
       if (item.width === 900 && item.zoom === 1.5 && target === "map" && result.mapCardsSameRow) problems.push("mapCards=still-two-columns");
-      if (item.width === 900 && item.zoom === 1.5 && target === "context" && result.contextEditorColumns.trim().split(/\s+/).length !== 1) problems.push(`contextColumns=${result.contextEditorColumns}`);
       if (item.width === 900 && item.zoom === 1.5 && target === "plugins" && result.pluginsWorkbenchColumns.trim().split(/\s+/).length !== 1) problems.push(`pluginColumns=${result.pluginsWorkbenchColumns}`);
       if ((item.width / item.zoom) <= 1100 && target === "file" && (result.fileFocusDisplay !== "none" || result.filePanelWidthDelta > 1)) problems.push(`fileSingleSurface=${result.fileFocusDisplay}/${result.filePanelWidthDelta}`);
       if (result.errors.length) problems.push(`errors=${result.errors.join("|")}`);

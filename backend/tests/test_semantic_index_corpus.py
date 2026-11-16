@@ -4,9 +4,19 @@ import json
 
 import pytest
 
-from backend.scripts.semantic_index_corpus import BenchmarkCorpus, CorpusCase, Snapshot, load_corpus, require_jsonb_text, select_cases, summarize_reports
-from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
 from backend.app.desktop.contexts.evolution import ContextRevisionRef
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
+    stable_expansion_hash,
+)
+from backend.scripts.semantic_index_corpus import (
+    BenchmarkCorpus,
+    CorpusCase,
+    Snapshot,
+    load_corpus,
+    require_jsonb_text,
+    select_cases,
+    summarize_reports,
+)
 
 
 def snapshot(messages, generation=1, context="context"):
@@ -67,6 +77,54 @@ def test_automatic_categories_distinguish_size_from_message_count():
     assert cases[2].snapshots == tuple(appends)
     with pytest.raises(ValueError, match="short dialogue"):
         select_cases([huge], automatic=True)
+
+
+@pytest.mark.usefixtures("isolated_postgres_database")
+def test_discovery_exports_only_current_or_explicit_published_pins(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+    from backend.scripts import semantic_index_corpus as corpus_module
+    from backend.tests.incremental_index_support import Checkpoints, messages, revision
+    from backend.tests.test_incremental_revision_index import exercise
+
+    monkeypatch.setattr(corpus_module, "get_app_config", lambda path: SimpleNamespace(
+        database=SimpleNamespace(url=os.environ["FOCUS_DATABASE_URL"])
+    ))
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    async def connection(*args, **kwargs):
+        return Connection()
+
+    # This test exercises the real read-only discovery repository. Its inputs
+    # carry stored execution messages, so the checkpoint transport is incidental.
+    monkeypatch.setattr(corpus_module.psycopg.AsyncConnection, "connect", connection)
+    monkeypatch.setattr(corpus_module, "AsyncPostgresSaver", lambda conn: Checkpoints())
+
+    async def run(sessions, seed):
+        repository = ContextRevisionRepository()
+        first = await revision(sessions, seed["context_id"], messages(2))
+        async with sessions.begin() as session:
+            await repository.freeze(session, first.ref, owner_kind="round", owner_id=seed["round_id"])
+        current = await revision(sessions, seed["context_id"], messages(3))
+        found, skipped = await corpus_module.read_snapshots("unused", context_ids=(seed["context_id"],))
+        assert skipped == []
+        assert [item.source for item in found] == [current.ref]
+        selected, skipped = await corpus_module.read_snapshots("unused", revision_ids=(first.ref.revision_id,))
+        assert skipped == []
+        assert [item.source for item in selected] == [first.ref]
+        async with sessions.begin() as session:
+            await repository.release(session, "round", seed["round_id"])
+        with pytest.raises(ValueError, match="unavailable or invalid"):
+            await corpus_module.read_snapshots("unused", revision_ids=(first.ref.revision_id,))
+
+    exercise(tmp_path, run)
 
 
 @pytest.mark.parametrize("different_control", [{"concurrency": 8},

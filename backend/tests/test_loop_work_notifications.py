@@ -6,28 +6,32 @@ result. Timings exclude model requests and are not model/end-to-end benchmarks.
 """
 
 import asyncio
-from datetime import UTC, datetime
 import json
 import os
+import uuid
+from datetime import UTC, datetime
 from time import perf_counter
 from types import SimpleNamespace
-import uuid
 
 import pytest
+from loop_run_boundary_support import freeze_patrol_intent, start_loop_run
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
 from backend.app.desktop.patrol.agent_loop import (
-    ContextRunPool, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel,
-    LoopWaveDispatcher, PatrolDecisionIntent,
+    ContextRunPool,
+    LoopCoordinator,
+    LoopCoordinatorRuntime,
+    LoopKernel,
+    LoopWaveDispatcher,
+    PatrolDecisionIntent,
 )
 from backend.app.desktop.patrol.agent_loop.models import LoopWorkerRequest
-from backend.app.desktop.runs.orchestration import RunOutboxConsumer
 from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.persistence.state_changes import PostgresNotifications
+from backend.app.desktop.runs.orchestration import RunOutboxConsumer
 from backend.tests.test_loop_runtime_pools import _create_loop, _frontier
-from loop_run_boundary_support import freeze_patrol_intent, start_loop_run
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
@@ -231,9 +235,10 @@ def test_reconnect_reconciles_work_missed_during_disconnect():
 def test_notification_migration_round_trip():
     # migration_support supplies a dedicated disposable database for downgrade.
     from pathlib import Path
+
     from alembic import command
     from alembic.config import Config
 
     config = Config(str(Path(__file__).parents[1] / "packages/harness/focus/persistence/migrations/alembic.ini"))
     command.downgrade(config, "e36d7e8f9012")
-    command.upgrade(config, "head")
+    command.upgrade(config, "4a5b6c7d8e9f")

@@ -16,8 +16,8 @@ const tasks = [
 
 const tree = [
   { context_id: "root", title: "同名 Context", depth: 0, projection_status: "root", editable: false, cache_hit_rate: null, cache_input_tokens: 0, cache_hit_tokens: 0, parents: [] },
-  { context_id: "child", title: "同名 Context", depth: 1, projection_status: "valid", editable: true, cache_hit_rate: 0.25, cache_input_tokens: 200, cache_hit_tokens: 50, parents: [{ context_id: "root" }] },
-  { context_id: "blocked", title: "同名 Context", depth: 1, projection_status: "approval_required", parents: [{ context_id: "root" }] },
+  { context_id: "child", title: "同名 Context", depth: 1, projection_status: "valid", editable: false, cache_hit_rate: 0.25, cache_input_tokens: 200, cache_hit_tokens: 50, parents: [{ context_id: "root" }] },
+  { context_id: "blocked", title: "同名 Context", depth: 1, projection_status: "error", parents: [{ context_id: "root" }] },
   { context_id: "sibling", title: "安全 Context", depth: 1, projection_status: "valid", parents: [{ context_id: "root" }] },
   { context_id: "merged", title: "合并 Context", depth: 2, projection_status: "valid", parents: [{ context_id: "child" }, { context_id: "sibling" }] },
   { context_id: "foreign-root", title: "其他线程", depth: 0, projection_status: "root", parents: [] },
@@ -68,7 +68,7 @@ window.fetch = async (input, options = {}) => {
     tasks.push(task);
     return json(task);
   }
-  if (path === "/desktop/api/bootstrap") return json({ tasks, equipment: { models: [], tools: [], skills: [], permissions: [] } });
+  if (path === "/desktop/api/bootstrap") return json({ tasks, plugins: [], equipment: { models: [], tools: [], skills: [], permissions: [] } });
   if (path === "/desktop/api/tasks") return json(tasks);
   if (path === "/desktop/api/workspaces/workspace/contexts/tree") return json(tree);
   if (/\/desktop\/api\/tasks\/[^/]+\/ui-state$/.test(path)) {
@@ -78,15 +78,13 @@ window.fetch = async (input, options = {}) => {
   }
   if (/\/desktop\/api\/tasks\/[^/]+$/.test(path)) {
     const taskId = path.split("/").at(-1);
-    const context = taskId === "child"
-      ? { context_id: taskId, projection_status: "valid", editable: true, authored_messages: [{ role: "human", content: "尚未运行，可继续编辑" }], sources: [{ context_id: "root", checkpoint_id: "checkpoint" }], repair_manifest: [], issues: [] }
-      : taskId === "blocked"
-        ? { context_id: taskId, projection_status: "approval_required", authored_messages: [{ role: "unknown", content: "保留" }], sources: [{ context_id: "root", checkpoint_id: "checkpoint" }], repair_manifest: [], issues: [{ reason: "测试非法角色", original: { role: "unknown", content: "保留" }, proposed: { role: "human", content: "保留" } }] }
-        : null;
+    const context = { context_id: taskId, projection_status: taskId === "blocked" ? "error" : "valid", editable: false };
     return json({ task_id: taskId, messages: conversationMessages(taskId), ui_state: uiStates.get(taskId) || {}, active_run: null, context });
   }
   if (/\/desktop\/api\/tasks\/[^/]+\/(materials|agents)$/.test(path)) return json([]);
   if (/\/desktop\/api\/tasks\/[^/]+\/(material-groups|material-history)$/.test(path)) return json([]);
+  if (path === "/desktop/api/plugins") return json({ plugins: [], interfaces: {} });
+  if (path === "/desktop/api/plugins/traces") return json([]);
   if (path === "/desktop/api/plugin/spatial-patrol/metadata") return json({ page_count: 1 });
   if (path === "/desktop/api/plugin/spatial-patrol/text") return json({ content: "# 文件工作台\n\n这是一份用于视觉验收的 Markdown 材料。\n\n- 支持文本引用\n- 支持文件预览\n- DOCX 编辑权限显式选择\n\n## 说明\n\n文件工作台与任务记录并存，不会替换当前对话。" });
   if (/\/desktop\/api\/tasks\/[^/]+\/skills$/.test(path)) return json({ skills: [] });

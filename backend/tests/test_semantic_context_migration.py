@@ -46,7 +46,7 @@ def test_semantic_context_derivation_migration_round_trip(isolated_postgres_data
         assert expected <= {column["name"] for column in inspect(engine).get_columns("loop_context_expansions")}
         command.downgrade(config, "3d4e5f6a7b8c")
         assert not expected & {column["name"] for column in inspect(engine).get_columns("loop_context_expansions")}
-        command.upgrade(config, "head")
+        command.upgrade(config, "5f6a7b8c9d0e")
         assert expected <= {column["name"] for column in inspect(engine).get_columns("loop_context_expansions")}
         indexes = {item["name"] for item in inspect(engine).get_indexes("loop_context_expansions")}
         assert {
@@ -55,5 +55,5 @@ def test_semantic_context_derivation_migration_round_trip(isolated_postgres_data
             "ix_loop_context_expansions_definition_hash",
         } <= indexes
     finally:
-        command.upgrade(config, "head")
+        command.upgrade(config, "5f6a7b8c9d0e")
         engine.dispose()

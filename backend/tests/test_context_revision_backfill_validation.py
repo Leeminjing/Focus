@@ -10,12 +10,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
-import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
-
 
 MIGRATIONS = (
     Path(__file__).parents[1]
@@ -101,7 +100,7 @@ def test_corrupt_legacy_contexts_abort_without_partial_backfill(
             )
 
         with pytest.raises(RuntimeError) as exc_info:
-            command.upgrade(config, "head")
+            command.upgrade(config, "c3d4e5f6a7b8")
         message = str(exc_info.value)
         for category in (
             "workspace_mismatch",
@@ -138,5 +137,5 @@ def test_corrupt_legacy_contexts_abort_without_partial_backfill(
                     "END IF; END $$"
                 )
             )
-        command.upgrade(config, "head")
+        command.upgrade(config, "c3d4e5f6a7b8")
         engine.dispose()

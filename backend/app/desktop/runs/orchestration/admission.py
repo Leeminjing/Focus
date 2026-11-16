@@ -9,18 +9,18 @@ r"""本文件对外提供 RunAdmissionService 与 RunAdmissionResult。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.persistence.safety import PersistencePayloadNormalizer
-from backend.app.desktop.runs.orchestration.models import RunDispatch
 from backend.app.desktop.runs.orchestration.input_provenance import bind_run_inputs
 from backend.app.desktop.runs.orchestration.lineage import validate_parent_chain
+from backend.app.desktop.runs.orchestration.models import RunDispatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +74,13 @@ class RunAdmissionService:
         if active is not None:
             raise RunAdmissionConflict(f"任务已有活跃 Main Run: {active.run_id}")
         await validate_parent_chain(session, run)
+        if run.kind == "main" and run.context_revision_id:
+            from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+
+            repository = ContextRevisionRepository()
+            source = await repository.get_by_id(session, run.context_revision_id)
+            await repository.get_input(session, source.ref)
+            await repository.freeze(session, source.ref, owner_kind="run", owner_id=run.run_id)
         run.input_messages = bind_run_inputs(run)
         self._normalize_mutable_payloads(run)
         session.add(run)

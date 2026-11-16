@@ -1,4 +1,9 @@
-"""桌面组合根：装配资源与领域端口，协调启动、关闭和持久派发。"""
+"""本文件对外提供 DesktopService 桌面组合根。
+
+输入为数据库会话、运行存储、应用配置与宿主桥接端口；输出为已装配的桌面领域服务。
+具体工作流为安装 Context 输入释放处理器并装配资源、Run 与 Patrol 端口，协调启动、关闭和持久派发。
+示例：service = DesktopService(sessions, checkpointer, store, bridge, config, run_manager)。
+"""
 
 from __future__ import annotations
 
@@ -41,6 +46,9 @@ from backend.app.desktop.materials.service import MaterialService
 from backend.app.desktop.materials.snapshots import MaterialSnapshotVerifier
 from backend.app.desktop.materials.upload import MaterialUploadService
 from backend.app.desktop.memory.service import MemoryService
+from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
+    install_context_index_lifecycle,
+)
 from backend.app.desktop.patrol.context_service import ContextPatrolService
 from backend.app.desktop.patrol.service import PatrolService
 from backend.app.desktop.persistence.models import (
@@ -86,6 +94,7 @@ class DesktopService:
         app_config: AppConfig,
         run_manager: RunManager,
     ) -> None:
+        install_context_index_lifecycle()
         self.session_factory = session_factory
         self.checkpointer = checkpointer
         self.store = store

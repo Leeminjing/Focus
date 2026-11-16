@@ -8,9 +8,15 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 
 import pytest
-from backend.tests.test_session_patrol_workbench_api import client as client, open_draft, save, SESSION
-from backend.app.desktop.patrol.session_patrol.source_projection import project_authoring_sources, freeze_authoring_sources, source_fingerprint
 from focus.history import FocusItem
+
+from backend.app.desktop.patrol.session_patrol.source_projection import (
+    freeze_authoring_sources,
+    project_authoring_sources,
+    source_fingerprint,
+)
+from backend.tests.test_session_patrol_workbench_api import SESSION, open_draft, save
+from backend.tests.test_session_patrol_workbench_api import client as client
 
 
 def test_stable_rows_select_one_expanded_call_without_touching_source():
@@ -103,43 +109,66 @@ def test_source_changed_and_unavailable_are_recoverable(client):
     conflict = http.post(endpoint + "/sources", headers=SESSION, json=request)
     assert conflict.status_code == 409 and conflict.json()["detail"]["code"] == "source_changed"
     assert http.get(endpoint, headers=SESSION).json()["authoring_document"] == draft["authoring_document"]
-    missing = http.post(endpoint + "/source-preview", headers=SESSION, json={"kind": "context", "revision_id": "missing"})
+    missing = http.post(endpoint + "/source-preview", headers=SESSION, json={"kind": "context", "context_id": "missing"})
     assert missing.status_code == 404
+    removed = http.post(endpoint + "/source-preview", headers=SESSION,
+                        json={"kind": "context", "context_id": task["task_id"], "revision_id": "old"})
+    assert removed.status_code == 422 and removed.json()["detail"]["code"] == "context_history_removed"
     forbidden = http.post(endpoint + "/source-preview", headers=SESSION, json={**source, "path": "../outside.txt"})
     assert forbidden.status_code == 422
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_directory_query_and_cursor_are_scoped(client):
-    from datetime import UTC, datetime
     import uuid
+    from datetime import UTC, datetime
+
+    from focus.history import content_hash, serialize_history_message
     from langchain_core.messages import HumanMessage
+
+    from backend.app.desktop.contexts.evolution import (
+        ContextRevisionContract,
+        ContextRevisionRef,
+        ContextRevisionRepository,
+    )
     from backend.app.gateway.app import app
-    from backend.app.desktop.contexts.evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
-    from focus.history import serialize_history_message, content_hash
     http, task, _, _ = client
+    other = http.post(f"/desktop/api/workspaces/{task['workspace_id']}/threads", headers=SESSION,
+                      json={"thread_id": "catalog-" + uuid.uuid4().hex, "title": "other catalog"}).json()
     async def seed():
         service = app.state.desktop_service
         graph = await service.contexts._make_state_graph()
-        for generation in (20, 21):
-            config = await graph.aupdate_state({"configurable": {"thread_id": task["thread_id"], "checkpoint_ns": ""}},
-                {"messages": [HumanMessage(content=f"来源 {generation}", id=f"catalog-{generation}")]}, as_node="model")
-            state = await graph.aget_state(config)
-            records = tuple(serialize_history_message(message) for message in state.values["messages"])
-            ref = ContextRevisionRef(context_id=task["task_id"], revision_id=uuid.uuid4().hex, generation=generation,
-                execution_thread_id=task["thread_id"], checkpoint_ns="", checkpoint_id=config["configurable"]["checkpoint_id"], payload_mode="checkpoint")
-            async with service.session_factory() as session:
-                await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, execution_messages=records,
-                    content_hash=content_hash(records), projection_status="valid", origin_kind="root", created_at=datetime.now(UTC)))
-                await session.commit()
+        for context in (task, other):
+            for generation in (1, 2):
+                config = await graph.aupdate_state({"configurable": {"thread_id": context["thread_id"], "checkpoint_ns": ""}},
+                    {"messages": [HumanMessage(content=f"来源 {generation}", id=f"catalog-{generation}")]}, as_node="model")
+                state = await graph.aget_state(config)
+                records = tuple(serialize_history_message(message) for message in state.values["messages"])
+                async with service.session_factory() as session:
+                    repository = ContextRevisionRepository()
+                    current = await repository.current(session, context["task_id"])
+                    ref = ContextRevisionRef(context_id=context["task_id"], revision_id=uuid.uuid4().hex,
+                        generation=current.ref.generation + 1 if current else 1, execution_thread_id=context["thread_id"],
+                        checkpoint_ns="", checkpoint_id=config["configurable"]["checkpoint_id"], payload_mode="checkpoint")
+                    await repository.insert(session, ContextRevisionContract(ref=ref, execution_messages=records,
+                        content_hash=content_hash(records), projection_status="valid", origin_kind="root", created_at=datetime.now(UTC)))
+                    await repository.switch_current(session, ref, current.ref if current else None)
+                    await session.commit()
     http.portal.call(seed)
     first = http.get("/desktop/api/patrol/sources?kind=context&limit=1", headers=SESSION)
     assert first.status_code == 200 and len(first.json()["items"]) == 1
     assert first.json()["next_cursor"]
     second = http.get("/desktop/api/patrol/sources", headers=SESSION, params={"kind": "context", "limit": 1, "cursor": first.json()["next_cursor"]})
     assert second.status_code == 200 and second.json()["items"][0]["source_ref"] != first.json()["items"][0]["source_ref"]
+    assert second.json()["next_cursor"] is None
+    refs = [item["source_ref"] for page in (first.json(), second.json()) for item in page["items"]]
+    assert {ref["context_id"] for ref in refs} == {task["task_id"], other["task_id"]}
+    assert all("revision_id" not in ref for ref in refs)
     legacy = http.get("/desktop/api/patrol/sources", headers=SESSION)
-    assert legacy.status_code == 200 and "contexts" in legacy.json() and "branches" in legacy.json()
+    assert legacy.status_code == 200 and len(legacy.json()["contexts"]) == 2 and "branches" in legacy.json()
+    assert all("revisions" not in context for context in legacy.json()["contexts"])
+    assert http.get(f"/desktop/api/contexts/{task['task_id']}/revisions", headers=SESSION).status_code == 404
+    assert http.get("/desktop/api/context-revisions/old", headers=SESSION).status_code == 404
     if first.json()["next_cursor"]:
         mismatch = http.get("/desktop/api/patrol/sources", headers=SESSION, params={"kind": "patrol", "limit": 1, "cursor": first.json()["next_cursor"]})
         assert mismatch.status_code == 422
@@ -170,8 +199,8 @@ def test_preview_paging_selection_and_query_cursor_share_one_snapshot(client, mo
 
 
 def test_diagnostics_locate_actual_fields_and_offer_applicable_actions():
-    from backend.app.desktop.patrol.session_patrol.contracts import AuthoringDocument
     from backend.app.desktop.patrol.session_patrol.compiler import compile_document
+    from backend.app.desktop.patrol.session_patrol.contracts import AuthoringDocument
     document = AuthoringDocument.model_validate({"entries": [
         {"entry_id": "bad", "kind": "function_call", "payload": {"name": "read", "call_id": "bad", "arguments": "{bad"}},
         {"entry_id": "waiting", "kind": "function_call", "payload": {"name": "read", "call_id": "waiting", "arguments": "{}"}},
@@ -207,8 +236,9 @@ def test_provider_projection_failure_is_global_without_fake_entry_identity(clien
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_import_commit_failure_rolls_back_entries_references_and_revision(client, monkeypatch):
     from sqlalchemy.ext.asyncio import AsyncSession
-    from backend.app.gateway.app import app
+
     from backend.app.desktop.persistence.models import PatrolDraft
+    from backend.app.gateway.app import app
     http, task, path, _ = client
     draft = open_draft(http, task)
     endpoint = f"/desktop/api/drafts/{draft['draft_id']}"

@@ -11,17 +11,26 @@ r"""本文件对外提供 ContextPatrolService，编排 Context 策展 Patrol �
 from __future__ import annotations
 
 import asyncio
+import logging
+import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
-import logging
 from typing import Any
-import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from focus.config.app_config import AppConfig
+from focus.runtime.runs.events import build_envelope
+from focus.runtime.runs.manager import RunManager, RunRecord
+from focus.runtime.runs.schemas import DisconnectMode, RunStatus
+from focus.runtime.stream_bridge.base import StreamBridge
+from focus.runtime.stream_bridge.schemas import StreamEvent
+from focus.security.policy import AccessMode
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.api.schemas import ContextCurationPolicy
+from backend.app.desktop.contexts.curation import SingleLaneCurationProgramService
 from backend.app.desktop.contexts.curator import (
     CurationContractError,
     CurationEngine,
@@ -33,19 +42,20 @@ from backend.app.desktop.contexts.curator import (
     estimate_curation_tokens,
     require_curation_model,
 )
+from backend.app.desktop.contexts.evolution import (
+    ContextCheckpointBusy,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.contexts.service import ContextService
-from backend.app.desktop.contexts.curation import SingleLaneCurationProgramService
-from backend.app.desktop.contexts.evolution import ContextRevisionRepository
-from backend.app.desktop.api.schemas import ContextCurationPolicy
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, PatrolAgent, PatrolContextAttempt, PatrolContextBinding, PatrolContextRevision, PatrolDraft
-from focus.config.app_config import AppConfig
-from focus.runtime.runs.events import build_envelope
-from focus.runtime.runs.manager import RunManager, RunRecord
-from focus.runtime.runs.schemas import DisconnectMode, RunStatus
-from focus.runtime.stream_bridge.base import StreamBridge
-from focus.runtime.stream_bridge.schemas import StreamEvent
-from focus.security.policy import AccessMode
-
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    PatrolAgent,
+    PatrolContextAttempt,
+    PatrolContextBinding,
+    PatrolContextRevision,
+    PatrolDraft,
+)
 
 logger = logging.getLogger(__name__)
 _ACTIVE_ATTEMPT_STATUSES = frozenset({"pending", "running"})
@@ -127,7 +137,7 @@ class ContextPatrolService:
             draft_task_id = draft.task_id
 
         root_context_id = await self.contexts.resolve_chat_root(draft_task_id)
-        source_checkpoint_id = await self.contexts.current_checkpoint_id(root_context_id)
+        source_checkpoint_id = await self.stable_source_checkpoint(root_context_id)
         if source_checkpoint_id is None:
             raise HTTPException(409, "根 Context 尚无稳定 checkpoint")
 
@@ -185,7 +195,16 @@ class ContextPatrolService:
             session.add_all([agent, binding, revision])
             try:
                 await self.programs.provision(session, binding)
+                source_ref = await self.contexts.evolution.ensure_checkpoint_revision(
+                    session, root_context_id, source_checkpoint_id
+                )
+                await ContextRevisionRepository().freeze(
+                    session, source_ref, owner_kind="context_curator", owner_id=revision_id
+                )
                 await session.commit()
+            except (ContextCheckpointBusy, ValueError) as exc:
+                await session.rollback()
+                raise HTTPException(409, "根会话来源已变化或尚在发布，请重试策展") from exc
             except IntegrityError:
                 await session.rollback()
                 winner = await session.scalar(
@@ -199,6 +218,19 @@ class ContextPatrolService:
         if run is None:
             raise HTTPException(409, "策展修订未能进入执行队列")
         return run
+
+    async def stable_source_checkpoint(self, context_id: str) -> str | None:
+        """A running Main exposes only its published input, never its live head."""
+        async with self.session_factory() as session:
+            active = await session.scalar(select(DesktopRun.run_id).where(
+                DesktopRun.task_id == context_id,
+                DesktopRun.kind == "main",
+                or_(DesktopRun.status.in_(["pending", "running"]), DesktopRun.settled_at.is_(None)),
+            ).limit(1))
+            if active is not None:
+                current = await ContextRevisionRepository().current(session, context_id)
+                return current.ref.checkpoint_id if current is not None else None
+        return await self.contexts.current_checkpoint_id(context_id)
 
     async def notify_stable_context_checkpoint(self, context_id: str) -> None:
         root_context_id = await self.contexts.resolve_chat_root(context_id)
@@ -214,7 +246,7 @@ class ContextPatrolService:
             )
             if active:
                 return
-        checkpoint_id = await self.contexts.current_checkpoint_id(root_context_id)
+        checkpoint_id = await self.stable_source_checkpoint(root_context_id)
         if checkpoint_id is None:
             return
 
@@ -242,6 +274,17 @@ class ContextPatrolService:
                 if cursor_changed:
                     binding.observed_checkpoint_id = checkpoint_id
                     binding.desired_checkpoint_id = checkpoint_id
+                    stale = await session.scalars(select(PatrolContextRevision).where(
+                        PatrolContextRevision.binding_id == binding.binding_id,
+                        PatrolContextRevision.source_checkpoint_id != checkpoint_id,
+                        PatrolContextRevision.status.in_(["observed", "error", "interrupted"]),
+                    ))
+                    for item in stale:
+                        item.status = "superseded"
+                        item.completed_at = datetime.now(timezone.utc)
+                        await ContextRevisionRepository().release(
+                            session, "context_curator", item.revision_id
+                        )
                 if existing is None:
                     existing = PatrolContextRevision(
                         revision_id=_new_id(),
@@ -251,11 +294,24 @@ class ContextPatrolService:
                         status="observed",
                     )
                     session.add(existing)
+                if existing.status == "observed":
+                    try:
+                        source_ref = await self.contexts.evolution.ensure_checkpoint_revision(
+                            session, root_context_id, checkpoint_id
+                        )
+                    except (ContextCheckpointBusy, ValueError):
+                        await session.rollback()
+                        logger.info("Context curation source changed before freeze: context_id=%s", root_context_id)
+                        return
+                    await ContextRevisionRepository().freeze(
+                        session, source_ref, owner_kind="context_curator", owner_id=existing.revision_id
+                    )
                 should_wake = should_wake or (
                     binding.control_state == "following"
                     and binding.health_state != "blocked"
                     and existing.status == "observed"
                 )
+                await self._release_old_curation_payloads(session, binding)
             try:
                 await session.commit()
             except IntegrityError:
@@ -301,7 +357,19 @@ class ContextPatrolService:
                     latest.base_binding_revision = binding.revision
             elif target in {"paused", "stopped"}:
                 binding.health_state = "idle"
+                if target == "stopped":
+                    pending = await session.scalars(select(PatrolContextRevision).where(
+                        PatrolContextRevision.binding_id == binding.binding_id,
+                        PatrolContextRevision.status.in_(["observed", "error", "interrupted"]),
+                    ))
+                    for item in pending:
+                        item.status = "superseded"
+                        item.completed_at = datetime.now(timezone.utc)
+                        await ContextRevisionRepository().release(
+                            session, "context_curator", item.revision_id
+                        )
             await self.programs.set_control_state(session, binding, target)
+            await self._release_old_curation_payloads(session, binding)
             await session.commit()
         if target == "following":
             self._event.set()
@@ -460,6 +528,7 @@ class ContextPatrolService:
             for item in stale:
                 item.status = "superseded"
                 item.completed_at = datetime.now(timezone.utc)
+                await ContextRevisionRepository().release(session, "context_curator", item.revision_id)
             agent = await session.get(PatrolAgent, binding.agent_id)
             root = await session.get(DesktopThread, binding.root_context_id)
             model = self._model_config(agent.equipment.get("model_name"))
@@ -470,6 +539,7 @@ class ContextPatrolService:
                 revision.error = str(exc)
                 binding.health_state = "blocked"
                 binding.last_error = str(exc)
+                await ContextRevisionRepository().release(session, "context_curator", revision.revision_id)
                 await session.commit()
                 return None
             number = int(await session.scalar(
@@ -575,6 +645,7 @@ class ContextPatrolService:
                 attempt.completed_at = datetime.now(timezone.utc)
                 revision.status = "superseded"
                 binding.health_state = "idle"
+                await ContextRevisionRepository().release(session, "context_curator", revision.revision_id)
                 await session.commit()
                 return
             revision.source_payload = payload
@@ -724,6 +795,11 @@ class ContextPatrolService:
                 if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
                     run.status = "success" if outcome not in {"invalid", "error"} else "error"
                     run.error = None if run.status == "success" else attempt.error
+                if outcome != "deferred":
+                    await ContextRevisionRepository().release(session, "context_curator", revision.revision_id)
+                binding = await session.get(PatrolContextBinding, binding_id)
+                if binding is not None:
+                    await self._release_old_curation_payloads(session, binding)
             await session.commit()
         return outcome
 
@@ -800,6 +876,9 @@ class ContextPatrolService:
             ):
                 revision.status = "observed"
                 retry_delay = _TRANSIENT_RETRY_DELAYS[attempt.attempt_number - 1]
+            if retry_delay is None:
+                await ContextRevisionRepository().release(session, "context_curator", revision.revision_id)
+            await self._release_old_curation_payloads(session, binding)
             await session.commit()
         record = self.run_manager.get(run_id) if run_id else None
         if record is not None and record.task is None:
@@ -825,6 +904,43 @@ class ContextPatrolService:
             run.prompt_cache_hit_tokens = record.prompt_cache_hit_tokens
             await session.commit()
 
+    @staticmethod
+    async def _release_old_curation_payloads(session, binding) -> None:
+        """Keep current audit bodies and live retries, not an input archive."""
+        revisions = list(await session.scalars(select(PatrolContextRevision).where(
+            PatrolContextRevision.binding_id == binding.binding_id
+        ).order_by(PatrolContextRevision.created_at.desc(), PatrolContextRevision.revision_id.desc())))
+        if not revisions:
+            return
+        keep = {revisions[0].revision_id}
+        keep.update(item.revision_id for item in revisions
+                    if item.source_checkpoint_id == binding.published_checkpoint_id)
+        terminal = {"published", "unchanged", "superseded", "error", "interrupted"}
+        for revision in revisions:
+            if revision.revision_id in keep or revision.status not in terminal:
+                continue
+            if (binding.control_state != "stopped" and revision.status in {"error", "interrupted"}
+                    and revision.source_checkpoint_id == binding.desired_checkpoint_id):
+                continue
+            attempts = list(await session.scalars(select(PatrolContextAttempt).where(
+                PatrolContextAttempt.revision_id == revision.revision_id
+            )))
+            if any(attempt.status in _ACTIVE_ATTEMPT_STATUSES for attempt in attempts):
+                continue
+            revision.source_payload = {"input_released": True}
+            revision.authored_messages = []
+            revision.execution_messages = []
+            revision.disposition_manifest = []
+            revision.repair_manifest = []
+            revision.issues = []
+            for attempt in attempts:
+                attempt.raw_response = {}
+                attempt.parsed_response = {}
+                run = await session.get(DesktopRun, attempt.run_id)
+                if run is not None and run.origin == "patrol_curation" and run.status in _TERMINAL_RUN_STATUSES:
+                    run.input_messages = []
+            await ContextRevisionRepository().release(session, "context_curator", revision.revision_id)
+
     async def _reconcile(self) -> None:
         async with self.session_factory() as session:
             attempts = list((await session.scalars(
@@ -844,15 +960,21 @@ class ContextPatrolService:
                 revision = await session.get(PatrolContextRevision, attempt.revision_id)
                 if revision is not None and revision.status in {"preparing", "ready"}:
                     revision.status = "observed"
-            bindings = list((await session.scalars(
-                select(PatrolContextBinding).where(
-                    PatrolContextBinding.control_state == "following"
-                )
-            )).all())
-            roots = [binding.root_context_id for binding in bindings]
+            bindings = list((await session.scalars(select(PatrolContextBinding))).all())
+            roots = [binding.root_context_id for binding in bindings if binding.control_state == "following"]
             for binding in bindings:
                 if binding.health_state in {"preparing", "running"}:
                     binding.health_state = "idle"
+                if binding.control_state == "stopped":
+                    abandoned = await session.scalars(select(PatrolContextRevision).where(
+                        PatrolContextRevision.binding_id == binding.binding_id,
+                        PatrolContextRevision.status.in_(["observed", "preparing", "ready"]),
+                    ))
+                    for revision in abandoned:
+                        revision.status = "superseded"
+                        revision.completed_at = datetime.now(timezone.utc)
+                        await ContextRevisionRepository().release(session, "context_curator", revision.revision_id)
+                await self._release_old_curation_payloads(session, binding)
             await session.commit()
         for root_context_id in dict.fromkeys(roots):
             try:
@@ -923,6 +1045,7 @@ class ContextPatrolService:
             "status": revision.status,
             "source_projection_hash": revision.source_projection_hash,
             "source_payload": deepcopy(revision.source_payload),
+            "input_released": revision.source_payload.get("input_released") is True,
             "projection_status": revision.projection_status,
             "authored_messages": deepcopy(revision.authored_messages),
             "disposition_manifest": deepcopy(revision.disposition_manifest),

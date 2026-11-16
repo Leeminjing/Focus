@@ -5,7 +5,6 @@
 .focus-view,
 .map-view,
 .draft-view,
-.context-editor-view,
 .compression-view,
 .plugins-view {
   color: var(--text-primary);
@@ -16,7 +15,6 @@
 
 #app:has(.focus-shell),
 #app:has(.draft-view),
-#app:has(.context-editor-view),
 #app:has(.compression-view) { overflow: hidden; }
 
 .app-inspector .context-rail {
@@ -38,7 +36,6 @@
   background: var(--surface-warning);
   box-shadow: none;
 }
-.app-inspector .context-rail-add { color: var(--text-accent); }
 .context-rail-parents { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; padding-inline: 8px; overflow-wrap: anywhere; }
 .context-rail-source { min-width: 0; max-width: 100%; padding: 2px 0; color: var(--text-accent); text-align: left; overflow-wrap: anywhere; }
 .context-rail-source:hover { text-decoration: underline; }
@@ -49,7 +46,6 @@
 .context-rail-diagnostics dl { display: grid; gap: 8px; margin: 10px 0 4px; }
 .context-rail-diagnostics dt { font-weight: 600; }
 .context-rail-diagnostics dd { margin: 2px 0 0; overflow-wrap: anywhere; }
-.context-rail-resolve { margin: 4px 8px; }
 
 .inspector-run-meta {
   display: grid;
@@ -764,60 +760,6 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .task-card-shell details.task-card-more > summary::-webkit-details-marker,
 .task-card-shell .task-technical summary::-webkit-details-marker { display: none; }
 
-/* Context 组装与投影决断使用工作区边界，不再按整个 viewport 计算高度。 */
-#app:has(> .context-editor-view) {
-  container: context-editor / inline-size;
-  overflow: auto;
-}
-.context-editor-view {
-  grid-template-columns: minmax(320px, 5fr) minmax(420px, 7fr);
-  height: 100%;
-  padding: 0;
-  gap: var(--space-3);
-  background: transparent;
-}
-.context-source-panel,
-.context-definition-panel { border: 0; border-radius: 0; background: var(--surface-base); box-shadow: none; }
-.context-source-panel { padding: var(--space-3); border-right: 1px solid var(--border-default); background: var(--surface-base); }
-.context-definition-panel { padding: var(--space-4) var(--space-4) 88px; }
-.context-source-heading h2 { font-size: 24px; }
-.context-source-message .context-message-actions { opacity: 1; transform: none; }
-.context-definition-panel > header h1 { font-size: 28px; }
-.context-definition-panel > footer { bottom: -88px; margin: var(--space-4) calc(-1 * var(--space-4)) -88px; padding: var(--space-3) var(--space-4); border-color: var(--border-subtle); background: rgb(255 255 255 / 96%); }
-.context-message-editor,
-.context-source-message { border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: var(--surface-base); box-shadow: none; }
-.context-decision { margin: var(--space-5) 0 0; padding: var(--space-5); border-color: var(--border-warning); border-radius: var(--radius-card); background: var(--surface-warning); }
-.context-decision.repaired { border-color: #aad4bf; background: var(--surface-success); }
-.context-decision h2 { margin: var(--space-2) 0; font-size: 18px; }
-.context-diff { gap: var(--space-3); }
-.context-diff > div { min-width: 0; }
-.context-decision-actions { margin: var(--space-4) calc(-1 * var(--space-5)) calc(-1 * var(--space-5)); padding-inline: var(--space-5); }
-.context-decision-actions .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
-
-/* 查询 #app 的内容宽度，排除导航、检查器和工作区内边距。 */
-@container context-editor (max-width: 900px) {
-  .context-editor-view { grid-template-columns: minmax(260px, 4fr) minmax(380px, 7fr); }
-  .context-diff { grid-template-columns: 1fr; }
-}
-
-@container context-editor (max-width: 720px) {
-  .context-editor-view {
-    height: auto;
-    min-height: 100%;
-    grid-template-columns: minmax(0, 1fr);
-    overflow: visible;
-  }
-  .context-source-panel {
-    height: 72vh;
-    min-height: 360px;
-    border-right: 0;
-    border-bottom: 1px solid var(--border-default);
-  }
-  .context-definition-panel { min-height: calc(100vh - 120px); overflow: visible; }
-  .context-source-heading h2 { font-size: 20px; }
-  .context-definition-panel > header h1 { font-size: 24px; }
-}
-
 /* 小兵草稿：目标—消息—装备—确认四段顺序工作流。 */
 .draft-view { display: block; height: 100%; }
 .draft-panel {
@@ -1262,7 +1204,7 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .capability-refresh-result li + li { margin-top: 8px; }
 @media (max-width: 700px) { .plugins-view, .memory-view, .map-view { padding: 16px 12px; } .library-toolbar .page-search { margin: 0; width: 100%; flex-wrap: wrap; } .page-search input { width: 100%; } .memory-empty { min-height: 320px; padding: 24px; } }
 
-/* 记忆库：左侧记忆清单，右侧单条详情与创建器；复用 context-editor 的卡片语言。 */
+/* 记忆库：左侧记忆清单，右侧单条详情与创建器；使用共享卡片样式。 */
 .memory-view { display: flex; flex-direction: column; min-height: 100%; gap: var(--space-3); padding: 26px 30px; }
 .memory-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin: 0; padding: 0 0 var(--space-3); border: 0; border-bottom: 1px solid var(--border-default); border-radius: 0; background: transparent; }
 .memory-heading strong { font-size: 15px; }

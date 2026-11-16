@@ -56,7 +56,8 @@ test("main cards show names and actionable exceptions; diagnostics are collapsed
   assert.match(details.textContent, /持续跟踪/);
   assert.match(details.textContent, /idle/);
   assert.doesNotMatch(current.textContent, /派生 Context|child-full-id|25%|idle|受管/);
-  assert.ok(row.querySelector('[data-action="edit-context-definition"][data-context-id="child-full-id"]'));
+  assert.equal(row.querySelector('[data-action="edit-context-definition"]'), null);
+  assert.equal(root.querySelector('[data-action="derive-context"]'), null);
   assert.equal(row.getAttribute("data-context-depth"), "1");
   assert.match(root.querySelector('[data-context-id="merged-full-id"] .context-rail-alert').textContent, /更新失败/);
 });
@@ -81,15 +82,12 @@ test("all source identities survive cross-root merges, including tree-only delet
   assert.equal(root.querySelectorAll('.context-rail-item[data-context-id="merged-full-id"]').length, 1);
 });
 
-test("blocked review and source navigation act on the object ID, despite equal names", async () => {
+test("blocked contexts stay read-only and source navigation uses the object ID", async () => {
   const { root, context, evaluate } = fixture();
   const blocked = root.querySelector('.context-rail-item[data-context-id="blocked-full-id"]');
-  assert.match(blocked.querySelector(".context-rail-card").textContent, /需要确认后继续/);
+  assert.match(blocked.querySelector(".context-rail-card").textContent, /受阻/);
   assert.ok(blocked.querySelector(".is-blocked"));
-  context.__button = blocked.querySelector('[data-action="resume-context-decision"]');
-  evaluate("reopenContextDecision = async id => { globalThis.__reviewed = id; }");
-  await evaluate("handleDocumentClick({ target: __button })");
-  assert.equal(context.__reviewed, "blocked-full-id");
+  assert.equal(blocked.querySelector('[data-action="resume-context-decision"]'), null);
   context.__button = root.querySelector('.context-rail-item[data-context-id="merged-full-id"] [data-task-id="external-full-id"]');
   evaluate("switchTask = async id => { globalThis.__selected = id; }");
   await evaluate("handleDocumentClick({ target: __button })");

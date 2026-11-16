@@ -8,27 +8,38 @@
 import asyncio
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
 import sys
+from pathlib import Path
 
 import httpx
+import pytest
+from focus.agents.lead_agent_state import LeadAgentState
 from langchain_core.messages import message_to_dict
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-import pytest
 from sqlalchemy import func, select
 from test_workspace_patrol import _setup
 
-from focus.agents.lead_agent_state import LeadAgentState
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopUserIntent, LoopObservation
-from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+from backend.app.desktop.contexts.evolution import (
+    ContextEvolutionService,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
-from backend.app.desktop.runs.evidence.identity import canonical_hash
-from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import WorkspacePatrolBootstrap
-from backend.app.desktop.contexts.evolution import ContextEvolutionService, ContextRevisionRepository
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopObservation,
+    LoopUserIntent,
+)
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
+    LoopObservationService,
+)
+from backend.app.desktop.patrol.agent_loop.workspaces.workspace_patrol import (
+    WorkspacePatrolBootstrap,
+)
 from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.runs.evidence.identity import canonical_hash
 
 
 @pytest.mark.usefixtures("runtime_postgres_database")
@@ -121,7 +132,9 @@ def test_real_patrol_frontend_intake_frozen_inspection_and_pause(tmp_path):
                 async with sessions() as session:
                     loop = await session.get(AgentLoop, loop_id)
                     assert loop.status == "paused"
-                    observation = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
+                    observation = await session.get(LoopObservation, complete["observation_id"])
+                    assert observation is not None
+                    assert observation.loop_id == loop_id and observation.round_id == round_id
                     assert observation.observation_id in complete["frozen"]
                     assert await session.scalar(select(func.count()).select_from(LoopUserIntent).where(LoopUserIntent.loop_id == loop_id)) == 6
                     assert await session.scalar(select(func.count()).select_from(DesktopRun).where(DesktopRun.loop_id == loop_id)) == 0

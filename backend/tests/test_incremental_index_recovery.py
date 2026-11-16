@@ -1,7 +1,7 @@
 r"""本文件对外提供索引独立进程重启与 additive migration 的 PostgreSQL 演练。
 
 输入为真实隔离数据库、冻结输入和独立子进程；输出为强杀提交前不泄漏、提交后零调用恢复及迁移不改权威记忆的断言。
-具体工作流为通过真实 Observation 服务冻结调用所有权，再只在测试目录启动隐藏子进程，等待信号后强杀，另一个新进程重放并继续继承；迁移使用独立随机数据库。
+具体工作流为通过真实 Observation 服务冻结调用所有权，再只在测试目录启动隐藏子进程，等待信号后强杀，另一个新进程重放并复用独立段缓存；迁移使用独立随机数据库。
 综合参与真实计费及进程边界；崩溃未知预留仍占额度，索引组件迁移拒绝未结算消费，回撤综合 artifact 保留权威记忆。
 组件迁移仅在隔离库调用 9d0e1f2a3b4c 至 bf2a3b4c5d6e 的正式迁移函数，不回退新版多 Observation 的数据库 head。
 示例：python -m pytest backend/tests/test_incremental_index_recovery.py -q。
@@ -29,6 +29,7 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopIndexBudgetReservation,
     LoopSemanticIndexArtifact,
 )
+from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
 from backend.tests.incremental_index_support import messages, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 
@@ -71,7 +72,7 @@ async def signal(directory, name, child):
 
 
 @pytest.mark.parametrize("boundary", ["before_commit", "after_commit"])
-def test_independent_process_kill_and_persisted_inheritance(tmp_path, boundary):
+def test_independent_process_kill_and_persisted_segment_cache(tmp_path, boundary):
     async def run(sessions, seed):
         first = await revision(sessions, seed["context_id"], messages(12))
         directory = tmp_path / "killed"
@@ -100,9 +101,11 @@ def test_independent_process_kill_and_persisted_inheritance(tmp_path, boundary):
                     )
                 )
             ).all()
-            assert bool(pending) == (boundary == "before_commit")
-            if pending:
-                assert pending[0].model_calls == 3 and pending[0].grant_revision == 1
+            # The hold is after all three requests completed, before artifact
+            # publication. Their per-request receipts are already settled;
+            # killing here must not turn known usage into an unknown reserve.
+            assert pending == []
+            assert (await session.get(LoopBudgetUsage, seed["loop_id"])).model_calls == 3
         directory = tmp_path / "restarted"
         child, log = process(directory, "build", observation(seed, first))
         try:
@@ -128,8 +131,8 @@ def test_independent_process_kill_and_persisted_inheritance(tmp_path, boundary):
                 child.wait(5)
             log.close()
         assert (
-            descendant["mode"] == "incremental"
-            and descendant["reused"] == 1
+            descendant["mode"] == "full"
+            and descendant["reused"] == 0
             and descendant["calls"] == 3
         )
         assert descendant["pid"] != replay["pid"] != state["pid"]
@@ -185,7 +188,9 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 target_revision = await revision(
                     sessions, fixture["context_id"], messages(12)
                 )
-                from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
+                from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
+                    LoopObservationService,
+                )
                 from backend.tests.incremental_index_support import Checkpoints
 
                 frozen = await LoopObservationService(sessions, Checkpoints()).capture(
@@ -209,8 +214,8 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
 
         migrate_components("downgrade")
         tables = [
-            "desktop_context_revisions",
-            "desktop_context_publications",
+            "desktop_context_states",
+            "desktop_context_input_snapshots",
             "loop_task_progress",
             "loop_observations",
         ]
@@ -223,7 +228,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 }
 
         before = snapshot()
-        assert before["desktop_context_revisions"] and before["loop_task_progress"]
+        assert before["desktop_context_states"] and before["loop_task_progress"]
         migrate_components("upgrade")
         with engine.connect() as c:
             assert c.scalar(

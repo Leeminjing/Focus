@@ -15,8 +15,12 @@ from focus.config.app_config import get_app_config
 from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
     PortfolioSemanticIndexService,
 )
-from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import (
+    unlimited_loop_budgets,
+)
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
+    RoleBoundStructuredModel,
+)
 from backend.tests.incremental_index_support import Checkpoints, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 
@@ -126,7 +130,7 @@ def test_real_provider_locality_support_and_cache(tmp_path):
         )
         b = await service.build(observation(seed, new, budget=budgets))
         assert b.blocker_code is None, b.blocker_summary
-        assert len(b.indexes[0].inheritance.reused_segment_ids) == 1
+        assert b.indexes[0].inheritance.baseline_index_id is None
         projector_inputs = [
             p
             for role, p in calls
@@ -209,7 +213,7 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
         ]
         assert (
             index.interpretation.completed
-            and len(index.inheritance.reused_segment_ids) == 2
+            and index.inheritance.baseline_index_id is None
         )
         assert not index.interpretation.read_requests
         assert any(len(p["segments"]) >= 3 for _, p in calls if "inventory" in p)

@@ -13,12 +13,21 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.patrol.agent_loop.compression_authority.repository import CompressionAuthorityRepository
-from backend.app.desktop.patrol.agent_loop.curation.curation_ownership import CurationOwnershipRepository, TERMINAL_LOOP_STATUSES
-from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.compression_authority.repository import (
+    CompressionAuthorityRepository,
+)
+from backend.app.desktop.patrol.agent_loop.curation.curation_ownership import (
+    TERMINAL_LOOP_STATUSES,
+    CurationOwnershipRepository,
+)
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import (
+    CanonicalEventDraft,
+)
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.lifecycle.runtime_convergence import (
+    LoopRuntimeConvergence,
+)
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant
-from backend.app.desktop.patrol.agent_loop.lifecycle.runtime_convergence import LoopRuntimeConvergence
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,8 +70,43 @@ class LoopTerminalLifecycle:
         await CompressionAuthorityRepository().supersede(session, loop.loop_id, reason)
         cancelled = await self._convergence.converge(session, loop, reason)
         retired = await self._ownership.release_terminal(session, loop, reason=reason)
+        await self._release_context_inputs(session, loop)
         await self._record_terminal_event(session, loop, reason, retired)
         return TerminalFinalizationResult(status, cancelled, retired)
+
+    @staticmethod
+    async def _release_context_inputs(session: AsyncSession, loop: AgentLoop) -> None:
+        from backend.app.desktop.contexts.curation.models import (
+            PortfolioLaneCandidate,
+            PortfolioRevision,
+        )
+        from backend.app.desktop.contexts.evolution.repository import (
+            ContextRevisionRepository,
+        )
+        from backend.app.desktop.patrol.agent_loop.models import LoopRound
+
+        contexts = ContextRevisionRepository()
+        round_ids = await session.scalars(select(LoopRound.round_id).where(LoopRound.loop_id == loop.loop_id))
+        for round_id in round_ids:
+            await contexts.release(session, "round", round_id)
+        if not loop.program_id:
+            return
+        portfolios = tuple(await session.scalars(select(PortfolioRevision).where(
+            PortfolioRevision.program_id == loop.program_id,
+            PortfolioRevision.status.not_in(("published", "superseded", "error")),
+        ).with_for_update()))
+        for portfolio in portfolios:
+            candidates = tuple(await session.scalars(select(PortfolioLaneCandidate).where(
+                PortfolioLaneCandidate.portfolio_revision_id == portfolio.portfolio_revision_id,
+            )))
+            for candidate in candidates:
+                if candidate.candidate_context_revision_id:
+                    await contexts.discard_candidate(session, candidate.candidate_context_revision_id)
+                if candidate.status not in {"published", "unchanged"}:
+                    candidate.status = "superseded"
+            portfolio.status = "superseded"
+            portfolio.completed_at = datetime.now(UTC)
+            await contexts.release(session, "curation_portfolio", portfolio.portfolio_revision_id)
 
     @staticmethod
     async def _revoke_active_grants(session: AsyncSession, loop_id: str, now: datetime) -> None:
@@ -86,7 +130,9 @@ class LoopTerminalLifecycle:
         reason: str,
         retired_lane_ids: tuple[str, ...],
     ) -> None:
-        from backend.app.desktop.patrol.agent_loop.journal.lifecycle_events import LoopLifecycleEventRecorder
+        from backend.app.desktop.patrol.agent_loop.journal.lifecycle_events import (
+            LoopLifecycleEventRecorder,
+        )
 
         await LoopLifecycleEventRecorder().record(session, loop)
         await self._journal.append(

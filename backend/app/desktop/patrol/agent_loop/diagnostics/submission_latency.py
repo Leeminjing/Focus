@@ -12,21 +12,29 @@ No prompts, model responses, credentials, or transaction timestamps are exported
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from math import ceil, isfinite
-import re
 from time import perf_counter
 
 from sqlalchemy import cast, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import JSONPATH
 
-from backend.app.desktop.patrol.agent_loop.models import (
-    AgentLoop, LoopAction, LoopDecision, LoopDirective, LoopObservation,
+from backend.app.desktop.contexts.evolution.models import ContextRevision
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
+    LoopContextDerivationArtifact,
 )
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
-from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextDerivationArtifact
-from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt, ContextRevision
-from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
+    LoopJournalEvent,
+)
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopAction,
+    LoopDecision,
+    LoopDirective,
+    LoopObservation,
+)
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 
 MILESTONES = ("durable_acceptance", "patrol_decision_committed", "derived_context_available",
               "first_run_started", "first_effective_output")
@@ -98,9 +106,9 @@ class CommittedSubmissionProbe:
                     context_id = action.result.get("context_id")
                     revision_id = action.result.get("context_revision_id")
                     revision = await session.get(ContextRevision, revision_id) if revision_id else None
-                    publication = await session.get(ContextPublicationReceipt, revision_id) if revision_id else None
-                    if (revision is None or publication is None or revision.context_id != context_id
-                            or publication.context_id != context_id or revision.deleted_at is not None
+                    context = await session.get(DesktopThread, context_id) if context_id else None
+                    if (revision is None or context is None or revision.context_id != context_id
+                            or context.current_revision_id != revision_id or revision.deleted_at is not None
                             or revision.projection_status not in {"valid", "repaired", "approved"}
                             or revision.checkpoint_id is None):
                         continue

@@ -47,8 +47,8 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 from backend.app.desktop.persistence.contracts import bounded_thread_title
+from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
 
 class _FrozenModel(BaseModel):
@@ -180,9 +180,15 @@ class PortfolioCurrentReader:
                 ).all()
             )
             lanes = []
+            receipts = {
+                target["lane_id"]: target.get("published_context_revision")
+                for target in portfolio.target_lanes
+            }
             for candidate in candidates:
                 ref = None
-                if candidate.candidate_context_revision_id is not None:
+                if receipts.get(candidate.lane_id) is not None:
+                    ref = ContextRevisionRef.model_validate(receipts[candidate.lane_id])
+                elif candidate.candidate_context_revision_id is not None:
                     ref = (
                         await self._contexts.get_by_id(
                             session, candidate.candidate_context_revision_id
@@ -236,6 +242,8 @@ class PortfolioFreezer:
             lanes = await self._lock_lanes(session, request)
             generation = await self._next_generation(session, program.program_id)
             portfolio_id = portfolio_revision_id or uuid.uuid4().hex
+            for ref in sorted(request.source_frontier, key=lambda item: item.context_id):
+                await self._contexts.freeze(session, ref, owner_kind="curation_portfolio", owner_id=portfolio_id)
             controls = self._controls(request, program)
             targets = await self._targets(
                 session,
@@ -392,6 +400,8 @@ class PortfolioFreezer:
                 if context_id is not None
                 else None
             )
+            if base is not None:
+                await self._contexts.freeze(session, base.ref, owner_kind="curation_portfolio", owner_id=portfolio_id)
             targets.append({
                 "lane_id": lane.lane_id,
                 "action": intent.action.value,
@@ -448,7 +458,7 @@ class PortfolioFreezer:
             if thread is None or thread.workspace_id != workspace_id:
                 raise PortfolioPreparationError("source frontier 必须属于 Program workspace")
             try:
-                await self._contexts.get(session, ref)
+                await self._contexts.get_input(session, ref)
             except Exception as exc:
                 raise PortfolioPreparationError(
                     f"source frontier revision 不存在: {ref.context_id}/{ref.revision_id}"
@@ -637,6 +647,9 @@ class PortfolioCandidatePreparer:
             if not prepared.publishable or prepared.revision.projection_status.value != "valid":
                 raise PortfolioPreparationError("自动策展 revision 必须直接 valid")
             await self._contexts.insert(session, prepared.revision)
+            await self._contexts.freeze(
+                session, prepared.revision.ref, owner_kind="curation_portfolio", owner_id=portfolio_id
+            )
             candidate.candidate_context_revision_id = prepared.revision.ref.revision_id
             candidate.semantic_fingerprint = compiled.semantic_fingerprint
             candidate.message_lineage = [
@@ -701,6 +714,8 @@ class PortfolioCandidatePreparer:
             attempt.phase = "prepare_candidate"
             attempt.error = error
             attempt.completed_at = datetime.now(UTC)
+            await self._contexts.release(session, "curation_portfolio", portfolio_id)
+            await _discard_portfolio_candidates(session, self._contexts, portfolio_id)
 
     @staticmethod
     async def _attempt(
@@ -877,6 +892,19 @@ class AtomicPortfolioPublisher:
         attempt.phase = "authoritative_commit"
         portfolio.status = PortfolioRevisionStatus.PUBLISHING.value
         refs = await self._switch_candidates(session, candidates, lanes, contexts)
+        # Publication receipts retain identities, while source/candidate bodies
+        # belong only to the live preparation and can be released at commit.
+        by_context = {ref.context_id: ref for ref in refs}
+        portfolio.target_lanes = [
+            {
+                **target,
+                "published_context_revision": (
+                    by_context[target["target_context_id"]].model_dump(mode="json")
+                    if target.get("target_context_id") in by_context else None
+                ),
+            }
+            for target in portfolio.target_lanes
+        ]
         if authority_hook is not None:
             await authority_hook.commit(
                 session,
@@ -948,7 +976,7 @@ class AtomicPortfolioPublisher:
         for raw in portfolio.source_frontier:
             ref = ContextRevisionRef.model_validate(raw)
             try:
-                await self._contexts.get(session, ref)
+                await self._contexts.get_input(session, ref)
             except Exception as exc:
                 raise PortfolioSuperseded(
                     f"source frontier revision 不存在: {ref.context_id}/{ref.revision_id}"
@@ -997,8 +1025,13 @@ class AtomicPortfolioPublisher:
                     session, candidate.candidate_context_revision_id
                 )
                 context = contexts[candidate.target_context_id]
-                context.current_revision_id = revision.ref.revision_id
-                await self._contexts.record_publication(session, revision.ref)
+                expected = (
+                    await self._contexts.get_by_id(session, candidate.base_context_revision_id)
+                    if candidate.base_context_revision_id is not None else None
+                )
+                await self._contexts.switch_current(
+                    session, revision.ref, expected.ref if expected is not None else None
+                )
                 context.ui_state = {
                     key: value
                     for key, value in (context.ui_state or {}).items()
@@ -1071,6 +1104,9 @@ class AtomicPortfolioPublisher:
                 "generation": portfolio.generation,
             },
         )
+        await self._contexts.release(
+            session, "curation_portfolio", portfolio.portfolio_revision_id
+        )
 
     async def _result(
         self,
@@ -1080,6 +1116,14 @@ class AtomicPortfolioPublisher:
         refs: tuple[ContextRevisionRef, ...] | None = None,
         idempotent: bool = False,
     ) -> PortfolioPublicationResult:
+        if refs is None:
+            receipts = tuple(
+                ContextRevisionRef.model_validate(target["published_context_revision"])
+                for target in portfolio.target_lanes
+                if target.get("published_context_revision") is not None
+            )
+            if receipts or any("published_context_revision" in target for target in portfolio.target_lanes):
+                refs = receipts
         if refs is None:
             revision_ids = list(
                 (
@@ -1146,3 +1190,17 @@ class AtomicPortfolioPublisher:
                     "error": error,
                 },
             )
+            if superseded:
+                await self._contexts.release(session, "curation_portfolio", portfolio_id)
+                await _discard_portfolio_candidates(session, self._contexts, portfolio_id)
+
+
+async def _discard_portfolio_candidates(session, contexts, portfolio_id):
+    candidate_ids = await session.scalars(
+        select(PortfolioLaneCandidate.candidate_context_revision_id).where(
+            PortfolioLaneCandidate.portfolio_revision_id == portfolio_id,
+            PortfolioLaneCandidate.candidate_context_revision_id.is_not(None),
+        )
+    )
+    for revision_id in candidate_ids:
+        await contexts.discard_candidate(session, revision_id)

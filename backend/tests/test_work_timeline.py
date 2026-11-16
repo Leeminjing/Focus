@@ -1,31 +1,52 @@
 """Real PostgreSQL coverage for durable, ordered cross-Round work history."""
 import asyncio
-from datetime import UTC, datetime, timedelta
 import os
-from types import SimpleNamespace
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 from sqlalchemy import create_engine, delete, inspect, select
 from sqlalchemy.engine import make_url
-from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
-from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft, EventVisibility
+from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import (
+    InterventionLifecycleRepository,
+)
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import (
+    CanonicalEventDraft,
+    EventVisibility,
+)
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent, LoopProjectorCursor, LoopReplayRetention
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDecision, LoopRound, LoopUserIntent
-from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.patrol.agent_loop.journal.timeline_events import record_work_decision
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
+    LoopJournalEvent,
+    LoopProjectorCursor,
+)
+from backend.app.desktop.patrol.agent_loop.journal.timeline_events import (
+    record_work_decision,
+)
+from backend.app.desktop.patrol.agent_loop.journal.timeline_models import (
+    WorkTimelineEntry,
+)
+from backend.app.desktop.patrol.agent_loop.journal.timeline_projector import (
+    WorkTimelineProjector,
+)
+from backend.app.desktop.patrol.agent_loop.journal.timeline_query import (
+    WorkTimelineQuery,
+)
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopDecision,
+    LoopRound,
+    LoopUserIntent,
+)
 from backend.app.desktop.patrol.agent_loop.queries.query_routes import loop_query_router
-from backend.app.desktop.patrol.agent_loop.journal.timeline_models import WorkTimelineEntry
-from backend.app.desktop.patrol.agent_loop.journal.timeline_projector import WorkTimelineProjector
-from backend.app.desktop.patrol.agent_loop.journal.timeline_query import WorkTimelineQuery
 from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -255,11 +276,11 @@ def test_timeline_migration_round_trip_preserves_existing_loop(tmp_path):
     try:
         command.downgrade(config, "f57e8f901234")
         assert "work_timeline_entries" not in inspect(engine).get_table_names()
-        command.upgrade(config, "head")
+        command.upgrade(config, "4a5b6c7d8e9f")
         assert "work_timeline_entries" in inspect(engine).get_table_names()
         with engine.connect() as connection:
             assert connection.scalar(select(AgentLoop.loop_id).where(AgentLoop.loop_id == loop)) == loop
         assert not any(fk["referred_table"] == "loop_journal_events" for fk in inspect(engine).get_foreign_keys("work_timeline_entries"))
     finally:
-        command.upgrade(config, "head")
+        command.upgrade(config, "4a5b6c7d8e9f")
         engine.dispose()

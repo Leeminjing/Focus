@@ -11,11 +11,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from focus.persistence.base import Base
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-
-from focus.persistence.base import Base
 
 
 class LoopCompressionCandidate(Base):
@@ -40,7 +50,7 @@ class LoopCompressionCandidate(Base):
     pending_decision_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_pending_decisions.pending_decision_id", ondelete="CASCADE"), nullable=False)
     round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False)
     context_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False)
-    base_context_revision_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"), nullable=False)
+    base_context_revision_id: Mapped[str] = mapped_column(String(32), nullable=False)
     base_checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
     frontier_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     authority_revision: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -85,7 +95,7 @@ class LoopCompressionResolution(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="committed", server_default="committed")
     resume_run_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("desktop_runs.run_id", ondelete="SET NULL"), nullable=True)
     result_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    result_context_revision_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="SET NULL"), nullable=True)
+    result_context_revision_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     actual_before_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     actual_after_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")

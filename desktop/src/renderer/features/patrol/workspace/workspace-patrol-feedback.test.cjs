@@ -74,7 +74,7 @@ test("verified workspace delivery is explicit while Patrol remains available", (
   assert.ok(html.indexOf('class="patrol-delivery-unresolved"') < html.indexOf('class="patrol-delivery-evidence"'));
   assert.doesNotMatch(html, /继续提出调整|结果与修改位置|查看结果 ·/);
   assert.match(html, /data-patrol-delivery-context="result"/);
-  assert.match(html, /data-revision-id="revision-result"/);
+  assert.doesNotMatch(html, /data-revision-id=/);
   loop.current_round_id = "discussion";
   assert.equal(feedback.status({ loop: { state: loop } }, { status: "live" }, { rows: [] }).state, "idle");
   assert.match(view.delivery({ loop: { state: loop } }), /最近一次/);

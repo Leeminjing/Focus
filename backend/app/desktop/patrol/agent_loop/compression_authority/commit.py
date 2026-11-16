@@ -8,12 +8,21 @@ CompressionAuthorityPolicy 判定，允许时同事务接受候选、提交 reso
 
 from __future__ import annotations
 
-from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy
-from backend.app.desktop.patrol.agent_loop.compression_authority.models import LoopCompressionCandidate
-from backend.app.desktop.patrol.agent_loop.compression_authority.policy import CompressionAuthorityFacts, CompressionAuthorityPolicy
-from backend.app.desktop.patrol.agent_loop.compression_authority.repository import CompressionAuthorityRepository
-from backend.app.desktop.patrol.agent_loop.models import LoopPendingDecision
 from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import (
+    AutonomousCompressionPolicy,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.models import (
+    LoopCompressionCandidate,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.policy import (
+    CompressionAuthorityFacts,
+    CompressionAuthorityPolicy,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.repository import (
+    CompressionAuthorityRepository,
+)
+from backend.app.desktop.patrol.agent_loop.models import LoopPendingDecision
 from backend.app.desktop.persistence.models import DesktopThread
 
 
@@ -95,6 +104,7 @@ class CompressionAuthorityCommitter:
         if not verdict.allowed:
             if verdict.reason in {"candidate_expired", "authority_revision_changed", "goal_revision_changed", "context_revision_changed", "checkpoint_changed", "frontier_changed"}:
                 candidate.status = "expired" if verdict.reason == "candidate_expired" else "superseded"
+                await self._repository.release_candidate(session, candidate.candidate_id)
             raise CompressionCommitRejected(verdict.reason)
         return await self._repository.commit_resolution(
             session,

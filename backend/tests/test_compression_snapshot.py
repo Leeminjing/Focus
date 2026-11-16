@@ -1,9 +1,5 @@
 """验证压缩面板完整快照、关键词预览和应用均读取当前 Revision 的执行身份。"""
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
-import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
-
-
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,14 +7,15 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from focus.agents.compression import apply_compression_ranges
+from focus.runtime.runs.events import serialize_message
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
 
-from backend.app.desktop.composition import service as desktop_service
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 from backend.app.desktop.api.compression import compression_router
 from backend.app.desktop.composition.service import DesktopService
-from focus.agents.compression import apply_compression_ranges
-from focus.runtime.runs.events import serialize_message
 
 
 @pytest.fixture
@@ -134,7 +131,7 @@ def test_panel_snapshot_empty_checkpoint(compression_snapshot):
 
 def test_panel_snapshot_missing_task(compression_snapshot):
     fixture = compression_snapshot
-    fixture.service._get_task_entities.side_effect = HTTPException(404, "任务不存在")
+    fixture.service.workspaces._get_task_entities.side_effect = HTTPException(404, "任务不存在")
     with TestClient(fixture.app) as client:
         response = client.get("/desktop/api/tasks/missing/messages")
     assert response.status_code == 404

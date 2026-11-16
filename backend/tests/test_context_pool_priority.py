@@ -9,15 +9,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.patrol.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.patrol.agent_loop.resources.context_run_pool import ContextRunPool
 from backend.app.desktop.patrol.agent_loop.execution.dispatch import LoopWaveDispatcher
 from backend.app.desktop.patrol.agent_loop.models import LoopDirective, LoopUserIntent
+from backend.app.desktop.patrol.agent_loop.resources.context_run_pool import (
+    ContextRunPool,
+)
 from backend.app.desktop.persistence.models import DesktopRun
-from backend.app.desktop.workspaces.coordination import WorkspaceLeaseManager, WorkspaceLeaseRequest, WorkspaceSlot
+from backend.app.desktop.workspaces.coordination import (
+    WorkspaceLeaseManager,
+    WorkspaceLeaseRequest,
+    WorkspaceSlot,
+)
 from backend.tests.test_loop_runtime_pools import _create_wave
 
-
-pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+# These assertions exercise the global admission queue and global Run capacity.
+pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
 
 async def _user_priority(sessions, snapshot):

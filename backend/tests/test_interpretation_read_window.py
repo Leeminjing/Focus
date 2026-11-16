@@ -10,18 +10,36 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-
-from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel, IndexModelBudget, IndexBudgetExceeded
-from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_inputs import FrozenInterpretationInputs
-from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import RevisionInterpretationProposal
-from backend.app.desktop.patrol.agent_loop.context_expansion.revision_interpretation import INTERPRETATION_PROMPT, RevisionInterpretationBuilder
-from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import ProtocolSafeRevisionSegmenter, RevisionSemanticIndexer
-from backend.app.desktop.contexts.evolution import ContextRevisionRef
-from backend.app.desktop.patrol.agent_loop.workers import derivation_worker
-from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.patrol.agent_loop.workers.structured_worker import StructuredWorkerModel
-from backend.tests.config_helpers import app_config_for
 from focus.runtime.runs.usage import ModelUsage
+
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
+from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import (
+    BudgetedIndexModel,
+    IndexBudgetExceeded,
+    IndexModelBudget,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_inputs import (
+    FrozenInterpretationInputs,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import (
+    RevisionInterpretationProposal,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.revision_interpretation import (
+    INTERPRETATION_PROMPT,
+    RevisionInterpretationBuilder,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
+    ProtocolSafeRevisionSegmenter,
+    RevisionSemanticIndexer,
+)
+from backend.app.desktop.patrol.agent_loop.workers import derivation_worker
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
+    RoleBoundStructuredModel,
+)
+from backend.app.desktop.patrol.agent_loop.workers.structured_worker import (
+    StructuredWorkerModel,
+)
+from backend.tests.config_helpers import app_config_for
 
 
 def _source(contents=("甲" * 1700, "乙" * 1700)):
@@ -299,8 +317,13 @@ def test_tool_exchange_is_a_complete_window_atom():
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
-def test_existing_tail_window_index_remains_an_exact_cache_hit(monkeypatch, tmp_path):
-    from backend.tests.incremental_index_support import ModelProbe, messages, observation, revision
+def test_directory_only_snapshot_index_remains_an_exact_cache_hit(monkeypatch, tmp_path):
+    from backend.tests.incremental_index_support import (
+        ModelProbe,
+        messages,
+        observation,
+        revision,
+    )
     from backend.tests.test_incremental_revision_index import exercise
 
     async def run(sessions, seed):
@@ -314,7 +337,8 @@ def test_existing_tail_window_index_remains_an_exact_cache_hit(monkeypatch, tmp_
             legacy.setattr(BudgetedIndexModel, "fits_available_budget", lambda *args: False)
             old = await service.build(frozen)
         assert old.blocker_code is None, old.blocker_summary
-        assert len(old.indexes[0].interpretation.provided) == 1
+        assert old.indexes[0].inheritance.baseline_index_id is None
+        assert old.indexes[0].interpretation.provided == ()
         probe.calls.clear()
         current = await service.build(frozen)
         assert current.indexes == old.indexes and probe.calls == []
@@ -325,7 +349,11 @@ def test_existing_tail_window_index_remains_an_exact_cache_hit(monkeypatch, tmp_
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_window_contract_keeps_local_cache_and_old_proof(monkeypatch, tmp_path):
     import backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index as module
-    from backend.tests.incremental_index_support import ModelProbe, observation, revision
+    from backend.tests.incremental_index_support import (
+        ModelProbe,
+        observation,
+        revision,
+    )
     from backend.tests.test_incremental_revision_index import exercise
 
     async def run(sessions, seed):

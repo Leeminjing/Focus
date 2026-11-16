@@ -5,29 +5,42 @@
 示例：`python -m pytest backend/tests/test_loop_live_scaling.py -q`。"""
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
-from sqlalchemy import select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from test_loop_live_projection import _seed_loop
-from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft, EventVisibility
-from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
+    LoopContextExpansion,
+)
 from backend.app.desktop.patrol.agent_loop.facts.fact_models import LoopFact
-from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextExpansion
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalSequence, LoopLiveCheckpoint
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import (
+    CanonicalEventDraft,
+    EventVisibility,
+)
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
+    LoopJournalSequence,
+    LoopLiveCheckpoint,
+)
 from backend.app.desktop.patrol.agent_loop.live.live_api import LoopLiveSnapshotService
-from backend.app.desktop.patrol.agent_loop.live.live_checkpoint import LoopLiveCheckpointStore
-from backend.app.desktop.patrol.agent_loop.live.live_history import LoopLiveHistoryService
-from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
+from backend.app.desktop.patrol.agent_loop.live.live_checkpoint import (
+    LoopLiveCheckpointStore,
+)
+from backend.app.desktop.patrol.agent_loop.live.live_history import (
+    LoopLiveHistoryService,
+)
 from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant, LoopRound
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import (
+    LoopLiveSnapshotProjector,
+)
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -222,10 +235,10 @@ def test_checkpoint_migration_round_trip():
         assert "loop_live_checkpoints" in inspect(engine).get_table_names()
         command.downgrade(config, "e14b5c6d7e8f")
         assert "loop_live_checkpoints" not in inspect(engine).get_table_names()
-        command.upgrade(config, "head")
+        command.upgrade(config, "4a5b6c7d8e9f")
         assert "loop_live_checkpoints" in inspect(engine).get_table_names()
     finally:
-        command.upgrade(config, "head")
+        command.upgrade(config, "4a5b6c7d8e9f")
         engine.dispose()
 
 

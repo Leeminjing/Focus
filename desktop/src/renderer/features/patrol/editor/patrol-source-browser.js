@@ -46,7 +46,7 @@
     constructor(controller,options){
       this.controller=controller;this.options=options;this.node=node("section","patrol-source-pane");this.node.setAttribute("aria-label",localize("只读来源浏览"));
       this._controls();this.list=node("div","patrol-source-list");this.list.setAttribute("aria-label",localize("来源条目"));
-      this.empty=node("div","patrol-source-empty",localize("选择一个精确版本，挑出需要的内容"));
+      this.empty=node("div","patrol-source-empty",localize("选择来源，挑出需要的内容"));
       this.viewport=new root.FocusPatrolViewport.PatrolViewport(null,this.list,{items:()=>controller.rows,key:row=>row.source_row_id,create:row=>new SourceRow(this,row),estimate:150,gap:0,stageClass:"patrol-source-stage"});
       this.pagination=node("div","patrol-source-pagination");this.previous=action(localize("上一页"),()=>{this.list.scrollTop=0;controller.previousPage();});this.next=action(localize("下一页"),()=>{this.list.scrollTop=0;controller.nextPage();});this.page=node("span");this.pagination.append(this.previous,this.page,this.next);
       this.node.append(this.controls,this.status,this.list,this.empty,this.pagination,this.selection);
@@ -59,15 +59,15 @@
       for(const [value,label]of [["context",localize("会话 Context")],["patrol",localize("小兵 Patrol")],["file",localize("工作区文件")],["material",localize("材料版本")]]){const option=node("option","",label);option.value=value;this.kind.append(option);}
       this.kind.value=controller.kind;
       this.kind.onchange=()=>{clearTimeout(this.searchTimer);clearTimeout(this.directoryTimer);controller.setKind(this.kind.value);};
-      this.catalog=node("select");this.catalog.setAttribute("aria-label",localize("精确来源版本"));this.catalog.onchange=()=>{
+      this.catalog=node("select");this.catalog.setAttribute("aria-label",localize("来源会话或运行"));this.catalog.onchange=()=>{
         clearTimeout(this.searchTimer);
         if(this.catalog.value===""){controller.choose(null);return;}
         const item=controller.catalog[Number(this.catalog.value)];if(!item)return;
         if(controller.kind==="material")controller.materialVersions(item.source_ref);else controller.choose(item.source_ref);
       };
-      this.catalogMore=action(localize("更多版本"),()=>controller.kind==="material" && controller.materialRef?controller.materialVersions(controller.materialRef,true):controller.directory(controller.kind,true));
-      this.catalogSearch=node("input");this.catalogSearch.type="search";this.catalogSearch.placeholder=localize("搜索会话或小兵名称");this.catalogSearch.setAttribute("aria-label",localize("搜索来源版本"));this.catalogSearch.value=controller.catalogQuery;
-      this.searchCatalog=action("⌕",()=>{this.catalogSearchOpen=!this.catalogSearchOpen;this.render();if(this.catalogSearchOpen)this.catalogSearch.focus();});this.searchCatalog.setAttribute("aria-label",localize("搜索来源版本名称"));
+      this.catalogMore=action(localize("更多来源"),()=>controller.kind==="material" && controller.materialRef?controller.materialVersions(controller.materialRef,true):controller.directory(controller.kind,true));
+      this.catalogSearch=node("input");this.catalogSearch.type="search";this.catalogSearch.placeholder=localize("搜索会话或小兵名称");this.catalogSearch.setAttribute("aria-label",localize("搜索来源"));this.catalogSearch.value=controller.catalogQuery;
+      this.searchCatalog=action("⌕",()=>{this.catalogSearchOpen=!this.catalogSearchOpen;this.render();if(this.catalogSearchOpen)this.catalogSearch.focus();});this.searchCatalog.setAttribute("aria-label",localize("搜索来源名称"));
       heading.append(this.kind,this.searchCatalog);
       this.catalogSearch.oninput=()=>{clearTimeout(this.directoryTimer);this.directoryTimer=setTimeout(()=>{controller.catalogQuery=this.catalogSearch.value;controller.directory(controller.kind);},250);};
       this.versions=node("select");this.versions.setAttribute("aria-label",localize("材料精确版本"));this.versions.onchange=()=>{clearTimeout(this.searchTimer);controller.choose(this.versions.value===""?null:controller.versions[Number(this.versions.value)]?.source_ref);};
@@ -84,22 +84,22 @@
     render(){
       const c=this.controller,isFile=c.kind==="file",signature=JSON.stringify(c.catalog);
       this.kind.value=c.kind;this.catalog.hidden=isFile;this.catalogMore.hidden=isFile || !(c.kind==="material" && c.materialRef?c.materialNext:c.catalogNext);this.path.hidden=this.fileOpen.hidden=!isFile;
-      this.catalogMore.textContent=c.kind==="material"?c.materialRef?localize("更早的材料版本"):localize("更多材料"):localize("更多版本");
+      this.catalogMore.textContent=c.kind==="material"?c.materialRef?localize("更早的材料版本"):localize("更多材料"):localize("更多来源");
       this.searchCatalog.hidden=isFile || c.kind==="material";this.searchCatalog.setAttribute("aria-expanded",String(Boolean(this.catalogSearchOpen)));
       this.catalogSearch.hidden=isFile || c.kind==="material" || !this.catalogSearchOpen && !c.catalogQuery;
       if(document.activeElement!==this.catalogSearch)this.catalogSearch.value=c.catalogQuery;
       this.versions.hidden=c.kind!=="material" || !c.versions;
       if(signature!==this._catalogSignature){
-        this._catalogSignature=signature;const placeholder=node("option","",c.catalogLoading?localize("读取版本…"):localize("选择精确来源版本"));placeholder.value="";this.catalog.replaceChildren(placeholder);
+        this._catalogSignature=signature;const placeholder=node("option","",c.catalogLoading?localize("读取来源…"):localize("选择来源"));placeholder.value="";this.catalog.replaceChildren(placeholder);
         c.catalog.forEach((item,index)=>{const option=node("option","",item.label);option.value=String(index);option.disabled=!item.available;this.catalog.append(option);});
       }
-      if(c.ref && !isFile){const index=c.catalog.findIndex(item=>item.source_ref.revision_id===c.ref.revision_id && item.source_ref.run_id===c.ref.run_id && item.source_ref.material_id===c.ref.material_id);this.catalog.value=index<0?"":String(index);}else this.catalog.value="";
+      if(c.ref && !isFile){const index=c.catalog.findIndex(item=>item.source_ref.context_id===c.ref.context_id && item.source_ref.run_id===c.ref.run_id && item.source_ref.material_id===c.ref.material_id);this.catalog.value=index<0?"":String(index);}else this.catalog.value="";
       if(c.versions!==this._versions){this._versions=c.versions;const placeholder=node("option","",localize("选择材料精确版本"));placeholder.value="";this.versions.replaceChildren(placeholder);c.versions?.forEach((item,index)=>{const option=node("option","",item.label);option.value=String(index);this.versions.append(option);});}
       if(c.versions && c.ref){const index=c.versions.findIndex(item=>item.source_ref.version_id===c.ref.version_id);this.versions.value=index<0?"":String(index);}
       if(document.activeElement!==this.search)this.search.value=c.query;this.search.disabled=!c.ref;this.historical.checked=c.historical;
       this.status.textContent=c.error || (c.loading || c.catalogLoading?localize("读取来源…"):c.source?localize`${c.source.title || c.source.path || localize("冻结 checkpoint")} · ${c.total} 项${c.excluded?localize` · ${c.excluded} 项不可导入`:""}`:"");
       this.status.classList.toggle("is-error",Boolean(c.error));this.status.hidden=!this.status.textContent;
-      this.empty.hidden=Boolean(c.rows.length);this.empty.textContent=c.ref?c.loading?localize("正在读取内容…"):c.error?localize("来源暂不可用，可以刷新或切换版本"):localize("此查询没有来源条目"):localize("选择一个精确版本，挑出需要的内容");
+      this.empty.hidden=Boolean(c.rows.length);this.empty.textContent=c.ref?c.loading?localize("正在读取内容…"):c.error?localize("来源暂不可用，可以刷新或切换来源"):localize("此查询没有来源条目"):localize("选择来源，挑出需要的内容");
       this.list.hidden=!c.rows.length;this.pagination.hidden=!c.ref || !c.total;this.previous.disabled=c.loading || !c.page;this.next.disabled=c.loading || !c.next;this.page.textContent=localize`第 ${c.page+1} 页`;
       this.count.textContent=localize`已选 ${c.selected.size} 项`;this.clear.disabled=!c.selected.size;this.insert.disabled=!c.selected.size || c.loading || this.busy;
       this.viewport.schedule();

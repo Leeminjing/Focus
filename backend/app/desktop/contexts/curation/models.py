@@ -13,6 +13,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from focus.persistence.base import Base
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -27,9 +28,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-
-from backend.app.desktop.contexts.evolution import models as _context_revision_models
-from focus.persistence.base import Base
 
 
 class CurationProgramControlState(StrEnum):
@@ -320,12 +318,10 @@ class PortfolioLaneCandidate(Base):
     )
     base_context_revision_id: Mapped[str | None] = mapped_column(
         String(32),
-        ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"),
         nullable=True,
     )
     candidate_context_revision_id: Mapped[str | None] = mapped_column(
         String(32),
-        ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"),
         nullable=True,
     )
     purpose: Mapped[str] = mapped_column(Text, nullable=False)

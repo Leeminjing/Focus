@@ -51,7 +51,9 @@ async def _memory(sessions, args, signals):
         SourceAssessment,
         canonical_hash,
     )
-    from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
+    from backend.app.desktop.patrol.agent_loop.task_progress.runtime import (
+        TaskProgressRuntime,
+    )
 
     class Model:
         context_window_tokens = 100000
@@ -142,7 +144,6 @@ async def _legacy(sessions, args, signals):
 
 
 async def _portfolio(sessions, args, signals):
-    from backend.app.desktop.patrol.agent_loop.models import AgentLoop
     from backend.app.desktop.contexts.curation import (
         AtomicPortfolioPublisher,
         PortfolioControlRevisions,
@@ -150,6 +151,7 @@ async def _portfolio(sessions, args, signals):
         PortfolioSuperseded,
     )
     from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+    from backend.app.desktop.patrol.agent_loop.models import AgentLoop
 
     async with sessions() as session:
         portfolio = await session.get(PortfolioRevision, args.entity_id)
@@ -182,10 +184,21 @@ async def _frozen_cognition(sessions, args, signals):
         DecisionSupplementRepository,
         PatrolDecisionContext,
     )
-    from backend.app.desktop.patrol.agent_loop.models import LoopObservation, LoopWorkerRequest
-    from backend.app.desktop.patrol.agent_loop.observations.builder import observation_hash
+    from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import (
+        source_revisions,
+    )
+    from backend.app.desktop.patrol.agent_loop.models import (
+        LoopObservation,
+        LoopWorkerRequest,
+    )
+    from backend.app.desktop.patrol.agent_loop.observations.builder import (
+        observation_hash,
+    )
     from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
         LoopObservationService,
+    )
+    from backend.app.desktop.patrol.agent_loop.task_progress.contracts import (
+        canonical_hash,
     )
     from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
 
@@ -205,6 +218,7 @@ async def _frozen_cognition(sessions, args, signals):
             scope={},
         )
         cognition, _, _ = await LoopWorkerRuntime(sessions, None)._evidence(request)
+        result = {"kind": "proposal", "frozen_ref": cognition["decision_inputs_ref"]}
         async with sessions.begin() as session:
             await supplements.put(
                 session,
@@ -213,8 +227,15 @@ async def _frozen_cognition(sessions, args, signals):
                 {
                     "results": [
                         {
-                            "kind": "proposal",
-                            "frozen_ref": cognition["decision_inputs_ref"],
+                            "request_id": request.worker_request_id,
+                            "kind": "lane_curator",
+                            "status": "proposed",
+                            "round_id": observation.round_id,
+                            "observation_id": observation.observation_id or observation.decision_inputs_ref,
+                            "observation_generation": observation.generation,
+                            "required_source_revisions": source_revisions(observation),
+                            "result": result,
+                            "result_hash": canonical_hash(result),
                         }
                     ]
                 },

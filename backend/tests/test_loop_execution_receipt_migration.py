@@ -5,21 +5,25 @@
 示例：pytest backend/tests/test_loop_execution_receipt_migration.py；不连接生产或原生验收数据库。
 """
 
-from contextlib import contextmanager
 import os
-from pathlib import Path
 import uuid
+from contextlib import contextmanager
+from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
-import pytest
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-import backend.app.desktop.persistence.registry
-from backend.app.desktop.persistence.models import DesktopWorkspace, DesktopThread, DesktopRun, ModelAttemptAudit
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+    ModelAttemptAudit,
+)
 
 
 @contextmanager
@@ -53,7 +57,7 @@ def test_receipt_migration_preserves_unknown_history_and_enforces_parent_restric
         command.downgrade(config, "c36f7a8b9c0d")
         assert "parent_run_id" not in {c["name"] for c in inspect(engine).get_columns("desktop_runs")}
         assert "usage_accounting" not in {c["name"] for c in inspect(engine).get_columns("model_attempt_audits")}
-        command.upgrade(config, "head")
+        command.upgrade(config, "e58b9c0d1e2f")
         with Session(engine) as session:
             run = session.get(DesktopRun, run_id)
             audit = session.get(ModelAttemptAudit, "legacy-audit")

@@ -14,27 +14,37 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
+from backend.app.desktop.contexts.curation.models import (
+    CurationLane,
+    CurationProgram,
+    PortfolioLaneCandidate,
+    PortfolioRevision,
+)
+from backend.app.desktop.contexts.evolution import (
+    ContextEvolutionQueryService,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.patrol.agent_loop.compression_authority.models import (
     LoopCompressionCandidate,
     LoopCompressionResolution,
 )
-from backend.app.desktop.patrol.agent_loop.queries.console_query import LoopConsoleQueryService
 from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopPlanningRetrievalSession,
 )
-from backend.app.desktop.patrol.agent_loop.queries.conversation_query import (
-    ContextConversationQueryService,
+from backend.app.desktop.patrol.agent_loop.facts.fact_projection import (
+    LoopFactProjectionService,
 )
-from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_projection import (
-    planning_session_view,
-    repeated_expansion_blocker,
-)
-from backend.app.desktop.patrol.agent_loop.facts.fact_projection import LoopFactProjectionService
-from backend.app.desktop.patrol.agent_loop.feature_flags import LoopFeatureFlags
 from backend.app.desktop.patrol.agent_loop.facts.materialized_fact_query import (
     MaterializedFactQueryService,
 )
-from backend.app.desktop.patrol.agent_loop.missions.mission_history import MissionHistoryQueryService
+from backend.app.desktop.patrol.agent_loop.feature_flags import LoopFeatureFlags
+from backend.app.desktop.patrol.agent_loop.live.live_access import (
+    LoopLiveAccessPolicy,
+    LoopLiveRedactionPolicy,
+)
+from backend.app.desktop.patrol.agent_loop.missions.mission_history import (
+    MissionHistoryQueryService,
+)
 from backend.app.desktop.patrol.agent_loop.models import (
     LoopAction,
     LoopDecision,
@@ -45,23 +55,24 @@ from backend.app.desktop.patrol.agent_loop.models import (
     LoopWorkerRequest,
     MessageProvenance,
 )
-from backend.app.desktop.patrol.agent_loop.live.live_access import LoopLiveAccessPolicy, LoopLiveRedactionPolicy
-from backend.app.desktop.patrol.agent_loop.observations.observation_query import ObservationInspectionQuery, ObservationSection
-from backend.app.desktop.patrol.agent_loop.queries.patrol_audit_query import PatrolAuditQuery
-from backend.app.desktop.contexts.curation.models import (
-    CurationLane,
-    CurationProgram,
-    PortfolioLaneCandidate,
-    PortfolioRevision,
+from backend.app.desktop.patrol.agent_loop.observations.observation_query import (
+    ObservationInspectionQuery,
+    ObservationSection,
 )
-from backend.app.desktop.contexts.evolution import (
-    ContextEvolutionQueryService,
-    ContextRevisionNotFound,
-    ContextRevisionReader,
-    ContextRevisionRepository,
+from backend.app.desktop.patrol.agent_loop.queries.console_query import (
+    LoopConsoleQueryService,
 )
-from backend.app.desktop.contexts.evolution.models import ContextRevision
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.patrol.agent_loop.queries.conversation_query import (
+    ContextConversationQueryService,
+)
+from backend.app.desktop.patrol.agent_loop.queries.patrol_audit_query import (
+    PatrolAuditQuery,
+)
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_projection import (
+    planning_session_view,
+    repeated_expansion_blocker,
+)
+from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.workspaces.coordination.models import (
     RunExecutionAnchor,
     WorkspaceAdoption,
@@ -86,7 +97,9 @@ async def loop_mission_history(loop_id: str, request: Request) -> dict:
 
 @loop_query_router.get("/agent-loops/{loop_id}/task-progress")
 async def loop_task_progress(loop_id: str, request: Request, progress_id: str | None = None) -> dict:
-    from backend.app.desktop.patrol.agent_loop.task_progress.query import TaskProgressQuery
+    from backend.app.desktop.patrol.agent_loop.task_progress.query import (
+        TaskProgressQuery,
+    )
 
     async with request.app.state.desktop_service.session_factory() as session:
         query = TaskProgressQuery()
@@ -137,7 +150,9 @@ async def loop_work_timeline(
     category: str | None = None, context_id: str | None = None,
     round_id: str | None = None, intent_id: str | None = None,
 ) -> dict:
-    from backend.app.desktop.patrol.agent_loop.journal.timeline_query import WorkTimelineQuery
+    from backend.app.desktop.patrol.agent_loop.journal.timeline_query import (
+        WorkTimelineQuery,
+    )
 
     async with request.app.state.desktop_service.session_factory() as session:
         return await WorkTimelineQuery().read(
@@ -211,31 +226,6 @@ async def context_first_parent_tree(workspace_id: str, request: Request) -> dict
         return result.model_dump(mode="json")
 
 
-@loop_query_router.get("/contexts/{context_id}/revisions")
-async def context_revisions(context_id: str, request: Request) -> list[dict]:
-    async with request.app.state.desktop_service.session_factory() as session:
-        context = await session.get(DesktopThread, context_id)
-        if context is None:
-            raise HTTPException(404, "Context 不存在")
-        rows = list((await session.scalars(select(ContextRevision).where(ContextRevision.context_id == context_id).order_by(ContextRevision.generation))).all())
-        return [{"revision_id": row.revision_id, "context_id": row.context_id, "generation": row.generation, "checkpoint_id": row.checkpoint_id, "projection_status": row.projection_status, "content_hash": row.content_hash, "origin_kind": row.origin_kind, "origin_id": row.origin_id, "current": row.revision_id == context.current_revision_id, "created_at": row.created_at.isoformat()} for row in rows]
-
-
-@loop_query_router.get("/context-revisions/{revision_id}")
-async def context_revision_snapshot(revision_id: str, request: Request) -> dict:
-    repository = ContextRevisionRepository()
-    async with request.app.state.desktop_service.session_factory() as session:
-        try:
-            revision = await repository.get_by_id(session, revision_id)
-        except ContextRevisionNotFound:
-            raise HTTPException(404, "Context revision 不存在")
-        view = await ContextRevisionReader(
-            repository,
-            request.app.state.desktop_service.checkpointer,
-        ).read(session, revision.ref, "historical")
-        return view.model_dump(mode="json")
-
-
 @loop_query_router.get("/curation-programs/{program_id}")
 async def curation_program(program_id: str, request: Request) -> dict:
     async with request.app.state.desktop_service.session_factory() as session:
@@ -253,8 +243,10 @@ async def loop_audit(
     loop_id: str, request: Request,
     round_id: str | None = None, observation_id: str | None = None,
 ) -> dict:
+    from backend.app.desktop.capabilities.evolution_strategies import (
+        strategy_adoption_records,
+    )
     from backend.app.desktop.patrol.agent_loop.models import LoopObservation
-    from backend.app.desktop.capabilities.evolution_strategies import strategy_adoption_records
 
     async with request.app.state.desktop_service.session_factory() as session:
         patrol_history = await PatrolAuditQuery().read(

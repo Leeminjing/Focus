@@ -17,35 +17,6 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
-    ResolvedEvidenceBundle,
-)
-from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopContextExpansion
-from backend.app.desktop.patrol.agent_loop.context_expansion.repository import (
-    ContextExpansionRepository,
-)
-from backend.app.desktop.patrol.agent_loop.context_recovery import ContextRecoveryOpportunityRepository
-from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import (
-    DirectiveLifecycleRepository,
-)
-from backend.app.desktop.patrol.agent_loop.journal.lineage_events import ContextLineageEventRecorder
-from backend.app.desktop.patrol.agent_loop.models import (
-    AgentLoop,
-    LoopAction,
-    LoopBudgetUsage,
-    LoopContextMembership,
-    LoopDecision,
-    LoopDelegationGrant,
-    LoopDirective,
-    LoopEventOutbox,
-    LoopRound,
-)
-from backend.app.desktop.patrol.agent_loop.journal.portfolio_events import (
-    ContextPublicationEventRecorder,
-    PortfolioPublicationEventRecorder,
-)
-from backend.app.desktop.patrol.agent_loop.governance.provenance import DelegatedDirectiveFactory
-from backend.app.desktop.patrol.agent_loop.schemas import PATROL_ACTION_ADAPTER
 from backend.app.desktop.contexts.curation import (
     AtomicPortfolioPublisher,
     CurationLane,
@@ -76,6 +47,43 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionRepository,
     LangGraphContextCheckpointWriter,
 )
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
+    ResolvedEvidenceBundle,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
+    LoopContextExpansion,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.repository import (
+    ContextExpansionRepository,
+)
+from backend.app.desktop.patrol.agent_loop.context_recovery import (
+    ContextRecoveryOpportunityRepository,
+)
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import (
+    DirectiveLifecycleRepository,
+)
+from backend.app.desktop.patrol.agent_loop.governance.provenance import (
+    DelegatedDirectiveFactory,
+)
+from backend.app.desktop.patrol.agent_loop.journal.lineage_events import (
+    ContextLineageEventRecorder,
+)
+from backend.app.desktop.patrol.agent_loop.journal.portfolio_events import (
+    ContextPublicationEventRecorder,
+    PortfolioPublicationEventRecorder,
+)
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopAction,
+    LoopBudgetUsage,
+    LoopContextMembership,
+    LoopDecision,
+    LoopDelegationGrant,
+    LoopDirective,
+    LoopEventOutbox,
+    LoopRound,
+)
+from backend.app.desktop.patrol.agent_loop.schemas import PATROL_ACTION_ADAPTER
 from backend.app.desktop.persistence.models import DesktopThread
 from backend.app.desktop.workspaces.coordination.models import WorkspaceSlot
 
@@ -205,7 +213,9 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
         round_row.status = "ready" if self._directive_ids else "running"
         decision.status = "committed"
         if not self._directive_ids:
-            from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import settle_round
+            from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import (
+                settle_round,
+            )
 
             await settle_round(session, loop, round_row)
         await self._event(
@@ -668,7 +678,7 @@ class LoopPortfolioPublicationService:
     ) -> MultiSourceEvidence:
         sources: list[SourceRevisionEvidence] = []
         for ref in frontier:
-            revision = await self._revisions.get(session, ref)
+            revision = await self._revisions.get_input(session, ref)
             view = await self._reader.read(session, ref, "execution")
             messages = tuple(
                 SourceMessageEvidence(

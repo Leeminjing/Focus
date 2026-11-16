@@ -8,27 +8,38 @@ r"""本文件验证 Canonical Loop Event Journal 的迁移、合同、原子并�
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import os
-from pathlib import Path
 import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
-import pytest
 from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-import backend.app.desktop.persistence.registry
-from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft, CanonicalEventEnvelope, EventNotAuthorized, EventVisibility, LiveEventAuthorizationPolicy
-from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal, ReplayUnavailable, StaleEntityRevision
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent, LoopProjectorCursor
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import (
+    CanonicalEventDraft,
+    CanonicalEventEnvelope,
+    EventNotAuthorized,
+    EventVisibility,
+    LiveEventAuthorizationPolicy,
+)
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import (
+    LoopEventJournal,
+    ReplayUnavailable,
+    StaleEntityRevision,
+)
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
+    LoopJournalEvent,
+    LoopProjectorCursor,
+)
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop
 from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -49,7 +60,7 @@ def test_event_journal_migration_round_trips_with_existing_loop(tmp_path: Path) 
             session.add(context)
             session.flush()
             session.add(AgentLoop(loop_id=loop_id, workspace_id=workspace.workspace_id, initial_context_id=context.task_id, holder_id="patrol", status="running", health="observing"))
-        command.upgrade(config, "head")
+        command.upgrade(config, "b5c6d7e8f9a0")
         tables = set(inspect(engine).get_table_names())
         assert {"loop_journal_sequences", "loop_journal_events", "loop_replay_retention", "loop_projector_cursors"} <= tables
         with Session(engine) as session:
@@ -59,7 +70,7 @@ def test_event_journal_migration_round_trips_with_existing_loop(tmp_path: Path) 
         assert "loop_journal_events" not in tables
         assert "agent_loops" in tables
     finally:
-        command.upgrade(config, "head")
+        command.upgrade(config, "b5c6d7e8f9a0")
         engine.dispose()
 
 

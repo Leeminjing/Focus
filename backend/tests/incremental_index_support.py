@@ -11,6 +11,12 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionContract,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+    ContextRevisionSourceContract,
+)
 from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     stable_expansion_hash,
 )
@@ -26,12 +32,6 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding 
 )
 from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
-)
-from backend.app.desktop.contexts.evolution import (
-    ContextRevisionContract,
-    ContextRevisionRef,
-    ContextRevisionRepository,
-    ContextRevisionSourceContract,
 )
 
 
@@ -70,7 +70,7 @@ async def revision(
             sources=tuple(
                 ContextRevisionSourceContract(source=s, position=i)
                 for i, s in enumerate(
-                    sources if sources is not None else ([parent.ref] if parent else [])
+                    sources if sources is not None else []
                 )
             ),
             authored_messages=tuple(messages),
@@ -82,7 +82,7 @@ async def revision(
         )
         await repository.insert(session, contract)
         if published:
-            await repository.switch_current(session, ref, expected.ref)
+            await repository.switch_current(session, ref, expected.ref if expected else None)
         return contract
 
 

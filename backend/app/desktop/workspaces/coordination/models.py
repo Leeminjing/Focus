@@ -11,11 +11,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from focus.persistence.base import Base
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-
-from focus.persistence.base import Base
 
 
 class WorkspaceSlot(Base):
@@ -70,7 +80,7 @@ class RunExecutionAnchor(Base):
     __tablename__ = "run_execution_anchors"
 
     run_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_runs.run_id", ondelete="CASCADE"), primary_key=True)
-    context_revision_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"), nullable=True)
+    context_revision_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     slot_id: Mapped[str] = mapped_column(String(32), ForeignKey("workspace_slots.slot_id", ondelete="RESTRICT"), nullable=False, index=True)
     lease_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("workspace_leases.lease_id", ondelete="SET NULL"), nullable=True)

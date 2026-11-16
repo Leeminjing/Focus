@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Protocol
 
 from fastapi import Request
+from focus.runtime.runs.manager import RunRecord
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -19,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.runs.orchestration.input_provenance import bind_run_inputs
-from focus.runtime.runs.manager import RunRecord
 
 
 class PreparedRunLike(Protocol):
@@ -104,6 +104,15 @@ class RunRegistrar:
             run.input_messages = bind_run_inputs(run)
             session.add(run)
             try:
+                if run.kind == "main" and run.context_revision_id:
+                    from backend.app.desktop.contexts.evolution import (
+                        ContextRevisionRepository,
+                    )
+
+                    repository = ContextRevisionRepository()
+                    source = await repository.get_by_id(session, run.context_revision_id)
+                    await repository.get_input(session, source.ref)
+                    await repository.freeze(session, source.ref, owner_kind="run", owner_id=run.run_id)
                 await session.commit()
                 return run
             except IntegrityError as exc:

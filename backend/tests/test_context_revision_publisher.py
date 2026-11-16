@@ -8,9 +8,9 @@ identity、current pointer、无失败残留及审批阻断断言。具体工作
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import delete, func, select, update
@@ -31,9 +31,11 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionSourceContract,
     StaleContextRevision,
 )
-from backend.app.desktop.contexts.evolution.models import ContextRevision, ContextRevisionSource
+from backend.app.desktop.contexts.evolution.models import (
+    ContextInputSnapshot,
+    ContextRevision,
+)
 from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -114,7 +116,7 @@ def test_publisher_only_routes_fully_prepared_candidates_and_rolls_back_stale_pu
                 expected_base=base_ref,
                 sources=(ContextRevisionSourceContract(source=base_ref, position=0),),
                 authored_messages=({"id": "directive-1", "role": "human", "content": "运行测试"},),
-                origin_kind=ContextRevisionOriginKind.MANUAL_DERIVE,
+                origin_kind=ContextRevisionOriginKind.CURATION,
                 origin_id="derive-request-1",
             )
             async with sessions() as session:
@@ -144,7 +146,7 @@ def test_publisher_only_routes_fully_prepared_candidates_and_rolls_back_stale_pu
                 context_id=context_id,
                 expected_base=second.revision.ref,
                 authored_messages=({"id": "bad", "role": "alien", "content": "x"},),
-                origin_kind=ContextRevisionOriginKind.DEFINITION_UPDATE,
+                origin_kind=ContextRevisionOriginKind.CURATION,
             )
             calls_before_invalid = len(writer.calls)
             async with sessions() as session:
@@ -170,19 +172,16 @@ def test_publisher_only_routes_fully_prepared_candidates_and_rolls_back_stale_pu
                             authored_messages=(
                                 {"id": "directive-2", "role": "human", "content": "定位失败"},
                             ),
-                            origin_kind=ContextRevisionOriginKind.DEFINITION_UPDATE,
+                            origin_kind=ContextRevisionOriginKind.CURATION,
                         ),
                     )
             async with sessions() as session:
                 assert await session.scalar(select(func.count()).select_from(ContextRevision)) == count_before_failure
                 assert (await repository.current(session, context_id)).ref == second.revision.ref
+                assert await session.scalar(select(func.count()).select_from(ContextInputSnapshot).where(ContextInputSnapshot.context_id == context_id)) == 0
         finally:
             async with sessions.begin() as session:
-                await session.execute(
-                    delete(ContextRevisionSource).where(
-                        ContextRevisionSource.source_context_id == context_id
-                    )
-                )
+                await session.execute(delete(ContextInputSnapshot).where(ContextInputSnapshot.context_id == context_id))
                 await session.execute(
                     update(DesktopThread)
                     .where(DesktopThread.task_id == context_id)

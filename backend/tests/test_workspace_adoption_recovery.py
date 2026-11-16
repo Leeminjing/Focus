@@ -2,25 +2,37 @@
 
 import asyncio
 import os
-from pathlib import Path
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.workspaces.coordination import (
-    GitWorkspaceResultApplier, WorkspaceAdopter, WorkspaceAdoption,
-    WorkspaceAdoptionRequest, WorkspaceFingerprinter, WorkspaceSlot,
-    WorkspaceAdoptionConflict, WorkspaceLeaseConflict, WorkspaceLeaseManager, WorkspaceLeaseRequest,
-    WorkspaceSlotLifecycle,
-    RunExecutionAnchor,
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
 )
-from backend.app.desktop.workspaces.coordination.fingerprints import WorkspaceRevisionConflict
+from backend.app.desktop.workspaces.coordination import (
+    GitWorkspaceResultApplier,
+    RunExecutionAnchor,
+    WorkspaceAdopter,
+    WorkspaceAdoption,
+    WorkspaceAdoptionConflict,
+    WorkspaceAdoptionRequest,
+    WorkspaceFingerprinter,
+    WorkspaceLeaseConflict,
+    WorkspaceLeaseManager,
+    WorkspaceLeaseRequest,
+    WorkspaceSlot,
+    WorkspaceSlotLifecycle,
+)
+from backend.app.desktop.workspaces.coordination.fingerprints import (
+    WorkspaceRevisionConflict,
+)
 from backend.tests.test_git_workspace_adoption import _git, _repository
-
 
 _CRASH = r'''
 import asyncio, json, os, sys
@@ -266,7 +278,7 @@ def test_intent_migration_preserves_existing_adoption(isolated_migration_databas
     identity = asyncio.run(seed())
     config = Config(str(Path(__file__).parents[1] / "packages/harness/focus/persistence/migrations/alembic.ini"))
     command.downgrade(config, "f36d7e8f901a")
-    command.upgrade(config, "head")
+    command.upgrade(config, "4a5b6c7d8e9f")
 
     async def verify():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])

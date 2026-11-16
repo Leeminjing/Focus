@@ -19,12 +19,12 @@ def test_context_revision_forward_migration(isolated_postgres_database) -> None:
     try:
         inspector = inspect(engine)
         assert {
-            "desktop_context_revisions",
-            "desktop_context_revision_sources",
+            "desktop_context_states",
+            "desktop_context_input_snapshots",
         } <= set(inspector.get_table_names())
         thread_columns = {column["name"] for column in inspector.get_columns("desktop_threads")}
         revision_columns = {
-            column["name"] for column in inspector.get_columns("desktop_context_revisions")
+            column["name"] for column in inspector.get_columns("desktop_context_states")
         }
         assert "current_revision_id" in thread_columns
         assert {
@@ -40,29 +40,25 @@ def test_context_revision_forward_migration(isolated_postgres_database) -> None:
             "origin_kind",
         } <= revision_columns
         foreign_keys = {
-            item["name"] for item in inspector.get_foreign_keys("desktop_context_revision_sources")
+            item["name"] for item in inspector.get_foreign_keys("desktop_context_input_snapshots")
         }
-        assert foreign_keys == {
-            "fk_context_revision_source_context",
-            "fk_context_revision_source_revision",
-            "fk_context_revision_source_target",
-        }
+        assert foreign_keys == set()
         unique_constraints = {
-            item["name"] for item in inspector.get_unique_constraints("desktop_context_revisions")
+            item["name"] for item in inspector.get_unique_constraints("desktop_context_states")
         }
         assert {
-            "uq_context_revision_generation",
-            "uq_context_revision_execution_checkpoint",
+            "uq_context_state_context",
+            "uq_context_state_execution_checkpoint",
         } <= unique_constraints
         check_constraints = {
-            item["name"] for item in inspector.get_check_constraints("desktop_context_revisions")
+            item["name"] for item in inspector.get_check_constraints("desktop_context_states")
         }
         assert {
-            "ck_context_revision_generation_positive",
-            "ck_context_revision_payload_mode",
-            "ck_context_revision_projection_status",
-            "ck_context_revision_origin_kind",
-            "ck_context_revision_checkpoint_payload",
+            "ck_context_state_generation_positive",
+            "ck_context_state_payload_mode",
+            "ck_context_state_projection_status",
+            "ck_context_state_origin_kind",
+            "ck_context_state_checkpoint_payload",
         } <= check_constraints
     finally:
         engine.dispose()

@@ -173,18 +173,15 @@ window.fetch = async (input, options = {}) => {
     }
     return window.patrolFixture.lineageError ? new Response("关系读取失败", {status:503}) : json(snapshot);
   }
-  if (window.patrolFixture.graphConversations) {
-    const context = path.match(/\/contexts\/([^/]+)\/revisions$/);
-    if (context) return json(window.patrolFixture.lineage.nodes.filter(node => node.context_id === context[1]).map(node => ({...node,current:window.patrolFixture.lineage.roots[node.context_id] === node.revision_id})));
-    const revision = path.match(/\/context-revisions\/([^/]+)$/);
-    if (revision) return json({revision:{sources:window.patrolFixture.lineage.edges.filter(edge => edge.target_revision_id === revision[1]).map(edge => ({source:{context_id:edge.source_context_id,revision_id:edge.source_revision_id}}))}});
-  }
+  if (/\/contexts\/[^/]+\/revisions$|\/context-revisions\//.test(path)) return json({detail:"Context history is retired"},404);
   const graphContext = path.match(/\/agent-loops\/[^/]+\/contexts\/([^/]+)\/conversation$/);
   if (graphContext && window.patrolFixture.graphConversations) {
     const id = graphContext[1], revision = url.searchParams.get("revision_id") || window.patrolFixture.lineage.roots[id];
     if (!window.patrolFixture.lineage.roots[id]) return new Response("Context 不属于当前 Loop", {status:404});
     const node = window.patrolFixture.lineage.nodes.find(node => node.revision_id === revision);
-    return json({ revision:{revision_id:revision,generation:node?.generation}, messages:[{index:0,message:{role:"ai",content:"隔离版本检查 "+revision}}],total:1,has_more:false });
+    return json({ revision:{revision_id:revision,generation:node?.generation}, content_hash:"current-hash-"+id,
+      sources:window.patrolFixture.lineage.edges.filter(edge=>edge.target_context_id===id).map(edge=>({context_id:edge.source_context_id})),
+      messages:[{index:0,message:{role:"ai",content:"隔离版本检查 "+revision}}],total:1,has_more:false });
   }
   const observation = path.match(/\/agent-loops\/[^/]+\/observations\/([^/]+)$/);
   if (observation) {
@@ -213,9 +210,7 @@ window.fetch = async (input, options = {}) => {
     return json(section ? { ...summary, section, items: [{ source_id: "frozen-source", version: "original" }], total: 1, has_more: false } : summary);
   }
   if (path.endsWith("/task-progress")) return json({ current: { progress_id: "current-progress", generation: 2, document: { items: [] } }, selected: { progress_id: url.searchParams.get("progress_id") || "current-progress", generation: 2, document: { items: [] } }, history: [{ progress_id: "current-progress", generation: 2 }] });
-  if (path === "/desktop/api/contexts/root/revisions") return json([{revision_id:"r1",generation:1,origin_kind:"bootstrap"},{revision_id:"r2",generation:2,origin_kind:"curation",current:true}]);
-  if (/\/context-revisions\/r[12]$/.test(path)) return json({revision:{sources:[{source:{context_id:"source",revision_id:"source-r1"}}]}});
-  if (path.endsWith("/contexts/root/conversation") && path.startsWith(prefix)) return json({ revision:{revision_id:url.searchParams.get("revision_id") || "r2"}, messages: [{ index: 0, message: { role: "ai", content: "Context 执行结果\n\n## 可读结果\n\n- 已完成\n\n| 文件 | 状态 |\n| --- | --- |\n| a.js | 完成 |\n\n[文件](file:///C:/work/a.js)\n\n[参考](https://example.com/context)\n\n```js\n\t  x < 2 && y\n```\n", tool_calls: [{name:"read_file",args:{path:"a.js"}}] } }], total: 1, has_more: false });
+  if (path.endsWith("/contexts/root/conversation") && path.startsWith(prefix)) return json({ revision:{revision_id:url.searchParams.get("revision_id") || "r2"}, content_hash:"current-root-content", sources:[{context_id:"source"}], messages: [{ index: 0, message: { role: "ai", content: "Context 执行结果\n\n## 可读结果\n\n- 已完成\n\n| 文件 | 状态 |\n| --- | --- |\n| a.js | 完成 |\n\n[文件](file:///C:/work/a.js)\n\n[参考](https://example.com/context)\n\n```js\n\t  x < 2 && y\n```\n", tool_calls: [{name:"read_file",args:{path:"a.js"}}] } }], total: 1, has_more: false });
   if (path.endsWith("/control") && path.startsWith(prefix)) {
     if (window.patrolFixture.holdControl) await new Promise(resolve => { window.patrolFixture.releaseControl = resolve; });
     if (window.patrolFixture.controlError) return new Response("工作控制读取失败", { status: 503 });

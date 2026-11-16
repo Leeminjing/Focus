@@ -1,9 +1,8 @@
-"""本文件对外提供 CommittedLineageReader 的真实已发布 Revision 祖先读面。
+"""本文件对外提供 CommittedLineageReader 的已发布当前来源图冻结端口。
 
-输入为只读事务和授权 workspace 内的已发布根；输出为完整祖先 DAG、外部来源边和拓扑 hash。
-具体工作流为验证根的 publication receipt/current proof，分批回溯全部来源，保留多父与外部祖先；
-普通同 Context 来源参与回溯但不成为派生边，prepared 候选不能用作根。读取不更改拓扑。
-示例：await CommittedLineageReader().snapshot(session, {"test": "r3"}, workspace_id="w")。
+输入为授权 workspace 内的当前或已发布任务输入根；输出为根、直接来源身份、拓扑 hash 与可裁剪快照。
+具体工作流为检查发布资格和 workspace 范围，构造当前根及其直接来源元数据，不读取永久 Revision 祖先正文。
+示例：await CommittedLineageReader().snapshot(session, roots, workspace_id=workspace_id)。
 """
 
 from __future__ import annotations
@@ -11,61 +10,36 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.contexts.evolution.models import (
-    ContextPublicationReceipt,
-    ContextRevision,
-    ContextRevisionSource,
-)
-from backend.app.desktop.runs.evidence.identity import canonical_hash
 from backend.app.desktop.persistence.models import DesktopThread
+from backend.app.desktop.runs.evidence.identity import canonical_hash
+
+from .models import ContextInputSnapshot, ContextRevision
+from .repository import ContextRevisionRepository
 
 
 class CommittedLineageReader:
     async def published_roots(
         self, session: AsyncSession, context_ids: tuple[str, ...]
     ) -> dict[str, str]:
-        eligible = ("valid", "repaired", "approved", "deleted")
-        current = dict(
+        return dict(
             (
                 await session.execute(
-                    select(DesktopThread.task_id, DesktopThread.current_revision_id)
+                    select(ContextRevision.context_id, ContextRevision.revision_id)
                     .join(
-                        ContextRevision,
-                        ContextRevision.revision_id
-                        == DesktopThread.current_revision_id,
+                        DesktopThread,
+                        DesktopThread.task_id == ContextRevision.context_id,
                     )
                     .where(
-                        DesktopThread.task_id.in_(context_ids),
-                        ContextRevision.projection_status.in_(eligible),
+                        ContextRevision.context_id.in_(context_ids),
+                        ContextRevision.revision_id
+                        == DesktopThread.current_revision_id,
+                        ContextRevision.projection_status.in_(
+                            ("valid", "repaired", "approved", "deleted")
+                        ),
                     )
                 )
             ).all()
         )
-        missing = set(context_ids) - set(current)
-        if missing:
-            history = (
-                await session.execute(
-                    select(
-                        ContextPublicationReceipt.context_id,
-                        ContextPublicationReceipt.revision_id,
-                    )
-                    .join(
-                        ContextRevision,
-                        ContextRevision.revision_id
-                        == ContextPublicationReceipt.revision_id,
-                    )
-                    .where(
-                        ContextPublicationReceipt.context_id.in_(missing),
-                        ContextRevision.projection_status.in_(eligible),
-                    )
-                    .order_by(
-                        ContextRevision.generation.desc(), ContextRevision.revision_id
-                    )
-                )
-            ).all()
-            for context_id, revision_id in history:
-                current.setdefault(context_id, revision_id)
-        return current
 
     async def snapshot(
         self,
@@ -75,105 +49,83 @@ class CommittedLineageReader:
         workspace_id: str,
         max_nodes: int = 10000,
     ) -> dict:
-        pending = set(roots.values())
-        current = dict(
-            (
-                await session.execute(
-                    select(
-                        DesktopThread.task_id, DesktopThread.current_revision_id
-                    ).where(DesktopThread.workspace_id == workspace_id)
-                )
-            ).all()
-        )
-        proven = (
-            set(
-                (
-                    await session.scalars(
-                        select(ContextPublicationReceipt.revision_id).where(
-                            ContextPublicationReceipt.revision_id.in_(pending)
-                        )
-                    )
-                ).all()
-            )
-            if pending
-            else set()
-        )
-        for context_id, revision_id in roots.items():
-            if context_id not in current or (
-                current[context_id] != revision_id and revision_id not in proven
+        repository = ContextRevisionRepository()
+        nodes, edges = {}, []
+        for context_id, token in sorted(roots.items()):
+            value = await repository.get_by_id(session, token)
+            value = await repository.get_input(session, value.ref)
+            task = await session.get(DesktopThread, context_id)
+            if (
+                task is None
+                or task.workspace_id != workspace_id
+                or value.ref.context_id != context_id
             ):
-                raise ValueError("Lineage 根不是已发布 Context revision")
-        nodes: dict[str, dict] = {}
-        edges: dict[tuple[str, str], dict] = {}
-        while pending:
-            batch = tuple(sorted(pending)[:256])
-            pending.difference_update(batch)
-            rows = list(
-                (
-                    await session.execute(
-                        select(ContextRevision, DesktopThread.workspace_id)
-                        .join(
-                            DesktopThread,
-                            DesktopThread.task_id == ContextRevision.context_id,
-                        )
-                        .where(ContextRevision.revision_id.in_(batch))
+                raise ValueError("provenance root crosses workspace scope")
+            if task.current_revision_id != token:
+                owner = await session.scalar(
+                    select(ContextInputSnapshot.snapshot_key)
+                    .where(
+                        ContextInputSnapshot.revision_id == token,
+                        ContextInputSnapshot.is_published.is_(True),
                     )
-                ).all()
-            )
-            if len(rows) != len(batch):
-                raise ValueError("Lineage 祖先 revision 缺失")
-            for row, workspace in rows:
-                if workspace != workspace_id:
-                    raise ValueError("Lineage 来源越过 workspace 授权边界")
-                if row.revision_id in roots.values() and row.projection_status not in {
-                    "valid",
-                    "repaired",
-                    "approved",
-                    "deleted",
-                }:
-                    raise ValueError("Lineage 根尚未完成发布所需的 projection 审核")
-                nodes[row.revision_id] = {
-                    "revision_id": row.revision_id,
-                    "context_id": row.context_id,
-                    "generation": row.generation,
-                    "redacted": row.deleted_at is not None,
-                }
-            if len(nodes) > max_nodes:
-                raise ValueError("lineage_history_budget_exceeded: 祖先读取未完成")
-            sources = tuple(
-                (
-                    await session.scalars(
-                        select(ContextRevisionSource)
-                        .where(ContextRevisionSource.target_revision_id.in_(batch))
-                        .order_by(
-                            ContextRevisionSource.target_revision_id,
-                            ContextRevisionSource.position,
-                        )
+                    .limit(1)
+                )
+                if owner is None:
+                    raise ValueError(
+                        "provenance root is neither current nor frozen execution input"
                     )
-                ).all()
-            )
-            for source in sources:
-                target = nodes[source.target_revision_id]
-                if target["context_id"] != source.source_context_id:
-                    edges[(source.source_revision_id, source.target_revision_id)] = {
-                        "source_context_id": source.source_context_id,
-                        "source_revision_id": source.source_revision_id,
-                        "target_context_id": target["context_id"],
-                        "target_revision_id": source.target_revision_id,
+            if value.projection_status.value not in {
+                "valid",
+                "repaired",
+                "approved",
+                "deleted",
+            }:
+                raise ValueError("provenance root is not runnable or deleted")
+            nodes[token] = {
+                "revision_id": token,
+                "context_id": context_id,
+                "generation": value.ref.generation,
+                "redacted": value.deleted_at is not None,
+            }
+            for edge in value.sources:
+                source = edge.source
+                if source.context_id == context_id:
+                    continue
+                source_task = await session.get(DesktopThread, source.context_id)
+                if source_task is not None and source_task.workspace_id != workspace_id:
+                    raise ValueError("provenance source crosses workspace scope")
+                nodes.setdefault(
+                    source.revision_id,
+                    {
+                        "revision_id": source.revision_id,
+                        "context_id": source.context_id,
+                        "generation": source.generation,
+                        "redacted": source_task is None
+                        or source_task.deleted_at is not None,
+                    },
+                )
+                edges.append(
+                    {
+                        "source_context_id": source.context_id,
+                        "source_revision_id": source.revision_id,
+                        "target_context_id": context_id,
+                        "target_revision_id": token,
                     }
-                if source.source_revision_id not in nodes:
-                    pending.add(source.source_revision_id)
-        ordered_edges = sorted(
-            edges.values(),
-            key=lambda item: (item["target_revision_id"], item["source_revision_id"]),
+                )
+        if len(nodes) > max_nodes:
+            raise ValueError(
+                "lineage_history_budget_exceeded: current provenance exceeds capacity"
+            )
+        edges.sort(
+            key=lambda item: (item["target_revision_id"], item["source_revision_id"])
         )
         return {
             "schema_version": 1,
             "complete": True,
             "roots": roots,
             "nodes": sorted(nodes.values(), key=lambda item: item["revision_id"]),
-            "edges": ordered_edges,
-            "topology_hash": canonical_hash(ordered_edges),
+            "edges": edges,
+            "topology_hash": canonical_hash(edges),
         }
 
     @staticmethod

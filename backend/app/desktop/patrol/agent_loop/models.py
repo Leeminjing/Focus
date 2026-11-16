@@ -15,11 +15,22 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from focus.persistence.base import Base
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-
-from focus.persistence.base import Base
 
 
 class AgentLoop(Base):
@@ -249,7 +260,7 @@ class LoopContextRecoveryOpportunity(Base):
         String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False
     )
     source_revision_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"), nullable=False
+        String(32), nullable=False
     )
     source_frontier_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     goal_revision: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -343,7 +354,7 @@ class LoopDirective(Base):
     decision_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_decisions.decision_id", ondelete="CASCADE"), nullable=False)
     action_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_actions.action_id", ondelete="CASCADE"), nullable=False)
     target_context_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False)
-    target_context_revision_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"), nullable=False)
+    target_context_revision_id: Mapped[str] = mapped_column(String(32), nullable=False)
     message_id: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -389,7 +400,7 @@ class MessageProvenance(Base):
     __table_args__ = (UniqueConstraint("context_revision_id", "message_id", name="uq_message_provenance"),)
 
     provenance_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    context_revision_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="CASCADE"), nullable=False, index=True)
+    context_revision_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     message_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(24), nullable=False)
     actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

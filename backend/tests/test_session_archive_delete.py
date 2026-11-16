@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # asyncpg 连接池绑定事件循环：模块级共享一个 loop，不得 set_event_loop（避免污染 TestClient）
@@ -26,13 +26,28 @@ _ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
-from backend.app.desktop.contexts.service import ContextService  # noqa: E402
-from backend.app.desktop.contexts.evolution.models import (  # noqa: E402
-    ContextRevision,
-    ContextRevisionSource,
-)
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 from focus.config.app_config import AppConfig  # noqa: E402
+
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionRepository,
+    ContextRevisionSourceContract,
+)
+from backend.app.desktop.contexts.evolution.history import build_revision_history
+from backend.app.desktop.contexts.evolution.models import (  # noqa: E402
+    ContextInputSnapshot,
+    ContextRevision,
+)
+from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
+from backend.app.desktop.contexts.service import ContextService  # noqa: E402
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopRound
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+    PatrolAgent,
+    PatrolContextBinding,
+    PatrolContextRevision,
+)
 
 
 class FakeCheckpointer:
@@ -82,16 +97,8 @@ async def _seed_thread(session, workspace_id: str, title: str) -> str:
 async def _link_child(session, child_task_id: str, parent_task_id: str) -> None:
     parent = await _ensure_revision(session, parent_task_id)
     child = await _ensure_revision(session, child_task_id)
-    session.add(
-        ContextRevisionSource(
-            source_edge_id=uuid.uuid4().hex,
-            target_revision_id=child.revision_id,
-            source_context_id=parent_task_id,
-            source_revision_id=parent.revision_id,
-            source_checkpoint_id=parent.checkpoint_id,
-            position=0,
-        )
-    )
+    source = await ContextRevisionRepository().get_by_id(session, parent.revision_id)
+    child.sources = [ContextRevisionSourceContract(source=source.ref, position=0).model_dump(mode="json")]
     await session.flush()
 
 
@@ -131,18 +138,6 @@ async def _seed_main_run(session, task_id: str, status: str = "pending") -> None
 
 async def _cleanup(workspace_id: str, task_ids: list[str]) -> None:
     async with _SESSION_FACTORY() as session:
-        await session.execute(
-            delete(ContextRevisionSource).where(
-                or_(
-                    ContextRevisionSource.source_context_id.in_(task_ids),
-                    ContextRevisionSource.target_revision_id.in_(
-                        select(ContextRevision.revision_id).where(
-                            ContextRevision.context_id.in_(task_ids)
-                        )
-                    ),
-                )
-            )
-        )
         for tid in task_ids:
             await session.execute(delete(DesktopThread).where(DesktopThread.task_id == tid))
         await session.execute(delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id))
@@ -230,6 +225,78 @@ def test_delete_no_descendant_hard_deletes_and_clears_checkpoint():
     _LOOP.run_until_complete(run())
 
 
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("borrowed_by_round", [False, True])
+def test_delete_releases_destroyed_owners_and_preserves_other_round_input(batch, borrowed_by_round):
+    async def run() -> None:
+        contexts = _contexts()
+        repository = ContextRevisionRepository()
+        run_id, curator_id, round_id, loop_id = (uuid.uuid4().hex for _ in range(4))
+        async with _SESSION_FACTORY.begin() as session:
+            workspace_id = await _seed_workspace(session)
+            deleted_id = await _seed_thread(session, workspace_id, "delete")
+            keeper_id = await _seed_thread(session, workspace_id, "keeper")
+            deleted = await _ensure_revision(session, deleted_id)
+            deleted.history_payload = build_revision_history([], [{
+                "role": "human", "id": "frozen", "content": "borrowed frozen input",
+            }]).model_dump(mode="json")
+            await _ensure_revision(session, keeper_id)
+            await session.flush()
+            deleted_ref = (await repository.current(session, deleted_id)).ref
+            keeper_ref = (await repository.current(session, keeper_id)).ref
+            session.add(DesktopRun(run_id=run_id, task_id=deleted_id, agent_id=f"main:{deleted_id}",
+                                   kind="main", status="interrupted", context_revision_id=keeper_ref.revision_id))
+            agent_id, binding_id = uuid.uuid4().hex, uuid.uuid4().hex
+            session.add(PatrolAgent(agent_id=agent_id, task_id=deleted_id,
+                                    checkpoint_ns=agent_id, system_prompt="", frozen_messages=[],
+                                    equipment={}, mode="context_curator"))
+            await session.flush()
+            session.add(PatrolContextBinding(binding_id=binding_id, agent_id=agent_id,
+                                             root_context_id=deleted_id, control_state="stopped"))
+            await session.flush()
+            session.add(PatrolContextRevision(revision_id=curator_id, binding_id=binding_id,
+                                              source_checkpoint_id=deleted_ref.checkpoint_id,
+                                              base_binding_revision=0, status="interrupted"))
+            await session.flush()
+            await repository.freeze(session, keeper_ref, owner_kind="run", owner_id=run_id)
+            await repository.freeze(session, deleted_ref, owner_kind="context_curator", owner_id=curator_id)
+            if borrowed_by_round:
+                session.add(AgentLoop(loop_id=loop_id, workspace_id=workspace_id,
+                                      initial_context_id=keeper_id, holder_id="keeper", status="running"))
+                await session.flush()
+                session.add(LoopRound(round_id=round_id, loop_id=loop_id, number=1,
+                                      authority_revision=1, goal_revision=1, frontier_hash="a" * 64,
+                                      workspace_revision=1, status="observed"))
+                await session.flush()
+                await repository.freeze(session, deleted_ref, owner_kind="round", owner_id=round_id)
+        try:
+            if batch:
+                await contexts.delete_many([deleted_id])
+            else:
+                await contexts.delete(deleted_id)
+            async with _SESSION_FACTORY() as session:
+                assert await session.get(DesktopThread, deleted_id) is None
+                assert await session.get(DesktopRun, run_id) is None
+                assert await session.get(PatrolContextRevision, curator_id) is None
+                remaining = list((await session.scalars(select(ContextInputSnapshot).where(
+                    ContextInputSnapshot.owner_id.in_((run_id, curator_id, round_id))
+                ))).all())
+                assert [(snapshot.owner_kind, snapshot.owner_id) for snapshot in remaining] == (
+                    [("round", round_id)] if borrowed_by_round else []
+                )
+                if borrowed_by_round:
+                    assert await session.get(LoopRound, round_id) is not None
+                    view = await ContextRevisionReader(repository, contexts.checkpointer).read(session, deleted_ref, "display")
+                    assert [message["content"] for message in view.messages] == ["borrowed frozen input"]
+        finally:
+            async with _SESSION_FACTORY.begin() as session:
+                await repository.release_owners(session, (("run", run_id), ("context_curator", curator_id), ("round", round_id)))
+                await session.execute(delete(AgentLoop).where(AgentLoop.loop_id == loop_id))
+            await _cleanup(workspace_id, [deleted_id, keeper_id])
+
+    _LOOP.run_until_complete(run())
+
+
 def test_delete_with_descendant_keeps_tombstone_and_preserves_child():
     async def run() -> None:
         checkpointer = FakeCheckpointer()
@@ -248,14 +315,9 @@ def test_delete_with_descendant_keeps_tombstone_and_preserves_child():
                 child_row = await session.get(DesktopThread, child)
                 assert parent_row is not None and parent_row.deleted_at is not None
                 assert child_row is not None and child_row.deleted_at is None and child_row.archived_at is None
-                source = await session.scalar(
-                    select(ContextRevisionSource).where(
-                        ContextRevisionSource.source_context_id == parent
-                    )
-                )
-                assert source is not None
-                target = await session.get(ContextRevision, source.target_revision_id)
-                assert target.context_id == child
+                target = await session.scalar(select(ContextRevision).where(ContextRevision.context_id == child))
+                assert len(target.sources) == 1
+                assert target.sources[0]["source"]["context_id"] == parent
             assert checkpointer.deleted_threads == [parent_thread_id]
         finally:
             await _cleanup(ws, [parent, child])
@@ -363,14 +425,9 @@ def test_batch_delete_with_descendant_keeps_tombstone_and_preserves_child():
                 assert parent_row is not None and parent_row.deleted_at is not None
                 assert child_row is not None and child_row.deleted_at is None
                 assert leaf_row is None
-                source = await session.scalar(
-                    select(ContextRevisionSource).where(
-                        ContextRevisionSource.source_context_id == parent
-                    )
-                )
-                assert source is not None
-                target = await session.get(ContextRevision, source.target_revision_id)
-                assert target.context_id == child
+                target = await session.scalar(select(ContextRevision).where(ContextRevision.context_id == child))
+                assert len(target.sources) == 1
+                assert target.sources[0]["source"]["context_id"] == parent
             assert set(checkpointer.deleted_threads) == {parent_thread_id, leaf_thread_id}
         finally:
             await _cleanup(ws, [parent, child, leaf])

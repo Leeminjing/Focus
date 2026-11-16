@@ -1,13 +1,8 @@
-r"""本文件对外提供当前、历史及多来源 Context revision 的统一只读端口。
+"""本文件对外提供精确当前状态或 owner 输入的 authored、execution、semantic 与 display 读取。
 
-输入为唯一 `ContextRevisionRef`、读取视图、可选分页边界和调用方 AsyncSession；输出为 authored、
-execution、semantic、display、display page、checkpoint、historical、frontier-summary 或 deleted-source 投影。
-具体工作流为从不可变 repository 解析 revision，按 payload mode 加载精确 checkpoint；checkpoint-backed revision 的 authored/display
-保留原始 checkpoint，execution 优先使用 settlement 时持久化的协议合法投影；分页读取只序列化命中页，且不追随最新 checkpoint。
-V1 semantic 从 canonical checkpoint 适配可证明的宿主来源，UI codec 仅用于显示；旧记录和 hash 不被改写。
-V2 display 消费统一 history.display 关系，合同及冻结引用只展示一次，原输入仍在 authored／execution 中。
-Definition display 保留无法解释为模型消息的作者原文，合法消息维持稳定身份和合同展示关系；读取不修改执行投影或审批状态。
-示例：`await reader.read(session, ref, "display")`。
+输入为唯一 Context 引用、视图与调用方事务；输出为保留消息身份的正文、分页或来源身份投影。
+具体工作流为仓储精确寻址，再按 typed history 或迁移后的 checkpoint 构造消费面；semantic 排除运行时控制且不追随 latest。
+示例：await ContextRevisionReader(repository, checkpointer).read(session, ref, "semantic")。
 """
 
 from __future__ import annotations
@@ -16,6 +11,17 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from focus.history import (
+    deserialize_history_message,
+    history_records,
+    items_to_messages,
+    legacy_to_items,
+    semantic_messages,
+    serialize_history_message,
+    validate_items,
+)
+from focus.history.display import display_messages
+from focus.runtime.runs.events import serialize_message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.contexts.evolution.repository import (
@@ -37,10 +43,6 @@ from backend.app.desktop.contexts.evolution.schemas import (
     DeletedContextSourceView,
 )
 from backend.app.desktop.persistence.models import DesktopThread
-from focus.runtime.runs.events import serialize_message
-from focus.history import deserialize_history_message, history_records, items_to_messages, legacy_to_items, semantic_messages, serialize_history_message, validate_items
-from focus.history.display import display_messages
-
 
 ContextRevisionViewKind = Literal[
     "authored",
@@ -247,37 +249,12 @@ class ContextRevisionReader:
         session: AsyncSession,
         revision: ContextRevisionContract,
     ) -> DeletedContextSourceView:
-        sources: list[DeletedContextSource] = []
+        sources = []
         for edge in revision.sources:
-            source = await self._repository.get(session, edge.source)
-            source_identity = (
-                await session.get(DesktopThread, edge.source.context_id)
-                if session is not None
-                else None
-            )
-            identity_deleted = (
-                source_identity is None
-                if session is not None
-                else False
-            ) or (
-                source_identity is not None and source_identity.deleted_at is not None
-            )
-            deleted = (
-                identity_deleted
-                or source.deleted_at is not None
-                or source.projection_status is ContextRevisionProjectionStatus.DELETED
-            )
-            sources.append(
-                DeletedContextSource(
-                    position=edge.position,
-                    source=edge.source,
-                    deleted=deleted,
-                    deleted_at=(
-                        source.deleted_at
-                        or (source_identity.deleted_at if source_identity is not None else None)
-                    ),
-                )
-            )
+            identity = await session.get(DesktopThread, edge.source.context_id) if session is not None else None
+            sources.append(DeletedContextSource(position=edge.position, source=edge.source,
+                deleted=identity is None or identity.deleted_at is not None,
+                deleted_at=identity.deleted_at if identity is not None else None))
         return DeletedContextSourceView(target=revision.ref, sources=tuple(sources))
 
     async def _checkpoint(
@@ -367,7 +344,7 @@ class ContextRevisionReader:
         prefix = [record for identity in groups for record in opaque.get(
             identity, (by_id[identity],) if identity in by_id else ()
         )]
-        return tuple([*prefix, *(message for message in visible if message.get("id") not in groups)])
+        return (*prefix, *(message for message in visible if message.get("id") not in groups))
 
     @staticmethod
     def _definition_display(

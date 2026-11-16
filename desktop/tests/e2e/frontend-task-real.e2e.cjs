@@ -1,5 +1,5 @@
 /* 本文件对外提供生产任务三栏与真实 Main/材料链的 Electron 验收。
- * 输入为隔离 HTTP 服务、任务/材料/已发布关系身份及截图目录；输出为全图精确版本检查、显式任务打开、真实文件预览、Run/SSE、记忆与独立会话断言。
+ * 输入为隔离 HTTP 服务、任务/材料/已发布关系身份及截图目录；输出为全图当前内容与状态身份检查、显式任务打开、真实文件预览、Run/SSE、记忆与独立会话断言。
  * 具体工作流为加载生产 index，显式进入任务，预览磁盘材料并提交，检查真实终态会话，再进入独立会话验证身份隔离并记录窄屏布局。
  * 示例：electron frontend-task-real.e2e.cjs；模型采样由 Python 夹具替换，HTTP/运行图/存储均为生产实现。
  */
@@ -23,7 +23,10 @@ app.whenReady().then(async () => {
       preload: path.join(__dirname, "../fixtures/frontend-task-real-preload.cjs"),
     },
   });
-  const execute = code => win.webContents.executeJavaScript(code, true);
+  const execute = async code => {
+    try { return await win.webContents.executeJavaScript(code, true); }
+    catch (error) { throw new Error(`${error.message}: ${code}`, { cause: error }); }
+  };
   win.webContents.on('console-message',(_event,level,message)=>{if(level>=3)console.error(message)});
   const until = async code => {
     const end = Date.now() + 20000;
@@ -49,6 +52,7 @@ app.whenReady().then(async () => {
   const previousTask = await execute('state.activeTaskId');
   await execute(`document.querySelector('[data-context-id="${map.context_id}"]').click()`);
   await until('document.querySelector("[data-patrol-context-content]").textContent.includes("全图真实发布内容")');
+  await until('Boolean(mapContextInspector.selection()?.revisionId)');
   assert.equal(await execute('mapContextInspector.selection().revisionId'),map.revision_id);
   assert.equal(await execute('state.activeTaskId'),previousTask);
   await shot('real-global-map-inspection');
@@ -63,7 +67,7 @@ app.whenReady().then(async () => {
   await execute(`document.querySelector('[data-material-id="${process.env.FOCUS_TASK_REAL_MATERIAL}"] [data-action=open-material]').click()`);
   await until('document.querySelector("#filePanel")?.textContent.includes("真实磁盘材料正文")');
   await shot("real-task-material");
-  await execute(`document.querySelector('[data-panel-action="close"]').click()`);
+  await execute(`document.querySelector('[data-viewer-close]').click()`);
   await until('!document.querySelector("#filePanel")');
   await execute(`document.querySelector('[data-material-id="${process.env.FOCUS_TASK_REAL_MATERIAL}"] [data-action=toggle-run-material]').click()`);
   await until('materialSelection().bindings.length === 1');

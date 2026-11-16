@@ -12,23 +12,23 @@ import importlib
 from focus.persistence.base import Base
 from sqlalchemy import CheckConstraint, UniqueConstraint
 
-from backend.app.desktop.persistence import registry as persistence_registry
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
     ContextRevisionProjectionStatus,
 )
 from backend.app.desktop.contexts.evolution.models import (
+    ContextInputSnapshot,
     ContextRevision,
-    ContextRevisionSource,
 )
+from backend.app.desktop.persistence import registry as persistence_registry
 from backend.app.desktop.persistence.models import DesktopThread
 
 
 def test_context_revision_tables_register_once() -> None:
     expected = {
-        "desktop_context_revisions",
-        "desktop_context_revision_sources",
+        "desktop_context_states",
+        "desktop_context_input_snapshots",
     }
     assert expected <= set(Base.metadata.tables)
     before = tuple(name for name in Base.metadata.tables if name in expected)
@@ -39,20 +39,20 @@ def test_context_revision_tables_register_once() -> None:
 
 def test_context_revision_model_contracts() -> None:
     revision_constraints = ContextRevision.__table__.constraints
-    source_constraints = ContextRevisionSource.__table__.constraints
+    source_constraints = ContextInputSnapshot.__table__.constraints
     assert any(
         isinstance(item, UniqueConstraint)
-        and item.name == "uq_context_revision_generation"
+        and item.name == "uq_context_state_context"
         for item in revision_constraints
     )
     assert any(
         isinstance(item, CheckConstraint)
-        and item.name == "ck_context_revision_checkpoint_payload"
+        and item.name == "ck_context_state_checkpoint_payload"
         for item in revision_constraints
     )
     assert any(
         isinstance(item, UniqueConstraint)
-        and item.name == "uq_context_revision_source_position"
+        and item.name == "uq_context_input_snapshot_owner"
         for item in source_constraints
     )
     assert "current_revision_id" in DesktopThread.__table__.columns

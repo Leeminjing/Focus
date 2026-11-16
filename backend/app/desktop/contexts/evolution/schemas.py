@@ -1,10 +1,8 @@
-r"""本文件对外提供 Context revision、版本化来源与执行历史寻址合同。
+"""本文件对外提供 Context 当前 token、候选和 owner 冻结输入的严格寻址合同。
 
-输入为 Context/revision identity、执行 checkpoint、投影载荷和有序来源；输出为冻结且严格
-校验的 `ContextRevisionRef`、`ContextRevisionSourceContract` 与 `ContextRevisionContract`。
-具体工作流为先把分散的 thread/namespace/checkpoint 收束为唯一 revision 引用，再由来源合同
-组合精确历史版本，最后由完整 revision 合同跨 repository、reader 与 publisher 边界传递。
-示例：`config = ContextRevisionRef(...).checkpoint_config()`。
+输入为 Context 身份、版本、执行 checkpoint、typed 内容和直接来源；输出为精确引用及不可变数据合同。
+具体工作流为收束执行身份、检查消息与正文一致性，再跨仓储和消费端传递；Revision 命名不代表永久版本档案。
+示例：ContextRevisionRef(...).checkpoint_config()。
 """
 
 from __future__ import annotations
@@ -13,8 +11,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 from focus.history import HistoryPayload, history_records
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ContextRevisionPayloadMode(StrEnum):

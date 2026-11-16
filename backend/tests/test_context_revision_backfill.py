@@ -15,7 +15,6 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-
 MIGRATIONS = (
     Path(__file__).parents[1]
     / "packages"
@@ -201,7 +200,7 @@ def test_context_revision_backfill_preserves_legacy_state(isolated_postgres_data
                 )
             ).scalar_one() == 0
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "b0c1d2e3f4a5")
         with engine.connect() as connection:
             second_revision_ids = dict(
                 connection.execute(
@@ -217,5 +216,5 @@ def test_context_revision_backfill_preserves_legacy_state(isolated_postgres_data
                 text("SELECT COUNT(*) FROM desktop_context_revision_sources edge JOIN desktop_context_revisions target ON target.revision_id = edge.target_revision_id WHERE target.context_id IN ('root', 'derived', 'compressed', 'managed')")
             ).scalar_one() == 3
     finally:
-        command.upgrade(config, "head")
+        command.upgrade(config, "b0c1d2e3f4a5")
         engine.dispose()

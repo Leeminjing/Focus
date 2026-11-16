@@ -5,18 +5,24 @@
 只替换模型响应；全库 Worker 不读取其他用例遗留任务。示例：pytest 本文件 -q。
 """
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
-import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
-
 import asyncio
 import uuid
+from copy import deepcopy
+
 import pytest
 from fastapi.testclient import TestClient
+from focus.models.responses import FocusResponsesChatModel
 from langchain_core.messages import AIMessageChunk
 from sqlalchemy import select, text
+
+import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    PatrolDeploymentDefinition,
+    PatrolDraft,
+)
 from backend.app.gateway.app import app
-from backend.app.desktop.persistence.models import PatrolDeploymentDefinition, PatrolDraft, DesktopRun
-from focus.models.responses import FocusResponsesChatModel
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 SESSION = {"X-Focus-Session": "focus-dev-session"}
@@ -230,7 +236,7 @@ def test_complete_budget_and_empty_deployment(client):
 def test_resume_uses_original_run_and_exact_interrupted_graph(client, monkeypatch):
     from langchain.agents.middleware import AgentMiddleware
     from langgraph.types import interrupt
-    import backend.app.desktop.composition.service as service_module
+
     original = _desktop_conversations_compression_service.make_lead_agent
     class PauseBeforeSampling(AgentMiddleware):
         async def abefore_model(self, state, runtime):
@@ -264,11 +270,17 @@ def test_resume_uses_original_run_and_exact_interrupted_graph(client, monkeypatc
     assert settled["checkpoint_ns"] == run["checkpoint_ns"] and len(requests) == 1
 
 
-def test_source_versions_runtime_images_and_path_boundary(client):
+def test_latest_context_frozen_import_runtime_images_and_path_boundary(client):
     from datetime import UTC, datetime
+
+    from focus.history import content_hash, serialize_history_message
     from langchain_core.messages import HumanMessage, SystemMessage
-    from backend.app.desktop.contexts.evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
-    from focus.history import serialize_history_message, content_hash
+
+    from backend.app.desktop.contexts.evolution import (
+        ContextRevisionContract,
+        ContextRevisionRef,
+        ContextRevisionRepository,
+    )
     http, task, path, requests = client
     repository = ContextRevisionRepository()
     async def seed(context, label, generation):
@@ -278,10 +290,13 @@ def test_source_versions_runtime_images_and_path_boundary(client):
             {"messages": [HumanMessage(content=label, id=label), SystemMessage(content="旧运行权限", id="runtime-"+label, additional_kwargs={"focus_context": {"origin": "runtime", "kind": "world_state_update", "scope": "runtime"}})]}, as_node="model")
         state = await graph.aget_state(config)
         records = tuple(serialize_history_message(m) for m in state.values["messages"])
-        ref = ContextRevisionRef(context_id=context["task_id"], revision_id=uuid.uuid4().hex, generation=generation,
-            execution_thread_id=context["thread_id"], checkpoint_ns="", checkpoint_id=config["configurable"]["checkpoint_id"], payload_mode="checkpoint")
         async with service.session_factory() as session:
+            current = await repository.current(session, context["task_id"])
+            ref = ContextRevisionRef(context_id=context["task_id"], revision_id=uuid.uuid4().hex,
+                generation=current.ref.generation + 1 if current else 1, execution_thread_id=context["thread_id"],
+                checkpoint_ns="", checkpoint_id=config["configurable"]["checkpoint_id"], payload_mode="checkpoint")
             await repository.insert(session, ContextRevisionContract(ref=ref, execution_messages=records, content_hash=content_hash(records), projection_status="valid", origin_kind="root", created_at=datetime.now(UTC)))
+            await repository.switch_current(session, ref, current.ref if current else None)
             await session.commit()
         return ref
     second = http.post(f"/desktop/api/workspaces/{task['workspace_id']}/threads", headers=SESSION, json={"thread_id": "source-"+uuid.uuid4().hex, "title": "第二来源"}).json()
@@ -291,13 +306,26 @@ def test_source_versions_runtime_images_and_path_boundary(client):
     draft = save(http, draft, {"schema_version": 2, "entries": []}).json()
     for source in (first_ref, second_ref):
         response = http.post(f"/desktop/api/drafts/{draft['draft_id']}/sources", headers=SESSION,
-            json={"kind": "context", "context_id": source.context_id, "revision_id": source.revision_id, "draft_revision": draft["draft_revision"]})
+            json={"kind": "context", "context_id": source.context_id, "draft_revision": draft["draft_revision"]})
         assert response.status_code == 200, response.text
         draft = response.json()
     assert [e["payload"]["content"] for e in draft["authoring_document"]["entries"]] == ["第一版本", "第二来源"]
+    frozen_entries = deepcopy(draft["authoring_document"]["entries"])
+    frozen_sources = [entry["source_ref"] for entry in frozen_entries]
+    endpoint = f"/desktop/api/drafts/{draft['draft_id']}"
+    preview = http.post(endpoint + "/source-preview", headers=SESSION,
+                        json={"kind": "context", "context_id": task["task_id"]}).json()
     http.portal.call(seed, task, "父会话前进", 21)
+    conflict = http.post(endpoint + "/sources", headers=SESSION, json={
+        **preview["source_ref"], "draft_revision": draft["draft_revision"],
+        "selected_row_ids": [preview["rows"][0]["source_row_id"]],
+        "source_fingerprint": preview["source_fingerprint"], "before_entry_id": None})
+    assert conflict.status_code == 409 and conflict.json()["detail"]["code"] == "source_changed"
+    assert http.get(endpoint, headers=SESSION).json()["authoring_document"]["entries"] == frozen_entries
+    status = http.get(endpoint + "/source-status", headers=SESSION).json()["sources"]
+    assert all(status[ref]["status"] == "available" for ref in frozen_sources)
     historical = http.post(f"/desktop/api/drafts/{draft['draft_id']}/sources", headers=SESSION,
-        json={"kind": "context", "revision_id": first_ref.revision_id, "include_historical_runtime": True, "message_ids": ["runtime-第一版本"], "draft_revision": draft["draft_revision"]})
+        json={"kind": "context", "context_id": task["task_id"], "include_historical_runtime": True, "message_ids": ["runtime-第一版本"], "draft_revision": draft["draft_revision"]})
     assert historical.status_code == 200, historical.text
     draft = historical.json()
     assert draft["authoring_document"]["entries"][-1]["reference_only"]
@@ -326,7 +354,8 @@ def test_source_versions_runtime_images_and_path_boundary(client):
         async with app.state.desktop_service.session_factory() as session:
             definition = await session.scalar(select(PatrolDeploymentDefinition).where(PatrolDeploymentDefinition.run_id == deployment.json()["run_id"]))
             refs = [s["source"] for s in definition.sources.values()]
-            assert any(r.get("revision_id") == first_ref.revision_id and r["checkpoint_id"] == first_ref.checkpoint_id for r in refs)
+            assert any(r.get("context_id") == first_ref.context_id and r.get("checkpoint_id") == first_ref.checkpoint_id for r in refs)
+            assert all("revision_id" not in r for r in refs if r.get("kind") == "context")
     http.portal.call(source_audit)
 
 
@@ -371,17 +400,18 @@ def test_preview_equipment_binding_and_definition_edit(client, monkeypatch):
 
 def test_new_model_tool_call_executes_once_after_simulated_history(client, monkeypatch):
     import json
-    from pathlib import Path
+
+    from focus.tools.builtins import workspace_tools
     from langchain_core.outputs import ChatGenerationChunk
     http, task, path, requests = client
     path.joinpath("actual.txt").write_text("真实工具证据", encoding="utf-8")
     effects = []
-    original_read = Path.read_bytes
-    def spy(target):
+    original_read = workspace_tools.read_utf8
+    def spy(target, *args, **kwargs):
         if target.name == "actual.txt":
             effects.append(str(target))
-        return original_read(target)
-    monkeypatch.setattr(Path, "read_bytes", spy)
+        return original_read(target, *args, **kwargs)
+    monkeypatch.setattr(workspace_tools, "read_utf8", spy)
     async def stream(model, messages, stop=None, run_manager=None, **kwargs):
         requests.append(model.request_payload(messages, **kwargs))
         if len(requests) == 1:
@@ -448,8 +478,8 @@ def test_electron_workbench_with_actual_api_sources_and_deployment(client, tmp_p
     import subprocess
     import threading
     import time
-    from pathlib import Path
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
     http, task, path, requests = client
     draft = open_draft(http, task)
     draft = save(http, draft, {"schema_version": 2, "entries": []}).json()
@@ -504,19 +534,21 @@ def test_electron_workbench_with_actual_api_sources_and_deployment(client, tmp_p
 def test_patrol_resume_keeps_uncertain_tool_ledger_and_never_repeats_effect(client, monkeypatch):
     import json
     import time
-    from pathlib import Path
+
+    from focus.tools.builtins import workspace_tools
     from langchain_core.outputs import ChatGenerationChunk
     from langgraph.types import interrupt
+
     from backend.app.desktop.runs.execution_attempts import ToolExecutionLedger
     http, task, path, requests = client
     path.joinpath("uncertain.txt").write_text("外部效果只发生一次", encoding="utf-8")
     effects = []
-    original_read = Path.read_bytes
-    def spy(target):
+    original_read = workspace_tools.read_utf8
+    def spy(target, *args, **kwargs):
         if target.name == "uncertain.txt":
             effects.append(str(target))
-        return original_read(target)
-    monkeypatch.setattr(Path, "read_bytes", spy)
+        return original_read(target, *args, **kwargs)
+    monkeypatch.setattr(workspace_tools, "read_utf8", spy)
     async def stream(model, messages, stop=None, run_manager=None, **kwargs):
         requests.append(model.request_payload(messages, **kwargs))
         yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[{"name": "read_file", "args": json.dumps({"path": "uncertain.txt"}), "id": "uncertain-call", "index": 0}]))
@@ -551,11 +583,12 @@ def test_patrol_resume_keeps_uncertain_tool_ledger_and_never_repeats_effect(clie
 
 def test_legacy_interrupt_keeps_original_namespace_without_new_definition(client, monkeypatch):
     import time
+
     from langchain.agents.middleware import AgentMiddleware
     from langgraph.types import interrupt
+
     from backend.app.desktop.persistence.models import PatrolAgent
     from backend.app.desktop.runs.orchestration.models import RunDispatch
-    import backend.app.desktop.composition.service as service_module
     original = _desktop_conversations_compression_service.make_lead_agent
     class PauseLegacy(AgentMiddleware):
         async def abefore_model(self, state, runtime):
@@ -714,9 +747,15 @@ def test_continue_keeps_pinned_checkpoint_when_another_run_advances_after_admiss
 @pytest.mark.parametrize("provider", ["openai", "deepseek"])
 def test_contract_rewrite_and_ordered_roles_reach_actual_request_without_approval(client, provider):
     from datetime import UTC, datetime
+
+    from focus.history import content_hash, serialize_history_message
     from langchain_core.messages import HumanMessage
-    from backend.app.desktop.contexts.evolution import ContextRevisionRepository, ContextRevisionContract, ContextRevisionRef
-    from focus.history import serialize_history_message, content_hash
+
+    from backend.app.desktop.contexts.evolution import (
+        ContextRevisionContract,
+        ContextRevisionRef,
+        ContextRevisionRepository,
+    )
     http, task, _, requests = client
     service = app.state.desktop_service
     service.app_config.get_model("deepseek-v4-flash").provider = provider
@@ -725,15 +764,20 @@ def test_contract_rewrite_and_ordered_roles_reach_actual_request_without_approva
         original = HumanMessage(content="原合同", id="approved-contract", additional_kwargs={"focus_context": {"kind": "task_contract", "origin": "direct_user", "approved": True}})
         config = await graph.aupdate_state({"configurable": {"thread_id": task["thread_id"], "checkpoint_ns": ""}}, {"messages": [original]}, as_node="model")
         records = (serialize_history_message(original),)
-        ref = ContextRevisionRef(context_id=task["task_id"], revision_id=uuid.uuid4().hex, generation=20, execution_thread_id=task["thread_id"], checkpoint_ns="", checkpoint_id=config["configurable"]["checkpoint_id"], payload_mode="checkpoint")
         async with service.session_factory() as session:
-            await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, execution_messages=records, content_hash=content_hash(records), projection_status="valid", origin_kind="root", created_at=datetime.now(UTC)))
+            repository = ContextRevisionRepository()
+            current = await repository.current(session, task["task_id"])
+            ref = ContextRevisionRef(context_id=task["task_id"], revision_id=uuid.uuid4().hex,
+                generation=current.ref.generation + 1 if current else 1, execution_thread_id=task["thread_id"],
+                checkpoint_ns="", checkpoint_id=config["configurable"]["checkpoint_id"], payload_mode="checkpoint")
+            await repository.insert(session, ContextRevisionContract(ref=ref, execution_messages=records, content_hash=content_hash(records), projection_status="valid", origin_kind="root", created_at=datetime.now(UTC)))
+            await repository.switch_current(session, ref, current.ref if current else None)
             await session.commit()
         return ref, content_hash(records)
     ref, original_hash = http.portal.call(seed_contract)
     draft = save(http, open_draft(http, task), {"schema_version": 2, "entries": []}).json()
     draft = http.post(f"/desktop/api/drafts/{draft['draft_id']}/sources", headers=SESSION,
-        json={"kind": "context", "revision_id": ref.revision_id, "draft_revision": draft["draft_revision"]}).json()
+        json={"kind": "context", "context_id": ref.context_id, "draft_revision": draft["draft_revision"]}).json()
     doc = draft["authoring_document"]
     contract = doc["entries"][0]
     contract["payload"]["content"], contract["edited_from"] = "改写合同", contract["source_ref"]
@@ -756,7 +800,9 @@ def test_contract_rewrite_and_ordered_roles_reach_actual_request_without_approva
     assert requests[-1] == plan["request"]
     async def unchanged_source():
         async with service.session_factory() as session:
-            from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
+            from backend.app.desktop.contexts.evolution.reader import (
+                ContextRevisionReader,
+            )
             reader = ContextRevisionReader(ContextRevisionRepository(), service.checkpointer)
             history = await reader.read(session, ref, "execution")
             assert content_hash(history.messages) == original_hash

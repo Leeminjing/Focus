@@ -2,6 +2,8 @@
 
 2026-11-15，用户明确决定废弃“将已有 Context 和初始 Run 接入自动 Loop”的旧启动方式，并清理专属接口、执行代码及测试。此前迁移文档中的“保留业务；入口待承接”由本决定取代。
 
+2026-11-16 补充：下文原“保留普通 Context 编辑、派生”的范围已被 [上下文手术退役决定](context-surgery-retirement.md) 覆盖。普通会话不再提供手工派生、定义重写和投影审批；Session Patrol 上下文编辑、Context Curator 与 Workspace Patrol 自动策展继续保留。旧 Loop 启动线的退役范围不变。
+
 ## 现行启动流程
 
 自动 Loop 统一使用 Workspace Patrol：
@@ -31,7 +33,7 @@
 
 ## 保留的共享能力
 
-- 普通 Context 的创建、编辑、派生、查看和 Main Run，以及 Session Patrol。
+- 普通会话创建、当前 Context 查看和 Main Run，以及 Session Patrol；上下文的派生与改写由 Patrol 自动策展负责。
 - Workspace Patrol 的统一输入、首线程准备、工作线组织和终态后继。
 - Mission 的工作区输入处理、任务进度、观察、执行事实和完成验证。
 - 权限、固定无上限预算与用量统计、授权收窄及撤销、暂停/继续/停止、人工 gate 和等待恢复。

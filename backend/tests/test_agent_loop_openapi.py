@@ -27,7 +27,6 @@ def test_agent_loop_openapi_surface_is_complete() -> None:
         "/desktop/api/agent-loops/{loop_id}/facts": "get",
         "/desktop/api/workspaces/{workspace_id}/context-evolution": "get",
         "/desktop/api/workspaces/{workspace_id}/context-tree": "get",
-        "/desktop/api/context-revisions/{revision_id}": "get",
         "/desktop/api/context-revisions/{revision_id}/message-provenance": "get",
         "/desktop/api/workspaces/{workspace_id}/slots": "get",
     }
@@ -36,6 +35,11 @@ def test_agent_loop_openapi_surface_is_complete() -> None:
         assert path in paths
         assert method in paths[path]
     assert "get" in paths["/desktop/api/agent-loops/{loop_id}/missions"]
+    for path in (
+        "/desktop/api/contexts/{context_id}/revisions",
+        "/desktop/api/context-revisions/{revision_id}",
+    ):
+        assert path not in paths
 
 
 def test_loop_mutation_routes_require_documented_request_bodies() -> None:

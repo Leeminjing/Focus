@@ -1,25 +1,29 @@
-r"""本文件对外提供 SemanticDerivationArtifactRepository。
+r"""本文件对外提供 SemanticDerivationArtifactRepository 与 install_context_index_lifecycle。
 
 输入为独立 AsyncSession、完整 Index、planning session 或 stage；输出为校验后的持久缓存、幂等 session 和不可变 artifact。
 具体工作流为校验数据库列与 payload 身份，唯一键竞争采用首个提交赢家；一般 stage 与旧索引仍拒绝改写。
-cached_local_index 只为权威祖先查找同局部合同的基线，不将旧综合合同冒充精确命中；调用方以短事务发布完整批次。
-示例：index = await repository.cached_local_index(...)；综合模型配置改变时仍可复用符合原局部合同的证据。
+局部 proof 按 Context 与段合同独立复用；完整 artifact 只按本次精确输入读取。
+示例：index = await repository.cached_index(...)；综合模型配置改变时仍可复用符合原局部合同的段缓存。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.desktop.contexts.evolution.input_lifecycle import (
+    register_context_input_release_handler,
+)
 from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     stable_expansion_hash,
 )
 from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopContextDerivationArtifact,
     LoopPlanningRetrievalSession,
+    LoopSegmentProjectionRecord,
     LoopSemanticIndexArtifact,
 )
 from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_index import (
@@ -31,6 +35,73 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval 
 
 
 class SemanticDerivationArtifactRepository:
+    def __init__(self) -> None:
+        install_context_index_lifecycle()
+
+    async def prune_indexes(self, session: AsyncSession, context_id: str) -> int:
+        """Keep current/owned input indexes and active planning references only.
+
+        Completed index payloads contain the whole frozen input. They are caches,
+        not a replacement Context history archive. Local proofs stay cached for
+        living Contexts; deleted sources retain only proofs of owned indexes.
+        """
+        from backend.app.desktop.contexts.evolution.models import (
+            ContextInputSnapshot,
+            ContextRevision,
+        )
+        from backend.app.desktop.patrol.agent_loop.models import LoopRound
+        from backend.app.desktop.persistence.models import DesktopThread
+
+        # Serialize against current publication and owner snapshot release.
+        context = await session.get(DesktopThread, context_id, with_for_update=True)
+        protected_tokens = set(await session.scalars(
+            select(ContextRevision.revision_id).where(ContextRevision.context_id == context_id)
+        ))
+        protected_tokens.update(await session.scalars(
+            select(ContextInputSnapshot.revision_id).where(
+                ContextInputSnapshot.context_id == context_id,
+                ContextInputSnapshot.is_published.is_(True),
+            )
+        ))
+        planning_payloads = await session.scalars(
+            select(LoopPlanningRetrievalSession.payload)
+            .join(LoopRound, LoopRound.round_id == LoopPlanningRetrievalSession.round_id)
+            .where(
+                LoopRound.status.not_in(("settled", "error", "superseded")),
+            )
+        )
+        protected_indexes = {
+            identity for payload in planning_payloads
+            for identity in payload.get("authorized_index_ids", ())
+        }
+        query = delete(LoopSemanticIndexArtifact).where(
+            LoopSemanticIndexArtifact.context_id == context_id,
+        )
+        if protected_tokens:
+            query = query.where(LoopSemanticIndexArtifact.revision_id.not_in(protected_tokens))
+        if protected_indexes:
+            query = query.where(LoopSemanticIndexArtifact.index_id.not_in(protected_indexes))
+        result = await session.execute(query.execution_options(synchronize_session=False))
+        if context is None:
+            # A surviving owner may still replay a complete index after its
+            # source conversation is deleted. Keep precisely its local proofs.
+            retained_payloads = await session.scalars(
+                select(LoopSemanticIndexArtifact.payload).where(
+                    LoopSemanticIndexArtifact.context_id == context_id
+                )
+            )
+            proof_ids = {
+                identity for payload in retained_payloads
+                for identity in (payload.get("inheritance") or {}).get("record_ids", ())
+            }
+            proof_query = delete(LoopSegmentProjectionRecord).where(
+                LoopSegmentProjectionRecord.context_id == context_id
+            )
+            if proof_ids:
+                proof_query = proof_query.where(LoopSegmentProjectionRecord.record_id.not_in(proof_ids))
+            await session.execute(proof_query.execution_options(synchronize_session=False))
+        return result.rowcount
+
     async def stage_artifact(
         self,
         session: AsyncSession,
@@ -95,34 +166,6 @@ class SemanticDerivationArtifactRepository:
                 LoopSemanticIndexArtifact.projector_version == projector_version,
                 LoopSemanticIndexArtifact.status == "ready",
             )
-        )
-        return None if row is None else self._validated_index(row)
-
-    async def cached_local_index(
-        self,
-        session,
-        *,
-        revision_id,
-        source_content_hash,
-        index_schema_version,
-        segmenter_version,
-        local_contract,
-    ):
-        row = await session.scalar(
-            select(LoopSemanticIndexArtifact)
-            .where(
-                LoopSemanticIndexArtifact.revision_id == revision_id,
-                LoopSemanticIndexArtifact.source_content_hash == source_content_hash,
-                LoopSemanticIndexArtifact.index_schema_version == index_schema_version,
-                LoopSemanticIndexArtifact.segmenter_version == segmenter_version,
-                LoopSemanticIndexArtifact.payload["interpretation"][
-                    "local_contract_fingerprint"
-                ].astext
-                == local_contract,
-                LoopSemanticIndexArtifact.status == "ready",
-            )
-            .order_by(LoopSemanticIndexArtifact.created_at.desc())
-            .limit(1)
         )
         return None if row is None else self._validated_index(row)
 
@@ -373,3 +416,15 @@ class SemanticDerivationArtifactRepository:
             getattr(current.usage, field) >= getattr(previous.usage, field)
             for field in fields
         )
+
+
+async def _prune_released_context_input(session: AsyncSession, context_id: str) -> None:
+    await SemanticDerivationArtifactRepository().prune_indexes(session, context_id)
+
+
+def install_context_index_lifecycle() -> None:
+    """Install this consumer's cleanup through the Context-owned release port."""
+    register_context_input_release_handler("semantic_index_cache", _prune_released_context_input)
+
+
+install_context_index_lifecycle()

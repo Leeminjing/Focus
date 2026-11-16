@@ -14,8 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
 from focus.history import FocusItem, HistoryPayload, messages_to_items
+from langchain_core.messages import AIMessage, HumanMessage
 
 from backend.app.desktop.contexts.evolution import (
     ContextFrontierSummary,
@@ -217,7 +217,7 @@ def test_checkpoint_backed_root_and_historical_views_use_exact_checkpoint() -> N
     asyncio.run(run())
 
 
-def test_frontier_is_bounded_and_deleted_source_history_remains_visible() -> None:
+def test_frontier_is_bounded_and_deleted_source_identity_remains_visible() -> None:
     async def run() -> None:
         deleted_ref = _ref("old-context", "old-revision-1", ContextRevisionPayloadMode.CHECKPOINT)
         target_ref = _ref("target-context", "target-revision-1", ContextRevisionPayloadMode.DEFINITION)

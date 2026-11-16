@@ -18,22 +18,29 @@ from time import perf_counter
 
 import pytest
 from focus.config.app_config import get_app_config
-from sqlalchemy import select
 
-from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import PortfolioIndexBuildResult, PortfolioSemanticIndexService
+from backend.app.desktop.contexts.evolution.schemas import ContextRevisionMessageView
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
+    stable_expansion_hash,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
+    PortfolioIndexBuildResult,
+    PortfolioSemanticIndexService,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.projection_record_repository import (
+    ProjectionRecordRepository,
+)
 from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.patrol.agent_loop.context_expansion.projection_record_repository import ProjectionRecordRepository
-from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
-from backend.app.desktop.contexts.evolution.schemas import ContextRevisionMessageView
-from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
+    RoleBoundStructuredModel,
+)
+from backend.scripts.semantic_index_corpus import load_corpus
 from backend.tests.incremental_index_support import Checkpoints, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
-from backend.scripts.semantic_index_corpus import load_corpus
-
 
 pytestmark = [
     pytest.mark.usefixtures("isolated_postgres_database"),
@@ -234,8 +241,10 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
                 assert records is not None
                 phase.update(
                     quality=_quality(index, records), segments=len(index.segments),
-                    reused_segments=len(index.inheritance.reused_segment_ids),
-                    recomputed_segments=len(index.inheritance.recomputed_segment_ids),
+                    reused_segments=(len(index.segments) if phase["model_calls"] == 0 else
+                                     sum(t["local_cache_hits"] for t in phase["revision_timings"])),
+                    recomputed_segments=sum(t["projected_segments"] for t in phase["revision_timings"]),
+                    reuse_basis="current_input_segment_cache",
                     interpretation_read_rounds=len(index.interpretation.read_requests),
                 )
             report["phases"][name] = phase

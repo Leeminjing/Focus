@@ -10,17 +10,18 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
-from pathlib import Path
 import uuid
+from pathlib import Path
 
+import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
+from backend.app.desktop.contexts.curation.models import CurationLane, CurationProgram
 from backend.app.desktop.patrol.agent_loop.curation.curation_ownership import (
     CurationOwnershipConflict,
     CurationOwnershipRecovery,
@@ -28,13 +29,14 @@ from backend.app.desktop.patrol.agent_loop.curation.curation_ownership import (
     CurationOwnershipState,
 )
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop
-from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant
-from backend.app.desktop.patrol.agent_loop.lifecycle.terminal_lifecycle import LoopTerminalLifecycle
-from backend.app.desktop.contexts.curation.models import CurationLane, CurationProgram
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
+    LoopJournalEvent,
+)
+from backend.app.desktop.patrol.agent_loop.lifecycle.terminal_lifecycle import (
+    LoopTerminalLifecycle,
+)
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant
 from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -52,17 +54,23 @@ def test_ownership_state_matrix_and_successor_reconciliation(tmp_path: Path) -> 
                 await session.flush()
                 rows: dict[str, tuple[str, str, str]] = {}
                 for status in sorted(terminal | nonterminal):
+                    status_workspace_id = uuid.uuid4().hex
+                    session.add(DesktopWorkspace(
+                        workspace_id=status_workspace_id, path=str(tmp_path / status),
+                        display_name=f"ownership-{status}",
+                    ))
+                    await session.flush()
                     context_id = uuid.uuid4().hex
                     program_id = uuid.uuid4().hex
                     loop_id = uuid.uuid4().hex
                     lane_id = uuid.uuid4().hex
                     session.add_all([
-                        DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title=status),
-                        CurationProgram(program_id=program_id, workspace_id=workspace_id, policy={"owner_loop_id": loop_id}, revision=1),
+                        DesktopThread(task_id=context_id, workspace_id=status_workspace_id, thread_id=f"thread-{context_id}", title=status),
+                        CurationProgram(program_id=program_id, workspace_id=status_workspace_id, policy={"owner_loop_id": loop_id}, revision=1),
                     ])
                     await session.flush()
                     session.add_all([
-                        AgentLoop(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, program_id=program_id, holder_id="patrol", status=status, health="idle"),
+                        AgentLoop(loop_id=loop_id, workspace_id=status_workspace_id, initial_context_id=context_id, program_id=program_id, holder_id="patrol", status=status, health="idle"),
                         CurationLane(lane_id=lane_id, program_id=program_id, managed_context_id=context_id, purpose=status, normalized_purpose=status, lane_policy={}),
                     ])
                     rows[status] = (context_id, loop_id, lane_id)

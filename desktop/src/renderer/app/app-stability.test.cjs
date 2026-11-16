@@ -94,17 +94,10 @@ async function testStaleWorkspaceRequestsDoNotNavigate() {
     await compression;
     const afterCompression = { active: state.activeTaskId, view: state.view, task: state.compression.taskId };
 
-    taskSwitchSequence -= 1;
-    state.activeTaskId = 'task-a';
-    const context = openContextEditor('task-a');
-    cancelPendingViewRequests();
-    state.view = 'plugins';
-    await context;
-    return { afterCompression, afterContext: { active: state.activeTaskId, view: state.view, draft: state.contextDraft } };
+    return afterCompression;
   })()`, harness.context);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), {
-    afterCompression: { active: "task-b", view: "focus", task: null },
-    afterContext: { active: "task-a", view: "plugins", draft: null },
+    active: "task-b", view: "focus", task: null,
   });
 }
 

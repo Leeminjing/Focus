@@ -1,16 +1,23 @@
 """本文件对外提供 SourceAvailabilityReader.inspect 的冻结来源只读状态查询。
 
 输入为调用方 session 与服务器冻结的 source refs；输出为 opaque ref 到 available/unavailable/unknown 及可显示原因。
-工作流按精确 Context/Run/checkpoint/材料版本定位原对象，文件只检查可读性、Git 只检查原 object 存在；重复来源复用状态。
+会话来源直接验证草稿内自足正文和 hash；运行与材料按 checkpoint/版本定位原对象，文件只检查可读性、Git 只检查原 object 存在。
 查询不读取新正文、不修改冻结 record/hash、不提交事务；磁盘检查在工作线程执行，异常只返回无敏感载荷的原因。
 示例：await SourceAvailabilityReader(host).inspect(session, draft.frozen_sources)，原文件删除后正文仍由原草稿提供。
 """
 import asyncio
 import subprocess
-from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace, DesktopRun, DesktopMaterial, MaterialVersion
-from backend.app.desktop.contexts.evolution.models import ContextRevision
-from backend.app.desktop.materials.files import resolve_material_path
+
 from focus.history import content_hash
+
+from backend.app.desktop.materials.files import resolve_material_path
+from backend.app.desktop.persistence.models import (
+    DesktopMaterial,
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+    MaterialVersion,
+)
 
 
 class SourceAvailabilityReader:
@@ -21,6 +28,11 @@ class SourceAvailabilityReader:
         result, cache = {}, {}
         for ref, value in sources.items():
             source = value.get("source", {})
+            if source.get("kind") == "context":
+                valid = "record" in value and source.get("content_hash") == content_hash(value["record"])
+                result[ref] = {"status": "available" if valid else "unavailable",
+                               "message": "已保存会话来源快照" if valid else "会话来源快照校验失败"}
+                continue
             key = content_hash({k: v for k, v in source.items() if k not in {"message_id", "content_hash"}})
             if key not in cache:
                 try:
@@ -40,16 +52,11 @@ class SourceAvailabilityReader:
             if run is None:
                 return "原运行不存在"
             return await self._checkpoint_reason(source)
-        if kind not in {"context", "file", "material"}:
+        if kind not in {"file", "material"}:
             return None
         task = await session.get(DesktopThread, source.get("context_id")) if source.get("context_id") else None
         if task is None or task.deleted_at is not None:
             return "原会话不可读取"
-        if kind == "context":
-            revision = await session.get(ContextRevision, source.get("revision_id")) if source.get("revision_id") else None
-            if revision is None or revision.context_id != task.task_id:
-                return "原历史版本不存在"
-            return await self._checkpoint_reason(source) if source.get("checkpoint_id") else None
         workspace = await session.get(DesktopWorkspace, source.get("workspace_id") or task.workspace_id)
         if workspace is None:
             return "原工作区不存在"

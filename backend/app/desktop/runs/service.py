@@ -426,11 +426,23 @@ class RunService:
                     agent_factory=None,
                     payload=self._run_payload(admission.run),
                 )
+            if current_revision is not None:
+                from backend.app.desktop.contexts.evolution import ContextRevisionReader
+                from backend.app.desktop.runs.context_snapshot import (
+                    capture_context_snapshot,
+                )
+
+                repository = ContextRevisionRepository()
+                frozen = await repository.freeze(session, current_revision.ref, owner_kind="run", owner_id=run.run_id)
+                equipment["context_snapshot"] = await capture_context_snapshot(
+                    session, ContextRevisionReader(repository, ports.checkpointer), frozen
+                )
+                run.equipment = dict(equipment)
             ports.run_material_history.add(session, run, run_materials)
             await session.refresh(task_row, with_for_update=True)
             task_row.ui_state = {
                 **(task_row.ui_state or {}),
-                _MAIN_RUNTIME_EQUIPMENT_KEY: equipment,
+                _MAIN_RUNTIME_EQUIPMENT_KEY: {key: value for key, value in equipment.items() if key != "context_snapshot"},
             }
             if memory_ids is not None:
                 state = dict(task_row.ui_state or {})

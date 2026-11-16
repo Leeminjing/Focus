@@ -1,7 +1,8 @@
 r"""本文件对外提供 IndexInheritanceReceipt 与 IndexBuildPlan。
 
-输入为冻结 segment inventories、基线 index 和消息前缀证明；输出为不可变构建计划和可审计 receipt。
-具体工作流为检查复用／重算库存不交叠、增量必须有基线、全量必须有原因，再由完整 index 绑定记录 identities。
+输入为本次冻结 segment inventories；输出为不可变构建计划和局部 proof inventory。
+新构建使用 full 合同，局部缓存复用不依赖历史基线；旧 incremental 字段仅用于读取已保存 artifact 和独立库的兼容协议。
+具体工作流为检查库存不交叠，再由完整 index 绑定本次实际记录 identities。
 示例：plan = IndexBuildPlan(recomputed_segment_ids=ids, full_build_reason="no_baseline")。
 """
 

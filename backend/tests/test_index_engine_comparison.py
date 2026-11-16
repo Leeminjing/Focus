@@ -102,6 +102,12 @@ def test_old_and_independent_service_contention(
                 )
             )
             grant.context_scope = contexts
+            # The comparison deliberately replays these inputs after current
+            # advances. Own them explicitly for this benchmark's lifetime.
+            for target in targets:
+                await ContextRevisionRepository().freeze(
+                    session, target.ref, owner_kind="benchmark", owner_id=seed["loop_id"]
+                )
         appended = [
             await revision(
                 sessions, c, messages(57 if i == 0 else 3), parent=targets[i]
@@ -221,6 +227,8 @@ def test_old_and_independent_service_contention(
         finally:
             logger.removeHandler(handler)
             logger.setLevel(level)
+            async with sessions.begin() as session:
+                await ContextRevisionRepository().release(session, "benchmark", seed["loop_id"])
         output = {
             "schema": "focus-index-service-comparison-v1",
             "mode": "offline-scripted-postgresql",

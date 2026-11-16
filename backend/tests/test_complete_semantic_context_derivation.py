@@ -17,6 +17,11 @@ from typing import ClassVar
 import pytest
 from focus.runtime.runs.usage import ModelUsage
 
+from backend.app.desktop.contexts.curation import evidence_ref_key
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionPayloadMode,
+    ContextRevisionRef,
+)
 from backend.app.desktop.patrol.agent_loop.context_expansion.compiler import (
     DeterministicExpansionPlanCompiler,
 )
@@ -81,11 +86,6 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.synthesis_service i
 from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
     RoleBoundStructuredModel,
     StructuredResultValidationError,
-)
-from backend.app.desktop.contexts.curation import evidence_ref_key
-from backend.app.desktop.contexts.evolution import (
-    ContextRevisionPayloadMode,
-    ContextRevisionRef,
 )
 from backend.tests._semantic_context_fixtures import failure_analysis_fixture
 
@@ -617,6 +617,9 @@ def test_portfolio_index_build_is_bounded_retried_and_incrementally_published() 
 
         async def put_index(self, session, index, *, attempt_records=()):
             self.published.append(index.index_id)
+
+        async def prune_indexes(self, session, context_id):
+            return 0  # this in-memory fixture has no persisted previous inputs
 
         async def put_stage_artifact(self, session, **payload):
             self.stages.append(payload)

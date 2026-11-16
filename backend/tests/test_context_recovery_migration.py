@@ -50,11 +50,11 @@ def test_context_recovery_opportunity_migration_round_trip(isolated_postgres_dat
         }
         command.downgrade(config, "5f6a7b8c9d0e")
         assert "loop_context_recovery_opportunities" not in inspect(engine).get_table_names()
-        command.upgrade(config, "head")
+        command.upgrade(config, "6a7b8c9d0e1f")
         assert expected <= {
             column["name"]
             for column in inspect(engine).get_columns("loop_context_recovery_opportunities")
         }
     finally:
-        command.upgrade(config, "head")
+        command.upgrade(config, "6a7b8c9d0e1f")
         engine.dispose()

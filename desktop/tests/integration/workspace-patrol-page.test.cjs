@@ -435,7 +435,7 @@ if (!process.versions.electron) {
     assert.equal(await run('contextCopied[1]'), '\t  x < 2 && y\n');
     await run('document.querySelector("[data-patrol-context-content] .message-audit summary").click()');
     assert.equal(await run('document.querySelector("[data-patrol-context-content] .message-audit").open'), true);
-    assert.match(await run('document.querySelector("[data-patrol-context-content] .message-audit").textContent'), /r1/);
+    assert.match(await run('document.querySelector("[data-patrol-context-content] .message-audit").textContent'), /r2/);
     await run('document.querySelector("[data-patrol-context-content] .message-tool summary").click()');
     assert.equal(await run('document.querySelector("[data-patrol-context-content] .message-tool").open'), true);
     assert.equal(await run('Boolean(document.querySelector("#loopInterventionForm"))'), false);
@@ -450,11 +450,13 @@ if (!process.versions.electron) {
 
     assert.equal(await run('document.body.dataset.view'), "patrol");
     assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "查看时保留草稿");
+    const beforeSourceTab = await run('window.patrolFixture.requests.length');
     await run('document.querySelector("[data-patrol-context-tab=sources]").click()');
-    await until('document.querySelector("[data-patrol-inspect-revision=r1]")');
-    await run('document.querySelector("[data-patrol-inspect-revision=r1]").click()');
-    await until('document.querySelector("[data-patrol-context-content]").textContent.includes("source-r1")');
-    assert.equal(await run('document.querySelector("[data-patrol-inspect-revision=r1]").getAttribute("aria-pressed")'), "true");
+    await until('document.querySelector("[data-patrol-context-content] [data-context-related=source]")');
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-inspect-revision]"))'), false);
+    assert.equal(await run('document.querySelector("[data-context-content-hash]").textContent'), "current-root-content");
+    assert.deepEqual(await run(`window.patrolFixture.requests.slice(${beforeSourceTab})`), [], "来源页复用当前内容metadata，不请求退役历史接口");
+    assert.equal(await run('window.patrolFixture.requests.some(path=>/context-revisions|\\/contexts\\/[^/]+\\/revisions$/.test(path))'), false);
     await run('window.patrolFixture.emit("loop-completion_check", "task_progress", "loop-completion_check", 2, {generation:1, document:{items:[{description:"已确认本地保存",state:"in_progress",support:"asserted"}]}})');
     await until('document.querySelector("[data-patrol-progress]").textContent.includes("已确认本地保存")');
     assert.equal(await run('document.querySelector("[data-patrol-lineage]").textContent.includes("首线程")'), true);
