@@ -199,7 +199,7 @@ if (!process.versions.electron) {
     if (url.pathname.endsWith("/facts/file-fixed")) {
       assert.equal(url.searchParams.get("revision"),"2");
       if (unavailableVersion) return json(response,{file:{...fileRef,result_key:"c".repeat(64)}});
-      return json(response,{file:{...fileRef,after:{available:true,text:"class ProtocolSafeRevisionSegmenter:\n    VERSION = 2"},before:{available:false,reason:"not_recorded"}}});
+      return json(response,{file:{...fileRef,after:{available:true,text:"class ProtocolSafeRevisionSegmenter:\n    VERSION = 2\n"},before:{available:true,text:"class ProtocolSafeRevisionSegmenter:\n    VERSION = 1\n"}}});
     }
     const control = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/control$/);
     if (control && request.method === "POST") {
@@ -629,9 +629,14 @@ if (!process.versions.electron) {
     await waitFor(host.panel,"innerWidth >= 580","详情未展开至左侧");
     assert.equal(await run(host.panel,"document.querySelector('.panel-shell').offsetWidth"),288);
     assert.equal(await run(host.panel,"document.querySelector('#version-picker').offsetWidth === 288 || document.querySelector('#version-picker').hidden"),true);
-    await run(host.panel,"document.querySelector('[role=tab]').dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true,cancelable:true}))");
-    assert.equal(await run(host.panel,"document.querySelectorAll('[role=tab]')[2].getAttribute('aria-selected')"),"true");
-    await run(host.panel,"document.querySelector('[role=tab]').click()");
+    await waitFor(host.panel,"document.querySelector('#version-detail .file-diff-row.is-added') && document.querySelector('#version-detail .file-diff-row.is-removed')","直接展示前后版本差异");
+    assert.equal(await run(host.panel,"document.querySelector('#version-detail [role=tab], #version-detail [data-patrol-file-add], #version-detail [data-file-operation=current], #version-detail .file-diff-summary')"),null);
+    await waitFor(host.panel,"[...document.querySelectorAll('.artifact-result')].find(row=>row.textContent.includes('semantic_indexer.py'))?.querySelector('.artifact-diff-count')?.textContent === '+1/-1'","增删数量必须显示在右侧文件名旁");
+    await run(host.panel,"document.querySelector('[data-version-folder]').click()");
+    await waitFor(host.panel,"!document.querySelector('[data-version-folder]').disabled","打开文件夹操作未完成");
+    assert.equal(sharedActions.at(-1).operation,"reveal");
+    assert.deepEqual(sharedActions.at(-1).target,{loop_id:"loop-workspace-a",fact_id:"file-fixed",revision:2,current:true});
+    assert.equal(await run(host.panel,"(() => { const diff=document.querySelector('#version-detail').getBoundingClientRect(), composer=document.querySelector('.panel-shell').getBoundingClientRect(); return diff.top>=0 && diff.right+7<=composer.left; })()"),true,"差异区必须完整显示在右侧面板左边，不能覆盖输入区");
     await capture(host.panel,"desktop-version-detail");
     await run(host.panel,"document.querySelector('#close-version-detail').click()");
     await capture(host.panel,"desktop-file-reference");

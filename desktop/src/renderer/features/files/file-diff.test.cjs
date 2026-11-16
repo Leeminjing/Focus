@@ -152,7 +152,7 @@ test("long collapsed context cannot consume the budget for later changes", () =>
   assert.match(html, /其余 \d+ 行未渲染/);
 });
 
-test("history tabs leave nested unchanged-line folds inside the Diff panel", async () => {
+test("companion opens the diff directly with context folds and only a folder action", async () => {
   const fs = require("node:fs"), vm = require("node:vm");
   const { createDocument } = require("../../../../tests/helpers/test-dom.cjs");
   const host = createElement("div");
@@ -167,20 +167,19 @@ test("history tabs leave nested unchanged-line folds inside the Diff panel", asy
   const refs = context.FocusDesktopPatrolReferences.create({ host, api: { factDetail: async () => ({ file }) },
     loopId: () => "loop", store: () => ({}), onError: error => { throw error; } });
   await refs.detail(file);
-  const section = host.querySelector("#version-body .file-version"), tabs = section.querySelector(".version-tabs");
-  assert.equal(tabs.children.length, 3);
-  const panels = section.querySelectorAll(':scope > [role="tabpanel"]');
-  assert.equal(panels.length, 3);
-  assert.equal(section.querySelectorAll('[role="tabpanel"]').length, 3);
-  assert.equal(panels[1].querySelectorAll("details.file-diff-fold").length, 3);
-  assert.ok(panels[1].querySelectorAll("details.file-diff-fold").every(fold => fold.querySelector("summary")));
-  assert.match(tabs.children[1].textContent, /Diff · \+2 \/ −2/);
-  tabs.children[1].dispatchEvent({ type: "click" });
+  const section = host.querySelector("#version-body .version-diff");
+  assert.equal(section.querySelectorAll("details.file-diff-fold").length, 3);
+  assert.ok(section.querySelectorAll("details.file-diff-fold").every(fold => fold.querySelector("summary")));
+  assert.equal(section.querySelector(".file-diff-summary"), null);
+  assert.equal(host.querySelector(".version-tabs"), null);
+  assert.equal(host.querySelector("[data-patrol-file-add]"), null);
+  const actions = [];
+  context.focusDesktop = { fileAction: async request => actions.push(request) };
+  host.querySelector("[data-version-folder]").dispatchEvent({type:"click"});
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(panels.map(panel => panel.hidden), [true, false, true]);
-  tabs.children[1].dispatchEvent({ type: "keydown", key: "End", preventDefault() {} });
-  assert.deepEqual(panels.map(panel => panel.hidden), [true, true, false]);
-  tabs.children[2].dispatchEvent({ type: "keydown", key: "Home", preventDefault() {} });
-  assert.deepEqual(panels.map(panel => panel.hidden), [false, true, true]);
+  assert.equal(actions[0].operation, "reveal");
+  assert.deepEqual(JSON.parse(JSON.stringify(actions[0].target)), {loop_id:"loop",fact_id:"fact",revision:1,current:true});
+  refs.close();
+  assert.equal(host.querySelector("[data-version-folder]"), null);
   refs.dispose();
 });

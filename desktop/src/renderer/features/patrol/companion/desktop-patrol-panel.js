@@ -44,6 +44,8 @@
   let resultKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
   let historyRefresh = FocusWorkspacePatrolFeedback.createInputRefresh();
   let historyKey = "", requestKey = "", progressKey = "", artifactKey = "";
+  let artifactReads = new AbortController();
+  const artifactComparisons = new Map();
   let historyRead = null, historyReady = false, historyRetryBefore = null, historyRefreshPending = false;
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   let control = null;
@@ -228,6 +230,7 @@
   function watchDraft() { unsubscribe?.(); unsubscribe = draftStore().subscribe(renderInput); }
   function cancelResults() { reads.abort(); reads = new AbortController(); resultKey = ""; }
   function resetResults() {
+    artifactReads.abort(); artifactReads = new AbortController();
     cancelResults(); requestKey = ""; progressKey = ""; artifactKey = ""; resultsNeedReset = true;
     if (panelVisible) refreshVisible();
   }
@@ -453,6 +456,18 @@
     });
     syncReading();
   }
+  async function artifactComparison(file,id,signal) {
+    const key = JSON.stringify([id,file.fact_id,file.revision,file.result_key,file.sha256]);
+    if (artifactComparisons.has(key)) return artifactComparisons.get(key);
+    const { file:snapshot } = await api.factDetail(id,file.fact_id,signal,file.revision);
+    if (signal.aborted) return null;
+    if (!snapshot || snapshot.result_key !== file.result_key || (file.sha256 && snapshot.sha256 !== file.sha256)) throw new Error(localize("引用版本不可用，请重新选择；原引用和要求已保留。"));
+    const comparison = snapshot.before?.available && snapshot.after?.available ? FocusLoopFactsView.buildLineDiff(snapshot.before.text,snapshot.after.text) : null;
+    const counts = comparison && !comparison.limited ? {added:comparison.added,removed:comparison.removed} : null;
+    artifactComparisons.set(key,counts);
+    if (artifactComparisons.size > 48) artifactComparisons.delete(artifactComparisons.keys().next().value);
+    return counts;
+  }
   function refreshVisible() {
     if (!panelVisible) return;
     if (resultsNeedReset) {
@@ -477,6 +492,7 @@
     const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact");
     const nextArtifacts = JSON.stringify(files.map(item => [item.fact_id, item.revision]));
     if (nextArtifacts !== artifactKey) {
+      artifactReads.abort(); artifactReads = new AbortController();
       artifactKey = nextArtifacts;
       artifacts.update(files);
       const container = $("#artifacts"); container.replaceChildren();
@@ -486,7 +502,18 @@
         const legacyArtifacts = files.filter(fact => !FocusLoopFactsView.fileReference(fact));
         for (const fact of [...latestFiles, ...legacyArtifacts].slice(0, 3)) {
           const file = FocusLoopFactsView.fileReference(fact), row = element("div", "", card); row.className = "artifact-result";
-          const name = element("span", file?.path?.split(/[\\/]/).at(-1) || fact.title || localize("产物"), row); name.title = file?.path || fact.title || localize("产物");
+          const name = element("span", "", row); name.className = "artifact-name"; name.title = file?.path || fact.title || localize("产物");
+          element("span",file?.path?.split(/[\\/]/).at(-1) || fact.title || localize("产物"),name).className = "artifact-filename";
+          if (file?.path && file.result_key && typeof api.factDetail === "function") {
+            const count = element("span","",name); count.className = "artifact-diff-count";
+            const id = loopId, signal = artifactReads.signal;
+            void artifactComparison(file,id,signal).then(comparison => {
+              if (signal.aborted || id !== loopId || !panelVisible || !row.parentNode || !comparison) return;
+              element("span",`+${comparison.added}`,count).className = "added";
+              element("span","/",count);
+              element("span",`-${comparison.removed}`,count).className = "removed";
+            }).catch(error => { if (!signal.aborted && row.parentNode) name.title = `${file.path}\n${error.message}`; });
+          }
           const actions = element("div", "", row); actions.className = "artifact-actions";
           iconAction("file-text", localize("打开"), actions, () => file?.path && file.result_key ? references.detail(file) : openWorkbench(fact.context_id, fact.revision_id));
           if (file?.path && file.result_key) iconAction("quote", localize("引用"), actions, () => references.reference(file));
@@ -506,7 +533,7 @@
     visibilityKnown = true;
     if (panelVisible === visible) return;
     panelVisible = visible;
-    if (!visible) cancelResults();
+    if (!visible) { cancelResults(); artifactReads.abort(); artifactKey = ""; }
     else refreshVisible();
   }
   if (!bridge?.enabled) document.addEventListener("visibilitychange", () => setVisibility(!document.hidden));
@@ -606,14 +633,14 @@
     const menuHeight = $(".panel-menu").open ? $(".panel-menu-content").offsetTop + $(".panel-menu-content").offsetHeight + 10 : 0;
     const gutter = parseFloat(getComputedStyle(host).paddingTop);
     // Measure intrinsic blocks independently of the viewport.
-    let height = Math.min(500+gutter*2, Math.ceil(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 56 : 0)+gutter*2));
+    let height = Math.min(500+gutter*2, Math.ceil(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 72 : 0)+gutter*2));
     if (bridge?.opaquePanel && drawerOpen) {
       // The drawer replaces the composer. Its clipped offsetHeight depends on
       // the old viewport and must not feed a shrinking native-window loop.
       const style = getComputedStyle(drawer);
       height = Math.min(440, Math.ceil(drawer.scrollHeight + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth)));
     }
-    const size = { height, width:(detail || drawerOpen ? 590 : host.dataset.reading === "true" ? 520 : 288)+gutter*2 };
+    const size = { height, width:(detail ? 848 : drawerOpen ? 590 : host.dataset.reading === "true" ? 520 : 288)+gutter*2 };
     if (!bridge?.enabled || (lastPanelSize && (!bridge.opaquePanel || lastPanelScale === scale) && Math.abs(size.height-lastPanelSize.height) <= 1 && Math.abs(size.width-lastPanelSize.width) <= 1)) return;
     lastPanelSize = size;
     lastPanelScale = scale;
@@ -675,5 +702,5 @@
   const flush = () => { void intake.flush().catch(fail); };
   document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
   window.addEventListener("pagehide", () => { try { intake.checkpoint(); } catch (error) { fail(error); } flush(); });
-  window.addEventListener("beforeunload", () => { sizingDisposed = true; if (resizeFrame !== null) cancelAnimationFrame(resizeFrame); sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
+  window.addEventListener("beforeunload", () => { sizingDisposed = true; if (resizeFrame !== null) cancelAnimationFrame(resizeFrame); sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); artifactReads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });

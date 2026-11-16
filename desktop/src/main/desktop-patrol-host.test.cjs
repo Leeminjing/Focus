@@ -240,7 +240,7 @@ test("compact panel expands within display bounds and only accepts resize from i
   assert.equal(f.host.panel.getBounds().height, panelMinimum.height);
   f.screen.area = { ...originalArea };
   f.invoke("resize-panel",f.host.panel,{height:400,width:10000});
-  assert.equal(f.host.panel.getBounds().width,590 + panelGutter*2);
+  assert.equal(f.host.panel.getBounds().width,848 + panelGutter*2);
   f.invoke("resize-panel",f.host.panel,136);
   assert.equal(f.host.panel.getBounds().width,panelMinimum.width);
   assert.throws(() => f.invoke("resize-panel",f.host.panel,{height:200,width:NaN}),/宽度无效/);
@@ -257,16 +257,16 @@ test("opaque panel converts CSS targets to DIP once and preserves them across zo
     assert.equal(f.host.panel.getBounds().width, Math.ceil(288 * zoom));
     assert.equal(f.host.panel.getBounds().height, Math.ceil(109 * zoom));
     f.invoke("resize-panel", f.host.panel, { width: 10000, height: 10000 });
-    assert.equal(f.host.panel.getBounds().width, Math.ceil(590 * zoom));
+    assert.equal(f.host.panel.getBounds().width, Math.ceil(848 * zoom));
     assert.equal(f.host.panel.getBounds().height, Math.ceil(500 * zoom));
   }
   f.host.panel.zoomFactor = 1.2 ** -2;
   f.host.openPanel();
-  assert.equal(f.host.panel.getBounds().width, Math.ceil(590 * 1.2 ** -2), "Opening must use current page zoom without waiting for another CSS measurement");
+  assert.equal(f.host.panel.getBounds().width, Math.ceil(848 * 1.2 ** -2), "Opening must use current page zoom without waiting for another CSS measurement");
   f.screen.area = { x: 0, y: 0, width: 100, height: 90 }; f.screen.emit("display-metrics-changed");
   assert.equal(f.host.panel.getBounds().width, 100);
   f.screen.area = { ...originalArea }; f.screen.emit("display-metrics-changed");
-  assert.equal(f.host.panel.getBounds().width, Math.ceil(590 * 1.2 ** -2));
+  assert.equal(f.host.panel.getBounds().width, Math.ceil(848 * 1.2 ** -2));
   f.host.panel.zoomFactor = 1.2 ** 2;
   f.invoke("resize-panel", f.host.panel, { width: 288, height: 200 });
   assert.equal(f.host.panel.getBounds().height, 288);
