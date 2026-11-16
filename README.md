@@ -12,7 +12,7 @@ Start with a rough idea, refine the requirements and spec, move into implementat
 
 **Rough idea → Refined spec → Execution → Revised decisions → Further execution.**
 
-[Quick start](#quick-start) · [Working strategies](#strategy-bring-your-way-of-working) · [Sandbox](docs/sandbox.md) · [agent-roles](docs/agent-roles.md) · [Tools](docs/tool-atlas/README.md) · [Documentation](#documentation)
+[Quick start](#quick-start) · [Working strategies](#strategy-bring-your-way-of-working) · [Sandbox](docs/sandbox.md) · [agent-roles](docs/agent-roles.md) · [Observation](docs/observation.md) · [Tools](docs/tool-atlas/README.md) · [Documentation](#documentation)
 
 ## One entry point for an evolving project
 
@@ -95,7 +95,7 @@ Use Patrol for everyday input. Open the workbench when you want a closer look.
 | View | What it shows |
 | --- | --- |
 | **Task Progress** | Verified, ongoing, blocked, or superseded work, with associated contexts and evidence status. |
-| **Observation** | The user input, task state, and execution snapshot used for a particular round's decisions. |
+| **[Observation](docs/observation.md)** | The user input, task state, and execution snapshot used for a particular round's decisions. |
 | **LoopFact** | Incoming execution, test, file, and workspace-result facts, together with their sources. |
 | **Context graph** | Relationships between lines of work, execution status, conversations, and historical versions. |
 
@@ -327,6 +327,7 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 
 - [Tools: tool atlas](docs/tool-atlas/README.md)
 - [agent-roles](docs/agent-roles.md)
+- [Observation](docs/observation.md)
 - [Sandbox: tool admission and Windows execution lifecycle](docs/sandbox.md)
 - [Strategy: write, import, and share working methods](docs/strategies/README.md)
 - [File outputs and version-specific feedback](docs/context-evolution-file-feedback.md)

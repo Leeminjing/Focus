@@ -12,7 +12,7 @@ Focus 是一个开源、本地优先的 Agent 开发工作区。你持续向 **P
 
 **模糊想法 → 精细化 Spec → 执行 → 调整决策 → 继续执行。**
 
-[快速开始](#快速开始) · [工作策略](#strategy把你的工作方法交给-focus) · [沙箱](docs/sandbox.md) · [agent-roles](docs/agent-roles.md) · [Tools](docs/tool-atlas/README.md) · [文档](#文档)
+[快速开始](#快速开始) · [工作策略](#strategy把你的工作方法交给-focus) · [沙箱](docs/sandbox.md) · [agent-roles](docs/agent-roles.md) · [Observation](docs/observation.md) · [Tools](docs/tool-atlas/README.md) · [文档](#文档)
 
 ## 一个入口，持续组织整个项目
 
@@ -95,7 +95,7 @@ Focus 的 Loop 模拟一个人在同一工作区中，面对持续变化的目�
 | 视图 | 你可以看到什么 |
 | --- | --- |
 | **Task Progress · 任务进度** | 已验证、正在推进、被阻塞或被替代的事项，以及相关工作线和证据状态。 |
-| **Observation · 本轮观察** | 本轮决策所依据的用户输入、任务状态与运行快照。 |
+| **[Observation · 本轮观察](docs/observation.md)** | 本轮决策所依据的用户输入、任务状态与运行快照。 |
 | **LoopFact · 事实流** | 持续产生的执行、测试、文件产出和工作区结果，以及它们的来源。 |
 | **上下文图谱** | 工作线之间的来源关系、运行状态、会话内容和历史版本。 |
 
@@ -326,6 +326,7 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 
 - [Tools：工具图鉴](docs/tool-atlas/README.md)
 - [agent-roles](docs/agent-roles.md)
+- [Observation](docs/observation.md)
 - [沙箱：工具准入与 Windows 执行生命周期](docs/sandbox.md)
 - [Strategy：编写、导入与分享工作方法](docs/strategies/README.md)
 - [文件产出与版本反馈](docs/context-evolution-file-feedback.md)
