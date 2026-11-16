@@ -33,7 +33,7 @@ class CommitSession:
     def __init__(self, latest=None):
         self.added = []
         self.latest = latest
-        self.input_snapshots = {}
+        self.input_owners = {}
         self.released_input_owners = []
         self.context_source = None
         if latest is not None and latest.context_revision_id:
@@ -45,7 +45,7 @@ class CommitSession:
                 history_payload=HistoryPayload(), content_hash=content_hash([]),
                 projection_status="valid", origin_kind="root", created_at=datetime.now(UTC),
             )
-            self.input_snapshots[("run", latest.run_id)] = self.context_source
+            self.input_owners[("run", latest.run_id)] = self.context_source.ref.revision_id
 
     def add(self, value):
         self.added.append(value)
@@ -71,14 +71,20 @@ def _snapshot_persistence(monkeypatch):
 
     async def freeze(session, ref, *, owner_kind, owner_id):
         source = await by_ref(session, ref)
-        session.input_snapshots[(owner_kind, owner_id)] = source
+        session.input_owners[(owner_kind, owner_id)] = ref.revision_id
+        return source
+
+    async def for_run(session, run, *, resume=False):
+        assert not resume
+        source = await by_id(session, run.context_revision_id)
+        assert session.input_owners[("run", run.run_id)] == source.ref.revision_id
         return source
 
     async def release(session, owner_kind, owner_id):
         session.released_input_owners.append((owner_kind, owner_id))
-        session.input_snapshots.pop((owner_kind, owner_id), None)
+        session.input_owners.pop((owner_kind, owner_id), None)
 
-    for name, handler in {"get_by_id": by_id, "get": by_ref, "get_input": by_ref,
+    for name, handler in {"get_by_id": by_id, "get_input": by_ref, "input_for_run": for_run,
                           "freeze": freeze, "release": release}.items():
         original = getattr(ContextRevisionRepository, name)
 
@@ -194,7 +200,7 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
     assert resumed.body.context["checkpoint_ns"] == "context-revision-shadow"
     assert resumed.payload["context_revision_id"] == "revision"
     assert session.released_input_owners == [("run", "interrupted")]
-    assert ("run", "interrupted") not in session.input_snapshots
+    assert ("run", "interrupted") not in session.input_owners
 
 
 @pytest.mark.parametrize("equipment_source", ["run", "task"])

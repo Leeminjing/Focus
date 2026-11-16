@@ -38,6 +38,7 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer im
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
+from backend.app.desktop.persistence.models import DesktopThread
 
 
 class Snapshot(BaseModel):
@@ -226,9 +227,9 @@ async def read_snapshots(config_path, *, context_ids=(), revision_ids=(), limit=
             repository = ContextRevisionRepository()
             reader = ContextRevisionReader(repository, AsyncPostgresSaver(conn))
             async with sessions() as session:
-                query = select(ContextRevision).order_by(
-                    ContextRevision.created_at.desc(), ContextRevision.revision_id
-                )
+                query = select(ContextRevision).join(
+                    DesktopThread, DesktopThread.current_revision_id == ContextRevision.revision_id
+                ).order_by(ContextRevision.created_at.desc(), ContextRevision.revision_id)
                 if context_ids:
                     query = query.where(ContextRevision.context_id.in_(context_ids))
                 if revision_ids:
@@ -297,7 +298,7 @@ def main():
     ))
     if args.action == "list":
         print(json.dumps({"revisions": [snapshot_stats(s) for s in snapshots], "skipped": skipped,
-                          "discovery": "current_states_only" if not args.revision_id else "explicit_current_or_pinned_inputs",
+                          "discovery": "current_inputs_only" if not args.revision_id else "explicit_current_or_pinned_inputs",
                           "multiple_append_status": "pending_data" if not args.revision_id else "requires_append_validation",
                           "multiple_append_note": "Use an existing exported corpus or explicitly pinned append-only inputs; current states do not preserve a version chain."}, indent=2))
     else:

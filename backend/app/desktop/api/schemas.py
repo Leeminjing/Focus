@@ -169,6 +169,12 @@ class ResumeRequest(StrictRequest):
 
     resume: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def require_public_resume(self):
+        if self.resume.get("type") == "compression":
+            raise ValueError("上下文压缩仅由 Patrol 自动处理")
+        return self
+
 
 class MaterialCreate(StrictRequest):
     path: str

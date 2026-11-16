@@ -126,7 +126,7 @@ class AgentFactory:
                 )
             if agent_role == "main":
                 additional_middlewares.append(build_image_attachment_middleware())
-            if agent_role == "main" and ports.app_config.compression.enabled:
+            if agent_role == "main" and governed_loop and ports.app_config.compression.enabled:
                 from focus.agents.compression.gate import build_compression_gate
 
                 additional_middlewares.append(

@@ -2,8 +2,8 @@
 
 import asyncio
 import os
-import uuid
 from pathlib import Path
+import uuid
 
 from alembic import command
 from alembic.config import Config
@@ -36,7 +36,7 @@ def test_upgrade_recovers_legacy_claim_and_downgrade_preserves_events():
                      "status": status, "owner": "dead" if status == "claimed" else None, "error": "old error" if status == "error" else None})
             connection.execute(text("INSERT INTO run_outbox_deliveries(delivery_id,event_id,consumer_id) VALUES(:id,:event,'coordinator')"),
                 {"id": uuid.uuid4().hex, "event": events["delivered"]})
-        command.upgrade(configuration, "4a5b6c7d8e9f")
+        command.upgrade(configuration, "head")
         columns = {column["name"] for column in inspect(engine).get_columns("run_outbox_events")}
         assert {"lease_expires_at", "next_attempt_at"} <= columns
         with engine.connect() as connection:
@@ -66,6 +66,6 @@ def test_upgrade_recovers_legacy_claim_and_downgrade_preserves_events():
             assert connection.scalar(text("SELECT count(*) FROM run_outbox_deliveries")) == 4
             row = connection.execute(text("SELECT status,error,delivery_count FROM run_outbox_events WHERE event_id=:id"), {"id": events["claimed"]}).one()
             assert tuple(row) == ("error", "persistent failure", 2)
-        command.upgrade(configuration, "4a5b6c7d8e9f")
+        command.upgrade(configuration, "head")
     finally:
         engine.dispose()

@@ -7,50 +7,29 @@ r"""本文件对外提供旧 Context Loop 退役与 Workspace Patrol 默认的�
 """
 
 import asyncio
-import os
-import uuid
 from datetime import UTC, datetime
+import os
 from pathlib import Path
+import uuid
 
-import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
+import pytest
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import backend.app.desktop.persistence.registry  # noqa: F401
 from backend.app.desktop.contexts.curation.models import CurationLane, CurationProgram
-from backend.app.desktop.patrol.agent_loop.governance.authority_control import (
-    LoopAuthorityService,
-)
-from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import (
-    InterventionLifecycleRepository,
-)
-from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
-    LoopJournalEvent,
-)
-from backend.app.desktop.patrol.agent_loop.lifecycle.retirement import (
-    retire_context_loops,
-)
-from backend.app.desktop.patrol.agent_loop.models import (
-    AgentLoop,
-    LoopDelegationGrant,
-    LoopRound,
-    LoopUserIntent,
-    LoopWorkerRequest,
-)
+from backend.app.desktop.patrol.agent_loop.governance.intervention_lifecycle import InterventionLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.governance.authority_control import LoopAuthorityService
+from backend.app.desktop.patrol.agent_loop.journal.journal_models import LoopJournalEvent
+from backend.app.desktop.patrol.agent_loop.lifecycle.retirement import retire_context_loops
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopRound, LoopUserIntent, LoopWorkerRequest
 from backend.app.desktop.patrol.agent_loop.schemas import RevokeLoopGrantRequest
-from backend.app.desktop.patrol.agent_loop.workers.worker_attempts import (
-    WorkerAttemptAuthority,
-    WorkerAttemptRejected,
-)
-from backend.app.desktop.persistence.models import (
-    DesktopRun,
-    DesktopThread,
-    DesktopWorkspace,
-)
+from backend.app.desktop.patrol.agent_loop.workers.worker_attempts import WorkerAttemptAuthority, WorkerAttemptRejected
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
 
 
 def test_startup_retires_legacy_work_without_resuming_or_changing_workspace_patrol(
@@ -158,8 +137,8 @@ def test_workspace_patrol_database_default_migration_round_trip(isolated_postgre
         assert "workspace_patrol" in default()
         command.downgrade(config, "39d4e5f6a7b8")
         assert "context_loop" in default()
-        command.upgrade(config, "4a5b6c7d8e9f")
+        command.upgrade(config, "head")
         assert "workspace_patrol" in default()
     finally:
-        command.upgrade(config, "4a5b6c7d8e9f")
+        command.upgrade(config, "head")
         engine.dispose()

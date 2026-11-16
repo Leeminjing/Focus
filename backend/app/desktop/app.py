@@ -2,7 +2,7 @@
 本文件对外提供 mount_desktop，把桌面能力内嵌到唯一 FastAPI Gateway。
 
 输入为已经创建的 Gateway `FastAPI` 实例；输出为挂载完成的 `/desktop/api` 普通/Live 路由、插件资产和
-`/desktop/` 静态页面。具体工作流为先注册 Context、Loop、压缩、Memory、模型设置与插件 API，
+`/desktop/` 静态页面。具体工作流为先注册 Context、Loop、Memory、模型设置与插件 API，
 再挂载插件前端和 Desktop 静态目录，从而保持页面与 API 同源且不创建第二个后端。
 DesktopService 由 Gateway lifespan 构造并复用同一数据库、checkpointer、store 和 StreamBridge。
 示例：`mount_desktop(app)`；开发时运行
@@ -23,17 +23,15 @@ def mount_desktop(app) -> None:
 
     工作流:
         (1) include_router(desktop_router) — 提供 /desktop/api 全部接口
-        (2) include_router(compression_router) — 提供压缩摘要与消息快照接口
-        (3) include_router(plugins_router) — 提供插件调试视图查询接口
-        (4) include_router(model_settings_router) — 提供模型设置的读取/保存/测试/引用查询接口
-        (5) mount_plugin_assets(app) — 挂载 Active 插件的桌面 API 路由与前端静态资源
-        (6) app.mount("/desktop", StaticFiles(...)) — 提供 index.html / app.js / styles.css
+        (2) include_router(plugins_router) — 提供插件调试视图查询接口
+        (3) include_router(model_settings_router) — 提供模型设置的读取/保存/测试/引用查询接口
+        (4) mount_plugin_assets(app) — 挂载 Active 插件的桌面 API 路由与前端静态资源
+        (5) app.mount("/desktop", StaticFiles(...)) — 提供 index.html / app.js / styles.css
 
     路由注册先于静态挂载，确保 /desktop/api/* 优先由 API 路由处理，静态挂载兜底。
     """
     from fastapi.staticfiles import StaticFiles
 
-    from backend.app.desktop.api.compression import compression_router
     from backend.app.desktop.api.memory import memory_router
     from backend.app.desktop.api.model_settings import model_settings_router
     from backend.app.desktop.api.storage import storage_router
@@ -49,7 +47,6 @@ def mount_desktop(app) -> None:
     app.include_router(loop_query_router)
     app.include_router(live_loop_router)
     app.include_router(projection_router)
-    app.include_router(compression_router)
     app.include_router(plugins_router)
     app.include_router(memory_router)
     app.include_router(model_settings_router)

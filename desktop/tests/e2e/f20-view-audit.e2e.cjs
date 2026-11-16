@@ -1,6 +1,6 @@
 /*
  * 本文件对 F20 全部主要工作台执行真实 Electron 稳定性矩阵。输入为确定性任务/Context/插件数据、
- * 12 类界面状态与 5 组尺寸缩放，输出为未捕获错误、DOM/ARIA、交互嵌套和页面溢出断言。
+ * 11 类界面状态与 5 组尺寸缩放，输出为未捕获错误、DOM/ARIA、交互嵌套和页面溢出断言。
  * 工作流为从默认 Patrol 通过任务导航进入旧工作台，再检查各入口；示例：electron desktop/tests/e2e/f20-view-audit.e2e.cjs。数据由隔离 fixture 提供。
  */
 "use strict";
@@ -25,7 +25,7 @@ const cases = [
   { width: 900, height: 680, zoom: 1 },
   { width: 900, height: 680, zoom: 1.5 },
 ];
-const targets = ["focus", "map", "draft", "agents", "commitment", "compression", "materials", "plugins", "file", "dialog", "empty", "error"];
+const targets = ["focus", "map", "draft", "agents", "commitment", "materials", "plugins", "file", "dialog", "empty", "error"];
 const qaDir = process.env.FOCUS_QA_DIR ? path.resolve(process.env.FOCUS_QA_DIR) : "";
 const captureAllViewports = process.env.FOCUS_QA_ALL_VIEWPORTS === "1";
 if (qaDir) fs.mkdirSync(qaDir, { recursive: true });
@@ -108,16 +108,6 @@ async function run() {
         state.view = 'focus'; state.commitment.taskId = task.task_id; state.commitment.stage = 4; render();
         appendCommitmentTrace({ actor: 'supervisor', stage: 4, attempt: 1, title: '范围审查', status: 'completed', detail: '确认边界。', payload: { scope: 'desktop' } });
         showReview({ stage: 4, draft: { summary: '保持同源并修复稳定性。' }, allowed_decisions: ['approve', 'revise'] });
-      } else if (target === 'compression') {
-        state.compression = {
-          taskId: task.task_id, request: { usage: 28640, limit: 32000, ratio: .9 },
-          messages: [
-            { id: 'c1', role: 'human', content: '检查前端。' },
-            { id: 'c2', role: 'ai', content: '确认约束。' },
-            { id: 'c3', role: 'tool', content: 'loaded' },
-          ], selected: new Set([0, 1]), ranges: [], busy: false, recovery: null,
-        };
-        state.view = 'compress'; render();
       } else if (target === 'materials') {
         state.materials.set(task.task_id, [
           { material_id: 'm1', relative_path: 'specs/product-direction.md', retention: 'irreplaceable', needs_confirmation: true },
@@ -207,7 +197,7 @@ async function run() {
           appHeight: appRect.height,
           duplicateWorkspaceHeaders: document.querySelectorAll('.workspace-context, #workspaceKicker, #workspaceTitle, #workspaceMeta').length,
           workspaceContentTopDelta: Math.abs(appRect.top - workspaceRect.top),
-          duplicateContentTitles: document.querySelectorAll('.map-toolbar .workspace-kicker, .draft-heading h1, .compression-heading h1').length,
+          duplicateContentTitles: document.querySelectorAll('.map-toolbar .workspace-kicker, .draft-heading h1').length,
           mapToolbarHeight: document.querySelector('.map-toolbar')?.getBoundingClientRect().height || 0,
           mapCardsSameRow: mapCards.length === 2 && Math.abs(mapCards[0].top - mapCards[1].top) < 2,
           pluginsWorkbenchColumns: document.querySelector('.plugins-workbench') ? getComputedStyle(document.querySelector('.plugins-workbench')).gridTemplateColumns : '',
@@ -221,7 +211,7 @@ async function run() {
         .map(([key, value]) => `${key}=${value}`);
       if (target === "dialog" ? result.openDialogs !== 1 : result.openDialogs !== 0) problems.push(`openDialogs=${result.openDialogs}`);
       if (result.appWidth < 300 || result.appHeight < 220) problems.push(`app=${result.appWidth}x${result.appHeight}`);
-      if (["map", "draft", "compression"].includes(target) && result.duplicateContentTitles) problems.push(`duplicateContentTitles=${result.duplicateContentTitles}`);
+      if (["map", "draft"].includes(target) && result.duplicateContentTitles) problems.push(`duplicateContentTitles=${result.duplicateContentTitles}`);
       const mapToolbarLimit = result.appWidth <= 900 ? 82 : 48;
       if (target === "map" && result.mapToolbarHeight > mapToolbarLimit) problems.push(`mapToolbarHeight=${result.mapToolbarHeight}`);
       if (item.width === 900 && item.zoom === 1.5 && target === "map" && result.mapCardsSameRow) problems.push("mapCards=still-two-columns");

@@ -972,18 +972,7 @@ class ContextService:
         hard = list(dict.fromkeys(ids))
         if not hard:
             return
-        await self._release_deleted_run_inputs(session, hard)
-        curator_revisions = tuple((await session.scalars(
-            select(PatrolContextRevision.revision_id)
-            .join(PatrolContextBinding, PatrolContextBinding.binding_id == PatrolContextRevision.binding_id)
-            .join(PatrolAgent, PatrolAgent.agent_id == PatrolContextBinding.agent_id)
-            .where(PatrolAgent.task_id.in_(hard))
-            .with_for_update()
-        )).all())
-        await ContextRevisionRepository().release_owners(
-            session, tuple(("context_curator", revision_id) for revision_id in curator_revisions)
-        )
-        await self.single_lane_programs.delete_for_contexts(session, hard)
+        await self._release_deleted_context_owners(session, hard)
         ordered = list(reversed(hard))
         for cid in ordered:
             row = await session.get(DesktopThread, cid)
@@ -991,17 +980,29 @@ class ContextService:
                 continue
             to_clean.append(row.thread_id)
             await session.execute(delete(DesktopThread).where(DesktopThread.task_id == cid))
-        await self._prune_deleted_context_indexes(session, hard)
+        await self._prune_deleted_context_inputs(session, hard)
+
+    async def _release_deleted_context_owners(
+        self, session: AsyncSession, context_ids: list[str]
+    ) -> None:
+        await self._release_deleted_run_inputs(session, context_ids)
+        curator_revisions = tuple((await session.scalars(
+            select(PatrolContextRevision.revision_id)
+            .join(PatrolContextBinding, PatrolContextBinding.binding_id == PatrolContextRevision.binding_id)
+            .join(PatrolAgent, PatrolAgent.agent_id == PatrolContextBinding.agent_id)
+            .where(PatrolAgent.task_id.in_(context_ids))
+            .with_for_update()
+        )).all())
+        await ContextRevisionRepository().release_owners(
+            session, tuple(("context_curator", revision_id) for revision_id in curator_revisions)
+        )
+        await self.single_lane_programs.delete_for_contexts(session, context_ids)
 
     @staticmethod
-    async def _prune_deleted_context_indexes(session: AsyncSession, context_ids: list[str]) -> None:
-        from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
-            SemanticDerivationArtifactRepository,
-        )
-
-        artifacts = SemanticDerivationArtifactRepository()
+    async def _prune_deleted_context_inputs(session: AsyncSession, context_ids: list[str]) -> None:
+        inputs = ContextRevisionRepository()
         for context_id in context_ids:
-            await artifacts.prune_indexes(session, context_id)
+            await inputs.prune(session, context_id)
 
     @staticmethod
     async def _release_deleted_run_inputs(session: AsyncSession, context_ids: list[str]) -> None:
@@ -1020,17 +1021,17 @@ class ContextService:
             return
         await self.evolution.publish_tombstone(session, cid, origin_id=cid)
         task.deleted_at = datetime.now(timezone.utc)
-        await self._release_deleted_run_inputs(session, [cid])
+        await self._release_deleted_context_owners(session, [cid])
         await session.execute(delete(DesktopRun).where(DesktopRun.task_id == cid))
         await session.execute(delete(DesktopMaterial).where(DesktopMaterial.task_id == cid))
         await session.execute(delete(PatrolDraft).where(PatrolDraft.task_id == cid))
         await session.execute(
-            delete(PatrolAgent).where(PatrolAgent.task_id == cid, PatrolAgent.mode == "standard")
+            delete(PatrolAgent).where(PatrolAgent.task_id == cid)
         )
         await session.execute(delete(SwarmAgent).where(SwarmAgent.task_id == cid))
         await session.execute(delete(AgentMessage).where(AgentMessage.task_id == cid))
         await session.execute(delete(AgentBoardTask).where(AgentBoardTask.thread_task_id == cid))
-        await self._prune_deleted_context_indexes(session, [cid])
+        await self._prune_deleted_context_inputs(session, [cid])
         to_clean.append(task.thread_id)
 
     @staticmethod

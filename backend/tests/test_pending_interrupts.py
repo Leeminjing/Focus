@@ -5,7 +5,6 @@
 后台执行主体身份不同而不会阻塞主运行，最后在服务入口断言主执行存在待决时新运行被拒。
 """
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.conversations.service as _desktop_conversations_service
 import backend.app.desktop.patrol.service as _desktop_patrol_service
 import backend.app.desktop.runs.recovery_service as _desktop_runs_recovery_service
@@ -191,9 +190,7 @@ def _stub_service(monkeypatch):
     service.workspaces._get_task_entities = _stub_task_entities
     service.conversations._commitment_recovery_payload = _stub_no_commitment
     service.contexts = SimpleNamespace(ensure_runnable=_stub_ensure_runnable)
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'ContextRevisionRepository', _RevisionRepository)
     monkeypatch.setattr(_desktop_runs_service, 'ContextRevisionRepository', _RevisionRepository)
-    monkeypatch.setattr(_desktop_conversations_service, 'compression_recovery_payload', _stub_no_compression)
     monkeypatch.setattr(_desktop_runs_recovery_service, 'compression_recovery_payload', _stub_no_compression)
     monkeypatch.setattr(_desktop_runs_service, 'compression_recovery_payload', _stub_no_compression)
     monkeypatch.setattr(_desktop_conversations_service, 'main_pending_interrupt', _stub_pending_access)

@@ -14,6 +14,10 @@ import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from focus.history import HistoryPayload, legacy_to_items
+from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.base import empty_checkpoint
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
@@ -24,21 +28,34 @@ def _engine():
     return sa.create_engine(make_url(os.environ["FOCUS_DATABASE_URL"]).set(drivername="postgresql+psycopg"))
 
 
-def test_fresh_head_has_current_state_and_owned_snapshots(isolated_postgres_database):
+def test_fresh_head_has_canonical_inputs_and_owner_references(isolated_postgres_database):
     engine = _engine()
     try:
         inspector = sa.inspect(engine)
         names = set(inspector.get_table_names())
-        assert {"desktop_context_states", "desktop_context_input_snapshots"} <= names
-        assert not {"desktop_context_revisions", "desktop_context_revision_sources", "desktop_context_publications"} & names
+        assert {"desktop_context_inputs", "desktop_context_input_owners"} <= names
+        assert not {"desktop_context_revisions", "desktop_context_revision_sources", "desktop_context_publications",
+                    "desktop_context_states", "desktop_context_input_snapshots"} & names
         assert {"curation_programs", "curation_source_subscriptions", "curation_lanes",
                 "curation_portfolio_revisions", "curation_portfolio_lane_candidates",
                 "curation_attempts", "curation_portfolio_publication_attempts",
                 "curation_outbox_events", "curation_outbox_deliveries",
                 "patrol_drafts", "patrol_deployment_definitions"} <= names
-        assert any(item["column_names"] == ["context_id"]
-                   for item in inspector.get_unique_constraints("desktop_context_states"))
-        assert not inspector.get_foreign_keys("desktop_context_input_snapshots")
+        assert not any(item["column_names"] == ["context_id"]
+                       for item in inspector.get_unique_constraints("desktop_context_inputs"))
+        assert not inspector.get_foreign_keys("desktop_context_inputs")
+        assert {"history_payload", "sources", "content_hash", "is_published", "checkpoint_id"} <= {
+            column["name"] for column in inspector.get_columns("desktop_context_inputs")
+        }
+        assert "uq_context_input_execution_checkpoint" in {
+            constraint["name"] for constraint in inspector.get_unique_constraints("desktop_context_inputs")
+        }
+        owner_columns = {column["name"] for column in inspector.get_columns("desktop_context_input_owners")}
+        assert owner_columns == {"snapshot_key", "owner_kind", "owner_id", "revision_id", "created_at"}
+        owner_fk, = inspector.get_foreign_keys("desktop_context_input_owners")
+        assert owner_fk["referred_table"] == "desktop_context_inputs"
+        assert owner_fk["constrained_columns"] == ["revision_id"]
+        assert owner_fk["options"]["ondelete"] == "CASCADE"
         assert not inspector.get_foreign_keys("loop_semantic_index_artifacts")
         assert not inspector.get_foreign_keys("loop_segment_projection_records")
         for table in names:
@@ -68,12 +85,17 @@ def test_populated_old_head_preserves_latest_and_only_live_inputs(isolated_postg
             "curation_portfolio_lane_candidates", "agent_loops", "loop_rounds", "loop_observations",
             "patrol_deployment_definitions", "loop_semantic_index_artifacts", "loop_planning_retrieval_sessions",
             "loop_pending_decisions", "loop_compression_candidates", "loop_segment_projection_records",
-            "patrol_agents", "patrol_context_bindings", "patrol_context_revisions", "patrol_context_attempts")}
+            "patrol_agents", "patrol_context_bindings", "patrol_context_revisions", "patrol_context_attempts",
+            "checkpoints", "checkpoint_blobs")}
+        typed_authored = [{"id": "typed-author", "role": "human", "content": "authored task"}]
+        typed_execution = [{"id": "typed-execution", "role": "human", "content": "exact typed input"}]
+        typed = HistoryPayload(authored_items=legacy_to_items(typed_authored),
+                               execution_items=legacy_to_items(typed_execution)).model_dump(mode="json")
         with engine.begin() as connection:
             connection.execute(tables["desktop_workspaces"].insert().values(workspace_id="ws", path="/upgrade", display_name="Upgrade"))
             connection.execute(tables["desktop_threads"].insert(), [
                 {"task_id": identity, "workspace_id": "ws", "thread_id": "thread-" + identity,
-                 "title": identity, "ui_state": {}} for identity in ("source", "context")])
+                 "title": identity, "ui_state": {}} for identity in ("source", "context", "empty")])
             for identity, context_id, generation, origin in (
                 ("source-v1", "source", 1, "root"), ("context-v1", "context", 1, "manual_derive"),
                 ("context-v2", "context", 2, "curation"), ("context-v3", "context", 3, "run_settled"),
@@ -81,11 +103,23 @@ def test_populated_old_head_preserves_latest_and_only_live_inputs(isolated_postg
                 connection.execute(tables["desktop_context_revisions"].insert().values(
                     revision_id=identity, context_id=context_id, generation=generation,
                     execution_thread_id="execution-" + identity, checkpoint_ns="", checkpoint_id="checkpoint-" + identity,
-                    payload_mode="checkpoint", authored_messages=[], execution_messages=[], repair_manifest=[],
+                    payload_mode="checkpoint",
+                    history_payload=typed if identity in {"context-v1", "context-v3"} else None,
+                    authored_messages=typed_authored if identity in {"context-v1", "context-v3"} else [],
+                    execution_messages=typed_execution if identity in {"context-v1", "context-v3"} else [], repair_manifest=[],
                     issues=[], initial_message_ids=[], content_hash=hashlib.sha256(identity.encode()).hexdigest(),
                     projection_status="valid", origin_kind=origin, origin_id="live-run" if identity == "resume-v6" else None))
                 if identity != "candidate-v5":
                     connection.execute(tables["desktop_context_publications"].insert().values(revision_id=identity, context_id=context_id))
+            blob_type, blob = JsonPlusSerializer().dumps_typed([
+                HumanMessage(id="legacy-source", content="exact checkpoint-only input")])
+            connection.execute(tables["checkpoint_blobs"].insert().values(thread_id="execution-source-v1",
+                checkpoint_ns="", channel="messages", version="1", type=blob_type, blob=blob))
+            legacy_checkpoint = empty_checkpoint()
+            legacy_checkpoint.update(id="checkpoint-source-v1", channel_versions={"messages": "1"})
+            connection.execute(tables["checkpoints"].insert().values(thread_id="execution-source-v1",
+                checkpoint_ns="", checkpoint_id="checkpoint-source-v1",
+                checkpoint=legacy_checkpoint, metadata={}))
             connection.execute(tables["desktop_context_revision_sources"].insert(), [
                 {"source_edge_id": "edge-cross", "target_revision_id": "context-v2", "source_context_id": "source",
                  "source_revision_id": "source-v1", "source_checkpoint_id": "checkpoint-source-v1", "position": 0},
@@ -114,7 +148,8 @@ def test_populated_old_head_preserves_latest_and_only_live_inputs(isolated_postg
                 status="observed", observation_id="observation", authority_revision=1, goal_revision=1,
                 frontier_hash="a" * 64, workspace_revision=1))
             connection.execute(tables["loop_observations"].insert().values(observation_id="observation", loop_id="loop",
-                round_id="round", generation=1, envelope={"portfolio_frontier": [{"context_id": "context", "revision_id": "context-v2"}]},
+                round_id="round", generation=1, envelope={"portfolio_frontier": [{"context_id": "context", "revision_id": "context-v2"},
+                    {"context_id": "empty", "revision_id": None}]},
                 envelope_hash="b" * 64))
             connection.execute(tables["patrol_deployment_definitions"].insert().values(definition_id="definition",
                 run_id="old-run", document_hash="c" * 64, document={"instructions": "keep edited input"},
@@ -166,37 +201,42 @@ def test_populated_old_head_preserves_latest_and_only_live_inputs(isolated_postg
         with pytest.raises(RuntimeError, match="Active Context input is missing"):
             command.upgrade(config, "head")
         assert "desktop_context_revisions" in sa.inspect(engine).get_table_names()
-        assert "desktop_context_input_snapshots" not in sa.inspect(engine).get_table_names()
+        assert "desktop_context_input_owners" not in sa.inspect(engine).get_table_names()
         with engine.begin() as connection:
             connection.execute(tables["loop_observations"].update().where(tables["loop_observations"].c.observation_id == "observation")
-                .values(envelope={"portfolio_frontier": [{"context_id": "context", "revision_id": "context-v2"}]}))
+                .values(envelope={"portfolio_frontier": [{"context_id": "context", "revision_id": "context-v2"},
+                    {"context_id": "empty", "revision_id": None}]}))
         command.upgrade(config, "head")
         assert not sa.inspect(engine).get_foreign_keys("loop_semantic_index_artifacts")
         assert not sa.inspect(engine).get_foreign_keys("loop_segment_projection_records")
         with engine.connect() as connection:
-            states = connection.execute(sa.text("SELECT * FROM desktop_context_states ORDER BY context_id")).mappings().all()
-            assert [(row["context_id"], row["revision_id"]) for row in states] == [("context", "context-v3"), ("source", "source-v1")]
-            assert states[0]["generation"] == 3  # Pointer wins over an unpublished higher generation.
-            assert states[0]["sources"][0]["source"]["revision_id"] == "source-v1"
-            snapshots = connection.execute(sa.text("SELECT * FROM desktop_context_input_snapshots")).mappings().all()
-            actual = {(row["owner_kind"], row["owner_id"], row["revision_id"]) for row in snapshots}
+            current_inputs = connection.execute(sa.text("SELECT i.* FROM desktop_threads t JOIN desktop_context_inputs i ON i.revision_id=t.current_revision_id ORDER BY i.context_id")).mappings().all()
+            assert [(row["context_id"], row["revision_id"]) for row in current_inputs] == [("context", "context-v3"), ("source", "source-v1")]
+            assert current_inputs[0]["generation"] == 3  # Pointer wins over an unpublished higher generation.
+            assert current_inputs[0]["sources"][0]["source"]["revision_id"] == "source-v1"
+            owner_rows = connection.execute(sa.text("SELECT * FROM desktop_context_input_owners")).mappings().all()
+            actual = {(row["owner_kind"], row["owner_id"], row["revision_id"]) for row in owner_rows}
             assert actual == {("run", "live-run", "context-v1"), ("curation_portfolio", "portfolio", "context-v2"),
                               ("curation_portfolio", "portfolio", "candidate-v5"), ("round", "round", "context-v2"),
                               ("run", "live-run", "resume-v6"), ("compression_candidate", "compression", "context-v1"),
                               ("context_curator", "retry", "context-v2"), ("context_curator", "newest", "resume-v6")}
-            from backend.app.desktop.contexts.evolution.schemas import (
-                ContextRevisionContract,
-            )
-            for row in snapshots:
-                payload = ContextRevisionContract.model_validate(row["payload"])
-                assert payload.ref.revision_id == row["revision_id"]
-                assert row["is_published"] is (row["revision_id"] != "candidate-v5")
+            assert connection.scalar(sa.text("SELECT count(*) FROM desktop_context_inputs")) == 6
+            assert connection.scalar(sa.text("SELECT count(*) FROM desktop_context_inputs WHERE revision_id='context-v2'")) == 1
+            assert connection.scalar(sa.text("SELECT count(*) FROM desktop_context_input_owners WHERE revision_id='context-v2'")) == 3
+            for row in owner_rows:
                 key = hashlib.sha256(json.dumps([row["owner_kind"], row["owner_id"], row["revision_id"]], ensure_ascii=False,
                                                 separators=(",", ":")).encode()).hexdigest()
                 assert row["snapshot_key"] == key
+            assert connection.scalar(sa.text("SELECT is_published FROM desktop_context_inputs WHERE revision_id='candidate-v5'")) is False
+            assert connection.scalar(sa.text("SELECT is_published FROM desktop_context_inputs WHERE revision_id='context-v1'")) is True
+            for identity in ("context-v1", "context-v3"):
+                body = connection.execute(sa.text("SELECT history_payload, authored_messages, execution_messages FROM desktop_context_inputs WHERE revision_id=:identity"), {"identity": identity}).mappings().one()
+                assert body["history_payload"] == typed
+                assert body["authored_messages"] == body["execution_messages"] == []
+            assert connection.scalar(sa.text("SELECT history_payload FROM desktop_context_inputs WHERE revision_id='source-v1'")) is None
             assert set(connection.execute(sa.text("SELECT index_id FROM loop_semantic_index_artifacts")).scalars()) == {"current-index", "pinned-index", "planning-index"}
             assert connection.scalar(sa.text("SELECT payload FROM loop_segment_projection_records WHERE record_id='proof'")) == {"proof": "preserved"}
-            assert connection.scalar(sa.text("SELECT count(*) FROM desktop_threads")) == 2
+            assert connection.scalar(sa.text("SELECT count(*) FROM desktop_threads")) == 3
             assert connection.scalar(sa.text("SELECT count(*) FROM curation_portfolio_lane_candidates")) == 1
             assert connection.scalar(sa.text("SELECT document FROM patrol_deployment_definitions WHERE definition_id='definition'")) == {"instructions": "keep edited input"}
             assert connection.scalar(sa.text("SELECT context_revision_id FROM desktop_runs WHERE run_id='old-run'")) == "obsolete-v4"
@@ -211,21 +251,36 @@ def test_populated_old_head_preserves_latest_and_only_live_inputs(isolated_postg
             assert connection.scalar(sa.text("SELECT status FROM patrol_context_revisions WHERE revision_id='stopped-observed'")) == "superseded"
             assert connection.scalar(sa.text("SELECT source_payload FROM patrol_context_revisions WHERE revision_id='stopped-observed'")) == {"input_released": True}
         async def release_portfolio():
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
             from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+            from backend.app.desktop.contexts.evolution.reader import (
+                ContextRevisionReader,
+            )
             from backend.app.desktop.contexts.evolution.repository import (
                 ContextRevisionRepository,
             )
             async_engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
             try:
-                async with async_sessionmaker(async_engine).begin() as session:
-                    await ContextRevisionRepository().release(session, "curation_portfolio", "portfolio")
+                async with (
+                    AsyncPostgresSaver.from_conn_string(target.set(drivername="postgresql").render_as_string(hide_password=False)) as saver,
+                    async_sessionmaker(async_engine).begin() as session,
+                ):
+                    repository = ContextRevisionRepository()
+                    reader = ContextRevisionReader(repository, saver)
+                    current_view = await reader.read_current(session, "context", "semantic")
+                    source_view = await reader.read_current(session, "source", "semantic")
+                    assert current_view.messages[0]["content"] == "exact typed input"
+                    assert source_view.messages[0]["content"] == "exact checkpoint-only input"
+                    await repository.release(session, "curation_portfolio", "portfolio")
             finally:
                 await async_engine.dispose()
-        asyncio.run(release_portfolio())
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(release_portfolio())
         with engine.connect() as connection:
-            assert not connection.scalar(sa.text("SELECT EXISTS (SELECT 1 FROM desktop_context_input_snapshots WHERE owner_kind='curation_portfolio' AND owner_id='portfolio')"))
-            assert not connection.scalar(sa.text("SELECT EXISTS (SELECT 1 FROM desktop_context_input_snapshots WHERE revision_id='candidate-v5')"))
+            assert not connection.scalar(sa.text("SELECT EXISTS (SELECT 1 FROM desktop_context_input_owners WHERE owner_kind='curation_portfolio' AND owner_id='portfolio')"))
+            assert not connection.scalar(sa.text("SELECT EXISTS (SELECT 1 FROM desktop_context_input_owners WHERE revision_id='candidate-v5')"))
+            assert not connection.scalar(sa.text("SELECT EXISTS (SELECT 1 FROM desktop_context_inputs WHERE revision_id='candidate-v5')"))
         with pytest.raises(RuntimeError, match="discarded history"):
             importlib.import_module("focus.persistence.migrations.versions.5a6b7c8d9e0f_retire_context_revision_history").downgrade()
     finally:

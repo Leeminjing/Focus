@@ -339,7 +339,7 @@ def test_patrol_candidate_branch_reads_body_free_manifest_before_exact_preparati
     asyncio.run(exercise())
 
 
-def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkpoint() -> None:
+def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkpoint(monkeypatch) -> None:
     resolution = LoopCompressionResolution(
         resolution_id="resolution",
         loop_id="loop",
@@ -390,6 +390,11 @@ def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkp
 
     released = []
 
+    async def release(_repository, _session, owner_kind, owner_id):
+        released.append({"owner_kind": owner_kind, "owner_id": owner_id})
+
+    monkeypatch.setattr(ContextRevisionRepository, "release", release)
+
     class ScalarRows:
         def __init__(self, values):
             self.values = values
@@ -402,23 +407,8 @@ def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkp
 
     class Session:
         async def scalars(self, _statement):
-            from backend.app.desktop.contexts.evolution.models import (
-                ContextInputSnapshot,
-            )
-
             model = _statement.column_descriptions[0]["entity"]
-            if model is ContextInputSnapshot:
-                return ScalarRows(["context"])
             return ScalarRows([resolution] if model is LoopCompressionResolution else [])
-
-        async def execute(self, statement):
-            from backend.app.desktop.contexts.evolution.models import (
-                ContextInputSnapshot,
-            )
-
-            if statement.table.name == ContextInputSnapshot.__tablename__:
-                released.append(statement.compile().params)
-            return SimpleNamespace(rowcount=0)
 
         async def get(self, model, identity, **_kwargs):
             return rows.get((model, identity))

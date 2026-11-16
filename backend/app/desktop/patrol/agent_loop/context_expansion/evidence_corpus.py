@@ -13,20 +13,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
-    ContextSemanticManifest,
-    EvidenceRole,
-    ExpansionOpportunity,
-    stable_expansion_hash,
-)
-from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
-from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_roles import (
-    context_evidence_role,
-    semantic_unit_roles,
-    structured_evidence_role,
-)
-from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.contexts.curation import (
     EvidenceRef,
     MaterialEvidenceRef,
@@ -46,6 +32,24 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionRepository,
 )
 from backend.app.desktop.contexts.evolution.repository import ContextRevisionNotFound
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
+    ContextSemanticManifest,
+    EvidenceRole,
+    ExpansionOpportunity,
+    stable_expansion_hash,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.evidence_roles import (
+    context_evidence_role,
+    semantic_unit_roles,
+    structured_evidence_role,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import (
+    FrozenMissionSectionCatalog,
+)
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import (
+    EffectiveMissionProjector,
+)
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
 
 class _CorpusModel(BaseModel):
@@ -170,7 +174,7 @@ class FrozenEvidenceCorpusReader:
         try:
             async with self._sessions() as session:
                 for source in opportunity.manifest_sources:
-                    revision = await self._repository.get(session, source)
+                    revision = await self._repository.get_input(session, source)
                     manifest = manifest_by_revision.get(source.revision_id)
                     manifest = self._authority.validate_source(
                         observation,

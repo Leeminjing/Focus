@@ -304,7 +304,6 @@ def test_context_selection_binding_and_native_status_in_real_focus(client, tmp_p
         catalog = compile_agent_tool_catalog(kwargs["tools"], middleware)
         return create_agent(Model(responses=["Browser-bound Run completed"]), tools=catalog.regular_tools,
                             middleware=middleware, context_schema=dict)
-    monkeypatch.setattr('backend.app.desktop.conversations.compression_service.make_lead_agent', graph)
     monkeypatch.setattr('backend.app.desktop.runs.agent_factory.make_lead_agent', graph)
     started = http.post(f"/desktop/api/tasks/{aid}/main/runs", headers=SESSION,
                         json={"message": "Run with an independent browser", "model_name": "deepseek-v4-flash"})

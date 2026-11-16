@@ -162,7 +162,6 @@ def _seed_service(monkeypatch) -> DesktopService:
     service.contexts = SimpleNamespace(ensure_runnable=_stub_none)
     service.run_materials = SimpleNamespace(resolve=_stub_resolve_materials)
     service.run_material_history = SimpleNamespace(add=lambda *_: None)
-    monkeypatch.setattr(_desktop_conversations_service, 'compression_recovery_payload', _stub_none)
     monkeypatch.setattr(_desktop_runs_recovery_service, 'compression_recovery_payload', _stub_none)
     monkeypatch.setattr(_desktop_runs_service, 'compression_recovery_payload', _stub_none)
     monkeypatch.setattr(_desktop_conversations_service, 'main_pending_interrupt', _stub_none)

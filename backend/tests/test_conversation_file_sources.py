@@ -2,10 +2,8 @@
 import asyncio
 from types import SimpleNamespace as NS
 
+from backend.app.desktop.patrol.agent_loop.queries.conversation_query import ContextConversationQueryService
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop
-from backend.app.desktop.patrol.agent_loop.queries.conversation_query import (
-    ContextConversationQueryService,
-)
 from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 
 

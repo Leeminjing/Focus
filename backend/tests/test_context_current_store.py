@@ -141,14 +141,26 @@ def test_current_replacement_keeps_only_owned_inputs_and_rejects_late_publicatio
                 )
                 assert frozen_view.messages == first.execution_messages
                 assert (await repo.current(session, context)).ref == second.ref
+                assert tuple(value.ref for value in await repo.list_workspace(
+                    session, (await session.get(DesktopThread, context)).workspace_id
+                )) == (second.ref,)
                 assert (
                     await session.scalar(
                         select(func.count())
                         .select_from(ContextRevision)
                         .where(ContextRevision.context_id == context)
                     )
-                    == 1
+                    == 2
                 )
+                # Two independent owners reference one canonical body. V2 text is stored
+                # only in history_payload; views are reconstructed from that authority.
+                row = await session.get(ContextRevision, first.ref.revision_id)
+                assert row.authored_messages == row.execution_messages == []
+                assert row.history_payload == first.history_payload.model_dump(mode="json")
+                owners = tuple(await session.scalars(select(ContextInputSnapshot).where(
+                    ContextInputSnapshot.revision_id == first.ref.revision_id)))
+                assert len(owners) == 2
+                assert {owner.owner_kind for owner in owners} == {"run", "round"}
                 await repo.release(session, "run", "old-run")
                 assert (await repo.get(session, first.ref)).ref == first.ref
                 wrong = first.ref.model_copy(
@@ -173,7 +185,8 @@ def test_current_replacement_keeps_only_owned_inputs_and_rejects_late_publicatio
                     await session.scalar(
                         select(func.count())
                         .select_from(ContextInputSnapshot)
-                        .where(ContextInputSnapshot.context_id == context)
+                        .join(ContextRevision, ContextRevision.revision_id == ContextInputSnapshot.revision_id)
+                        .where(ContextRevision.context_id == context)
                     )
                     == 0
                 )
@@ -313,7 +326,8 @@ def test_checkpoint_import_only_publishes_actual_head_and_keeps_pinned_reads_exa
                     await session.scalar(
                         select(func.count())
                         .select_from(ContextInputSnapshot)
-                        .where(ContextInputSnapshot.context_id == context_id)
+                        .join(ContextRevision, ContextRevision.revision_id == ContextInputSnapshot.revision_id)
+                        .where(ContextRevision.context_id == context_id)
                     )
                     == 0
                 )
@@ -435,6 +449,37 @@ def test_curation_observation_cannot_publish_a_running_mains_intermediate_head(
                     await repo.release(
                         session, "context_curator", "main-observer-" + run_id
                     )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_deleted_current_retains_only_empty_metadata_while_other_owners_keep_exact_input():
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        context = uuid.uuid4().hex
+        await workspace(sessions, context)
+        repo = ContextRevisionRepository()
+        value = contract(context)
+        try:
+            async with sessions.begin() as session:
+                await repo.insert(session, value)
+                await repo.switch_current(session, value.ref, None)
+                await repo.freeze(session, value.ref, owner_kind="round", owner_id=context)
+                deleted = await ContextEvolutionService(sessions, None, None).publish_tombstone(
+                    session, context)
+                current = await repo.current(session, context)
+                assert current.ref == deleted
+                assert current.projection_status.value == "deleted"
+                assert current.history_payload == HistoryPayload()
+                assert current.authored_messages == current.execution_messages == ()
+                assert (await repo.get_input(session, value.ref)).history_payload == value.history_payload
+                await repo.release(session, "round", context)
+                with pytest.raises(ContextRevisionNotFound):
+                    await repo.get(session, value.ref)
+                assert (await repo.current(session, context)).ref == deleted
         finally:
             await engine.dispose()
 

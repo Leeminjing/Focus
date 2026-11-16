@@ -78,10 +78,7 @@ app.whenReady().then(async () => {
   const result = await execute('({run_id:taskRunOperations.get(state.activeTaskId).active_run.run_id, materialHistory:state.materialHistory.get(state.activeTaskId), task_id:state.activeTaskId})');
   result.map={context_id:map.context_id,revision_id:map.revision_id,opened_task_id:map.context_id};
   await shot("real-task-complete");
-  await execute('document.querySelector("[data-action=organize-context]").click()');
-  await until('document.body.dataset.view === "compress"');
-  await execute('document.querySelector("[data-action=cancel-compression]").click()');
-  await until('document.body.dataset.view === "focus"');
+  assert.equal(await execute('document.querySelector("[data-action=organize-context]")'), null);
   await execute('document.querySelector("[data-action=show-assembly]").click()');
   await until('activeTask()?.harness_mode === "assembly" && document.querySelector("#mainInput")');
   assert.notEqual(await execute('state.activeTaskId'), result.task_id);

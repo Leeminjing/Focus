@@ -8,21 +8,15 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
 from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import (
     BudgetedIndexModel,
     IndexBudgetExceeded,
     IndexModelBudget,
 )
-from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import (
-    resolve_expansion_resources,
-)
-from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import (
-    unlimited_loop_budgets,
-)
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import resolve_expansion_resources
 from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
-from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
-    RoleBoundStructuredModel,
-)
 from backend.tests.config_helpers import app_config_for
 
 
@@ -274,15 +268,15 @@ def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeyp
         SemanticProjectionProposal,
     )
     from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
-    from backend.tests.incremental_index_support import (
+    from backend.tests.index_test_support import (
         Checkpoints,
         ModelProbe,
+        exercise,
         messages,
         observation,
         revision,
     )
-    from backend.tests.test_incremental_index_real_model import observed_model_factory
-    from backend.tests.test_incremental_revision_index import exercise
+    from backend.tests.test_index_provider import observed_model_factory
 
     budgets = _legacy_finite_budgets()
 
@@ -321,10 +315,9 @@ def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeyp
         cold = await service.build(observation(seed, first, budget=budgets))
         assert cold.blocker_code is None, cold.blocker_summary
         assert cold.indexes[0].quality_state == "complete" and len(probe.calls) > 6
-        target = await revision(sessions, seed["context_id"], history + messages(1, 37), parent=first)
+        target = await revision(sessions, seed["context_id"], history + messages(1, 37))
         appended = await service.build(observation(seed, target, budget=budgets))
         assert appended.blocker_code is None, appended.blocker_summary
-        assert appended.indexes[0].inheritance.baseline_index_id is None
         assert len(set(cold.indexes[0].inheritance.record_ids).intersection(appended.indexes[0].inheritance.record_ids)) == 3
         count = len(probe.calls)
         cached = await service.build(observation(seed, target, budget=budgets))

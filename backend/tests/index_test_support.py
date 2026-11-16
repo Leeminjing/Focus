@@ -1,12 +1,14 @@
-r"""本文件对外提供隔离索引测试的 Revision 播种、冻结 Observation 和计数模型端口。
+r"""本文件对外提供隔离索引测试的当前输入播种与组合环境、冻结 Observation 和计数模型端口。
 
-输入为真实隔离 PostgreSQL sessionmaker 与执行消息；输出为已提交的 Context Revision、最小冻结输入和可观测模型调用。
-工作流为真实 Loop bootstrap，显式绑定已冻结 Observation 身份，发布权威后继，模型只从请求原文生成 drafts；默认综合完成空结果。
+输入为真实隔离 PostgreSQL sessionmaker 与执行消息；输出为已发布的当前 Context 输入、最小冻结输入和可观测模型调用。
+工作流为真实 Loop bootstrap，显式绑定已冻结 Observation 身份，原子替换当前输入，模型只从请求原文生成 drafts；默认综合完成空结果。
 calls 记录全部尝试；interpretation_calls 为综合回合，local_calls 仅排除综合回合，联合 verifier 通过 payload 或 index_phase 另行识别。
 示例：probe = ModelProbe(); service = probe.service(sessions)。测试模型不访问 provider，不隐藏模型 payload。
 """
 
+import asyncio
 import json
+import os
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -47,7 +49,6 @@ async def revision(
     context_id,
     messages,
     *,
-    parent=None,
     origin="run_settled",
     published=True,
     sources=None,
@@ -77,7 +78,7 @@ async def revision(
             execution_messages=tuple(messages),
             content_hash=stable_expansion_hash("test-execution", messages),
             projection_status="valid",
-            origin_kind=origin if parent or sources else "root",
+            origin_kind=origin if expected or sources else "root",
             created_at=datetime.now(UTC),
         )
         await repository.insert(session, contract)
@@ -244,3 +245,51 @@ class ModelProbe:
             Checkpoints(),
             **options,
         )
+
+
+def exercise(tmp_path, operation, *, budgets=None):
+    # This fixture is the integration composition root; production installs
+    # the same release port in DesktopService, never from a repository import.
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
+        install_context_index_lifecycle,
+    )
+    from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant
+    from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
+        LoopObservationService,
+    )
+    from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
+
+    install_context_index_lifecycle()
+
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        seed = await _seed_loop(
+            sessions, tmp_path, label="index", started_at=datetime.now(UTC), budgets=budgets,
+        )
+        async with sessions.begin() as session:
+            grant = await session.scalar(
+                select(LoopDelegationGrant).where(
+                    LoopDelegationGrant.loop_id == seed["loop_id"]
+                )
+            )
+            grant.budgets = budgets if budgets is not None else {
+                **grant.budgets,
+                "max_model_calls": 10000,
+                "max_input_tokens": 10000000,
+                "max_output_tokens": 10000000,
+            }
+        frozen = await LoopObservationService(sessions, Checkpoints()).capture(
+            seed["loop_id"], seed["round_id"]
+        )
+        seed["observation_id"] = frozen.decision_inputs_ref
+        try:
+            await operation(sessions, seed)
+        finally:
+            await _stop(seed["service"], seed["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())

@@ -86,8 +86,12 @@ def test_discovery_exports_only_current_or_explicit_published_pins(tmp_path, mon
 
     from backend.app.desktop.contexts.evolution import ContextRevisionRepository
     from backend.scripts import semantic_index_corpus as corpus_module
-    from backend.tests.incremental_index_support import Checkpoints, messages, revision
-    from backend.tests.test_incremental_revision_index import exercise
+    from backend.tests.index_test_support import (
+        Checkpoints,
+        exercise,
+        messages,
+        revision,
+    )
 
     monkeypatch.setattr(corpus_module, "get_app_config", lambda path: SimpleNamespace(
         database=SimpleNamespace(url=os.environ["FOCUS_DATABASE_URL"])
@@ -155,7 +159,7 @@ def test_summary_keeps_blockers_and_rejects_different_control_settings(tmp_path,
 @pytest.mark.parametrize("prewarm", ["off", "on"])
 def test_corpus_replay_reports_cold_appends_exact_and_citation_quality(tmp_path, caplog, monkeypatch, prewarm):
     from backend.tests import test_index_real_model_performance as benchmark
-    from backend.tests.incremental_index_support import ModelProbe
+    from backend.tests.index_test_support import ModelProbe
 
     probe = ModelProbe()
 

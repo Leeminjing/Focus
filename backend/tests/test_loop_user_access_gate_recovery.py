@@ -5,44 +5,26 @@
 """
 
 import asyncio
+from datetime import UTC,datetime,timedelta
+from copy import deepcopy
+from types import SimpleNamespace
 import os
 import uuid
-from copy import deepcopy
-from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
-import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+import pytest
+from sqlalchemy import func,select
+from sqlalchemy.ext.asyncio import async_sessionmaker,create_async_engine
 
-from backend.app.desktop.patrol.agent_loop.governance.gates import (
-    PendingDecisionProjector,
-)
-from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
-from backend.app.desktop.patrol.agent_loop.models import (
-    AgentLoop,
-    LoopDecision,
-    LoopDirective,
-    LoopEventOutbox,
-    LoopPendingDecision,
-    LoopRound,
-)
-from backend.app.desktop.patrol.agent_loop.recovery.user_access_gate_recovery import (
-    UserAccessGateRecovery,
-)
+from backend.app.desktop.patrol.agent_loop.governance.gates import PendingDecisionProjector
+from backend.app.desktop.patrol.agent_loop.models import AgentLoop,LoopPendingDecision,LoopDecision,LoopDirective,LoopEventOutbox,LoopRound
 from backend.app.desktop.patrol.agent_loop.schemas import LoopWaitResponseRequest
-from backend.app.desktop.patrol.agent_loop.waits.wait_models import (
-    LoopWaitRequest,
-    LoopWaitResponse,
-)
+from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest,LoopWaitResponse
+from backend.app.desktop.patrol.agent_loop.recovery.user_access_gate_recovery import UserAccessGateRecovery
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
 from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
-from backend.app.desktop.workspaces.coordination.models import (
-    RunExecutionAnchor,
-    WorkspaceLease,
-    WorkspaceSlot,
-)
-from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
+from backend.app.desktop.workspaces.coordination.models import RunExecutionAnchor,WorkspaceLease,WorkspaceSlot
+from backend.tests.test_agent_loop_round_liveness import _seed_loop,_stop
 
 pytestmark=pytest.mark.usefixtures('runtime_postgres_database')
 

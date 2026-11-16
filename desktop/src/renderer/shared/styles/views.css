@@ -5,7 +5,6 @@
 .focus-view,
 .map-view,
 .draft-view,
-.compression-view,
 .plugins-view {
   color: var(--text-primary);
 }
@@ -15,7 +14,6 @@
 
 #app:has(.focus-shell),
 #app:has(.draft-view),
-#app:has(.compression-view) { overflow: hidden; }
 
 .app-inspector .context-rail {
   width: 100%;
@@ -523,25 +521,6 @@
 .composer-feedback.is-danger { color: var(--text-danger); }
 .main-submission-recovery:empty { display: none; }
 .main-submission-recovery { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0 var(--space-3) var(--space-2); }
-/* @命令 高亮叠加层：与 textarea 同字体/内边距/换行；textarea 正文透明、由 backdrop 显示，@命令片段蓝字。 */
-.composer-input-wrap { position: relative; min-width: 0; }
-.composer .composer-input-wrap textarea { position: relative; z-index: 1; color: transparent; caret-color: var(--text-primary); }
-.composer-input-wrap textarea::placeholder { color: var(--text-secondary); }
-.composer-input-highlight {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  overflow: hidden;
-  pointer-events: none;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  word-break: break-word;
-  color: var(--text-primary);
-  padding: var(--space-3) var(--space-4);
-  min-height: 50px;
-}
-.composer-input-highlight .cmd-at { color: var(--text-accent); }
-
 .context-block-banner {
   margin: var(--space-3) var(--space-4) 0;
   border: 1px solid var(--border-warning);
@@ -951,81 +930,9 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .review-panel[data-recovery-status="processing"] { border-color: var(--border-accent); background: var(--surface-accent); }
 .review-panel[data-recovery-status="orphaned"] { border-color: var(--status-danger); background: var(--surface-danger); }
 
-/* 压缩是“选择来源 → 审阅计划 → 确认写入”的双栏工作区。 */
-#app:has(.compression-view) { container: compression-workbench / inline-size; overflow: auto; }
-.compression-view { display: grid; height: 100%; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-3); padding: 0; }
-.compression-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  min-height: 44px;
-  padding: var(--space-2) 0;
-  border: 0;
-  border-bottom: 1px solid var(--border-default);
-  border-radius: 0;
-  background: var(--surface-base);
-}
-.compression-usage { margin: 0; color: var(--text-secondary); font-size: 12px; }
-.compression-heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); }
-.compression-panels { display: grid; min-height: 0; grid-template-columns: minmax(300px, 5fr) minmax(420px, 7fr); gap: var(--space-4); }
-.compression-messages,
-.compression-plan {
-  display: grid;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border: 0;
-  border-radius: 0;
-  background: var(--surface-base);
-}
-.compression-messages { grid-template-rows: auto minmax(0, 1fr) auto; }
-.compression-plan { align-content: start; overflow: auto; padding: 0; }
-.compression-panel-heading {
-  display: flex;
-  min-height: 58px;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-subtle);
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-.compression-panel-heading > div { display: grid; gap: 2px; }
-.compression-panel-heading strong { color: var(--text-primary); font-size: 13px; }
-.compression-message-list { min-height: 0; overflow: auto; }
-.compression-message-row { border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: transparent; }
-.compression-message-row.is-block { border-color: var(--border-accent); background: var(--surface-accent); }
-.compression-message-row.is-planned { opacity: .58; }
-.compression-preview,
+/* 历史压缩块仅提供只读摘要与原文阅读。 */
 .compression-block-divider > span,
 .compression-block-summary > summary { display: inline-flex; align-items: center; gap: var(--space-1); }
-.compression-range-card { margin: 0 var(--space-4); padding: var(--space-4) 0; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: transparent; }
-.compression-range-card.is-restore { border-color: var(--status-success); background: var(--surface-success); }
-.compression-range-card.is-delete { border-color: var(--status-danger); background: var(--surface-danger); }
-.compression-range-card textarea { border-color: var(--border-default); border-radius: var(--radius-control); background: var(--surface-base); }
-.compression-messages > footer,
-.compression-plan > footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border-subtle); background: var(--surface-base); }
-.compression-plan > footer { position: sticky; bottom: 0; z-index: 1; }
-
-/* 两栏至少需要 300px + 420px + 16px；按工作区内容宽度而非窗口宽度堆叠。 */
-@container compression-workbench (width < 736px) {
-  .compression-view { height: auto; min-height: 100%; grid-template-rows: auto auto; }
-  .compression-heading { align-items: flex-start; }
-  .compression-heading-actions { align-items: center; flex-direction: row; }
-  .compression-panels { min-height: auto; grid-template-columns: minmax(0, 1fr); }
-  .compression-messages { min-height: 520px; }
-  .compression-plan { min-height: 440px; overflow: visible; }
-}
-.compression-stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); padding: var(--space-4); }
-.compression-stats > span { display: grid; gap: var(--space-1); padding: var(--space-3) 0; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: transparent; }
-.compression-stats small { color: var(--text-secondary); }
-.compression-stats strong { font-size: 13px; }
-.compression-mapping-details { margin: 0 var(--space-4) var(--space-4); color: var(--text-secondary); font-size: 12px; }
-.compression-mapping-details summary { cursor: pointer; }
-.compression-mapping { display: grid; gap: var(--space-1); margin-bottom: 0; padding-left: var(--space-5); }
 
 /* 材料检查器：主行承载本次选择，长期规则和版本动作位于独立设置区。 */
 .materials-inspector .inspector-description { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }

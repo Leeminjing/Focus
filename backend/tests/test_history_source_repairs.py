@@ -6,30 +6,43 @@
 """
 
 import asyncio
-from copy import deepcopy
 import os
-from types import SimpleNamespace
 import uuid
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
+from focus.history import (
+    deserialize_history_messages,
+    messages_to_items,
+    semantic_messages,
+    validate_items,
+)
+from focus.history.repair import repair_tool_messages
+from focus.history.selection import semantic_policy
+from focus.models.provider_contract import ProviderContract
+from focus.models.response_projection import ResponsesRequestProjector
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.contexts.curator.contract import compile_curated_context
 from backend.app.desktop.contexts.curator.projector import CurationSourceProjector
-from backend.app.desktop.contexts.evolution import ContextRevisionPayloadMode, ContextRevisionReader
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionPayloadMode,
+    ContextRevisionReader,
+)
 from backend.app.desktop.persistence.models import DesktopRun, DesktopWorkspace
 from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
 from backend.app.desktop.runs.orchestration.executor import _graph_input
 from backend.app.desktop.runs.orchestration.input_provenance import bind_run_inputs
-from backend.tests.test_context_revision_reader import _ref, _revision, _RevisionStore, _Checkpointer
-from backend.tests.test_unified_run_orchestration import _seed, _registration
-from focus.agents.compression.gate import apply_compression_ranges
-from focus.history import deserialize_history_messages, messages_to_items, semantic_messages, validate_items
-from focus.history.selection import semantic_policy
-from focus.models.provider_contract import ProviderContract
-from focus.models.response_projection import ResponsesRequestProjector
+from backend.tests.test_context_revision_reader import (
+    _Checkpointer,
+    _ref,
+    _revision,
+    _RevisionStore,
+)
+from backend.tests.test_unified_run_orchestration import _registration, _seed
 
 
 @pytest.mark.parametrize("provider", ["openai", "deepseek"])
@@ -108,12 +121,12 @@ def test_v1_semantic_uses_canonical_checkpoint_without_mutation(stored):
     asyncio.run(run())
 
 
-def test_compression_parallel_exchange_has_error_repair_and_real_evidence():
+def test_parallel_exchange_repairs_missing_result_and_keeps_real_evidence():
     messages = [AIMessage(id="call", content="", tool_calls=[
         {"id": "a", "name": "lookup", "args": {"key": "a"}}, {"id": "b", "name": "lookup", "args": {"key": "b"}}]),
         ToolMessage(id="result-a", content="real a", tool_call_id="a"),
         ToolMessage(id="result-b", content="real b", tool_call_id="b"), HumanMessage(id="next", content="continue")]
-    rebuilt = apply_compression_ranges(messages, [{"source_ids": ["result-a"], "delete": True}])["messages"][1:]
+    rebuilt = repair_tool_messages([message for message in messages if message.id != "result-a"], cause="compression")
     results = {message.tool_call_id: message for message in rebuilt if isinstance(message, ToolMessage)}
     assert results["a"].status == "error" and results["b"].status == "success"
     items = messages_to_items(rebuilt)

@@ -6,7 +6,6 @@
 示例：python -m pytest backend/tests/test_running_context_preview_real.py -q -s。
 """
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
 
@@ -172,7 +171,6 @@ def test_parallel_contexts_real_run_sse_and_browser(client, tmp_path, monkeypatc
             StructuredTool.from_function(coroutine=read_file, name="read_file", description="Read the isolated workspace file"),
         ])
 
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_graph)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_graph)
     http.portal.call(app.state.agent_loop_runtime.close)
     (workspace / "source.md").write_text("真实文件首行\n工具结果倒数第二行。\n工具结果最后一行：并行隔离。", encoding="utf-8")

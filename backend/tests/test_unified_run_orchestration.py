@@ -275,9 +275,6 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
                     ContextRevisionNotFound,
                 )
 
-                persisted = await session.get(DesktopRun, run_id)
-                assert "context_snapshot" not in persisted.equipment
-                assert "resume_context_snapshot" not in persisted.equipment
                 with pytest.raises(ContextRevisionNotFound):
                     await ContextRevisionRepository().get(session, ref)
             async with sessions.begin() as session:
@@ -353,12 +350,8 @@ def test_settled_approval_is_visible_after_restart_without_reading_checkpoints()
                 status=RunStatus.interrupted, on_disconnect=DisconnectMode.cancel,
             ))
             async with sessions() as session:
-                from backend.app.desktop.runs.context_snapshot import (
-                    read_context_snapshot,
-                )
-
                 persisted = await session.get(DesktopRun, run_id)
-                resume_source, _ = read_context_snapshot(persisted.equipment["resume_context_snapshot"])
+                resume_source = await ContextRevisionRepository().input_for_run(session, persisted, resume=True)
                 assert resume_source.ref.checkpoint_id == "approval-checkpoint"
                 assert resume_source.origin_id == run_id
                 assert resume_source.ref != ref
@@ -427,14 +420,17 @@ def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoin
             from backend.app.desktop.runs.orchestration.execution_history import (
                 repaired_execution_for_run,
             )
+            from backend.app.desktop.contexts.evolution.repository import ContextRevisionIdentityMismatch
 
+            continuation_id = uuid.uuid4().hex
+            await registrar.register(
+                _registration(context_id, settlement.context_revision, continuation_id, "continued-settle")
+            )
             async with sessions() as session:
-                next_run = SimpleNamespace(kind="main", context_revision_id=contract.ref.revision_id,
-                    task_id=context_id, execution_thread_id=contract.ref.execution_thread_id,
-                    checkpoint_ns=contract.ref.checkpoint_ns, context_checkpoint_id=contract.ref.checkpoint_id)
+                next_run = await session.get(DesktopRun, continuation_id)
                 assert await repaired_execution_for_run(session, next_run, checkpointer) == execution.messages
                 next_run.context_checkpoint_id = "foreign-checkpoint"
-                with pytest.raises(ValueError, match="execution"):
+                with pytest.raises(ContextRevisionIdentityMismatch):
                     await repaired_execution_for_run(session, next_run, checkpointer)
 
             async def strict_provider(messages):
@@ -443,10 +439,6 @@ def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoin
 
             response = await strict_provider(execution.messages)
             assert response.content == "The interrupted call is accounted for."
-            continuation_id = uuid.uuid4().hex
-            await registrar.register(
-                _registration(context_id, settlement.context_revision, continuation_id, "continued-settle")
-            )
             tool = execution.messages[-1]
             continuation_messages = (
                 dangling,
@@ -544,19 +536,20 @@ def test_later_provider_error_cannot_repair_call_in_source_checkpoint(source_che
             assert settlement.context_revision is None
             async with sessions() as session:
                 from backend.app.desktop.contexts.evolution.models import (
-                    ContextInputSnapshot,
+                    ContextInputSnapshot, ContextRevision,
                 )
 
                 repository = ContextRevisionRepository()
                 current = await repository.current(session, context_id)
                 persisted = await session.get(DesktopRun, run_id)
                 snapshots = list(await session.scalars(
-                    select(ContextInputSnapshot).where(ContextInputSnapshot.context_id == context_id)
+                    select(ContextInputSnapshot).join(ContextRevision,
+                        ContextRevision.revision_id == ContextInputSnapshot.revision_id
+                    ).where(ContextRevision.context_id == context_id)
                 ))
                 diagnostic = persisted.workspace_result["context_protocol_diagnostic"]
             assert current.ref == ref
             assert snapshots == []
-            assert "context_snapshot" not in persisted.equipment
             assert diagnostic["checkpoint_id"] == "provider-error-checkpoint"
             assert diagnostic["status"] == "unresolved"
             assert diagnostic["issues"][0]["kind"] == "unresolved_tool_call"
@@ -574,3 +567,68 @@ def test_later_provider_error_cannot_repair_call_in_source_checkpoint(source_che
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_owned_run_input_keeps_native_continuation_exact_until_last_owner_releases():
+    from focus.history import FocusItem, HistoryPayload, content_hash
+    from backend.app.desktop.contexts.evolution.repository import (
+        ContextRevisionIdentityMismatch, ContextRevisionNotFound,
+    )
+    from backend.app.desktop.contexts.evolution.models import ContextRevision
+
+    async def exercise():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        workspace_id, context_id, initial = await _seed(sessions, uuid.uuid4().hex[:8])
+        repository = ContextRevisionRepository()
+        native = {"type": "reasoning", "id": "reasoning-source", "summary": [], "encrypted_content": "opaque-source"}
+        history = HistoryPayload(execution_items=(FocusItem(
+            item_id="reasoning-source", message_id="assistant-source", kind="reasoning", origin="provider",
+            provider="openai", payload=native,
+        ),))
+        try:
+            async with sessions.begin() as session:
+                previous = await repository.current(session, context_id)
+                source = previous.model_copy(update={
+                    "ref": initial.model_copy(update={"revision_id": uuid.uuid4().hex, "generation": 2,
+                        "checkpoint_id": "opaque-source-checkpoint"}),
+                    "history_payload": history, "content_hash": content_hash(history.model_dump(mode="json")),
+                })
+                source = ContextRevisionContract.model_validate(source.model_dump(mode="json"))
+                await repository.insert(session, source)
+                await repository.switch_current(session, source.ref, initial)
+            run = await RunRegistrar(sessions).register(
+                _registration(context_id, source.ref, uuid.uuid4().hex, uuid.uuid4().hex)
+            )
+            async with sessions.begin() as session:
+                await repository.freeze(session, source.ref, owner_kind="round", owner_id="opaque-round")
+                replacement = source.model_copy(update={
+                    "ref": source.ref.model_copy(update={"revision_id": uuid.uuid4().hex, "generation": 3,
+                        "checkpoint_id": "replacement-checkpoint"}),
+                    "history_payload": HistoryPayload(), "execution_messages": (), "content_hash": "b" * 64,
+                })
+                await repository.insert(session, replacement)
+                await repository.switch_current(session, replacement.ref, source.ref)
+                owned = await repository.input_for_run(session, run)
+                assert owned.ref == source.ref and owned.history_payload == history
+                assert (await repository.current(session, context_id)).ref == replacement.ref
+                bodies = list(await session.scalars(select(ContextRevision.revision_id).where(
+                    ContextRevision.context_id == context_id
+                )))
+                assert set(bodies) == {source.ref.revision_id, replacement.ref.revision_id}
+                execution = await ContextRevisionReader(repository, None).read(session, owned.ref, "execution")
+                assert execution.messages[0]["additional_kwargs"]["focus_response_items"] == [native]
+                run.context_checkpoint_id = "foreign-checkpoint"
+                with pytest.raises(ContextRevisionIdentityMismatch):
+                    await repository.input_for_run(session, run)
+                await repository.release(session, "run", run.run_id)
+                assert (await repository.get(session, source.ref)).history_payload == history
+                await repository.release(session, "round", "opaque-round")
+                with pytest.raises(ContextRevisionNotFound):
+                    await repository.get(session, source.ref)
+        finally:
+            async with sessions.begin() as session:
+                await session.execute(delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id))
+            await engine.dispose()
+
+    asyncio.run(exercise())

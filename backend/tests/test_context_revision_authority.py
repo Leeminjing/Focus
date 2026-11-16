@@ -28,6 +28,8 @@ _REMOVED_TABLES = {
     "desktop_context_revisions",
     "desktop_context_revision_sources",
     "desktop_context_publications",
+    "desktop_context_states",
+    "desktop_context_input_snapshots",
 }
 _REMOVED_RUNTIME_NAMES = {
     "ContextEvolutionMigrationAdapter",
@@ -69,17 +71,17 @@ def test_final_schema_drops_identity_level_context_authority() -> None:
                     column["name"] for column in inspect(sync_connection).get_columns("desktop_threads")
                 })
                 state_constraints = await connection.run_sync(lambda sync_connection:
-                    inspect(sync_connection).get_unique_constraints("desktop_context_states"))
+                    inspect(sync_connection).get_unique_constraints("desktop_context_inputs"))
                 snapshot_constraints = await connection.run_sync(lambda sync_connection:
-                    inspect(sync_connection).get_unique_constraints("desktop_context_input_snapshots"))
+                    inspect(sync_connection).get_unique_constraints("desktop_context_input_owners"))
             assert {"authored_messages", "execution_messages", "definition_hash", "projection_hash", "projection_status"}.isdisjoint(thread_columns)
             assert "current_revision_id" in thread_columns
-            assert any(item["column_names"] == ["context_id"] for item in state_constraints)
+            assert not any(item["column_names"] == ["context_id"] for item in state_constraints)
             assert any(item["column_names"] == ["owner_kind", "owner_id", "revision_id"] for item in snapshot_constraints)
             assert _REMOVED_TABLES.isdisjoint(tables)
             assert {
-                "desktop_context_states",
-                "desktop_context_input_snapshots",
+                "desktop_context_inputs",
+                "desktop_context_input_owners",
                 "curation_portfolio_revisions",
                 "curation_portfolio_lane_candidates",
             }.issubset(tables)

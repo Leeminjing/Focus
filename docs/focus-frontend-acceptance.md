@@ -6,6 +6,8 @@
 
 2026-11-16 补充：普通会话手工上下文派生、定义编辑和投影审批已退役。以下旧编辑器、消息改写重试与历史版本验收仅记录当时行为，不作为现行支持范围。`context-ui.e2e.cjs` 现检查只读来源导航、草稿/滚动恢复、退役入口不可见及响应式壳层；`f20-view-audit.e2e.cjs` 保留其他工作台，移除普通 Context 编辑器场景。会话 Patrol 自定义上下文编辑和两条自动策展链保留，详见 [本次退役边界](context-surgery-retirement.md)。
 
+第二轮退役补充：普通会话的手工压缩页面、关键词整理和 apply/restore 不再保留；M23 为历史验收范围，已被 [当前退役边界](context-surgery-retirement.md) 覆盖。现行 E2E 移除专属手工压缩操作，继续覆盖其余工作台、材料、Main、Session Patrol 编辑和自动策展。Patrol 受管压缩与 Provider 原生 compaction 保留。
+
 ## 实现边界
 
 页面仍采用原生 HTML/CSS/JavaScript 与浏览器 DOM，没有引入前端框架。下文的 Node 指运行 JavaScript 回归测试的工具；现有 Electron 主进程也使用 Node，未新增产品 Node 依赖。

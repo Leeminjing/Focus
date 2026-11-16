@@ -14,6 +14,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from focus.history import HistoryPayload
 from focus.history import serialize_history_message as serialize_message
 from focus.history.bridge import checkpoint_records
 from sqlalchemy import or_, select
@@ -74,22 +75,6 @@ class ContextEvolutionService:
             value = await self._reader.read_current(session, context_id, "display")
         if value is None:
             return None
-        if not isinstance(value, ContextRevisionMessageView):
-            raise TypeError("display reader 返回了错误视图")
-        return value
-
-    async def read_checkpoint_display(
-        self,
-        session: AsyncSession,
-        context_id: str,
-        checkpoint_id: str,
-    ) -> ContextRevisionMessageView | None:
-        revision = await self._repository.find_by_checkpoint(
-            session, context_id, checkpoint_id
-        )
-        if revision is None:
-            return None
-        value = await self._reader.read(session, revision.ref, "display")
         if not isinstance(value, ContextRevisionMessageView):
             raise TypeError("display reader 返回了错误视图")
         return value
@@ -190,8 +175,7 @@ class ContextEvolutionService:
         messages: list[dict[str, Any]] = []
         initial_ids: set[str] = set()
         if current is not None:
-            ancestor = await self._definition_ancestor(session, current)
-            initial_ids = set(ancestor.initial_message_ids if ancestor is not None else ())
+            initial_ids = set(current.initial_message_ids)
             if current.ref.is_runnable:
                 checkpoint = await self._checkpointer.aget_tuple(
                     current.ref.checkpoint_config()
@@ -328,6 +312,7 @@ class ContextEvolutionService:
                 if expected is not None and expected.is_runnable
                 else ()
             ),
+            history_payload=HistoryPayload(),
             content_hash=self._hash("deleted", context_id, now.isoformat()),
             projection_status=ContextRevisionProjectionStatus.DELETED,
             origin_kind=ContextRevisionOriginKind.MIGRATION,
@@ -338,14 +323,6 @@ class ContextEvolutionService:
         await self._repository.insert(session, contract)
         await self._repository.switch_current(session, ref, expected)
         return ref
-
-    async def _definition_ancestor(
-        self,
-        session: AsyncSession,
-        current: ContextRevisionContract,
-    ) -> ContextRevisionContract | None:
-        # Initial definition identities are carried by the current state itself.
-        return current if current.initial_message_ids else None
 
     async def _require_checkpoint(
         self, thread_id: str, checkpoint_ns: str, checkpoint_id: str

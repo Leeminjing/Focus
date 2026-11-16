@@ -104,15 +104,9 @@ class RunRegistrar:
             run.input_messages = bind_run_inputs(run)
             session.add(run)
             try:
-                if run.kind == "main" and run.context_revision_id:
-                    from backend.app.desktop.contexts.evolution import (
-                        ContextRevisionRepository,
-                    )
+                from backend.app.desktop.runs.orchestration.admission import admit_run_input
 
-                    repository = ContextRevisionRepository()
-                    source = await repository.get_by_id(session, run.context_revision_id)
-                    await repository.get_input(session, source.ref)
-                    await repository.freeze(session, source.ref, owner_kind="run", owner_id=run.run_id)
+                await admit_run_input(session, run)
                 await session.commit()
                 return run
             except IntegrityError as exc:

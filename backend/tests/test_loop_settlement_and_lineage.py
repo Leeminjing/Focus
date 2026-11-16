@@ -18,18 +18,32 @@ Run / 可重试中断清空绑定」「第 N 代目标仍返回跨 Context 派�
 from __future__ import annotations
 
 import asyncio
-import os
-import uuid
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 from types import SimpleNamespace
+import uuid
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from test_agent_loop_round_liveness import _seed_loop, _stop
 
-import backend.app.desktop.persistence.registry  # noqa: F401 - register shared metadata
+import backend.app.desktop.persistence.registry
+from backend.app.desktop.patrol.agent_loop import LoopCoordinator
+from backend.app.desktop.patrol.agent_loop.queries.console_query import LoopConsoleQueryService
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
+from backend.app.desktop.patrol.agent_loop.journal.lineage_events import ContextLineageEventRecorder
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_contract import LoopLiveProjection
+from backend.app.desktop.patrol.agent_loop.projections.live_projection_reducer import LoopLiveProjectionReducer
+from backend.app.desktop.patrol.agent_loop.projections.live_snapshot_overlay import LoopLiveProjectionOverlay
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopAction,
+    LoopContextMembership,
+    LoopDecision,
+    LoopDirective,
+)
 from backend.app.desktop.contexts.evolution import (
     ContextLineageResolver,
     ContextRevisionContract,
@@ -41,38 +55,9 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionSourceContract,
 )
 from backend.app.desktop.contexts.evolution.models import ContextRevision
-from backend.app.desktop.patrol.agent_loop import LoopCoordinator
-from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import (
-    DirectiveLifecycleRepository,
-)
-from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
-from backend.app.desktop.patrol.agent_loop.journal.lineage_events import (
-    ContextLineageEventRecorder,
-)
-from backend.app.desktop.patrol.agent_loop.models import (
-    AgentLoop,
-    LoopAction,
-    LoopContextMembership,
-    LoopDecision,
-    LoopDirective,
-)
-from backend.app.desktop.patrol.agent_loop.projections.live_projection_contract import (
-    LoopLiveProjection,
-)
-from backend.app.desktop.patrol.agent_loop.projections.live_projection_reducer import (
-    LoopLiveProjectionReducer,
-)
-from backend.app.desktop.patrol.agent_loop.projections.live_snapshot_overlay import (
-    LoopLiveProjectionOverlay,
-)
-from backend.app.desktop.patrol.agent_loop.queries.console_query import (
-    LoopConsoleQueryService,
-)
-from backend.app.desktop.persistence.models import (
-    DesktopRun,
-    DesktopThread,
-    DesktopWorkspace,
-)
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+
+from test_agent_loop_round_liveness import _seed_loop, _stop
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

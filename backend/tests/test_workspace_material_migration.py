@@ -6,15 +6,15 @@
 """
 
 import os
-import uuid
 from pathlib import Path
+import uuid
 
-import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
+import pytest
 
 
 def test_workspace_material_migration_preserves_legacy_and_refuses_destructive_downgrade(isolated_postgres_database):
@@ -29,7 +29,7 @@ def test_workspace_material_migration_preserves_legacy_and_refuses_destructive_d
             {"t": task, "w": workspace})
         connection.execute(text("INSERT INTO desktop_materials (material_id,task_id,relative_path,reading_mode,instruction_mode,retention) VALUES (:m,:t,'same.txt','full','reference','removable')"),
             {"m": legacy, "t": task})
-    command.upgrade(config, "4a5b6c7d8e9f")
+    command.upgrade(config, "head")
     statement = text("INSERT INTO desktop_materials (material_id,task_id,workspace_id,relative_path,intake_upload_key,retention) VALUES (:m,:t,:w,:p,:k,'removable')")
     try:
         with engine.begin() as connection:

@@ -94,8 +94,8 @@ def test_planned_checkpoint_cannot_be_reused_with_different_source_revisions():
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_completed_index_survives_a_sibling_failure_and_is_immediately_readable(tmp_path):
     from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopSemanticIndexArtifact
-    from backend.tests.incremental_index_support import ModelProbe, messages, observation, revision
-    from backend.tests.test_incremental_revision_index import exercise
+    from backend.tests.index_test_support import ModelProbe, messages, observation, revision
+    from backend.tests.index_test_support import exercise
 
     async def run(sessions, seed):
         probe = ModelProbe()

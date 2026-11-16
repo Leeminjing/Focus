@@ -171,9 +171,8 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/shared/markdown/message-reading.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/skills/skill-picker.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/context/context-navigation.js"), "utf8"), context);
-  vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/context/compression-panel.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/conversation-history.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/context/context-curator-presentation.js"), "utf8"), context);
-  vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/keyword-command.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/plugins/plugin-view.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/conversation-events.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("../../src/renderer/features/conversation/conversation-reconciler.js"), "utf8"), context);

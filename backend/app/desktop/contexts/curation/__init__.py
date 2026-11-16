@@ -5,37 +5,12 @@ r"""本文件对外提供持续多 Context 策展领域的持久化与应用公�
 原子发布，再由本入口显式导出。示例：`from ...context_curation import CurationProgramRepository`。
 """
 
-from backend.app.desktop.contexts.curation.models import (
-    CurationAttempt,
-    CurationAttemptStatus,
-    CurationOutboxDelivery,
-    CurationOutboxEvent,
-    CurationOutboxStatus,
-    CurationLane,
-    CurationLaneLifecycle,
-    CurationProgram,
-    CurationProgramControlState,
-    CurationSourceSubscription,
-    CurationWorkerKind,
-    PortfolioLaneAction,
-    PortfolioLaneCandidate,
-    PortfolioLaneCandidateStatus,
-    PortfolioRevision,
-    PortfolioRevisionStatus,
-    PortfolioPublicationAttempt,
-    PortfolioPublicationAttemptStatus,
-)
-from backend.app.desktop.contexts.curation.frontier import (
-    ContextExpansionDenied,
-    ContextExpansionHandle,
-    ContextFrontierBudgetExceeded,
-    ContextFrontierBuilder,
-    ContextFrontierEntry,
-    ContextFrontierError,
-    ContextFrontierFreshness,
-    ContextFrontierManifest,
-    ContextFrontierState,
-    ContextRecentRunResult,
+from backend.app.desktop.contexts.curation.compiler import (
+    CompiledLaneCandidate,
+    LaneCompilationError,
+    MessageLineage,
+    SourceDisposition,
+    compile_lane,
 )
 from backend.app.desktop.contexts.curation.contracts import (
     ComposeMessage,
@@ -63,12 +38,34 @@ from backend.app.desktop.contexts.curation.contracts import (
     WorkspaceEffectEvidenceRef,
     evidence_ref_key,
 )
-from backend.app.desktop.contexts.curation.compiler import (
-    CompiledLaneCandidate,
-    LaneCompilationError,
-    MessageLineage,
-    SourceDisposition,
-    compile_lane,
+from backend.app.desktop.contexts.curation.lane_curator import (
+    LaneCuratorAssignment,
+    LaneCuratorBackend,
+    LaneCuratorBudget,
+    LaneCuratorError,
+    LaneCuratorOutcome,
+    LaneCuratorProposal,
+    LaneCuratorRunner,
+)
+from backend.app.desktop.contexts.curation.models import (
+    CurationAttempt,
+    CurationAttemptStatus,
+    CurationLane,
+    CurationLaneLifecycle,
+    CurationOutboxDelivery,
+    CurationOutboxEvent,
+    CurationOutboxStatus,
+    CurationProgram,
+    CurationProgramControlState,
+    CurationSourceSubscription,
+    CurationWorkerKind,
+    PortfolioLaneAction,
+    PortfolioLaneCandidate,
+    PortfolioLaneCandidateStatus,
+    PortfolioPublicationAttempt,
+    PortfolioPublicationAttemptStatus,
+    PortfolioRevision,
+    PortfolioRevisionStatus,
 )
 from backend.app.desktop.contexts.curation.patrol_engine import (
     DirectCurationBudgetExceeded,
@@ -80,14 +77,26 @@ from backend.app.desktop.contexts.curation.patrol_engine import (
     PatrolWorkerReview,
     WorkerReviewVerdict,
 )
-from backend.app.desktop.contexts.curation.lane_curator import (
-    LaneCuratorAssignment,
-    LaneCuratorBackend,
-    LaneCuratorBudget,
-    LaneCuratorError,
-    LaneCuratorOutcome,
-    LaneCuratorProposal,
-    LaneCuratorRunner,
+from backend.app.desktop.contexts.curation.portfolio_publisher import (
+    AtomicPortfolioPublisher,
+    FrozenPortfolio,
+    PortfolioAuthorityCommitHook,
+    PortfolioCandidatePreparer,
+    PortfolioControlRevisions,
+    PortfolioCurrentReader,
+    PortfolioFreezer,
+    PortfolioFreezeRequest,
+    PortfolioLaneIntent,
+    PortfolioPreparationError,
+    PortfolioPublicationError,
+    PortfolioPublicationResult,
+    PortfolioSuperseded,
+    PublishedPortfolioLane,
+    PublishedPortfolioView,
+)
+from backend.app.desktop.contexts.curation.publication_outbox import (
+    CurationOutboxRepository,
+    DeliveryHandler,
 )
 from backend.app.desktop.contexts.curation.repository import (
     CurationPersistenceError,
@@ -108,27 +117,6 @@ from backend.app.desktop.contexts.curation.service import (
 from backend.app.desktop.contexts.curation.single_lane_publisher import (
     SingleLanePortfolioPublisher,
     SingleLanePublicationResult,
-)
-from backend.app.desktop.contexts.curation.publication_outbox import (
-    CurationOutboxRepository,
-    DeliveryHandler,
-)
-from backend.app.desktop.contexts.curation.portfolio_publisher import (
-    AtomicPortfolioPublisher,
-    FrozenPortfolio,
-    PortfolioCandidatePreparer,
-    PortfolioAuthorityCommitHook,
-    PortfolioControlRevisions,
-    PortfolioCurrentReader,
-    PortfolioFreezer,
-    PortfolioFreezeRequest,
-    PortfolioLaneIntent,
-    PortfolioPreparationError,
-    PortfolioPublicationError,
-    PortfolioPublicationResult,
-    PortfolioSuperseded,
-    PublishedPortfolioLane,
-    PublishedPortfolioView,
 )
 
 __all__ = [
@@ -152,16 +140,6 @@ __all__ = [
     "DirectCurationBudgetExceeded",
     "DirectCurationRequest",
     "DeliveryHandler",
-    "ContextExpansionDenied",
-    "ContextExpansionHandle",
-    "ContextFrontierBudgetExceeded",
-    "ContextFrontierBuilder",
-    "ContextFrontierEntry",
-    "ContextFrontierError",
-    "ContextFrontierFreshness",
-    "ContextFrontierManifest",
-    "ContextFrontierState",
-    "ContextRecentRunResult",
     "ComposeMessage",
     "CopyMessage",
     "CreateLanePlan",

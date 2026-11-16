@@ -6,7 +6,6 @@ performance. Main Runs use the real admission/dispatch/graph/checkpoint/finalize
 """
 
 import backend.app.desktop.capabilities.service as _desktop_capabilities_service
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
 
@@ -26,7 +25,7 @@ from sqlalchemy import select
 
 from backend.tests.test_desktop_poc import _client, SESSION
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
-from backend.tests.incremental_index_support import ModelProbe, messages, revision
+from backend.tests.index_test_support import ModelProbe, messages, revision
 from backend.app.desktop.patrol.agent_loop.context_expansion.index_prewarm import LocalIndexPrewarmer
 from backend.app.desktop.patrol.agent_loop.models import LoopDelegationGrant
 from backend.scripts.desktop_performance_report import summarize
@@ -61,7 +60,6 @@ def test_two_runs_prewarm_and_continuous_submissions(tmp_path, monkeypatch, wait
     async def no_tools(**_kwargs):
         return []
 
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_agent)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_agent)
     monkeypatch.setattr(_desktop_capabilities_service, 'get_available_tools', no_tools)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', no_tools)

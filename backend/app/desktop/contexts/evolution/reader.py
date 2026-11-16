@@ -30,19 +30,13 @@ from backend.app.desktop.contexts.evolution.repository import (
     ContextRevisionRepository,
 )
 from backend.app.desktop.contexts.evolution.schemas import (
-    ContextFrontierSummary,
     ContextRevisionCheckpointView,
     ContextRevisionContract,
-    ContextRevisionHistoricalView,
     ContextRevisionMessageView,
     ContextRevisionMessageViewKind,
     ContextRevisionPayloadMode,
-    ContextRevisionProjectionStatus,
     ContextRevisionRef,
-    DeletedContextSource,
-    DeletedContextSourceView,
 )
-from backend.app.desktop.persistence.models import DesktopThread
 
 ContextRevisionViewKind = Literal[
     "authored",
@@ -50,17 +44,8 @@ ContextRevisionViewKind = Literal[
     "semantic",
     "display",
     "checkpoint",
-    "historical",
-    "frontier-summary",
-    "deleted-source",
 ]
-ContextRevisionReadResult = (
-    ContextRevisionMessageView
-    | ContextRevisionCheckpointView
-    | ContextRevisionHistoricalView
-    | ContextFrontierSummary
-    | DeletedContextSourceView
-)
+ContextRevisionReadResult = ContextRevisionMessageView | ContextRevisionCheckpointView
 
 
 @dataclass(frozen=True)
@@ -165,12 +150,6 @@ class ContextRevisionReader:
                     f"revision 尚无可读取 checkpoint: {revision.ref.revision_id}"
                 )
             return checkpoint
-        if view == "historical":
-            return await self._historical(revision)
-        if view == "frontier-summary":
-            return await self._frontier_summary(revision)
-        if view == "deleted-source":
-            return await self._deleted_sources(session, revision)
         raise ValueError(f"未知 Context revision view: {view}")
 
     async def _messages(
@@ -213,49 +192,6 @@ class ContextRevisionReader:
         else:
             messages = self._definition_display(revision, runtime)
         return ContextRevisionMessageView(ref=revision.ref, view=view, messages=tuple(messages))
-
-    async def _historical(
-        self,
-        revision: ContextRevisionContract,
-    ) -> ContextRevisionHistoricalView:
-        return ContextRevisionHistoricalView(
-            revision=revision,
-            authored=await self._messages(revision, "authored"),
-            execution=await self._messages(revision, "execution"),
-            display=await self._messages(revision, "display"),
-            checkpoint=await self._checkpoint(revision.ref),
-        )
-
-    async def _frontier_summary(
-        self,
-        revision: ContextRevisionContract,
-    ) -> ContextFrontierSummary:
-        display = await self._messages(revision, "display")
-        return ContextFrontierSummary(
-            ref=revision.ref,
-            projection_status=revision.projection_status,
-            content_hash=revision.content_hash,
-            summary=self._short_summary(display.messages),
-            message_count=len(display.messages),
-            source_frontier=tuple(source.source for source in revision.sources),
-            deleted=(
-                revision.deleted_at is not None
-                or revision.projection_status is ContextRevisionProjectionStatus.DELETED
-            ),
-        )
-
-    async def _deleted_sources(
-        self,
-        session: AsyncSession,
-        revision: ContextRevisionContract,
-    ) -> DeletedContextSourceView:
-        sources = []
-        for edge in revision.sources:
-            identity = await session.get(DesktopThread, edge.source.context_id) if session is not None else None
-            sources.append(DeletedContextSource(position=edge.position, source=edge.source,
-                deleted=identity is None or identity.deleted_at is not None,
-                deleted_at=identity.deleted_at if identity is not None else None))
-        return DeletedContextSourceView(target=revision.ref, sources=tuple(sources))
 
     async def _checkpoint(
         self,
@@ -354,19 +290,3 @@ class ContextRevisionReader:
         initial_ids = set(revision.initial_message_ids)
         suffix = [message for message in runtime if message.get("id") not in initial_ids]
         return [*deepcopy(revision.authored_messages), *suffix]
-
-    @staticmethod
-    def _short_summary(messages: tuple[dict[str, Any], ...]) -> str:
-        for message in reversed(messages):
-            content = message.get("content", "")
-            if isinstance(content, str) and content.strip():
-                return content.strip()[:280]
-            if isinstance(content, list):
-                text = " ".join(
-                    block.get("text", "")
-                    for block in content
-                    if isinstance(block, dict) and isinstance(block.get("text"), str)
-                ).strip()
-                if text:
-                    return text[:280]
-        return ""

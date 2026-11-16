@@ -130,7 +130,7 @@ def test_materialized_fact_migration_round_trips_with_existing_loop(tmp_path: Pa
             session.add(context)
             session.flush()
             session.add(AgentLoop(loop_id=loop_id, workspace_id=workspace.workspace_id, initial_context_id=context.task_id, holder_id="patrol", status="running", health="observing"))
-        command.upgrade(config, "0a1b2c3d4e5f")
+        command.upgrade(config, "head")
         assert {"loop_facts", "loop_fact_revisions", "loop_fact_relationships"} <= set(inspect(engine).get_table_names())
         with Session(engine) as session:
             assert session.get(AgentLoop, loop_id) is not None
@@ -139,7 +139,7 @@ def test_materialized_fact_migration_round_trips_with_existing_loop(tmp_path: Pa
         with Session(engine) as session:
             assert session.get(AgentLoop, loop_id) is not None
     finally:
-        command.upgrade(config, "0a1b2c3d4e5f")
+        command.upgrade(config, "head")
         engine.dispose()
 
 

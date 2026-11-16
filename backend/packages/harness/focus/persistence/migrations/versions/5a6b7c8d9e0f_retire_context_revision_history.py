@@ -7,7 +7,6 @@ an honest downgrade, so this migration is forward-only.
 import hashlib
 import json
 from collections import defaultdict
-from datetime import datetime
 
 import sqlalchemy as sa
 from alembic import op
@@ -22,14 +21,9 @@ _REF_FIELDS = ("context_id", "revision_id", "generation", "execution_thread_id",
                "checkpoint_ns", "checkpoint_id", "payload_mode")
 
 
-def _json(value):
-    return json.loads(json.dumps(value, default=lambda item: item.isoformat()
-                                if isinstance(item, datetime) else str(item)))
-
-
 def _referenced_ids(value):
     if isinstance(value, dict):
-        if "revision_id" in value and "context_id" in value:
+        if value.get("revision_id") and value.get("context_id"):
             yield value["revision_id"]
         for item in value.values():
             yield from _referenced_ids(item)
@@ -131,37 +125,14 @@ def upgrade():
     )).mappings():
         owners[("compression_candidate", row["candidate_id"])].add(row["base_context_revision_id"])
 
-    op.create_table("desktop_context_input_snapshots",
-        sa.Column("snapshot_key", sa.String(64), primary_key=True),
-        sa.Column("owner_kind", sa.String(32), nullable=False),
-        sa.Column("owner_id", sa.String(128), nullable=False),
-        sa.Column("revision_id", sa.String(32), nullable=False),
-        sa.Column("context_id", sa.String(32), nullable=False),
-        sa.Column("payload", JSONB(), nullable=False),
-        sa.Column("is_published", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.UniqueConstraint("owner_kind", "owner_id", "revision_id", name="uq_context_input_snapshot_owner"))
-    for name in ("owner_kind", "owner_id", "revision_id", "context_id"):
-        op.create_index("ix_desktop_context_input_snapshots_" + name,
-                        "desktop_context_input_snapshots", [name])
-    snapshots = sa.Table("desktop_context_input_snapshots", sa.MetaData(), autoload_with=connection)
-    needed = {item for values in owners.values() for item in values}
-    rows = {row["revision_id"]: dict(row) for row in connection.execute(
-        sa.select(old).where(old.c.revision_id.in_(needed))).mappings()} if needed else {}
-    payloads = {}
-    for identity, row in rows.items():
-        payload = {"ref": refs[identity], "sources": sources_for(identity)}
-        payload.update({name: value for name, value in row.items() if name not in _REF_FIELDS})
-        payloads[identity] = _json(payload)
-    for (kind, owner_id), identities in owners.items():
-        for identity in identities:
-            if identity not in payloads:
-                raise RuntimeError("Active Context input is missing during migration: " + str(identity))
-            key = hashlib.sha256(json.dumps([kind, owner_id, identity], ensure_ascii=False,
-                                           separators=(",", ":")).encode()).hexdigest()
-            connection.execute(snapshots.insert().values(snapshot_key=key, owner_kind=kind,
-                owner_id=owner_id, revision_id=identity, context_id=refs[identity]["context_id"],
-                payload=payloads[identity], is_published=identity in published))
+    current = set(connection.execute(sa.text(
+        "SELECT current_revision_id FROM desktop_threads WHERE current_revision_id IS NOT NULL"
+    )).scalars())
+    needed = {identity for identities in owners.values() for identity in identities}
+    retained = current | needed
+    missing = retained - refs.keys()
+    if missing:
+        raise RuntimeError("Active Context input is missing during migration: " + ", ".join(sorted(missing)))
 
     # References remain immutable identity tokens. Current state can advance without
     # rewriting those tokens; exact reads use the owner's snapshot instead.
@@ -171,36 +142,55 @@ def upgrade():
             continue
         for fk in inspector.get_foreign_keys(table):
             if fk["referred_table"] == "desktop_context_revisions" or (
-                table in {"loop_semantic_index_artifacts", "loop_segment_projection_records"}
+                table in {"desktop_context_revisions", "loop_semantic_index_artifacts", "loop_segment_projection_records"}
                 and fk["referred_table"] == "desktop_threads"
                 and fk["constrained_columns"] == ["context_id"]
             ):
                 op.drop_constraint(fk["name"], table, type_="foreignkey")
     op.drop_table("desktop_context_revision_sources")
     op.drop_table("desktop_context_publications")
-    connection.execute(sa.text(
-        "DELETE FROM desktop_context_revisions r WHERE NOT EXISTS "
-        "(SELECT 1 FROM desktop_threads t WHERE t.task_id = r.context_id "
-        "AND t.current_revision_id = r.revision_id)"
-    ))
-    op.rename_table("desktop_context_revisions", "desktop_context_states")
-    op.add_column("desktop_context_states", sa.Column("sources", JSONB(), nullable=False,
+    connection.execute(old.delete().where(old.c.revision_id.not_in(retained)))
+    op.rename_table("desktop_context_revisions", "desktop_context_inputs")
+    op.add_column("desktop_context_inputs", sa.Column("sources", JSONB(), nullable=False,
                                                        server_default=sa.text("'[]'::jsonb")))
-    states = sa.Table("desktop_context_states", sa.MetaData(), autoload_with=connection)
-    for identity in connection.execute(sa.select(states.c.revision_id)).scalars():
-        connection.execute(states.update().where(states.c.revision_id == identity)
-                           .values(sources=_json(sources_for(identity))))
-    op.drop_constraint("uq_context_revision_generation", "desktop_context_states", type_="unique")
-    op.create_unique_constraint("uq_context_state_context", "desktop_context_states", ["context_id"])
+    op.add_column("desktop_context_inputs", sa.Column("is_published", sa.Boolean(), nullable=False,
+                                                       server_default=sa.false()))
+    inputs = sa.Table("desktop_context_inputs", sa.MetaData(), autoload_with=connection)
+    for identity in retained:
+        connection.execute(inputs.update().where(inputs.c.revision_id == identity).values(
+            sources=sources_for(identity), is_published=identity in published or identity in current))
+    # Typed history already owns both authored and execution views. Keep legacy
+    # arrays only for genuine pre-V2/checkpoint-backed production data.
+    connection.execute(sa.text(
+        "UPDATE desktop_context_inputs SET authored_messages = '[]'::jsonb, "
+        "execution_messages = '[]'::jsonb WHERE jsonb_typeof(history_payload) = 'object'"
+    ))
+    op.drop_constraint("uq_context_revision_generation", "desktop_context_inputs", type_="unique")
     for old_name, new_name in (
-        ("uq_context_revision_execution_checkpoint", "uq_context_state_execution_checkpoint"),
-        ("pk_desktop_context_revisions", "pk_desktop_context_states"),
-        ("fk_context_revision_context", "fk_context_state_context"),
-        *(("ck_context_revision_" + suffix, "ck_context_state_" + suffix)
+        ("uq_context_revision_execution_checkpoint", "uq_context_input_execution_checkpoint"),
+        ("pk_desktop_context_revisions", "pk_desktop_context_inputs"),
+        *(("ck_context_revision_" + suffix, "ck_context_input_" + suffix)
           for suffix in ("generation_positive", "payload_mode", "projection_status", "origin_kind", "checkpoint_payload")),
     ):
-        op.execute(sa.text('ALTER TABLE desktop_context_states RENAME CONSTRAINT "' + old_name + '" TO "' + new_name + '"'))
-    op.execute(sa.text("ALTER INDEX ix_desktop_context_revisions_context_id RENAME TO ix_desktop_context_states_context_id"))
+        op.execute(sa.text('ALTER TABLE desktop_context_inputs RENAME CONSTRAINT "' + old_name + '" TO "' + new_name + '"'))
+    op.execute(sa.text("ALTER INDEX ix_desktop_context_revisions_context_id RENAME TO ix_desktop_context_inputs_context_id"))
+    op.create_table("desktop_context_input_owners",
+        sa.Column("snapshot_key", sa.String(64), primary_key=True),
+        sa.Column("owner_kind", sa.String(32), nullable=False),
+        sa.Column("owner_id", sa.String(128), nullable=False),
+        sa.Column("revision_id", sa.String(32), sa.ForeignKey("desktop_context_inputs.revision_id", ondelete="CASCADE"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.UniqueConstraint("owner_kind", "owner_id", "revision_id", name="uq_context_input_owner"))
+    for name in ("owner_kind", "owner_id", "revision_id"):
+        op.create_index("ix_desktop_context_input_owners_" + name, "desktop_context_input_owners", [name])
+    owner_table = sa.Table("desktop_context_input_owners", sa.MetaData(), autoload_with=connection)
+    for (kind, owner_id), identities in owners.items():
+        for identity in identities:
+            key = hashlib.sha256(json.dumps([kind, owner_id, identity], ensure_ascii=False,
+                                           separators=(",", ":")).encode()).hexdigest()
+            connection.execute(owner_table.insert().values(snapshot_key=key, owner_kind=kind,
+                                                            owner_id=owner_id, revision_id=identity))
+
     # Retain the latest/current publication and live retries of the automatic
     # curator. Finished attempts must not become another full input archive.
     connection.execute(sa.text(
@@ -238,8 +228,9 @@ def upgrade():
     # proofs stay reusable by content and are deliberately not pruned here.
     connection.execute(sa.text(
         "DELETE FROM loop_semantic_index_artifacts i WHERE NOT EXISTS "
-        "(SELECT 1 FROM desktop_context_states s WHERE s.revision_id = i.revision_id) "
-        "AND NOT EXISTS (SELECT 1 FROM desktop_context_input_snapshots p "
+        "(SELECT 1 FROM desktop_threads t WHERE t.current_revision_id = i.revision_id) "
+        "AND NOT EXISTS (SELECT 1 FROM desktop_context_input_owners o "
+        "JOIN desktop_context_inputs p ON p.revision_id = o.revision_id "
         "WHERE p.revision_id = i.revision_id AND p.is_published) "
         "AND NOT EXISTS (SELECT 1 FROM loop_planning_retrieval_sessions p "
         "JOIN loop_rounds r ON r.round_id = p.round_id "

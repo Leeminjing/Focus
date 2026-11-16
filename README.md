@@ -101,7 +101,7 @@ Use Patrol for everyday input. Open the workbench when you want a closer look.
 
 Open important file outputs and modifications to inspect saved content and available diffs. Use **@ file-version references** to give feedback on a specific result. Inspecting a Context keeps your everyday input directed to the same Patrol.
 
-You can pause, resume, or stop execution, adjust authorization, and open a line of work to read its current context. Patrol automatically derives and curates contexts; Session Patrol retains its custom execution-context editor. Manual derivation, rewriting, and projection approval in ordinary conversations are retired. See [Context surgery retirement](docs/context-surgery-retirement.md). Loop budgets remain fixed and unlimited; usage is still visible. See [Loop budgets](docs/loop-budgets.md).
+You can pause, resume, or stop execution, adjust authorization, and open a line of work to read its current context. Patrol automatically derives and curates contexts; Session Patrol retains its custom execution-context editor. Manual derivation, rewriting, projection approval, and context compression in ordinary conversations are retired. See [Context surgery retirement](docs/context-surgery-retirement.md). Loop budgets remain fixed and unlimited; usage is still visible. See [Loop budgets](docs/loop-budgets.md).
 
 ### Patrol on your desktop
 

@@ -1,6 +1,6 @@
 /*
  * 本文件验证 F20 运行中心的展示契约。输入为宿主渲染源码、模板和覆盖层样式，输出为状态词汇、
- * 九阶段摘要、固定审批区、恢复语义及压缩顺序布局断言；工作流只检查展示映射，不改写后端状态。
+ * 九阶段摘要、固定审批区与恢复语义断言；工作流只检查展示映射，不改写后端状态。
  */
 "use strict";
 
@@ -41,12 +41,3 @@ assert.match(appSource, /data-recovery-status|dataset\.recoveryStatus = "resumab
 assert.match(appSource, /dataset\.recoveryStatus = "processing"/);
 assert.match(appSource, /dataset\.recoveryStatus = "orphaned"/);
 assert.match(css, /\.review-actions,[\s\S]*position: sticky;[\s\S]*bottom: 0/);
-
-assert.match(appSource, /class="compression-panels"/);
-assert.match(appSource, /01 · SOURCE/);
-assert.match(appSource, /02 · PLAN/);
-assert.match(appSource, /确认前不写入/);
-assert.match(appSource, /只有确认后才会写入 checkpoint/);
-assert.match(css, /\.compression-panels \{[\s\S]*grid-template-columns: minmax\(300px, 5fr\) minmax\(420px, 7fr\)/);
-assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.compression-panels \{ min-height: auto; grid-template-columns: 1fr; \}/);
-

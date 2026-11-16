@@ -28,6 +28,7 @@ atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
 from focus.config.app_config import AppConfig  # noqa: E402
 
+from backend.app.desktop.contexts.curation.models import PortfolioRevision
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
@@ -227,15 +228,18 @@ def test_delete_no_descendant_hard_deletes_and_clears_checkpoint():
 
 @pytest.mark.parametrize("batch", [False, True])
 @pytest.mark.parametrize("borrowed_by_round", [False, True])
-def test_delete_releases_destroyed_owners_and_preserves_other_round_input(batch, borrowed_by_round):
+@pytest.mark.parametrize("with_descendant", [False, True])
+def test_delete_releases_destroyed_owners_and_preserves_other_round_input(batch, borrowed_by_round, with_descendant):
     async def run() -> None:
         contexts = _contexts()
         repository = ContextRevisionRepository()
-        run_id, curator_id, round_id, loop_id = (uuid.uuid4().hex for _ in range(4))
+        run_id, curator_id, round_id, loop_id, portfolio_id = (uuid.uuid4().hex for _ in range(5))
         async with _SESSION_FACTORY.begin() as session:
             workspace_id = await _seed_workspace(session)
             deleted_id = await _seed_thread(session, workspace_id, "delete")
             keeper_id = await _seed_thread(session, workspace_id, "keeper")
+            if with_descendant:
+                await _link_child(session, keeper_id, deleted_id)
             deleted = await _ensure_revision(session, deleted_id)
             deleted.history_payload = build_revision_history([], [{
                 "role": "human", "id": "frozen", "content": "borrowed frozen input",
@@ -258,8 +262,16 @@ def test_delete_releases_destroyed_owners_and_preserves_other_round_input(batch,
                                               source_checkpoint_id=deleted_ref.checkpoint_id,
                                               base_binding_revision=0, status="interrupted"))
             await session.flush()
+            binding = await session.get(PatrolContextBinding, binding_id)
+            program = await contexts.single_lane_programs.provision(session, binding)
+            session.add(PortfolioRevision(
+                portfolio_revision_id=portfolio_id, program_id=program.program_id,
+                generation=1, frontier_hash="a" * 64, base_program_revision=0, status="preparing",
+            ))
+            await session.flush()
             await repository.freeze(session, keeper_ref, owner_kind="run", owner_id=run_id)
             await repository.freeze(session, deleted_ref, owner_kind="context_curator", owner_id=curator_id)
+            await repository.freeze(session, deleted_ref, owner_kind="curation_portfolio", owner_id=portfolio_id)
             if borrowed_by_round:
                 session.add(AgentLoop(loop_id=loop_id, workspace_id=workspace_id,
                                       initial_context_id=keeper_id, holder_id="keeper", status="running"))
@@ -275,11 +287,17 @@ def test_delete_releases_destroyed_owners_and_preserves_other_round_input(batch,
             else:
                 await contexts.delete(deleted_id)
             async with _SESSION_FACTORY() as session:
-                assert await session.get(DesktopThread, deleted_id) is None
+                deleted_context = await session.get(DesktopThread, deleted_id)
+                if with_descendant:
+                    assert deleted_context is not None and deleted_context.deleted_at is not None
+                    assert await session.get(DesktopThread, keeper_id) is not None
+                else:
+                    assert deleted_context is None
                 assert await session.get(DesktopRun, run_id) is None
                 assert await session.get(PatrolContextRevision, curator_id) is None
+                assert await session.get(PortfolioRevision, portfolio_id) is None
                 remaining = list((await session.scalars(select(ContextInputSnapshot).where(
-                    ContextInputSnapshot.owner_id.in_((run_id, curator_id, round_id))
+                    ContextInputSnapshot.owner_id.in_((run_id, curator_id, round_id, portfolio_id))
                 ))).all())
                 assert [(snapshot.owner_kind, snapshot.owner_id) for snapshot in remaining] == (
                     [("round", round_id)] if borrowed_by_round else []
@@ -288,9 +306,15 @@ def test_delete_releases_destroyed_owners_and_preserves_other_round_input(batch,
                     assert await session.get(LoopRound, round_id) is not None
                     view = await ContextRevisionReader(repository, contexts.checkpointer).read(session, deleted_ref, "display")
                     assert [message["content"] for message in view.messages] == ["borrowed frozen input"]
+                else:
+                    assert await session.get(ContextRevision, deleted_ref.revision_id) is None
+            async with _SESSION_FACTORY.begin() as session:
+                await repository.release(session, "round", round_id)
+                assert await session.get(ContextRevision, deleted_ref.revision_id) is None
         finally:
             async with _SESSION_FACTORY.begin() as session:
-                await repository.release_owners(session, (("run", run_id), ("context_curator", curator_id), ("round", round_id)))
+                await repository.release_owners(session, (("run", run_id), ("context_curator", curator_id),
+                                                         ("round", round_id), ("curation_portfolio", portfolio_id)))
                 await session.execute(delete(AgentLoop).where(AgentLoop.loop_id == loop_id))
             await _cleanup(workspace_id, [deleted_id, keeper_id])
 

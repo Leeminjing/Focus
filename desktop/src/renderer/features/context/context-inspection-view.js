@@ -24,7 +24,7 @@
     const itemRole = role(message);
     const provenance = item.provenance;
     const compression = message.compression || message.additional_kwargs?.compression;
-    const compressed = compression ? localize`<details class="compression-audit"><summary>${compression.deleted ? localize("已删除块") : localize("压缩块")} · 原始来源可恢复</summary><pre>${escape(JSON.stringify(compression.source || [], null, 2))}</pre></details>` : "";
+    const compressed = compression ? localize`<details class="compression-audit"><summary>${compression.deleted ? localize("已删除块") : localize("压缩块")} · 原始来源</summary><pre>${escape(JSON.stringify(compression.source || [], null, 2))}</pre></details>` : "";
     const fileContext = message.file_reference || message.file_context || { workspace_id: message.workspace_id, run_id: message.run_id, slot_id: message.slot_id };
     return `<article class="loop-message is-${escape(itemRole)}" data-message-index="${escape(item.index)}" data-message-role="${escape(itemRole)}" data-file-task-id="${escape(message.task_id || item.context_id || "")}" data-file-context="${escape(JSON.stringify(fileContext))}"><header><strong>${escape(itemRole)}</strong><span>#${item.index + 1}</span></header><div class="loop-message-content">${reading.render(message, { details: true, provenance: provenance || (["human", "user"].includes(itemRole) ? { source_kind: "direct_human" } : null), revision })}${compressed}</div></article>`;
   }

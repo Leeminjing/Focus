@@ -20,7 +20,6 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from sqlalchemy import delete
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
@@ -83,9 +82,8 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
     async def fake_get_available_tools(*, workspace=None):
         return []
 
-    original = _desktop_conversations_compression_service.make_lead_agent
+    original = _desktop_runs_agent_factory.make_lead_agent
     original_tools = _discovery_tools.get_available_tools
-    _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
     _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
     _discovery_tools.get_available_tools = fake_get_available_tools
     _desktop_runs_agent_factory.get_available_tools = fake_get_available_tools
@@ -168,7 +166,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
                     "list_patrol_agents", "read_patrol_agent_history",
                     "read_swarm_agent_history"} <= main_names
             assert main_cfg["middlewares"] is None
-            assert len(main_cfg["additional_middlewares"]) == 3 + len(browser_middlewares)
+            assert len(main_cfg["additional_middlewares"]) == 2 + len(browser_middlewares)
             names = [
                 middleware.__class__.__name__
                 for middleware in main_cfg["additional_middlewares"]
@@ -176,8 +174,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
             assert "ImageAttachmentProjectionMiddleware" in names
             assert "MustViewCompletionMiddleware" not in names
             assert "report_must_view_images" not in main_names
-            assert "CompressionGate" in names
-            assert names.index("ImageAttachmentProjectionMiddleware") < names.index("CompressionGate")
+            assert "CompressionGate" not in names
             assert "response_format" not in main_cfg, (
                 "主运行 MUST NOT 绑定 provider 结构化输出：有必需图片时 LangChain 会回落 "
                 "ToolStrategy 并强制 tool_choice=required，与 thinking 模型互斥"
@@ -204,7 +201,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
             empty_cfg = captured[-1]
             assert [
                 item.__class__.__name__ for item in empty_cfg["additional_middlewares"]
-            ] == ["handle_tool_errors", *browser_middlewares, "ImageAttachmentProjectionMiddleware", "CompressionGate"]
+            ] == ["handle_tool_errors", *browser_middlewares, "ImageAttachmentProjectionMiddleware"]
             assert "response_format" not in empty_cfg
             assert "report_must_view_images" not in {
                 item.name for item in empty_cfg["tools"]
@@ -233,7 +230,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
             attached_cfg = captured[-1]
             assert [
                 item.__class__.__name__ for item in attached_cfg["additional_middlewares"]
-            ] == ["handle_tool_errors", *browser_middlewares, "ImageAttachmentProjectionMiddleware", "CompressionGate"]
+            ] == ["handle_tool_errors", *browser_middlewares, "ImageAttachmentProjectionMiddleware"]
             assert "response_format" not in attached_cfg
             assert "report_must_view_images" not in {
                 item.name for item in attached_cfg["tools"]
@@ -407,7 +404,6 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
 
             cleanup()
     finally:
-        _desktop_conversations_compression_service.make_lead_agent = original
         _desktop_runs_agent_factory.make_lead_agent = original
         _discovery_tools.get_available_tools = original_tools
         _desktop_runs_agent_factory.get_available_tools = original_tools

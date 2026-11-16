@@ -8,15 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 
 import pytest
+from backend.tests.test_session_patrol_workbench_api import client as client, open_draft, save, SESSION
+from backend.app.desktop.patrol.session_patrol.source_projection import project_authoring_sources, freeze_authoring_sources, source_fingerprint
 from focus.history import FocusItem
-
-from backend.app.desktop.patrol.session_patrol.source_projection import (
-    freeze_authoring_sources,
-    project_authoring_sources,
-    source_fingerprint,
-)
-from backend.tests.test_session_patrol_workbench_api import SESSION, open_draft, save
-from backend.tests.test_session_patrol_workbench_api import client as client
 
 
 def test_stable_rows_select_one_expanded_call_without_touching_source():

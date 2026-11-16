@@ -10,7 +10,7 @@ slot 有未恢复的采用意图时仅记录 adoption_recovery_pending，不由�
 未启动的 abort_prepared 同事务按 Run→Dispatch 顺序保存终态、终结派发和释放租约，再登记 outbox。
 重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。Run.workspace_result 中未清理的 Shell attempt 阻止结算、派发完成和租约释放；重启只记录 interrupted，绝不将未知进程树当作已退出。
 checkpoint 的 canonical typed bridge 在结算前验证，current 保存 V2 execution Items，UI codec 不参与恢复。
-普通终态释放 Run 的冻结输入，待恢复的中断执行保留自足输入直到恢复被受理，不永久归档每次执行的 Context 正文。
+普通终态释放 Run 的输入引用，待恢复的中断执行持有精确来源直到新恢复 Run 受理，不永久归档每次执行的 Context 正文。
 示例：`settlement = await finalizer.finalize(record)`。
 """
 
@@ -56,11 +56,8 @@ from backend.app.desktop.persistence.models import (
     ModelAttemptAudit,
 )
 from backend.app.desktop.persistence.safety import PersistencePayloadNormalizer
-from backend.app.desktop.runs.context_snapshot import (
-    capture_context_snapshot,
-    context_snapshot_for_run,
-)
 from backend.app.desktop.runs.evidence.run_outcomes import RunOutcomeRecorder
+from backend.app.desktop.runs.orchestration.admission import admit_run_input
 from backend.app.desktop.runs.orchestration.outbox import RunOutboxRepository
 from backend.app.desktop.workspaces.coordination.fingerprints import (
     WorkspaceFingerprinter,
@@ -350,10 +347,6 @@ class RunLifecycleFinalizer:
     async def _release_context_input(self, session, run, *, force=False):
         if run.status == "interrupted" and not force:
             return
-        run.equipment = {
-            key: value for key, value in (run.equipment or {}).items()
-            if key not in {"context_snapshot", "resume_context_snapshot"}
-        }
         await self._contexts.release(session, owner_kind="run", owner_id=run.run_id)
 
     async def _identity(self, run_id: str) -> tuple[DesktopRun, DesktopThread]:
@@ -486,12 +479,7 @@ class RunLifecycleFinalizer:
         contract = await self._contexts.insert(session, contract)
         await self._contexts.switch_current(session, ref, expected)
         if run.status == "interrupted":
-            run.equipment = {
-                **(run.equipment or {}),
-                "resume_context_snapshot": await capture_context_snapshot(
-                    session, ContextRevisionReader(self._contexts, self._checkpointer), contract
-                ),
-            }
+            await admit_run_input(session, run, resume_ref=ref)
         return ref, "published"
 
     @staticmethod
@@ -535,32 +523,26 @@ class RunLifecycleFinalizer:
         session: AsyncSession,
         current: ContextRevisionContract | None,
         *,
-        run: DesktopRun | None = None,
+        run: DesktopRun,
     ) -> tuple[set[str], bool]:
         if current is None:
             return set(), False
-        snapshot = context_snapshot_for_run(run) if run is not None else None
-        if snapshot is not None:
-            source, views = snapshot
-            if source.ref != current.ref:
-                return set(), False
-            return {
-                str(message["id"])
-                for messages in views.values() for message in messages
-                if message.get("id")
-            }, True
-        inherited = {
-            str(message.get("id"))
-            for message in (*current.authored_messages, *current.execution_messages)
-            if message.get("id")
-        }
-        inherited.update(current.initial_message_ids)
         try:
+            source = await self._contexts.input_for_run(session, run)
+            if source is None or source.ref != current.ref:
+                return set(), False
+            inherited = {
+                str(message["id"])
+                for message in (*source.authored_messages, *source.execution_messages)
+                if message.get("id")
+            } | set(source.initial_message_ids)
+            if source.history_payload is not None:
+                return inherited, True
             authored = await ContextRevisionReader(self._contexts, self._checkpointer).read(
-                session, current.ref, "authored"
+                session, source.ref, "authored"
             )
         except (ContextRevisionNotFound, ContextRevisionIdentityMismatch):
-            return inherited, False
+            return set(), False
         inherited.update(str(message["id"]) for message in authored.messages if message.get("id"))
         return inherited, True
 

@@ -7,27 +7,36 @@
 """
 
 import asyncio
+from typing import ClassVar
 
-import pytest
-from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.memory import InMemorySaver
-
-from backend.tests.runtime_context_support import runtime_context
-from backend.tests.tool_catalog_support import app_config, desktop_service, install_fixture, model_fixture, registry_for, test_tool
 import focus.agents.lead.agent as lead
+import pytest
 from focus.agents.compression.gate import CompressionGate
 from focus.context.middleware import WorldStateMiddleware
 from focus.history import content_hash
 from focus.messages.request_budget import estimate_responses_budget
-from langchain_core.utils.function_calling import convert_to_openai_tool
 from focus.models.response_projection import function_specs
 from focus.tools.catalog import ToolNameConflict
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import HumanMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from langgraph.checkpoint.memory import InMemorySaver
+
+from backend.tests.runtime_context_support import runtime_context
+from backend.tests.tool_catalog_support import (
+    app_config,
+    desktop_service,
+    install_fixture,
+    model_fixture,
+    registry_for,
+    test_tool,
+)
 
 
 @pytest.mark.parametrize("provider", ["openai", "deepseek"])
 @pytest.mark.parametrize("compression", [True, False])
-def test_actual_desktop_main_plugin_and_compression(monkeypatch, tmp_path, provider, compression):
+@pytest.mark.parametrize("governed", [True, False])
+def test_actual_desktop_main_plugin_and_compression(monkeypatch, tmp_path, provider, compression, governed):
     async def run():
         captured, calls = [], []
         registry = registry_for([test_tool("demo_echo", calls)])
@@ -41,8 +50,11 @@ def test_actual_desktop_main_plugin_and_compression(monkeypatch, tmp_path, provi
             return create(**kwargs)
         monkeypatch.setattr(lead, "create_agent", capture)
         try:
+            equipment = {"permissions": ["read"], "model_name": "fixture"}
+            if governed:
+                equipment["_loop_authority_revision"] = 1
             factory = service._build_agent_factory("task", "main", str(tmp_path),
-                {"permissions": ["read"], "model_name": "fixture"}, "base", "", "main")
+                equipment, "base", "", "main")
             try:
                 graph = await factory()
             except ValueError:
@@ -67,7 +79,9 @@ def test_actual_desktop_main_plugin_and_compression(monkeypatch, tmp_path, provi
             section = result["world_state_snapshot"]["sections"]["tool_catalog"]["data"]
             assert set(section) == set(names)
             assert all(section[spec["function"]["name"]]["schema_hash"] == content_hash(spec) for spec in specs)
-            if compression:
+            gates = [item for item in assembled[0]["middleware"] if isinstance(item, CompressionGate)]
+            assert bool(gates) == (compression and governed)
+            if gates:
                 gate = next(item for item in assembled[0]["middleware"] if isinstance(item, CompressionGate))
                 initial = {"messages": [HumanMessage(content="你好")]}
                 context = runtime_context(agent_id="main", task_id="task", workspace=str(tmp_path))
@@ -158,8 +172,9 @@ def test_real_factory_conflicts_fail_before_http_or_tool_effects(monkeypatch, co
 def test_packaged_demo_plugin_is_injected_once(monkeypatch, tmp_path):
     async def run():
         from pathlib import Path
-        from focus.plugins.loader import load_plugins
+
         from focus.plugins.interfaces import builtin_catalog
+        from focus.plugins.loader import load_plugins
         from focus.plugins.registry import PluginRegistry
         registry = PluginRegistry(builtin_catalog())
         load_plugins(registry, Path(__file__).resolve().parents[2] / "plugins")
@@ -187,7 +202,7 @@ def test_late_middleware_tool_is_visible_everywhere(monkeypatch, tmp_path, provi
         install_fixture(monkeypatch, registry, model)
         attempt_tool = test_tool("attempt_probe", calls)
         class AttemptTools(AgentMiddleware):
-            tools = [attempt_tool]
+            tools: ClassVar[list] = [attempt_tool]
         captured = []
         create = lead.create_agent
         def capture(**kwargs):

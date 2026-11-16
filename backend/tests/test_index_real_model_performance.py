@@ -39,8 +39,12 @@ from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
     RoleBoundStructuredModel,
 )
 from backend.scripts.semantic_index_corpus import load_corpus
-from backend.tests.incremental_index_support import Checkpoints, observation, revision
-from backend.tests.test_incremental_revision_index import exercise
+from backend.tests.index_test_support import (
+    Checkpoints,
+    exercise,
+    observation,
+    revision,
+)
 
 pytestmark = [
     pytest.mark.usefixtures("isolated_postgres_database"),
@@ -263,9 +267,8 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
             return result
 
         histories = [s.messages for s in case.snapshots] if case else [_history(count), _history(count + 2)]
-        parent = None
         for i, history in enumerate(histories):
-            target = await revision(sessions, seed["context_id"], history, parent=parent)
+            target = await revision(sessions, seed["context_id"], history)
             if case:
                 frozen_messages[target.ref.revision_id] = tuple(history)
             phase_name = "cold" if i == 0 else f"append-{i}"
@@ -278,7 +281,6 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
                 assert report["phases"][f"exact-{i}"]["model_calls"] == 0
             else:
                 report["phases"][f"exact-{i}"] = {"status": "not_run", "reason": "no complete Index was published"}
-            parent = target
         report["evaluation_complete"] = True
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         if case is None:
@@ -290,7 +292,7 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
 
 
 def test_production_prefill_preserves_cross_segment_correction(tmp_path):
-    from backend.tests.test_incremental_index_real_model import observed_model_factory
+    from backend.tests.test_index_provider import observed_model_factory
     from backend.tests.test_revision_interpretation import NARRATIVE
 
     async def run(sessions, seed):
@@ -304,7 +306,7 @@ def test_production_prefill_preserves_cross_segment_correction(tmp_path):
         service._indexer = RevisionSemanticIndexer(ProtocolSafeRevisionSegmenter(max_messages=1))
         first = await revision(sessions, seed["context_id"], NARRATIVE[:2])
         assert (await service.build(observation(seed, first))).blocker_code is None
-        target = await revision(sessions, seed["context_id"], NARRATIVE, parent=first)
+        target = await revision(sessions, seed["context_id"], NARRATIVE)
         started = perf_counter()
         result = await service.build(observation(seed, target))
         assert result.blocker_code is None, result.blocker_summary
@@ -323,7 +325,6 @@ def test_production_prefill_preserves_cross_segment_correction(tmp_path):
             "append_duration_ms": (perf_counter() - started) * 1000,
             "interpretation_read_rounds": len(index.interpretation.read_requests),
             "joint_statements": [unit.statement for unit in joint],
-            "reused_segments": len(index.inheritance.reused_segment_ids),
         }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     exercise(tmp_path, run)

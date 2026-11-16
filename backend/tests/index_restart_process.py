@@ -2,7 +2,7 @@ r"""本文件对外提供隔离演练子进程的索引构建入口。
 
 输入为模式、冻结 Observation JSON 和输出目录；输出为真实提交边界信号、完整 index identity 与实际模型调用数。
 工作流为从环境指定的测试数据库新建 sessionmaker，构建或在提交前／后停留，父进程可强杀以验证持久恢复。
-示例：python -m backend.tests.incremental_index_process build input.json output-dir。
+示例：python -m backend.tests.index_restart_process build input.json output-dir。
 """
 
 import asyncio
@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.tests.incremental_index_support import ModelProbe
+from backend.tests.index_test_support import ModelProbe
 
 
 async def main():
@@ -48,8 +48,7 @@ async def main():
                 {
                     "index_id": index.index_id,
                     "record_ids": index.inheritance.record_ids,
-                    "mode": index.inheritance.mode,
-                    "reused": len(index.inheritance.reused_segment_ids),
+                    "source_token": index.source.revision_id,
                     "calls": len(probe.calls),
                     "pid": os.getpid(),
                 }

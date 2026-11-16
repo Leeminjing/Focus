@@ -1,7 +1,7 @@
 """本文件对外提供 ContextRevisionRepository 的当前状态、候选与活动输入持久化端口。
 
 输入为调用方事务、精确 Context 合同、预期 current 和 owner；输出为当前状态、受保护输入或明确的冲突。
-具体工作流为候选暂存快照，发布在 Context 锁下比较完整预期引用并覆盖唯一 current；输入释放通知上层清理端口。
+具体工作流为候选写入唯一正文，发布在 Context 锁下比较完整预期引用并移动 current 指针；输入释放后回收无根正文。
 同 Context 来源折叠成当前跨 Context 直接关系，不创建历史父链；读取不会用 latest 替代缺失的精确输入。
 示例：await repo.switch_current(session, next_ref, expected_ref)；await repo.release(session, "run", run_id)。
 """
@@ -12,7 +12,7 @@ import hashlib
 import json
 from copy import deepcopy
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, exists, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -175,323 +175,172 @@ class ContextRevisionRepository:
                     "initial_message_ids": inherited_initial,
                 }
             )
-            existing = await self._find(session, revision.ref.revision_id)
+            row = await session.get(ContextRevision, revision.ref.revision_id)
+            existing = self._contract(row) if row is not None else None
             if existing is not None:
                 if existing != revision:
                     raise ContextRevisionAlreadyExists(
                         "state token already identifies different content"
                     )
             else:
-                await self._save_snapshot(
-                    session, revision, "candidate", revision.ref.revision_id
-                )
+                session.add(self._to_row(revision))
+                await session.flush()
+                await self._own(session, revision.ref, "candidate", revision.ref.revision_id)
             prepared[revision.ref.revision_id] = revision
         return tuple(prepared[value.ref.revision_id] for value in revisions)
 
-    async def get(
-        self, session: AsyncSession, ref: ContextRevisionRef
-    ) -> ContextRevisionContract:
+    async def get(self, session: AsyncSession, ref: ContextRevisionRef) -> ContextRevisionContract:
         value = await self.get_by_id(session, ref.revision_id)
         if value.ref != ref:
-            raise ContextRevisionIdentityMismatch(
-                "exact Context execution identity mismatch"
-            )
+            raise ContextRevisionIdentityMismatch("exact Context execution identity mismatch")
         return value
 
-    async def get_input(
-        self, session: AsyncSession, ref: ContextRevisionRef
-    ) -> ContextRevisionContract:
-        """Read published current input or a published state held by an active owner."""
-        value = await self.get(session, ref)
-        current = await session.scalar(
-            select(ContextRevision.revision_id).where(
-                ContextRevision.context_id == ref.context_id
-            )
-        )
-        if current != ref.revision_id:
-            published = await session.scalar(
-                select(ContextInputSnapshot.snapshot_key)
-                .where(
-                    ContextInputSnapshot.revision_id == ref.revision_id,
-                    ContextInputSnapshot.is_published.is_(True),
-                )
-                .limit(1)
-            )
-            if published is None:
-                raise ContextRevisionNotFound(
-                    "unpublished candidates cannot be used as execution input"
-                )
-        if value.projection_status.value not in {
-            "valid",
-            "repaired",
-            "approved",
-            "deleted",
-        }:
-            raise ContextRevisionIdentityMismatch(
-                "Context input is not a published executable state"
-            )
+    async def get_input(self, session: AsyncSession, ref: ContextRevisionRef) -> ContextRevisionContract:
+        row = await session.get(ContextRevision, ref.revision_id)
+        if row is None or not row.is_published:
+            raise ContextRevisionNotFound("Context input is not published or no longer retained")
+        value = self._contract(row)
+        if value.ref != ref or value.projection_status.value not in {"valid", "repaired", "approved", "deleted"}:
+            raise ContextRevisionIdentityMismatch("Context input identity or publication status is invalid")
         return value
 
-    async def get_by_id(
-        self, session: AsyncSession, revision_id: str
-    ) -> ContextRevisionContract:
-        value = await self._find(session, revision_id)
-        if value is None:
-            raise ContextRevisionNotFound(
-                f"Context state is neither current nor pinned: {revision_id}"
-            )
-        return value
-
-    async def _find(
-        self, session: AsyncSession, revision_id: str
-    ) -> ContextRevisionContract | None:
+    async def get_by_id(self, session: AsyncSession, revision_id: str) -> ContextRevisionContract:
         row = await session.get(ContextRevision, revision_id)
-        if row is not None:
-            return self._contract(row)
-        payload = await session.scalar(
-            select(ContextInputSnapshot.payload)
-            .where(ContextInputSnapshot.revision_id == revision_id)
-            .order_by(ContextInputSnapshot.snapshot_key)
-            .limit(1)
-        )
-        if payload is None:
-            return None
-        value = ContextRevisionContract.model_validate(payload)
-        if value.ref.revision_id != revision_id:
-            raise ContextRevisionIdentityMismatch(
-                "snapshot payload does not match its state token"
-            )
-        return value
+        if row is None:
+            raise ContextRevisionNotFound(f"Context input is no longer retained: {revision_id}")
+        return self._contract(row)
 
-    async def current(
-        self, session: AsyncSession, context_id: str
-    ) -> ContextRevisionContract | None:
+    async def current(self, session: AsyncSession, context_id: str) -> ContextRevisionContract | None:
         task = await session.get(DesktopThread, context_id)
         if task is None:
             raise ContextIdentityNotFound(f"Context does not exist: {context_id}")
-        row = await session.scalar(
-            select(ContextRevision).where(ContextRevision.context_id == context_id)
-        )
-        if row is None:
-            if task.current_revision_id is not None:
-                raise ContextRevisionNotFound("Context current state is missing")
+        if task.current_revision_id is None:
             return None
-        if task.current_revision_id != row.revision_id:
-            raise ContextRevisionIdentityMismatch(
-                "Context current pointer does not match its state"
-            )
-        return self._contract(row)
-
-    async def find_by_checkpoint(
-        self, session: AsyncSession, context_id: str, checkpoint_id: str
-    ) -> ContextRevisionContract | None:
-        current = await self.current(session, context_id)
-        if current is not None and current.ref.checkpoint_id == checkpoint_id:
-            return current
-        payloads = (
-            await session.scalars(
-                select(ContextInputSnapshot.payload).where(
-                    ContextInputSnapshot.context_id == context_id
-                )
-            )
-        ).all()
-        for payload in payloads:
-            value = ContextRevisionContract.model_validate(payload)
-            if value.ref.checkpoint_id == checkpoint_id:
-                return value
-        return None
-
-    async def list_workspace(
-        self, session: AsyncSession, workspace_id: str
-    ) -> tuple[ContextRevisionContract, ...]:
-        rows = (
-            await session.scalars(
-                select(ContextRevision)
-                .join(
-                    DesktopThread, DesktopThread.task_id == ContextRevision.context_id
-                )
-                .where(DesktopThread.workspace_id == workspace_id)
-                .order_by(ContextRevision.context_id)
-            )
-        ).all()
-        return tuple(self._contract(row) for row in rows)
-
-    async def switch_current(
-        self,
-        session: AsyncSession,
-        next_ref: ContextRevisionRef,
-        expected_ref: ContextRevisionRef | None,
-    ) -> ContextRevisionRef:
-        task = await session.get(
-            DesktopThread,
-            next_ref.context_id,
-            with_for_update=True,
-            populate_existing=True,
-        )
-        if task is None:
-            raise ContextIdentityNotFound("publication Context does not exist")
-        expected_id = expected_ref.revision_id if expected_ref else None
-        if expected_ref and expected_ref.context_id != next_ref.context_id:
-            raise ContextRevisionIdentityMismatch(
-                "expected and next state belong to different Contexts"
-            )
-        if task.current_revision_id != expected_id:
-            raise StaleContextRevision(
-                f"Context changed: expected={expected_id}, actual={task.current_revision_id}"
-            )
-        candidate = await self.get(session, next_ref)
-        if (
-            expected_ref
-            and next_ref != expected_ref
-            and next_ref.generation != expected_ref.generation + 1
-        ):
-            raise StaleContextRevision(
-                "new Context generation must follow the expected current state"
-            )
-        row = await session.scalar(
-            select(ContextRevision)
-            .where(ContextRevision.context_id == next_ref.context_id)
-            .execution_options(populate_existing=True)
-        )
-        actual_ref = self._row_ref(row) if row is not None else None
-        if actual_ref != expected_ref:
-            raise StaleContextRevision(
-                "expected execution identity does not match current Context state"
-            )
-        if row is None:
-            session.add(self._to_row(candidate))
-        elif row.revision_id != next_ref.revision_id:
-            values = self._to_row(candidate)
-            for column in ContextRevision.__table__.columns:
-                setattr(row, column.name, deepcopy(getattr(values, column.name)))
-        task.current_revision_id = next_ref.revision_id
-        await session.flush()
-        await session.execute(
-            update(ContextInputSnapshot)
-            .where(ContextInputSnapshot.revision_id == next_ref.revision_id)
-            .values(is_published=True)
-        )
-        await self.release(session, "candidate", next_ref.revision_id)
-        return next_ref
-
-    async def freeze(
-        self,
-        session: AsyncSession,
-        ref: ContextRevisionRef,
-        *,
-        owner_kind: str,
-        owner_id: str,
-    ) -> ContextRevisionContract:
-        if not owner_kind or not owner_id or owner_kind == "candidate":
-            raise ValueError("execution snapshots require an explicit owner")
-        # The same lock as publication closes the read/current replacement race.
-        await session.get(
-            DesktopThread, ref.context_id, with_for_update=True, populate_existing=True
-        )
-        value = await self.get(session, ref)
-        current_token = await session.scalar(
-            select(ContextRevision.revision_id).where(
-                ContextRevision.context_id == ref.context_id
-            )
-        )
-        prior_published = await session.scalar(
-            select(ContextInputSnapshot.snapshot_key)
-            .where(
-                ContextInputSnapshot.revision_id == ref.revision_id,
-                ContextInputSnapshot.is_published.is_(True),
-            )
-            .limit(1)
-        )
-        await self._save_snapshot(
-            session,
-            value,
-            owner_kind,
-            owner_id,
-            is_published=current_token == ref.revision_id
-            or prior_published is not None,
-        )
-        await self.discard_candidate(session, ref.revision_id)
+        value = await self.get_by_id(session, task.current_revision_id)
+        if value.ref.context_id != context_id:
+            raise ContextRevisionIdentityMismatch("current pointer belongs to another Context")
         return value
 
-    async def _save_snapshot(
-        self,
-        session: AsyncSession,
-        value: ContextRevisionContract,
-        owner_kind: str,
-        owner_id: str,
-        *,
-        is_published: bool = False,
-    ) -> None:
-        key = self.snapshot_key(owner_kind, owner_id, value.ref.revision_id)
-        payload = value.model_dump(mode="json")
-        await session.execute(
-            insert(ContextInputSnapshot)
-            .values(
-                snapshot_key=key,
-                owner_kind=owner_kind,
-                owner_id=owner_id,
-                revision_id=value.ref.revision_id,
-                context_id=value.ref.context_id,
-                payload=payload,
-                is_published=is_published,
-            )
-            .on_conflict_do_nothing(index_elements=["snapshot_key"])
-        )
-        saved = await session.get(ContextInputSnapshot, key, populate_existing=True)
-        if saved.payload != payload:
-            raise ContextRevisionIdentityMismatch(
-                "snapshot owner already holds different content for this token"
-            )
-        if is_published:
-            saved.is_published = True
+    async def find_by_checkpoint(self, session: AsyncSession, context_id: str, checkpoint_id: str) -> ContextRevisionContract | None:
+        row = await session.scalar(select(ContextRevision).where(
+            ContextRevision.context_id == context_id, ContextRevision.checkpoint_id == checkpoint_id,
+            ContextRevision.is_published.is_(True),
+        ))
+        return self._contract(row) if row is not None else None
 
-    async def release(
-        self, session: AsyncSession, owner_kind: str, owner_id: str
-    ) -> None:
-        owned = (
-            ContextInputSnapshot.owner_kind == owner_kind,
-            ContextInputSnapshot.owner_id == owner_id,
+    async def list_workspace(self, session: AsyncSession, workspace_id: str) -> tuple[ContextRevisionContract, ...]:
+        rows = await session.scalars(select(ContextRevision).join(
+            DesktopThread, DesktopThread.current_revision_id == ContextRevision.revision_id,
+        ).where(DesktopThread.workspace_id == workspace_id).order_by(ContextRevision.context_id))
+        return tuple(self._contract(row) for row in rows)
+
+    async def switch_current(self, session: AsyncSession, next_ref: ContextRevisionRef,
+                             expected_ref: ContextRevisionRef | None) -> ContextRevisionRef:
+        task = await session.get(DesktopThread, next_ref.context_id, with_for_update=True, populate_existing=True)
+        if task is None:
+            raise ContextIdentityNotFound("publication Context does not exist")
+        if expected_ref and expected_ref.context_id != next_ref.context_id:
+            raise ContextRevisionIdentityMismatch("expected and next inputs belong to different Contexts")
+        current = await self.current(session, next_ref.context_id)
+        if (current.ref if current else None) != expected_ref:
+            raise StaleContextRevision("expected execution identity does not match current Context input")
+        candidate = await self.get(session, next_ref)
+        if expected_ref and next_ref != expected_ref and next_ref.generation != expected_ref.generation + 1:
+            raise StaleContextRevision("new Context generation must follow the expected current input")
+        row = await session.get(ContextRevision, candidate.ref.revision_id)
+        row.is_published = True
+        task.current_revision_id = next_ref.revision_id
+        await session.flush()
+        await session.execute(delete(ContextInputSnapshot).where(
+            ContextInputSnapshot.owner_kind == "candidate",
+            ContextInputSnapshot.owner_id == next_ref.revision_id,
+        ))
+        await self.prune(session, next_ref.context_id)
+        return next_ref
+
+    async def freeze(self, session: AsyncSession, ref: ContextRevisionRef, *, owner_kind: str,
+                     owner_id: str) -> ContextRevisionContract:
+        if not owner_kind or not owner_id or owner_kind == "candidate":
+            raise ValueError("execution inputs require an explicit owner")
+        await session.get(DesktopThread, ref.context_id, with_for_update=True)
+        row = await session.get(ContextRevision, ref.revision_id, with_for_update=True, populate_existing=True)
+        if row is None:
+            raise ContextRevisionNotFound("exact Context input is no longer retained")
+        if self._row_ref(row) != ref:
+            raise ContextRevisionIdentityMismatch("exact Context execution identity mismatch")
+        await self._own(session, ref, owner_kind, owner_id)
+        await session.execute(delete(ContextInputSnapshot).where(
+            ContextInputSnapshot.owner_kind == "candidate", ContextInputSnapshot.owner_id == ref.revision_id,
+        ))
+        return self._contract(row)
+
+    async def _own(self, session: AsyncSession, ref: ContextRevisionRef, owner_kind: str, owner_id: str) -> None:
+        await session.execute(insert(ContextInputSnapshot).values(
+            snapshot_key=self.snapshot_key(owner_kind, owner_id, ref.revision_id),
+            owner_kind=owner_kind, owner_id=owner_id, revision_id=ref.revision_id,
+        ).on_conflict_do_nothing(index_elements=["snapshot_key"]))
+
+    async def input_for_run(self, session: AsyncSession, run, *, resume: bool = False) -> ContextRevisionContract | None:
+        if not resume and not run.context_revision_id:
+            return None
+        query = select(ContextRevision).join(ContextInputSnapshot,
+            ContextInputSnapshot.revision_id == ContextRevision.revision_id).where(
+            ContextInputSnapshot.owner_kind == "run", ContextInputSnapshot.owner_id == run.run_id,
+            ContextRevision.is_published.is_(True),
         )
-        contexts = tuple(
-            (
-                await session.scalars(
-                    select(ContextInputSnapshot.context_id)
-                    .where(*owned)
-                    .distinct()
-                    .order_by(ContextInputSnapshot.context_id)
-                )
-            ).all()
-        )
+        if resume:
+            if not run.final_checkpoint_id:
+                raise ContextRevisionNotFound("Run has no settled recovery checkpoint")
+            query = query.where(ContextRevision.checkpoint_id == run.final_checkpoint_id,
+                                ContextRevision.origin_id == run.run_id,
+                                ContextRevision.origin_kind == "run_settled")
+        else:
+            query = query.where(ContextRevision.revision_id == run.context_revision_id)
+        row = (await session.execute(query)).scalar_one_or_none()
+        if row is None:
+            raise ContextRevisionNotFound("Run does not own its exact Context input")
+        value = self._contract(row)
+        ref = value.ref
+        expected_checkpoint = run.final_checkpoint_id if resume else run.context_checkpoint_id
+        if (ref.context_id, ref.execution_thread_id, ref.checkpoint_ns, ref.checkpoint_id) != (
+            run.task_id, run.execution_thread_id, run.checkpoint_ns or "", expected_checkpoint,
+        ) or not ref.is_runnable or value.projection_status.value not in {"valid", "repaired", "approved"}:
+            raise ContextRevisionIdentityMismatch("Run does not match its owned Context execution input")
+        return value
+
+    async def release(self, session: AsyncSession, owner_kind: str, owner_id: str) -> None:
+        owned = (ContextInputSnapshot.owner_kind == owner_kind, ContextInputSnapshot.owner_id == owner_id)
+        contexts = tuple(await session.scalars(select(ContextRevision.context_id).join(
+            ContextInputSnapshot, ContextInputSnapshot.revision_id == ContextRevision.revision_id,
+        ).where(*owned).distinct().order_by(ContextRevision.context_id)))
         if not contexts:
             return
-        await session.scalars(
-            select(DesktopThread)
-            .where(DesktopThread.task_id.in_(contexts))
-            .order_by(DesktopThread.task_id)
-            .with_for_update()
-        )
+        await session.scalars(select(DesktopThread).where(DesktopThread.task_id.in_(contexts))
+                              .order_by(DesktopThread.task_id).with_for_update())
         await session.execute(delete(ContextInputSnapshot).where(*owned))
         for context_id in contexts:
-            await notify_context_inputs_released(session, context_id)
+            await self.prune(session, context_id)
+
+    async def prune(self, session: AsyncSession, context_id: str) -> None:
+        await session.flush()
+        # A deleted Context has no Thread lock. Serialize collection with freeze
+        # on its remaining bodies before taking the statement's owner snapshot.
+        await session.scalars(select(ContextRevision.revision_id).where(
+            ContextRevision.context_id == context_id,
+        ).order_by(ContextRevision.revision_id).with_for_update())
+        await session.execute(delete(ContextRevision).where(
+            ContextRevision.context_id == context_id,
+            ~exists().where(DesktopThread.current_revision_id == ContextRevision.revision_id),
+            ~exists().where(ContextInputSnapshot.revision_id == ContextRevision.revision_id),
+        ).execution_options(synchronize_session="fetch"))
+        await notify_context_inputs_released(session, context_id)
 
     async def discard_candidate(self, session: AsyncSession, revision_id: str) -> None:
         await self.release(session, "candidate", revision_id)
 
-    async def release_owners(
-        self, session: AsyncSession, owners: tuple[tuple[str, str], ...]
-    ) -> None:
-        """Release only owners whose terminal state the caller has established."""
+    async def release_owners(self, session: AsyncSession, owners: tuple[tuple[str, str], ...]) -> None:
         for kind, identity in set(owners):
             await self.release(session, kind, identity)
-
-    async def record_publication(
-        self, session: AsyncSession, ref: ContextRevisionRef
-    ) -> None:
-        current = await self.current(session, ref.context_id)
-        if current is None or current.ref != ref:
-            raise StaleContextRevision(
-                "publication must atomically replace the current Context state"
-            )
 
     def _contract(
         self,

@@ -24,14 +24,14 @@ from backend.app.desktop.patrol.agent_loop.observations.observation_capture impo
 from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
     CuratorCoordinationStage,
 )
-from backend.tests.incremental_index_support import (
+from backend.tests.index_test_support import (
     Checkpoints,
     ModelProbe,
+    exercise,
     messages,
     observation,
     revision,
 )
-from backend.tests.test_incremental_revision_index import exercise
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -47,7 +47,7 @@ def make_service(sessions, probe, **kwargs):
     )
 
 
-def test_frozen_revision_independent_engine_publication_and_curator_input(tmp_path):
+def test_current_input_index_feeds_curator_and_exact_cache(tmp_path):
     async def run(sessions, seed):
         probe = ModelProbe()
         service = make_service(sessions, probe, segment_max_messages=2)
@@ -60,11 +60,9 @@ def test_frozen_revision_independent_engine_publication_and_curator_input(tmp_pa
         exact = await service.build(observation(seed, first))
         assert exact.indexes == built.indexes
         assert len(probe.calls) == initial_calls
-        second = await revision(sessions, seed["context_id"], messages(6), parent=first)
+        second = await revision(sessions, seed["context_id"], messages(6))
         appended = await service.build(observation(seed, second))
         assert appended.blocker_code is None, appended.blocker_summary
-        assert appended.indexes[0].inheritance.mode == "full"
-        assert appended.indexes[0].inheritance.baseline_index_id is None
         assert len(probe.calls) - initial_calls == 3  # one changed segment + interpretation
         assert len(appended.indexes[0].inheritance.record_ids) == 3
         assert all(
@@ -96,7 +94,7 @@ def test_frozen_revision_independent_engine_publication_and_curator_input(tmp_pa
 
 
 @pytest.mark.parametrize("changed_prefix", [False, True])
-def test_segment_proofs_survive_without_ancestor_artifacts(tmp_path, changed_prefix):
+def test_segment_cache_reuses_only_unchanged_current_input(tmp_path, changed_prefix):
     async def run(sessions, seed):
         probe = ModelProbe()
         service = make_service(sessions, probe, segment_max_messages=2)
@@ -104,16 +102,10 @@ def test_segment_proofs_survive_without_ancestor_artifacts(tmp_path, changed_pre
         initial = await service.build(observation(seed, first))
         assert initial.blocker_code is None, initial.blocker_summary
         old = initial.indexes[0]
-        async with sessions.begin() as session:
-            await session.execute(
-                delete(LoopSemanticIndexArtifact).where(
-                    LoopSemanticIndexArtifact.index_id == old.index_id
-                )
-            )
         current_messages = messages(5)
         if changed_prefix:
             current_messages[0]["content"] = "Corrected evidence number zero"
-        # There is no parent source or complete ancestor artifact to consult.
+        # Replace current input; released content is not an implicit history archive.
         current = await revision(sessions, seed["context_id"], current_messages)
         assert current.sources == ()
         from backend.app.desktop.contexts.evolution import ContextRevisionRepository
@@ -123,13 +115,11 @@ def test_segment_proofs_survive_without_ancestor_artifacts(tmp_path, changed_pre
         async with sessions() as session:
             with pytest.raises(ContextRevisionNotFound):
                 await ContextRevisionRepository().get_input(session, first.ref)
+            assert await session.get(LoopSemanticIndexArtifact, old.index_id) is None
         probe.calls.clear()
         built = await service.build(observation(seed, current))
         assert built.blocker_code is None, built.blocker_summary
         index = built.indexes[0]
-        assert index.inheritance.mode == "full"
-        assert index.inheritance.baseline_index_id is None
-        assert index.inheritance.prefix_hash is None
         assert len(probe.local_calls) == (4 if changed_prefix else 2)
         assert len(probe.interpretation_calls) == 1
         assert index.interpretation.completed

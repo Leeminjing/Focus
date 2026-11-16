@@ -140,36 +140,6 @@ class ContextRevisionCheckpointView(_FrozenContract):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class ContextRevisionHistoricalView(_FrozenContract):
-    revision: ContextRevisionContract
-    authored: ContextRevisionMessageView
-    execution: ContextRevisionMessageView
-    display: ContextRevisionMessageView
-    checkpoint: ContextRevisionCheckpointView | None
-
-
-class ContextFrontierSummary(_FrozenContract):
-    ref: ContextRevisionRef
-    projection_status: ContextRevisionProjectionStatus
-    content_hash: str = Field(min_length=64, max_length=64)
-    summary: str = Field(max_length=280)
-    message_count: int = Field(ge=0)
-    source_frontier: tuple[ContextRevisionRef, ...] = ()
-    deleted: bool = False
-
-
-class DeletedContextSource(_FrozenContract):
-    position: int = Field(ge=0)
-    source: ContextRevisionRef
-    deleted: bool
-    deleted_at: datetime | None = None
-
-
-class DeletedContextSourceView(_FrozenContract):
-    target: ContextRevisionRef
-    sources: tuple[DeletedContextSource, ...] = ()
-
-
 class ContextRevisionPrepareRequest(_FrozenContract):
     context_id: str = Field(min_length=1)
     expected_base: ContextRevisionRef | None = None

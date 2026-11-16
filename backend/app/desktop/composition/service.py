@@ -34,7 +34,6 @@ from backend.app.desktop.api.schemas import (
 )
 from backend.app.desktop.capabilities.service import CapabilityService
 from backend.app.desktop.contexts.service import ContextService
-from backend.app.desktop.conversations.compression_service import CompressionService
 from backend.app.desktop.conversations.service import ConversationService
 from backend.app.desktop.materials.content import (
     MaterialContentService,
@@ -322,31 +321,6 @@ class DesktopService:
     ) -> list[dict[str, Any]]:
         return await self.conversations.get_checkpoint_messages(
             thread_id, checkpoint_ns
-        )
-
-    async def _compression_execution_identity(
-        self, session: AsyncSession, task: DesktopThread
-    ) -> tuple[str, str]:
-        return await self.compression._compression_execution_identity(session, task)
-
-    async def get_compression_messages(self, task_id: str) -> list[dict[str, Any]]:
-        return await self.compression.get_compression_messages(task_id)
-
-    async def quick_compression_preview(
-        self, task_id: str, keyword: str, case_sensitive: bool = False
-    ) -> dict[str, Any]:
-        return await self.compression.quick_compression_preview(
-            task_id, keyword, case_sensitive
-        )
-
-    async def quick_compression_apply(
-        self,
-        task_id: str,
-        ranges: list[dict[str, Any]],
-        scrub_terms: list[str] | None = None,
-    ) -> dict[str, Any]:
-        return await self.compression.quick_compression_apply(
-            task_id, ranges, scrub_terms
         )
 
     async def open_draft(self, task_id: str) -> dict[str, Any]:
@@ -866,10 +840,6 @@ class DesktopService:
     @cached_property
     def capabilities(self) -> CapabilityService:
         return CapabilityService(self)
-
-    @cached_property
-    def compression(self) -> CompressionService:
-        return CompressionService(self)
 
     @cached_property
     def conversations(self) -> ConversationService:

@@ -35,13 +35,13 @@ from backend.app.desktop.patrol.agent_loop.models import (
     LoopDelegationGrant,
 )
 from backend.app.desktop.persistence.models import DesktopThread
-from backend.tests.incremental_index_support import (
+from backend.tests.index_test_support import (
     ModelProbe,
+    exercise,
     messages,
     observation,
     revision,
 )
-from backend.tests.test_incremental_revision_index import exercise
 from backend.tests.test_independent_context_index import make_service
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -110,7 +110,7 @@ def test_old_and_independent_service_contention(
                 )
         appended = [
             await revision(
-                sessions, c, messages(57 if i == 0 else 3), parent=targets[i]
+                sessions, c, messages(57 if i == 0 else 3)
             )
             for i, c in enumerate(contexts)
         ]

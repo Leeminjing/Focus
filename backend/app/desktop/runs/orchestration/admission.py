@@ -34,6 +34,25 @@ class RunAdmissionConflict(RuntimeError):
     pass
 
 
+async def admit_run_input(session, run, *, resume_ref=None):
+    """Hold an exact input for execution or for a settled Run's pending resume."""
+    if run.kind != "main" or (run.context_revision_id is None and resume_ref is None):
+        return
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+
+    repository = ContextRevisionRepository()
+    ref = resume_ref
+    if ref is None:
+        ref = (await repository.get_by_id(session, run.context_revision_id)).ref
+    source = await repository.get_input(session, ref)
+    expected_checkpoint = run.final_checkpoint_id if resume_ref is not None else run.context_checkpoint_id
+    if (ref.context_id, ref.execution_thread_id, ref.checkpoint_ns, ref.checkpoint_id) != (
+        run.task_id, run.execution_thread_id, run.checkpoint_ns or "", expected_checkpoint,
+    ) or (resume_ref is not None and (run.status != "interrupted" or source.origin_id != run.run_id)):
+        raise ValueError("Run input does not match its exact execution identity")
+    await repository.freeze(session, ref, owner_kind="run", owner_id=run.run_id)
+
+
 class RunAdmissionService:
     def __init__(self, ownership_validator=None):
         self._ownership_validator = ownership_validator
@@ -74,13 +93,7 @@ class RunAdmissionService:
         if active is not None:
             raise RunAdmissionConflict(f"任务已有活跃 Main Run: {active.run_id}")
         await validate_parent_chain(session, run)
-        if run.kind == "main" and run.context_revision_id:
-            from backend.app.desktop.contexts.evolution import ContextRevisionRepository
-
-            repository = ContextRevisionRepository()
-            source = await repository.get_by_id(session, run.context_revision_id)
-            await repository.get_input(session, source.ref)
-            await repository.freeze(session, source.ref, owner_kind="run", owner_id=run.run_id)
+        await admit_run_input(session, run)
         run.input_messages = bind_run_inputs(run)
         self._normalize_mutable_payloads(run)
         session.add(run)

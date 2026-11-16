@@ -4,20 +4,19 @@
     validate_apply_decision — 校验并规范化 resume 载荷中的压缩 apply 决定
 
 输入:
-    decision: dict — interrupt() 返回的用户决定
+    decision: dict — Patrol 已授权候选生成的内部恢复载荷
     messages: list[BaseMessage] — 当前 graph state 的完整 messages
     protected_message_ids: tuple[str, ...] — 当前活动运行的 origin 用户消息标识
 
 输出:
     tuple[list[dict], str | None] — (规范化 ranges, 错误信息)；错误非 None 时调用方
     SHALL NOT 修改任何状态。每条规范化 range 为 {"source_ids": [...], "replacement": str}
-    或 {"source_ids": [...], "restore": True}。
 
 具体工作流:
     (1) 校验决定类型与 apply 语义
     (2) 逐范围校验：source_ids 非空、无重复、存在于当前 messages、跨范围不重叠
     (3) 活动输入豁免：范围覆盖 origin 用户消息时拒绝
-    (4) replacement 与 restore 二选一；restore 的 source 必须全部是压缩块
+    (4) 只接受非空 replacement，不提供手工删除或原文恢复操作
     (5) 其余选择完全自由：拆散 tool-call 组的范围不拒绝，由共享 history.repair 以 error 占位闭合
 
 示例:
@@ -28,17 +27,9 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage
 
+
 def _source_by_id(messages: list[BaseMessage]) -> dict[str, BaseMessage]:
     return {message.id: message for message in messages if message.id}
-
-
-def _compression_source(message: BaseMessage) -> list[dict] | None:
-    kwargs = getattr(message, "additional_kwargs", None)
-    if not isinstance(kwargs, dict):
-        return None
-    metadata = kwargs.get("compression")
-    source = metadata.get("source") if isinstance(metadata, dict) else None
-    return source if isinstance(source, list) else None
 
 
 def validate_apply_decision(
@@ -81,23 +72,8 @@ def validate_apply_decision(
         if protected_messages:
             return [], f"ranges[{index}] 覆盖当前活动运行的用户材料消息: {sorted(protected_messages)[:3]}"
         replacement = message_range.get("replacement")
-        restore = bool(message_range.get("restore"))
-        delete = bool(message_range.get("delete"))
-        if delete:
-            if replacement not in (None, "") or restore:
-                return [], f"ranges[{index}] 的 delete 与 replacement/restore 不能同时提供"
-            normalized.append({"source_ids": source_ids, "delete": True})
-            continue
-        if restore:
-            if replacement not in (None, ""):
-                return [], f"ranges[{index}] 的 restore 与 replacement 不能同时提供"
-            non_blocks = [
-                item for item in source_ids if _compression_source(by_id[item]) is None
-            ]
-            if non_blocks:
-                return [], f"ranges[{index}] restore 的目标必须全部是压缩块: {non_blocks[:3]}"
-            normalized.append({"source_ids": source_ids, "restore": True})
-            continue
+        if "restore" in message_range or "delete" in message_range:
+            return [], f"ranges[{index}] 仅支持摘要替换"
         if not isinstance(replacement, str) or not replacement.strip():
             return [], f"ranges[{index}].replacement 必须是非空字符串"
         normalized.append(

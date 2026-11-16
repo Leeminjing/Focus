@@ -15,7 +15,6 @@ from focus.models.responses import FocusResponsesChatModel
 from langchain_core.messages import AIMessageChunk
 from sqlalchemy import select, text
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 from backend.app.desktop.persistence.models import (
     DesktopRun,
@@ -237,7 +236,7 @@ def test_resume_uses_original_run_and_exact_interrupted_graph(client, monkeypatc
     from langchain.agents.middleware import AgentMiddleware
     from langgraph.types import interrupt
 
-    original = _desktop_conversations_compression_service.make_lead_agent
+    original = _desktop_runs_agent_factory.make_lead_agent
     class PauseBeforeSampling(AgentMiddleware):
         async def abefore_model(self, state, runtime):
             interrupt({"type": "patrol_test_review"})
@@ -245,7 +244,6 @@ def test_resume_uses_original_run_and_exact_interrupted_graph(client, monkeypatc
     async def factory(**kwargs):
         kwargs["additional_middlewares"] = [*kwargs.get("additional_middlewares", []), PauseBeforeSampling()]
         return await original(**kwargs)
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', factory)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', factory)
     http, task, _, requests = client
     draft = open_draft(http, task)
@@ -589,14 +587,13 @@ def test_legacy_interrupt_keeps_original_namespace_without_new_definition(client
 
     from backend.app.desktop.persistence.models import PatrolAgent
     from backend.app.desktop.runs.orchestration.models import RunDispatch
-    original = _desktop_conversations_compression_service.make_lead_agent
+    original = _desktop_runs_agent_factory.make_lead_agent
     class PauseLegacy(AgentMiddleware):
         async def abefore_model(self, state, runtime):
             interrupt({"type": "legacy_test"})
     async def factory(**kwargs):
         kwargs["additional_middlewares"] = [*kwargs.get("additional_middlewares", []), PauseLegacy()]
         return await original(**kwargs)
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', factory)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', factory)
     http, task, path, requests = client
     identity = uuid.uuid4().hex; namespace = "legacy-patrol:"+identity

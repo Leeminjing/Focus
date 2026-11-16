@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.contexts.evolution.input_lifecycle import (
-    register_context_input_release_handler,
+    set_context_input_release_handler,
 )
 from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     stable_expansion_hash,
@@ -35,9 +35,6 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval 
 
 
 class SemanticDerivationArtifactRepository:
-    def __init__(self) -> None:
-        install_context_index_lifecycle()
-
     async def prune_indexes(self, session: AsyncSession, context_id: str) -> int:
         """Keep current/owned input indexes and active planning references only.
 
@@ -55,12 +52,16 @@ class SemanticDerivationArtifactRepository:
         # Serialize against current publication and owner snapshot release.
         context = await session.get(DesktopThread, context_id, with_for_update=True)
         protected_tokens = set(await session.scalars(
-            select(ContextRevision.revision_id).where(ContextRevision.context_id == context_id)
+            select(ContextRevision.revision_id)
+            .join(DesktopThread, DesktopThread.current_revision_id == ContextRevision.revision_id)
+            .where(DesktopThread.task_id == context_id)
         ))
         protected_tokens.update(await session.scalars(
-            select(ContextInputSnapshot.revision_id).where(
-                ContextInputSnapshot.context_id == context_id,
-                ContextInputSnapshot.is_published.is_(True),
+            select(ContextInputSnapshot.revision_id)
+            .join(ContextRevision, ContextRevision.revision_id == ContextInputSnapshot.revision_id)
+            .where(
+                ContextRevision.context_id == context_id,
+                ContextRevision.is_published.is_(True),
             )
         ))
         planning_payloads = await session.scalars(
@@ -424,7 +425,4 @@ async def _prune_released_context_input(session: AsyncSession, context_id: str) 
 
 def install_context_index_lifecycle() -> None:
     """Install this consumer's cleanup through the Context-owned release port."""
-    register_context_input_release_handler("semantic_index_cache", _prune_released_context_input)
-
-
-install_context_index_lifecycle()
+    set_context_input_release_handler(_prune_released_context_input)

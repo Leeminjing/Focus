@@ -11,37 +11,25 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
+import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
-from backend.app.desktop.contexts.curation.contracts import (
-    MissionEvidenceRef,
-    evidence_ref_key,
-)
-from backend.app.desktop.patrol.agent_loop.completion.completion_policy import (
-    CompletionCheckPolicy,
-)
-from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import (
-    FrozenMissionSectionCatalog,
-    MissionSectionMismatch,
-)
 from backend.app.desktop.patrol.agent_loop.missions.mission_contract import (
     CompletionCheckDefinition,
     ExecutionBoundaries,
     LegacyMissionAdapter,
     LoopMissionContract,
 )
-from backend.app.desktop.patrol.agent_loop.missions.mission_projection import (
-    EffectiveMissionProjector,
-)
-from backend.app.desktop.patrol.agent_loop.missions.mission_service import (
-    MissionRevisionService,
-)
+from backend.app.desktop.patrol.agent_loop.completion.completion_policy import CompletionCheckPolicy
+from backend.app.desktop.patrol.agent_loop.missions.mission_service import MissionRevisionService
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.patrol.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog, MissionSectionMismatch
 from backend.app.desktop.patrol.agent_loop.schemas import CriterionVerification
+from backend.app.desktop.contexts.curation.contracts import MissionEvidenceRef, evidence_ref_key
 
 
 def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres_database, monkeypatch) -> None:
@@ -74,7 +62,7 @@ def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres
         assert "loop_mission_revisions" not in inspect(engine).get_table_names()
         assert "loop_goal_revisions" in inspect(engine).get_table_names()
 
-        command.upgrade(config, "a4b5c6d7e8f9")
+        command.upgrade(config, "head")
         schema = inspect(engine)
         assert {"loop_goal_revisions", "loop_mission_revisions"} <= set(schema.get_table_names())
         columns = {column["name"] for column in schema.get_columns("loop_mission_revisions")}

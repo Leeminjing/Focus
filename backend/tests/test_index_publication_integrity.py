@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
 from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
     stable_expansion_hash,
 )
@@ -53,9 +54,7 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer im
     RevisionSemanticIndexer,
 )
 from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
-from backend.app.desktop.contexts.evolution import ContextRevisionRef
-from backend.tests.incremental_index_support import observation, revision
-from backend.tests.test_incremental_revision_index import exercise
+from backend.tests.index_test_support import exercise, observation, revision
 from backend.tests.test_revision_interpretation import ControlledInterpretationProbe
 
 TEXT = "The connection pool was ruled out. Investigation: the connection pool was ruled out."

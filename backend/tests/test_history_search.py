@@ -1,31 +1,20 @@
 """History lookup: real catalog filtering, durable filenames and stable reader targets."""
 
 import asyncio
-import os
-import uuid
 from datetime import datetime, timezone
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import uuid
 
-import pytest
 from fastapi import HTTPException
+import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.conversations.history import (
-    HistorySearchService,
-    history_entries,
-    message_text,
-    snippet,
-)
-from backend.app.desktop.persistence.models import (
-    DesktopMaterial,
-    DesktopRun,
-    DesktopThread,
-    DesktopWorkspace,
-    RunMaterialBinding,
-)
+from backend.app.desktop.conversations.history import HistorySearchService, history_entries, message_text, snippet
 from backend.app.desktop.runs.evidence.models import DesktopDomainResult
+from backend.app.desktop.persistence.models import DesktopMaterial, DesktopRun, DesktopThread, DesktopWorkspace, RunMaterialBinding
 
 
 def test_text_and_retained_compression_sources():

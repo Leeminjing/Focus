@@ -27,7 +27,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 import backend.app.desktop.runs.lifecycle_service as _desktop_runs_lifecycle_service
 from backend.app.desktop.conversations.input_delivery import ConversationInputDelivery
@@ -315,7 +314,6 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
 
     monkeypatch.setattr("focus.tools.tools.get_available_tools", empty_tools)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', empty_tools)
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_agent)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_agent)
     monkeypatch.setattr(_desktop_runs_lifecycle_service, '_RUN_FINALIZATION_RETRY_INITIAL_SECONDS', 0.01)
     headers = {"X-Focus-Session": "focus-dev-session"}

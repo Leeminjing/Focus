@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 
 from backend.tests.test_desktop_poc import _client, SESSION
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
-from backend.tests.incremental_index_support import Checkpoints, messages, revision
+from backend.tests.index_test_support import Checkpoints, messages, revision
 from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import PortfolioSemanticIndexService
 from backend.app.desktop.patrol.agent_loop.context_expansion.index_prewarm import LocalIndexPrewarmer
 from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel

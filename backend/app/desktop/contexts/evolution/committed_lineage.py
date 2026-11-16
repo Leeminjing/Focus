@@ -66,7 +66,6 @@ class CommittedLineageReader:
                     select(ContextInputSnapshot.snapshot_key)
                     .where(
                         ContextInputSnapshot.revision_id == token,
-                        ContextInputSnapshot.is_published.is_(True),
                     )
                     .limit(1)
                 )

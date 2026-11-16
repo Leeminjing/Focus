@@ -40,6 +40,7 @@ async function run() {
   await win.loadFile(path.join(__dirname, "../../src/renderer/index.html"));
   await evaluate(win, `new Promise(async (resolve, reject) => {
     for (let count = 0; count < 120; count += 1) {
+      if (document.body.dataset.view === 'patrol') document.querySelector('[data-action=focus-home]')?.click();
       if (document.querySelector('.focus-view')) return resolve();
       await new Promise(next => setTimeout(next, 20));
     }
@@ -202,37 +203,6 @@ async function run() {
   })()`);
   if (fallback.threw || fallback.view !== "focus" || !fallback.hasFocus) failures.push(`未知插件视图没有安全回退：${JSON.stringify(fallback)}`);
 
-  const compression = await evaluate(win, `(async () => {
-    state.filesPanel = null;
-    state.compression = {
-      taskId: state.activeTaskId,
-      messages: [
-        { id: 'm1', role: 'human', content: '可以直接删除的消息' },
-        { id: 'm2', role: 'ai', content: '可以加入摘要计划的消息' },
-      ],
-      selected: new Set(), ranges: [], request: { usage: 80, limit: 100 },
-    };
-    state.view = 'compress';
-    render();
-    document.querySelector('[data-action="toggle-compress-message"][data-index="0"]').click();
-    await new Promise(resolve => setTimeout(resolve, 0));
-    document.querySelector('[data-action="compression-delete-selection"]').click();
-    await new Promise(resolve => setTimeout(resolve, 30));
-    const deleted = JSON.parse(JSON.stringify(state.compression.ranges));
-    const firstDisabled = document.querySelector('[data-action="toggle-compress-message"][data-index="0"]').disabled;
-    document.querySelector('[data-action="toggle-compress-message"][data-index="1"]').click();
-    await new Promise(resolve => setTimeout(resolve, 0));
-    document.querySelector('[data-action="compression-join-selection"]').click();
-    await new Promise(resolve => setTimeout(resolve, 30));
-    const uniqueIds = state.compression.ranges.flatMap(range => range.source_ids);
-    const readyBeforeSummary = compressionReady();
-    state.view = 'focus'; render();
-    return { deleted, firstDisabled, uniqueIds, readyBeforeSummary };
-  })()`);
-  if (!compression.deleted[0]?.delete || !compression.firstDisabled || new Set(compression.uniqueIds).size !== compression.uniqueIds.length || compression.readyBeforeSummary) {
-    failures.push(`压缩计划允许重复来源或直接删除不可用：${JSON.stringify(compression)}`);
-  }
-
   win.webContents.setZoomFactor(1.5);
   const compactConversation = await evaluate(win, `(() => {
     state.view = 'focus';
@@ -295,7 +265,7 @@ async function run() {
 
   win.destroy();
   if (failures.length) throw new Error(`F20 stability audit:\n- ${failures.join("\n- ")}`);
-  console.log("f20-stability: 新建任务、失败重试、重复提交、Composer、取消、焦点、面板、回退、压缩计划与 DOM 守卫通过");
+  console.log("f20-stability: 新建任务、失败重试、重复提交、Composer、取消、焦点、面板、回退与 DOM 守卫通过");
 }
 
 app.whenReady().then(run).then(() => app.quit()).catch(error => {
