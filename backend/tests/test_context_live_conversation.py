@@ -7,8 +7,12 @@ import asyncio
 import atexit
 import os
 import uuid
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.base import CheckpointTuple
 from sqlalchemy import delete, func, select
@@ -24,10 +28,22 @@ _ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
-from backend.app.desktop.contexts.service import ContextService  # noqa: E402
-from backend.app.desktop.contexts.evolution.models import ContextRevision  # noqa: E402
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
 from focus.config.app_config import AppConfig  # noqa: E402
+
+from backend.app.desktop.api.contexts import router as contexts_router
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionContract,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
+from backend.app.desktop.contexts.evolution.models import ContextRevision  # noqa: E402
+from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
+from backend.app.desktop.contexts.service import ContextService  # noqa: E402
+from backend.app.desktop.persistence.models import (  # noqa: E402
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+)
 
 
 class ScriptedCheckpointer:
@@ -115,24 +131,22 @@ async def _seed(session) -> tuple[str, str]:
 
 
 async def _publish_revision(session, task_id: str, execution_thread_id: str, checkpoint_id: str, generation: int) -> ContextRevision:
-    revision = ContextRevision(
-        revision_id=uuid.uuid4().hex,
-        context_id=task_id,
-        generation=generation,
-        execution_thread_id=execution_thread_id,
-        checkpoint_ns="",
-        checkpoint_id=checkpoint_id,
-        payload_mode="checkpoint",
+    repository = ContextRevisionRepository()
+    previous = await repository.current(session, task_id)
+    revision = ContextRevisionContract(
+        ref=ContextRevisionRef(
+            revision_id=uuid.uuid4().hex, context_id=task_id, generation=generation,
+            execution_thread_id=execution_thread_id, checkpoint_ns="",
+            checkpoint_id=checkpoint_id, payload_mode="checkpoint",
+        ),
         content_hash=uuid.uuid4().hex * 2,
         projection_status="valid",
         origin_kind="run_settled",
+        created_at=datetime.now(UTC),
     )
-    session.add(revision)
-    await session.flush()
-    task = await session.get(DesktopThread, task_id)
-    task.current_revision_id = revision.revision_id
-    await session.flush()
-    return revision
+    await repository.insert(session, revision)
+    await repository.switch_current(session, revision.ref, previous.ref if previous else None)
+    return await session.get(ContextRevision, revision.ref.revision_id)
 
 
 async def _cleanup(workspace_id: str, task_id: str) -> None:
@@ -293,6 +307,58 @@ def test_live_view_converges_on_published_revision_after_settlement():
             assert _ids(after_settlement["messages"]) == _ids(published["messages"])
             assert after_settlement["checkpoint_id"] == "ck-2"
         finally:
+            await _cleanup(workspace_id, task_id)
+
+    _LOOP.run_until_complete(run())
+
+
+@pytest.mark.parametrize("published_state", [False, True])
+def test_snapshot_http_exposes_only_current_checkpoint(published_state):
+    async def run() -> None:
+        checkpointer = ScriptedCheckpointer()
+        contexts = _contexts(checkpointer)
+        repository = ContextRevisionRepository()
+        owner_id = uuid.uuid4().hex
+        old_ref = None
+        async with _SESSION_FACTORY.begin() as session:
+            workspace_id, task_id = await _seed(session)
+            thread_id = (await session.get(DesktopThread, task_id)).thread_id
+            if published_state:
+                await _publish_revision(session, task_id, thread_id, "ck-old", 1)
+                old_ref = (await repository.current(session, task_id)).ref
+                await repository.freeze(session, old_ref, owner_kind="observation", owner_id=owner_id)
+                await _publish_revision(session, task_id, thread_id, "ck-current", 2)
+
+        app = FastAPI()
+        app.include_router(contexts_router)
+        app.state.desktop_service = SimpleNamespace(contexts=contexts)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                if not published_state:
+                    empty = await client.get(f"/contexts/{task_id}/snapshot")
+                    assert empty.status_code == 200
+                    assert empty.json() == {"context_id": task_id, "checkpoint_id": None, "messages": []}
+                checkpointer.append(thread_id, "", "ck-old", [HumanMessage(content="retired-private", id="old")])
+                checkpointer.append(thread_id, "", "ck-current", [HumanMessage(content="latest-public", id="current")])
+
+                for token in ("ck-old", "unknown"):
+                    rejected = await client.get(f"/contexts/{task_id}/snapshot", params={"checkpoint_id": token})
+                    assert rejected.status_code == 409
+                    assert "retired-private" not in rejected.text
+                for params in ({}, {"checkpoint_id": "ck-current"}):
+                    current = await client.get(f"/contexts/{task_id}/snapshot", params=params)
+                    assert current.status_code == 200
+                    assert current.json()["checkpoint_id"] == "ck-current"
+                    assert [message["content"] for message in current.json()["messages"]] == ["latest-public"]
+
+            assert all(read["configurable"].get("checkpoint_id") != "ck-old" for read in checkpointer.reads)
+            if old_ref is not None:
+                async with _SESSION_FACTORY() as session:
+                    internal = await ContextRevisionReader(repository, checkpointer).read(session, old_ref, "display")
+                    assert [message["content"] for message in internal.messages] == ["retired-private"]
+        finally:
+            async with _SESSION_FACTORY.begin() as session:
+                await repository.release(session, "observation", owner_id)
             await _cleanup(workspace_id, task_id)
 
     _LOOP.run_until_complete(run())

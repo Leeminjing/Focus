@@ -79,14 +79,13 @@ assert.doesNotMatch(app, /context-family|context-root-label|context-derived-(?:l
 assert.match(app, /style="--context-depth:\$\{depth\}"/);
 assert.match(app, /context-rail-diagnostics/);
 assert.doesNotMatch(app, /context-tree-(?:root|children|node)|context-current-marker|context-rail-lineage/, "Context rail 又引入了树线、层级胶囊或重复父来源");
-assert.match(legacyStyles, /\.context-rail-card,\s*\n\.context-rail-add\s*\{[^}]*border:\s*1px solid[^;]*;[^}]*border-radius:[^;]+;[^}]*text-align:\s*left/s);
+assert.match(legacyStyles, /\.context-rail-card\s*\{[^}]*border:\s*1px solid[^;]*;[^}]*border-radius:[^;]+;[^}]*text-align:\s*left/s);
 assert.match(legacyStyles, /\.context-rail-card\.is-current\s*\{[^}]*border-color:\s*var\(--border-accent[^}]*background:\s*var\(--surface-accent/s);
 assert.match(views, /\.app-inspector \.context-rail-card\.is-current\s*\{[^}]*border-color:\s*var\(--border-accent\)/s);
 
 for (const [name, source] of [["index", index], ["app", app], ["events", eventsJs]]) {
   assert.doesNotMatch(source, /[⌂⊞⑂◎◇↳⠿🖼📕📘📄📦🗑]/u, `${name} 仍包含字符或 emoji 图标`);
 }
-assert.doesNotMatch(read("desktop/src/renderer/features/context/context-editor.js"), /⠿/u);
 assert.doesNotMatch(read("plugins/spatial-patrol/desktop/viewer.js"), /[◀▶＋−]/u);
 
 for (const [name, body] of [
@@ -128,7 +127,6 @@ assert.match(app, /<header class="draft-heading"><span class="ui-meta">\$\{curat
 assert.doesNotMatch(app, /draft-heading[^\n]*AGENT DRAFT|draft-heading[^\n]*小兵草稿/);
 assert.match(app, /<header class="compression-heading">\s*<p class="compression-usage">/s);
 assert.doesNotMatch(app, /compression-heading[\s\S]{0,240}(?:CONTEXT COMPRESSION|<h1>上下文压缩<\/h1>)/);
-assert.match(views, /@media \(max-width: 720px\)[\s\S]*\.context-editor-view\s*\{[\s\S]*grid-template-columns:\s*1fr/s);
 assert.match(views, /@media \(max-width: 720px\)[\s\S]*\.plugins-workbench\s*\{\s*grid-template-columns:\s*1fr/s);
 assert.match(views, /@media \(max-width: 1100px\)[\s\S]*\.focus-shell:has\(\.file-panel\)\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\) !important/s);
 assert.match(views, /\.focus-shell:has\(\.file-panel\) > \.focus-view\s*\{\s*display:\s*none/s);

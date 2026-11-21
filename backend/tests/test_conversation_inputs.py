@@ -1,19 +1,24 @@
 """普通会话补充、结算后队列、撤回和启动回执恢复的真实 PostgreSQL/Graph 回归。"""
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
-import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
-import backend.app.desktop.runs.lifecycle_service as _desktop_runs_lifecycle_service
-
-
 import asyncio
+import os
+import uuid
 from datetime import UTC, datetime
 from itertools import cycle
-import os
 from types import SimpleNamespace
-import uuid
 
 import pytest
 from fastapi import HTTPException
+from focus.agents.lead_agent_state import LeadAgentState
+from focus.context.middleware import WorldStateMiddleware
+from focus.history import content_hash
+from focus.history.middleware import TypedHistoryMiddleware
+from focus.security.context import (
+    AuthorizationIdentity,
+    RoutingIdentity,
+    SecurityContext,
+)
+from focus.security.policy import AccessMode
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -22,16 +27,20 @@ from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.conversations.inputs import ConversationInput, ConversationInputCreate, ConversationInputs
+import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
+import backend.app.desktop.runs.lifecycle_service as _desktop_runs_lifecycle_service
 from backend.app.desktop.conversations.input_delivery import ConversationInputDelivery
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.conversations.inputs import (
+    ConversationInput,
+    ConversationInputCreate,
+    ConversationInputs,
+)
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+)
 from backend.app.desktop.runs.orchestration.admission import RunAdmissionService
-from focus.agents.lead_agent_state import LeadAgentState
-from focus.context.middleware import WorldStateMiddleware
-from focus.history import content_hash
-from focus.history.middleware import TypedHistoryMiddleware
-from focus.security.context import AuthorizationIdentity, RoutingIdentity, SecurityContext
-from focus.security.policy import AccessMode
 
 pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
@@ -243,6 +252,7 @@ def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_pa
         if timing == "before_tool":
             answers.insert(0, AIMessage(content="", tool_calls=[{"id": "old-tool", "name": "modify_database", "args": {}}]))
         from focus.agents.lead import agent as lead
+
         from backend.tests.tool_catalog_support import registry_for
         model = Model(messages=iter(answers) if timing == "before_tool" else cycle(answers))
         monkeypatch.setattr(lead, "create_chat_model", lambda **kwargs: model)
@@ -278,9 +288,9 @@ def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_pa
 @pytest.mark.parametrize("finalization_fault", [None, "before_commit", "after_commit"])
 def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypatch, wait_until, finalization_fault):
     """HTTP→准入→真实 dispatcher/worker→精确补充 checkpoint→结算→下一轮。"""
-    from backend.app.gateway.app import app
-    from backend.app.desktop.composition import service as service_module
     from fastapi.testclient import TestClient
+
+    from backend.app.gateway.app import app
 
     controls, sampled, assembled = {}, [], []
 
@@ -304,7 +314,6 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
 
     monkeypatch.setattr("focus.tools.tools.get_available_tools", empty_tools)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', empty_tools)
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_agent)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_agent)
     monkeypatch.setattr(_desktop_runs_lifecycle_service, '_RUN_FINALIZATION_RETRY_INITIAL_SECONDS', 0.01)
     headers = {"X-Focus-Session": "focus-dev-session"}
@@ -405,15 +414,32 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
 
         async def settlement_facts():
             from backend.app.desktop.contexts.evolution.models import ContextRevision
-            from backend.app.desktop.runs.orchestration.models import RunDispatch, RunOutboxEvent
+            from backend.app.desktop.runs.orchestration.models import (
+                RunDispatch,
+                RunOutboxEvent,
+            )
 
             async with service.session_factory() as session:
                 runs = (await session.scalars(select(DesktopRun).where(DesktopRun.task_id == task["task_id"]))).all()
-                revisions = (await session.scalars(select(ContextRevision).where(
-                    ContextRevision.origin_id == run["run_id"], ContextRevision.origin_kind == "run_settled"))).all()
+                current_states = (await session.scalars(select(ContextRevision).where(
+                    ContextRevision.context_id == task["task_id"]))).all()
                 events = (await session.scalars(select(RunOutboxEvent).where(RunOutboxEvent.run_id == run["run_id"]))).all()
                 dispatch = await session.scalar(select(RunDispatch).where(RunDispatch.run_id == run["run_id"]))
-                return len(runs), len(revisions), len(events), dispatch.status, all(row.settled_at for row in runs)
+                first_run = next(row for row in runs if row.run_id == run["run_id"])
+                publications = [event for event in events if event.event_type == "MainRunSettled"
+                    and event.payload["workspace_result"].get("context_publication") == "published"
+                    and event.payload["context_revision"]["context_id"] == task["task_id"]
+                    and event.payload["context_revision"]["checkpoint_id"] == first_run.final_checkpoint_id]
+                all_settled = all(row.settled_at for row in runs)
+                if all_settled:
+                    assert len(current_states) == 1 and len(publications) == 1
+                    queued_run = next(row for row in runs if row.run_id == second_run)
+                    published_ref = publications[0].payload["context_revision"]
+                    assert queued_run.context_revision_id == published_ref["revision_id"]
+                    assert current_states[0].origin_id == second_run
+                    assert current_states[0].checkpoint_id == queued_run.final_checkpoint_id
+                    assert current_states[0].generation == published_ref["generation"] + 1
+                return len(runs), len(publications), len(events), dispatch.status, all_settled
 
         wait_until(lambda: client.portal.call(settlement_facts)[-1], timeout=30)
         assert client.portal.call(settlement_facts)[:4] == (2, 1, 1, "settled")

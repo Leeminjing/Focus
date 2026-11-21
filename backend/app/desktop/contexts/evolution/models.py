@@ -1,10 +1,8 @@
-r"""本文件对外提供不可变 Context revision、版本化来源边及同事务发布证明的 SQLAlchemy 实体。
+"""本文件对外提供唯一规范 Context 输入和 owner 纯引用 ORM。
 
-输入为 Context identity、执行 checkpoint、V1 消息或 V2 typed payload、哈希、来源和生命周期事实；输出为独立 ORM 表定义。
-具体工作流为复用 schema 层枚举合同，持久化 revision 内容与有序来源，并由
-`DesktopThread.current_revision_id` 指向已发布版本。
-publication receipt 与 current pointer 切换共同提交，候选插入不会生成发布证明。
-示例：`revision = ContextRevision(revision_id="r1", context_id="c1", generation=1, ...)`。
+输入为内容、执行身份、直接来源和输入 owner；输出为 desktop_context_inputs 与 desktop_context_input_owners 表定义。
+具体工作流为正文按 token 只存一次，current pointer 和 owner 引用共同保护输入；无根输入及时回收而不积累版本档案。
+示例：session.get(ContextRevision, current_token)；ContextInputSnapshot(owner_kind="run", owner_id=run_id, ...)。
 """
 
 from __future__ import annotations
@@ -14,6 +12,7 @@ from typing import Any
 
 from focus.persistence.base import Base
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -28,46 +27,54 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 
 class ContextRevision(Base):
-    __tablename__ = "desktop_context_revisions"
+    __tablename__ = "desktop_context_inputs"
     __table_args__ = (
-        UniqueConstraint("context_id", "generation", name="uq_context_revision_generation"),
         UniqueConstraint(
             "execution_thread_id",
             "checkpoint_ns",
             "checkpoint_id",
-            name="uq_context_revision_execution_checkpoint",
+            name="uq_context_input_execution_checkpoint",
         ),
-        CheckConstraint("generation > 0", name="ck_context_revision_generation_positive"),
+        CheckConstraint("generation > 0", name="ck_context_input_generation_positive"),
         CheckConstraint(
             "payload_mode IN ('checkpoint', 'definition')",
-            name="ck_context_revision_payload_mode",
+            name="ck_context_input_payload_mode",
         ),
         CheckConstraint(
             "projection_status IN ('preparing', 'valid', 'repaired', 'approved', 'approval_required', "
             "'rejected', 'error', 'deleted')",
-            name="ck_context_revision_projection_status",
+            name="ck_context_input_projection_status",
         ),
         CheckConstraint(
             "origin_kind IN ('root', 'manual_derive', 'definition_update', 'projection_decision', "
             "'compression', 'compression_restore', 'run_settled', 'curation', 'migration')",
-            name="ck_context_revision_origin_kind",
+            name="ck_context_input_origin_kind",
         ),
         CheckConstraint(
             "payload_mode <> 'checkpoint' OR checkpoint_id IS NOT NULL",
-            name="ck_context_revision_checkpoint_payload",
+            name="ck_context_input_checkpoint_payload",
         ),
     )
 
     revision_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     context_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+        String(32),
+        nullable=False,
+        index=True,
+    )
+    sources: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
     )
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     execution_thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    checkpoint_ns: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload_mode: Mapped[str] = mapped_column(String(16), nullable=False)
-    history_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    history_payload: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     authored_messages: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
@@ -86,53 +93,38 @@ class ContextRevision(Base):
     definition_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     projection_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_published: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     projection_status: Mapped[str] = mapped_column(String(32), nullable=False)
     origin_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     origin_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
-class ContextPublicationReceipt(Base):
-    __tablename__ = "desktop_context_publications"
-
-    revision_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="CASCADE"), primary_key=True)
-    context_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class ContextRevisionSource(Base):
-    __tablename__ = "desktop_context_revision_sources"
+class ContextInputSnapshot(Base):
+    __tablename__ = "desktop_context_input_owners"
     __table_args__ = (
-        UniqueConstraint("target_revision_id", "position", name="uq_context_revision_source_position"),
         UniqueConstraint(
-            "target_revision_id",
-            "source_revision_id",
-            name="uq_context_revision_source_revision",
-        ),
-        CheckConstraint("position >= 0", name="ck_context_revision_source_position"),
-        CheckConstraint(
-            "target_revision_id <> source_revision_id",
-            name="ck_context_revision_source_not_self",
+            "owner_kind",
+            "owner_id",
+            "revision_id",
+            name="uq_context_input_owner",
         ),
     )
 
-    source_edge_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    target_revision_id: Mapped[str] = mapped_column(
-        String(32),
-        ForeignKey("desktop_context_revisions.revision_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+    snapshot_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    revision_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_context_inputs.revision_id", ondelete="CASCADE"),
+        nullable=False, index=True,
     )
-    source_context_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
-    source_revision_id: Mapped[str] = mapped_column(
-        String(32),
-        ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"),
-        nullable=False,
-        index=True,
-    )
-    source_checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
-    position: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -19,7 +19,6 @@ from sqlalchemy.orm import load_only
 from backend.app.desktop.capabilities.prompts import (
     MAIN_SYSTEM_PROMPT as _MAIN_SYSTEM_PROMPT,
 )
-from backend.app.desktop.conversations.compression import compression_recovery_payload
 from backend.app.desktop.conversations.interrupts import main_pending_interrupt
 from backend.app.desktop.conversations.recovery import _checkpoint_commitment_review
 from backend.app.desktop.persistence.contracts import _MAIN_RUNTIME_EQUIPMENT_KEY
@@ -494,9 +493,6 @@ class ConversationService:
         ui_state = dict(task.ui_state or {})
         ui_state.pop(_MAIN_RUNTIME_EQUIPMENT_KEY, None)
         recovery = await self._commitment_recovery_payload(session, task)
-        compression_recovery = await compression_recovery_payload(
-            session, task, ports.checkpointer
-        )
         access_recovery = await main_pending_interrupt(
             session, task, ports.checkpointer, APPROVAL_TYPE
         )
@@ -514,11 +510,6 @@ class ConversationService:
             if recovery and recovery["status"] == "resumable"
             else None,
             "commitment_recovery": recovery,
-            "pending_compression": compression_recovery["request"]
-            if compression_recovery
-            and compression_recovery["status"] in ("resumable", "orphaned")
-            else None,
-            "compression_recovery": compression_recovery,
             "pending_access_review": access_recovery["request"]
             if access_recovery
             and access_recovery["status"] in ("resumable", "orphaned")

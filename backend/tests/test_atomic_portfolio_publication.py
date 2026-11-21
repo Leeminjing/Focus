@@ -9,11 +9,11 @@ r"""本文件验证 Context Portfolio 的冻结、shadow 准备、CAS 原子发�
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from hashlib import sha256
 import json
 import os
 import uuid
+from datetime import UTC, datetime
+from hashlib import sha256
 
 import pytest
 from sqlalchemy import delete, select
@@ -21,27 +21,20 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.contexts.curation import (
     AtomicPortfolioPublisher,
-    ComposeMessage,
     CompiledLaneCandidate,
-    CurationLane,
+    ComposeMessage,
     CurationOutboxDelivery,
     CurationOutboxEvent,
     CurationOutboxRepository,
     CurationProgram,
     CurationProgramRepository,
+    FrozenPortfolio,
     MissionEvidenceRef,
     MultiSourceEvidence,
-    SourceRevisionEvidence,
-    StructuredEvidence,
-    UpdateLanePlan,
-    compile_lane,
-    evidence_ref_key,
-    FrozenPortfolio,
     PortfolioCandidatePreparer,
-    PortfolioControlRevisions,
     PortfolioCurrentReader,
-    PortfolioFreezeRequest,
     PortfolioFreezer,
+    PortfolioFreezeRequest,
     PortfolioLaneAction,
     PortfolioLaneCandidate,
     PortfolioLaneIntent,
@@ -49,6 +42,14 @@ from backend.app.desktop.contexts.curation import (
     PortfolioPublicationAttempt,
     PortfolioRevision,
     PortfolioSuperseded,
+    SourceRevisionEvidence,
+    StructuredEvidence,
+    UpdateLanePlan,
+    compile_lane,
+    evidence_ref_key,
+)
+from backend.app.desktop.contexts.curation.service import (
+    SingleLaneCurationProgramService,
 )
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionContract,
@@ -59,9 +60,13 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
+from backend.app.desktop.contexts.evolution.models import (
+    ContextInputSnapshot,
+    ContextRevision,
+)
+from backend.app.desktop.contexts.evolution.repository import ContextRevisionNotFound
 from backend.app.desktop.persistence.contracts import THREAD_TITLE_LIMIT
 from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -263,6 +268,14 @@ def test_failed_candidate_keeps_previous_portfolio_and_context_pointers() -> Non
                     ).all()
                 )
                 assert any(item.candidate_context_revision_id for item in staged)
+                assert list(await session.scalars(select(ContextInputSnapshot).where(
+                    ContextInputSnapshot.owner_kind == "curation_portfolio",
+                    ContextInputSnapshot.owner_id == frozen.portfolio_revision_id,
+                ))) == []
+                for candidate in staged:
+                    if candidate.candidate_context_revision_id:
+                        with pytest.raises(ContextRevisionNotFound):
+                            await revisions.get_by_id(session, candidate.candidate_context_revision_id)
         finally:
             await _cleanup(sessions, workspace_id)
             await engine.dispose()
@@ -368,6 +381,101 @@ def test_atomic_publish_is_idempotent_and_outbox_consumes_once() -> None:
                 mission_published = await session.get(PortfolioLaneCandidate, frozen.candidate_ids[0])
                 assert mission_published.status == "published"
                 assert evidence_ref_key(MissionEvidenceRef.model_validate(mission_published.message_lineage[0]["sources"][0])) == evidence_ref_key(mission_ref)
+        finally:
+            await _cleanup(sessions, workspace_id)
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_automatic_curation_pins_sources_until_publish_and_replays_identity_receipts() -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        revisions = ContextRevisionRepository()
+        freezer = PortfolioFreezer(sessions, revisions)
+        preparer = PortfolioCandidatePreparer(
+            sessions, ContextRevisionPublisher(revisions, _CheckpointWriter()), revisions
+        )
+        publisher = AtomicPortfolioPublisher(sessions, revisions)
+        workspace_id, program_id, source, bases, lanes = await _seed(sessions, uuid.uuid4().hex[:8])
+        try:
+            frozen = await freezer.freeze(_freeze_request(program_id, source, lanes))
+            newer_source = _contract(source.ref.context_id, 2, "source changed after freeze")
+            async with sessions.begin() as session:
+                await revisions.insert(session, newer_source)
+                await revisions.switch_current(session, newer_source.ref, source.ref)
+                assert (await revisions.get(session, source.ref)).execution_messages == source.execution_messages
+            await preparer.prepare(frozen.portfolio_revision_id, {
+                frozen.candidate_ids[0]: _compiled(lanes[0].lane_id, lanes[0].purpose, source.ref, "original source task"),
+                frozen.candidate_ids[1]: _compiled(lanes[1].lane_id, lanes[1].purpose, source.ref, "original source checks"),
+            })
+            result = await publisher.publish(frozen.portfolio_revision_id, frozen.controls)
+            async with sessions.begin() as session:
+                assert list(await session.scalars(select(ContextInputSnapshot).where(
+                    ContextInputSnapshot.owner_kind == "curation_portfolio",
+                    ContextInputSnapshot.owner_id == frozen.portfolio_revision_id,
+                ))) == []
+                with pytest.raises(ContextRevisionNotFound):
+                    await revisions.get(session, source.ref)
+                published = await revisions.get(session, result.context_revisions[0])
+                assert published.sources[0].source == source.ref
+                # Execution can advance after publication without keeping the old
+                # Context body alive merely for idempotent publication receipts.
+                next_state = _contract(published.ref.context_id, published.ref.generation + 1, "subsequent execution")
+                await revisions.insert(session, next_state)
+                await revisions.switch_current(session, next_state.ref, published.ref)
+                with pytest.raises(ContextRevisionNotFound):
+                    await revisions.get(session, published.ref)
+                states = list(await session.scalars(select(ContextRevision).where(
+                    ContextRevision.context_id == published.ref.context_id
+                )))
+                assert len(states) == 1
+            replay = await publisher.publish(frozen.portfolio_revision_id, frozen.controls)
+            assert replay.idempotent and replay.context_revisions == result.context_revisions
+            visible = await PortfolioCurrentReader(sessions, revisions).current(program_id)
+            assert visible.lanes[0].context_revision == result.context_revisions[0]
+        finally:
+            await _cleanup(sessions, workspace_id)
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_deleting_curation_program_releases_only_its_owned_inputs() -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        revisions = ContextRevisionRepository()
+        workspace_id, program_id, source, bases, lanes = await _seed(sessions, uuid.uuid4().hex[:8])
+        try:
+            frozen = await PortfolioFreezer(sessions, revisions).freeze(_freeze_request(program_id, source, lanes))
+            prepared = await PortfolioCandidatePreparer(
+                sessions, ContextRevisionPublisher(revisions, _CheckpointWriter()), revisions
+            ).prepare(frozen.portfolio_revision_id, {
+                frozen.candidate_ids[0]: _compiled(lanes[0].lane_id, lanes[0].purpose, source.ref, "pending task"),
+                frozen.candidate_ids[1]: _compiled(lanes[1].lane_id, lanes[1].purpose, source.ref, "pending checks"),
+            })
+            async with sessions.begin() as session:
+                await revisions.freeze(session, source.ref, owner_kind="round", owner_id="external-round")
+                newer = _contract(source.ref.context_id, 2, "newer source")
+                await revisions.insert(session, newer)
+                await revisions.switch_current(session, newer.ref, source.ref)
+                assert await SingleLaneCurationProgramService().delete_for_contexts(
+                    session, [bases[0].ref.context_id]
+                ) == 1
+                assert await session.get(CurationProgram, program_id) is None
+                for ref in prepared:
+                    with pytest.raises(ContextRevisionNotFound):
+                        await revisions.get(session, ref)
+                assert (await revisions.get_input(session, source.ref)).execution_messages == source.execution_messages
+                assert list(await session.scalars(select(ContextInputSnapshot).where(
+                    ContextInputSnapshot.owner_kind == "curation_portfolio",
+                    ContextInputSnapshot.owner_id == frozen.portfolio_revision_id,
+                ))) == []
+                await revisions.release(session, "round", "external-round")
+                with pytest.raises(ContextRevisionNotFound):
+                    await revisions.get(session, source.ref)
         finally:
             await _cleanup(sessions, workspace_id)
             await engine.dispose()

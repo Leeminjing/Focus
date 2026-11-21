@@ -299,22 +299,27 @@ def test_tool_exchange_is_a_complete_window_atom():
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
-def test_existing_tail_window_index_remains_an_exact_cache_hit(monkeypatch, tmp_path):
-    from backend.tests.incremental_index_support import ModelProbe, messages, observation, revision
-    from backend.tests.test_incremental_revision_index import exercise
+def test_directory_only_snapshot_index_remains_an_exact_cache_hit(monkeypatch, tmp_path):
+    from backend.tests.index_test_support import (
+        ModelProbe,
+        exercise,
+        messages,
+        observation,
+        revision,
+    )
 
     async def run(sessions, seed):
         probe = ModelProbe()
         service = probe.service(sessions)
         first = await revision(sessions, seed["context_id"], messages(12))
         assert (await service.build(observation(seed, first))).blocker_code is None
-        target = await revision(sessions, seed["context_id"], messages(13), parent=first)
+        target = await revision(sessions, seed["context_id"], messages(13))
         frozen = observation(seed, target)
         with monkeypatch.context() as legacy:
             legacy.setattr(BudgetedIndexModel, "fits_available_budget", lambda *args: False)
             old = await service.build(frozen)
         assert old.blocker_code is None, old.blocker_summary
-        assert len(old.indexes[0].interpretation.provided) == 1
+        assert old.indexes[0].interpretation.provided == ()
         probe.calls.clear()
         current = await service.build(frozen)
         assert current.indexes == old.indexes and probe.calls == []
@@ -325,8 +330,12 @@ def test_existing_tail_window_index_remains_an_exact_cache_hit(monkeypatch, tmp_
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_window_contract_keeps_local_cache_and_old_proof(monkeypatch, tmp_path):
     import backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index as module
-    from backend.tests.incremental_index_support import ModelProbe, observation, revision
-    from backend.tests.test_incremental_revision_index import exercise
+    from backend.tests.index_test_support import (
+        ModelProbe,
+        exercise,
+        observation,
+        revision,
+    )
 
     async def run(sessions, seed):
         probe = ModelProbe()

@@ -1,10 +1,12 @@
 # 独立 Context 索引接入
 
+2026-11-16 当前边界：Patrol 自动策展继续消费完整语义索引；最新 Context 和活动任务输入按需保留，局部缓存按同 Context、同段内容及相同模型合同复用，不再查找祖先 Revision 作为构建前提。输入快照有生命周期，历史基准仅代表当时的 Revision 继承实现。见 [上下文手术退役说明](context-surgery-retirement.md)。
+
 `CuratorCoordinationStage` 默认构造 `IndependentPortfolioSemanticIndexService`，模型、存储与预算通过端口接入 `focus-context-index`。原 `PortfolioSemanticIndexService` 保留为冻结对照实现，不会在新路径失败时静默回退。
 
 ## 完整发布边界
 
-冻结 Revision 与 semantic view、已提交祖先选择、delegation／Round／fencing 验证继续属于 Focus。独立库负责分组、局部及整体理解、引文验证、共享名额和取消回收。
+冻结输入与 semantic view、delegation／Round／fencing 验证继续属于 Focus。独立库负责分组、局部及整体理解、引文验证、共享名额和取消回收。
 
 `FocusIndexStore` 使用既有局部 proof 和完整索引表。局部成功可以立即保存。每个 Context 的完整候选在重验局部赢家和整体 proof 后独立提交；catalog 按请求范围组装，目录容量失败保留已提交的完整 Context 索引。Curator 只接收所需 Context 已提交索引构成的 catalog，不等待无关 Context。
 

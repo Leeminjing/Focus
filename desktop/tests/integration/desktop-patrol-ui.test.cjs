@@ -508,7 +508,8 @@ if (!process.versions.electron) {
     assert.equal(await run(host.panel, "document.querySelector('#delivery').scrollWidth <= document.querySelector('#delivery').clientWidth + 1"), true);
     await run(host.panel, "document.querySelector('#delivery details').open=false; document.querySelector('[data-patrol-delivery-context]').click()");
     await run(workbench, "window.target=null;window.focusDesktop.patrol.onWorkbench(value=>window.target=value);window.focusDesktop.patrol.ready()");
-    await waitFor(workbench, "window.target?.revisionId === 'revision-answer'", "交付入口必须传递验收时的固定结果版本");
+    await waitFor(workbench, "window.target?.taskId === 'context-answer'", "交付入口必须定位结果所属的当前会话");
+    assert.deepEqual(await run(workbench, "window.target"), { workspaceId: "workspace-a", taskId: "context-answer" });
     await waitFor(host.panel, "document.querySelector('#results').textContent.includes('截图中的机器人已经接住材料')", "已提交回答未显示");
     const resultText = await run(host.panel, "document.querySelector('#results').textContent");
     assert.equal(await run(host.panel, "document.querySelector('#results [data-context-id]').dataset.contextId"), "context-answer");

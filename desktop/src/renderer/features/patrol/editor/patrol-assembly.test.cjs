@@ -9,20 +9,20 @@ const {PatrolSourceController}=require('./patrol-source-controller.js');
 global.window=globalThis;require('./patrol-interactions.js');
 const {PatrolInteractions}=global.FocusPatrolInteractions;
 const row=(id)=>({source_row_id:id,kind:'message',eligible:true,summary:id});
-const page=(ref,rows,next=null)=>({source_ref:ref,source_fingerprint:ref.revision_id,rows,total:100,next_cursor:next});
+const page=(ref,rows,next=null)=>({source_ref:ref,source_fingerprint:ref.context_id,rows,total:100,next_cursor:next});
 
-test('source selection survives filtering/pages but late responses cannot cross revisions',async()=>{
-  let release;const ref={kind:'context',revision_id:'R1'};
+test('source selection survives filtering/pages but late responses cannot cross Contexts',async()=>{
+  let release;const ref={kind:'context',context_id:'C1'};
   const controller=new PatrolSourceController({draft:{draft_id:'d'},api:async(_url,options)=>{
     const body=JSON.parse(options.body);
-    if(body.revision_id==='R2')return new Promise(resolve=>{release=resolve;});
+    if(body.context_id==='C2')return new Promise(resolve=>{release=resolve;});
     return page(body,body.cursor?[row('second')]:[row('first')],body.cursor?null:'page-two');
   }});
   await controller.choose(ref);controller.select('first',true);await controller.nextPage();controller.select('second',true);
   assert.deepEqual([...controller.selected],['first','second']);await controller.search('filter');assert(controller.selected.has('second'));
-  const late=controller.choose({kind:'context',revision_id:'R2'});await Promise.resolve();
-  await controller.choose({kind:'context',revision_id:'R3'});release(page({kind:'context',revision_id:'R2'},[row('wrong')]));await late;
-  assert.equal(controller.source.revision_id,'R3');assert.equal(controller.rows[0].source_row_id,'first');assert.equal(controller.selected.size,0);
+  const late=controller.choose({kind:'context',context_id:'C2'});await Promise.resolve();
+  await controller.choose({kind:'context',context_id:'C3'});release(page({kind:'context',context_id:'C2'},[row('wrong')]));await late;
+  assert.equal(controller.source.context_id,'C3');assert.equal(controller.rows[0].source_row_id,'first');assert.equal(controller.selected.size,0);
 });
 
 test('batch insertion uses stable anchor, preserves later field edits and undoes once',()=>{
@@ -35,7 +35,7 @@ test('batch insertion uses stable anchor, preserves later field edits and undoes
 
 function workbench(api){
   const wb={draft:{draft_id:'d',draft_revision:4},api,cards:new Map(),status:{textContent:''},sourceView:{render(){}},renderList(){},_refreshSources(){}};
-  wb.sourceController=new PatrolSourceController({draft:wb.draft,api});wb.sourceController.ref={kind:'context',revision_id:'R1'};wb.sourceController.source=wb.sourceController.ref;wb.sourceController.fingerprint='R1';wb.sourceController.rows=[row('source')];wb.sourceController.select('source',true);
+  wb.sourceController=new PatrolSourceController({draft:wb.draft,api});wb.sourceController.ref={kind:'context',context_id:'C1'};wb.sourceController.source=wb.sourceController.ref;wb.sourceController.fingerprint='C1';wb.sourceController.rows=[row('source')];wb.sourceController.select('source',true);
   wb.doc=new PatrolDocument({schema_version:3,entries:[{entry_id:'a',kind:'message',payload:{content:'原文'}},{entry_id:'b',kind:'message',payload:{content:'目标'}}]},()=>wb.queue.changed());
   wb.queue=new DraftSaveQueue({revision:4,delay:10000,save:body=>api('save',{body:JSON.stringify(body)}),snapshot:revision=>({draft_revision:revision,authoring_document:wb.doc.value})});wb.interactions=new PatrolInteractions(wb);return wb;
 }
@@ -73,7 +73,7 @@ test('historical policy changes invalidate pending full row requests',async()=>{
     const body=JSON.parse(options.body);if(body.row_id)return new Promise(resolve=>{release=resolve;});
     return {...page(body,[row('same')]),source_fingerprint:body.include_historical?'historical':'default'};
   }});
-  await controller.choose({kind:'context',revision_id:'R1'});const detail=controller.expand('same');await controller.setHistorical(true);
+  await controller.choose({kind:'context',context_id:'C1'});const detail=controller.expand('same');await controller.setHistorical(true);
   release({source_fingerprint:'default',row:{entry:{kind:'message',payload:{content:'old policy'}}}});await detail;
   assert.equal(controller.fingerprint,'historical');assert.equal(controller.details.size,0);assert.equal(controller.expanded.size,0);
 });

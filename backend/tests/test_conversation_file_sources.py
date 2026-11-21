@@ -12,15 +12,16 @@ def test_conversation_projects_original_file_sources_across_runs_and_derivation(
     new = {"id": "new", "role": "ai", "content": "[新报告](report.md)"}
     def revision(key, context, messages, sources=(), run=None):
         return NS(ref=NS(revision_id=key, context_id=context, model_dump=lambda **_: {"revision_id": key}),
-                  sources=tuple(NS(source=NS(revision_id=source)) for source in sources),
+                  sources=tuple(NS(source=NS(revision_id=source, context_id="c")) for source in sources),
                   origin_kind="run_settled" if run else "derive", origin_id=run,
-                  projection_status=NS(value="valid"), messages=messages)
+                  projection_status=NS(value="valid"), content_hash="a" * 64, messages=messages)
     revisions = {
         "r1": revision("r1", "c", [old], run="run-one"),
         "r2": revision("r2", "c", [old, new], ["r1"], "run-two"),
         "r3": revision("r3", "derived", [old, new], ["r2"]),
     }
     class Repository:
+        async def current(self, session, context): return revisions["r3" if context == "derived" else "r2"]
         async def get_by_id(self, session, key): return revisions[key]
     class Reader:
         async def read(self, session, ref, view): return NS(messages=revisions[ref.revision_id].messages)
@@ -36,6 +37,8 @@ def test_conversation_projects_original_file_sources_across_runs_and_derivation(
     service = ContextConversationQueryService(None)
     service._repository, service._reader = Repository(), Reader()
     result = asyncio.run(service.read(Session(), "loop", "derived", revision_id="r3", before=None, limit=30))
+    assert result["content_hash"] == "a" * 64
+    assert result["sources"] == [{"context_id": "c"}]
     sources = [item.get("file_context") for item in result["messages"]]
     assert sources == [
         {"task_id": "c", "workspace_id": "w", "run_id": "run-one", "slot_id": "run-one-slot"},
@@ -44,7 +47,9 @@ def test_conversation_projects_original_file_sources_across_runs_and_derivation(
 
 
 def test_authored_answer_cannot_claim_a_run_via_model_metadata():
-    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import ConversationFileSources
+    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import (
+        ConversationFileSources,
+    )
     message = {"id": "made-up", "role": "ai", "content": "[报告](report.md)",
                "file_context": {"run_id": "foreign", "slot_id": "foreign"}}
     revision = NS(ref=NS(revision_id="authored", context_id="c"), origin_kind="derive", origin_id="foreign", sources=())
@@ -54,7 +59,9 @@ def test_authored_answer_cannot_claim_a_run_via_model_metadata():
 
 
 def test_conflicting_inherited_sources_never_choose_a_same_named_file():
-    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import ConversationFileSources
+    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import (
+        ConversationFileSources,
+    )
     message = {"id": "same-id", "role": "ai", "content": "[报告](report.md)"}
     refs = {key: NS(ref=NS(revision_id=key, context_id="c"), origin_kind="run_settled", origin_id=key, sources=())
             for key in ("one", "two")}
@@ -72,7 +79,9 @@ def test_conflicting_inherited_sources_never_choose_a_same_named_file():
 
 
 def test_run_source_must_belong_to_the_context_and_workspace():
-    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import ConversationFileSources
+    from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import (
+        ConversationFileSources,
+    )
     message = {"id": "answer", "role": "ai", "content": "[报告](report.md)"}
     revision = NS(ref=NS(revision_id="r", context_id="c"), origin_kind="run_settled", origin_id="run", sources=())
     class Session:

@@ -9,21 +9,37 @@ execute_prepared_run 启动；结算后记录 checkpoint/revision 并解开 Loop
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.patrol.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
-from backend.app.desktop.patrol.agent_loop.compression_authority.recovery_evidence import CompressionRecoveryEvidenceReader
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopPendingDecision, LoopRound
 from backend.app.desktop.contexts.evolution import ContextRevisionRepository
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
-from backend.app.desktop.runs.orchestration import RunExecutionResources, RunLifecycleFinalizer, execute_prepared_run
+from backend.app.desktop.patrol.agent_loop.compression_authority.models import (
+    LoopCompressionCandidate,
+    LoopCompressionResolution,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.recovery_evidence import (
+    CompressionRecoveryEvidenceReader,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.repository import (
+    CompressionAuthorityRepository,
+)
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopAction,
+    LoopPendingDecision,
+    LoopRound,
+)
 from backend.app.desktop.patrol.agent_loop.waits.wait_requests import open_recovery_wait
-
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.runs.orchestration import (
+    RunExecutionResources,
+    RunLifecycleFinalizer,
+    execute_prepared_run,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +51,7 @@ class CompressionResolutionCoordinator:
         self._lease_seconds = lease_seconds
         self._owner = f"compression-resolution:{uuid.uuid4().hex}"
         self._revisions = ContextRevisionRepository()
+        self._repository = CompressionAuthorityRepository()
         self._evidence = CompressionRecoveryEvidenceReader(getattr(desktop_service, "checkpointer", None))
 
     async def drain(self) -> int:
@@ -63,8 +80,9 @@ class CompressionResolutionCoordinator:
         action = await session.get(LoopAction, resolution.action_id, with_for_update=True)
         round_row = await session.get(LoopRound, resolution.round_id, with_for_update=True)
         revision = (event.payload or {}).get("context_revision") or {}
-        if run.status != "success" or not revision.get("revision_id"):
+        if run.status != "success" or not run.final_checkpoint_id:
             resolution.status = "failed"
+            await self._repository.release_candidate(session, resolution.candidate_id)
             resolution.error_evidence = {"run_id": run.run_id, "status": run.status, "error": run.error}
             if pending is not None:
                 pending.status = "failed"
@@ -84,8 +102,7 @@ class CompressionResolutionCoordinator:
             )
             return "failed"
         candidate = await session.get(LoopCompressionCandidate, resolution.candidate_id)
-        current = await self._revisions.current(session, run.task_id)
-        evidence = await self._evidence.inspect(session, candidate, run, current) if candidate is not None else None
+        evidence = await self._evidence.inspect(session, candidate, run) if candidate is not None else None
         if evidence is None or not evidence.matched:
             await self._mark_failed(
                 session,
@@ -103,8 +120,8 @@ class CompressionResolutionCoordinator:
             resolution,
             run,
             loop,
-            current.ref.checkpoint_id,
-            current.ref.revision_id,
+            run.final_checkpoint_id,
+            revision.get("revision_id") if revision.get("checkpoint_id") == run.final_checkpoint_id else None,
             pending=pending,
             action=action,
             round_row=round_row,
@@ -116,6 +133,7 @@ class CompressionResolutionCoordinator:
     async def reconcile(self) -> int:
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
+            await self._repository.expire_candidates(session)
             rows = list(
                 (
                     await session.scalars(
@@ -135,7 +153,7 @@ class CompressionResolutionCoordinator:
                     if run is not None and run.status == "success" and run.settled_at is not None:
                         current = await self._revisions.current(session, run.task_id)
                         candidate = await session.get(LoopCompressionCandidate, row.candidate_id)
-                        evidence = await self._evidence.inspect(session, candidate, run, current) if candidate is not None else None
+                        evidence = await self._evidence.inspect(session, candidate, run) if candidate is not None else None
                         if evidence is not None and evidence.matched:
                             loop = await session.get(AgentLoop, row.loop_id, with_for_update=True)
                             if loop is not None:
@@ -144,8 +162,10 @@ class CompressionResolutionCoordinator:
                                     row,
                                     run,
                                     loop,
-                                    current.ref.checkpoint_id,
-                                    current.ref.revision_id,
+                                    run.final_checkpoint_id,
+                                    (current.ref.revision_id if current is not None
+                                     and current.ref.checkpoint_id == run.final_checkpoint_id
+                                     and current.origin_id == run.run_id else None),
                                     actual_before_tokens=evidence.actual_before_tokens,
                                     actual_after_tokens=evidence.actual_after_tokens,
                                 )
@@ -166,6 +186,7 @@ class CompressionResolutionCoordinator:
                             recovered += 1
                             continue
                         row.status = "failed"
+                        await self._repository.release_candidate(session, row.candidate_id)
                         row.error_evidence = {"reason": "loop_missing_during_reconciliation", "run_id": run.run_id}
                         recovered += 1
                         continue
@@ -177,6 +198,7 @@ class CompressionResolutionCoordinator:
                         continue
                     if run is not None and run.status in {"error", "interrupted"}:
                         row.status = "failed"
+                        await self._repository.release_candidate(session, row.candidate_id)
                         row.error_evidence = {"reason": "resume_run_terminal", "run_id": run.run_id, "status": run.status}
                         recovered += 1
                 row.lease_owner = None
@@ -203,6 +225,7 @@ class CompressionResolutionCoordinator:
         action = action or await session.get(LoopAction, resolution.action_id, with_for_update=True)
         round_row = round_row or await session.get(LoopRound, resolution.round_id, with_for_update=True)
         resolution.status = "applied"
+        await self._repository.release_candidate(session, resolution.candidate_id)
         resolution.result_checkpoint_id = checkpoint_id
         resolution.result_context_revision_id = revision_id
         resolution.actual_before_tokens = actual_before_tokens
@@ -239,6 +262,7 @@ class CompressionResolutionCoordinator:
         action = action or await session.get(LoopAction, resolution.action_id, with_for_update=True)
         round_row = round_row or await session.get(LoopRound, resolution.round_id, with_for_update=True)
         resolution.status = "failed"
+        await self._repository.release_candidate(session, resolution.candidate_id)
         resolution.error_evidence = {"reason": reason, "run_id": run.run_id, "checkpoint_id": run.final_checkpoint_id}
         resolution.lease_owner = None
         resolution.lease_token = None
@@ -300,6 +324,8 @@ class CompressionResolutionCoordinator:
                 "round_id": resolution.round_id,
                 "action_id": resolution.action_id,
                 "resolution_id": resolution.resolution_id,
+                "context_revision_id": candidate.base_context_revision_id,
+                "context_checkpoint_id": candidate.base_checkpoint_id,
                 "idempotency_key": resolution.idempotency_key,
             }
         prepared = await self._desktop.resume_run(task.thread_id, payload, identity)
@@ -348,6 +374,7 @@ class CompressionResolutionCoordinator:
             ):
                 return
             resolution.status = "failed"
+            await self._repository.release_candidate(session, resolution.candidate_id)
             resolution.error_evidence = {"type": type(exc).__name__, "message": str(exc)[:2000]}
             pending = await session.get(LoopPendingDecision, resolution.pending_decision_id, with_for_update=True)
             action = await session.get(LoopAction, resolution.action_id, with_for_update=True)

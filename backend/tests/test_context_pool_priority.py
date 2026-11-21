@@ -16,8 +16,8 @@ from backend.app.desktop.persistence.models import DesktopRun
 from backend.app.desktop.workspaces.coordination import WorkspaceLeaseManager, WorkspaceLeaseRequest, WorkspaceSlot
 from backend.tests.test_loop_runtime_pools import _create_wave
 
-
-pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+# These assertions exercise the global admission queue and global Run capacity.
+pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
 
 async def _user_priority(sessions, snapshot):

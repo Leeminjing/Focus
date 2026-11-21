@@ -1,8 +1,8 @@
-"""本文件对外提供不可变 LineageSnapshot 的完整祖先图合同。
+"""本文件对外提供冻结当前来源图的 LineageSnapshot、LineageNode 与 LineageEdge 合同。
 
-输入为已提交根、Revision 节点及跨 Context 边；输出为身份和拓扑 hash 一致的强类型快照。
-具体工作流为验证根与边引用的节点存在且 Context 身份一致，同 Context 边不能冒充派生。
-示例：LineageSnapshot.model_validate(reader_snapshot)。合同不提供发布或授权能力。
+输入为根、来源身份、代次与拓扑 hash；输出为严格且不可变的直接关系快照。
+具体工作流为检查根和边的 Context 身份、节点唯一性与确定性 hash，不携带或要求旧状态正文。
+示例：LineageSnapshot.model_validate(snapshot_payload)。
 """
 
 from __future__ import annotations

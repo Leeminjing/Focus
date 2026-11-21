@@ -1,27 +1,27 @@
 """本文件对外提供 isolated_migration_database 的独立 PostgreSQL DDL 验证环境。
 
 输入为会话隔离数据库的连接和单个迁移测试；输出为独立临时数据库，避免读取或降级其它用例产生的 V2 权威事实。
-具体工作流为只为 DDL／回填用例创建随机测试库、升级正式 head、测试后仅删除该确切库并恢复环境变量。
-示例：pytest 的 migration/backfill 用例自动启用本 fixture；生产数据库不作为测试目标。
+具体工作流为只为 DDL 用例创建随机测试库、升级正式 head、测试后仅删除该确切库并恢复环境变量。
+示例：pytest 的 migration 用例自动启用本 fixture；生产数据库不作为测试目标。
 """
 
 import inspect
 import os
-from pathlib import Path
 import uuid
+from pathlib import Path
 
+import psycopg
+import pytest
 from alembic import command
 from alembic.config import Config
-import psycopg
 from psycopg import sql
-import pytest
 from sqlalchemy.engine import make_url
 
 
 @pytest.fixture(autouse=True)
 def isolated_migration_database(request, monkeypatch):
     source = inspect.getsource(request.function)
-    if "command.downgrade" not in source and "backfill" not in request.path.name:
+    if "command.downgrade" not in source:
         yield
         return
     request.getfixturevalue("isolated_postgres_database")

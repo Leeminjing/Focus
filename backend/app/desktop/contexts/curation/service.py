@@ -8,8 +8,8 @@ Curation Program、来源订阅与单个稳定 Lane。具体工作流为仅在�
 
 from __future__ import annotations
 
-from typing import Literal
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, or_, select
@@ -19,8 +19,15 @@ from backend.app.desktop.contexts.curation.models import (
     CurationLane,
     CurationProgram,
     CurationSourceSubscription,
+    PortfolioLaneCandidate,
+    PortfolioRevision,
 )
-from backend.app.desktop.persistence.models import DesktopThread, PatrolAgent, PatrolContextBinding
+from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+from backend.app.desktop.persistence.models import (
+    DesktopThread,
+    PatrolAgent,
+    PatrolContextBinding,
+)
 
 
 class SingleLaneCurationIdentity(BaseModel):
@@ -96,13 +103,31 @@ class SingleLaneCurationProgramService:
         lane_programs = select(CurationLane.program_id).where(
             CurationLane.managed_context_id.in_(context_ids)
         )
-        result = await session.execute(
-            delete(CurationProgram).where(
+        program_ids = list(await session.scalars(
+            select(CurationProgram.program_id).where(
                 or_(
                     CurationProgram.program_id.in_(source_programs),
                     CurationProgram.program_id.in_(lane_programs),
                 )
             )
+        ))
+        if not program_ids:
+            return 0
+        portfolio_ids = list(await session.scalars(select(PortfolioRevision.portfolio_revision_id).where(
+            PortfolioRevision.program_id.in_(program_ids)
+        )))
+        contexts = ContextRevisionRepository()
+        if portfolio_ids:
+            candidates = await session.scalars(select(PortfolioLaneCandidate.candidate_context_revision_id).where(
+                PortfolioLaneCandidate.portfolio_revision_id.in_(portfolio_ids),
+                PortfolioLaneCandidate.candidate_context_revision_id.is_not(None),
+            ))
+            for revision_id in candidates:
+                await contexts.discard_candidate(session, revision_id)
+            for portfolio_id in portfolio_ids:
+                await contexts.release(session, "curation_portfolio", portfolio_id)
+        result = await session.execute(
+            delete(CurationProgram).where(CurationProgram.program_id.in_(program_ids))
         )
         await session.flush()
         return int(result.rowcount or 0)

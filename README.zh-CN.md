@@ -97,11 +97,11 @@ Focus 的 Loop 模拟一个人在同一工作区中，面对持续变化的目�
 | **Task Progress · 任务进度** | 已验证、正在推进、被阻塞或被替代的事项，以及相关工作线和证据状态。 |
 | **[Observation · 本轮观察](docs/observation.md)** | 本轮决策所依据的用户输入、任务状态与运行快照。 |
 | **LoopFact · 事实流** | 持续产生的执行、测试、文件产出和工作区结果，以及它们的来源。 |
-| **上下文图谱** | 工作线之间的来源关系、运行状态、会话内容和历史版本。 |
+| **上下文图谱** | 工作线之间的来源关系、运行状态和当前会话内容。 |
 
 重要文件产出与修改可以直接点开，查看已保存的内容和可用的 Diff，并通过 **@ 引用文件版本** 继续提出意见。查看某个 Context 时，日常输入仍面向同一个 Patrol。
 
-你也可以暂停、继续或停止执行，调整授权，或在任务界面打开某条工作线，直接查看、编辑和派生上下文。Loop 预算固定无上限，不可调整，用量仍可查看。详见 [Loop 预算](docs/loop-budgets.md)。
+你也可以暂停、继续或停止执行，调整授权，或在任务界面打开某条工作线查看当前上下文。上下文的派生和整理交给 Patrol 自动策展；会话 Patrol 保留自定义执行上下文编辑。普通会话的手工派生、重写、投影审批和手工压缩已退役，详见 [上下文手术退役说明](docs/context-surgery-retirement.md)。Loop 预算固定无上限，不可调整，用量仍可查看。详见 [Loop 预算](docs/loop-budgets.md)。
 
 ### 把 Patrol 放在桌面上
 
@@ -299,7 +299,7 @@ Focus 默认提供内置 Skill [`focus-skill-to-strategy`](skills/public/focus-s
 | 对象 | 职责 |
 | --- | --- |
 | **Patrol** | 承接用户意图，观察整个工作局面，提出下一步安排。 |
-| **Context** | 持续保存一条工作线的背景与成果；通过不可变 Revision 记录版本和来源。 |
+| **Context** | 持续保存一条工作线当前的背景与成果；运行中的任务固定自己的输入快照。 |
 | **Run** | 基于某个 Context 的一次实际执行。 |
 | **Round** | 一轮冻结观察、决策和相应执行，保留当时的输入与依据。 |
 | **Kernel** | 校验权限、版本和状态，把有效决策提交为可执行安排。 |
@@ -317,7 +317,7 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 | 目录 | 内容 |
 | --- | --- |
 | [backend/app/desktop/patrol/agent_loop](backend/app/desktop/patrol/agent_loop/) | Patrol、轮次、任务进度、执行协调与完成检查。 |
-| [backend/app/desktop/contexts/evolution](backend/app/desktop/contexts/evolution/) | Context 版本、来源关系与演化图谱。 |
+| [backend/app/desktop/contexts/evolution](backend/app/desktop/contexts/evolution/) | Context 当前状态、任务输入快照与来源关系。 |
 | [backend/app/desktop/workspaces/coordination](backend/app/desktop/workspaces/coordination/) | 工作区访问、隔离与结果采用。 |
 | [backend/packages/harness/focus](backend/packages/harness/focus/) | Agent 运行时、模型、工具、Skill、MCP 与持久化。 |
 | [desktop](desktop/) | 桌面壳、机器人入口与工作台。 |

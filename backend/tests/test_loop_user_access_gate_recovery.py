@@ -130,6 +130,9 @@ async def _handled(sessions,fixture,*,legacy=False):
     gate=await PendingDecisionProjector(sessions).project(fixture['loop_id'],payload)
     async with sessions.begin() as session:
         stored=await session.get(LoopPendingDecision,gate.pending_decision_id)
+        source=await session.get(DesktopRun,original.run_id)
+        source.created_at=original.created_at=stored.created_at-timedelta(seconds=2)
+        source.settled_at=original.settled_at=stored.created_at-timedelta(seconds=1)
         resumed=DesktopRun(run_id=uuid.uuid4().hex,task_id=original.task_id,agent_id=original.agent_id,kind='main',origin='resume',
             status='success',execution_thread_id=original.execution_thread_id,checkpoint_ns=original.checkpoint_ns,
             context_revision_id=original.context_revision_id,context_checkpoint_id=original.context_checkpoint_id,

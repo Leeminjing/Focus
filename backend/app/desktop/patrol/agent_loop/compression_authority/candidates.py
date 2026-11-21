@@ -9,26 +9,49 @@ revision 后规范化协议范围，事务外复用既有摘要模型，再在�
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from focus.messages.usage import estimate_messages_tokens
+from focus.runtime.runs.events import deserialize_messages
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.patrol.agent_loop.resources.resource_limits import exceeds_limit
-from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy, CompressionCandidateRequest
-from backend.app.desktop.patrol.agent_loop.compression_authority.evidence import CompressionEvidenceVerifier
-from backend.app.desktop.patrol.agent_loop.compression_authority.manifest import CompressionManifestBuilder
-from backend.app.desktop.patrol.agent_loop.compression_authority.models import LoopCompressionCandidate
-from backend.app.desktop.patrol.agent_loop.compression_authority.repository import CompressionAuthorityRepository
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant, LoopEventOutbox, LoopPendingDecision, LoopRound
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionReader,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.conversations.compression import summarize_messages
-from backend.app.desktop.contexts.evolution import ContextRevisionReader, ContextRevisionRepository
-from focus.messages.usage import estimate_messages_tokens
-from focus.runtime.runs.events import deserialize_messages
+from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import (
+    AutonomousCompressionPolicy,
+    CompressionCandidateRequest,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.evidence import (
+    CompressionEvidenceVerifier,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.manifest import (
+    CompressionManifestBuilder,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.models import (
+    LoopCompressionCandidate,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.repository import (
+    CompressionAuthorityRepository,
+)
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopBudgetUsage,
+    LoopDelegationGrant,
+    LoopEventOutbox,
+    LoopPendingDecision,
+    LoopRound,
+)
+from backend.app.desktop.patrol.agent_loop.resources.resource_limits import (
+    exceeds_limit,
+)
 
 
 class CompressionCandidateService:
@@ -60,6 +83,7 @@ class CompressionCandidateService:
                 return live
             if live is not None:
                 live.status = "expired" if live.expires_at <= datetime.now(UTC) else "superseded"
+                await self._revisions.release(session, "compression_candidate", live.candidate_id)
             attempts = int(
                 await session.scalar(
                     select(func.count()).select_from(LoopEventOutbox).where(
@@ -186,6 +210,10 @@ class CompressionCandidateService:
                 expires_at=datetime.now(UTC) + timedelta(seconds=policy.candidate_ttl_seconds),
             )
             session.add(candidate)
+            await self._revisions.freeze(
+                session, revision_now.ref,
+                owner_kind="compression_candidate", owner_id=candidate.candidate_id,
+            )
             session.add(
                 LoopEventOutbox(
                     event_id=uuid.uuid4().hex,

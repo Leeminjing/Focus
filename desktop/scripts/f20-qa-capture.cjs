@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供 F20 桌面视觉基线截图生成器。输入为确定性 preload、阶段目录和 focus/map/
- * draft/plugins/materials/file/Commitment/压缩/Context 目标，输出为三种验收尺寸 PNG；工作流使用
+ * draft/plugins/materials/file/Commitment 目标，输出为三种验收尺寸 PNG；工作流使用
  * 真实 index.html、插件脚本和 Electron 渲染器，不访问网络或数据库。
  */
 "use strict";
@@ -137,27 +137,6 @@ async function capture(size, outputDir) {
       appendCommitmentTrace({ actor: 'supervisor', stage: 4, attempt: 1, title: 'Supervisor 委派范围审查', status: 'completed', detail: '已将验收标准与文件范围交给 Worker。', payload: { reasoning_summary: '先确认修改边界，再进入实现。' } });
       appendCommitmentTrace({ actor: 'worker', stage: 4, attempt: 1, title: 'Worker 返回实施方案', status: 'completed', detail: '建议保留同源拓扑并仅更新展示层。', payload: { files: ['desktop/src/renderer/app/app.js', 'desktop/src/renderer/shared/styles/views.css'] } });
       showReview({ stage: 4, draft: { summary: '保留同源 API/SSE 与插件资源，继续完成界面升级。', acceptance: ['无新增依赖', '不改变后端状态枚举', '900×680 无页面横向滚动'] }, allowed_decisions: ['approve', 'revise'] });
-    } else if (target === 'compression') {
-      state.inspector.open = false;
-      state.compression = {
-        taskId: state.activeTaskId,
-        request: { usage: 28640, limit: 32000, ratio: 0.9 },
-        messages: [
-          { id: 'c1', role: 'human', content: '请先审阅当前前端结构与约束。' },
-          { id: 'c2', role: 'ai', content: '已确认项目使用原生 JavaScript、HTML 与 CSS。' },
-          { id: 'c3', role: 'tool', name: 'read_file', tool_call_id: 'call-1', content: 'desktop/src/renderer/app/app.js and styles loaded' },
-          { id: 'c4', role: 'human', content: '保持前后端同源，不要引入跨域。' },
-          { id: 'c5', role: 'ai', content: '同源约束已记录，并加入静态守卫。' }
-        ],
-        selected: new Set([3, 4]),
-        ranges: [{ source_ids: ['c1', 'c2', 'c3'], replacement: '已审阅原生前端结构，确认零新增依赖并保留现有 API。', generated: true, restore: false, summarizing: false }],
-        busy: false, recovery: null
-      };
-      state.view = 'compress';
-      render();
-    } else if (target === 'context') {
-      state.inspector.open = false;
-      await reopenContextDecision('blocked');
     } else if (target === 'empty') {
       state.tasks = [];
       state.inspector.open = false;

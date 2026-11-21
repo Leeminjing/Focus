@@ -5,7 +5,6 @@
 示例：python -m pytest backend/tests/test_frontend_task_real.py -q。
 """
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
 import json
@@ -26,7 +25,6 @@ def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch
     async def make_graph(**kwargs):
         return create_agent(model=FakeListChatModel(responses=["真实任务响应"]), tools=[])
 
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_graph)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_graph)
     http, task, workspace, _requests = client
     from backend.app.gateway.app import app

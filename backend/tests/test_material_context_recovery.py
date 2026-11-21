@@ -10,22 +10,42 @@
 """
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from focus.agents.image_attachment import project_image_messages
+from focus.agents.material_inputs import RunMaterialInputs
+from focus.history import HistoryPayload, content_hash
 from langchain_core.messages import HumanMessage
 from PIL import Image
 
 from backend.app.desktop.composition.service import DesktopService
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionContract,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.persistence.models import DesktopRun
-from focus.agents.image_attachment import project_image_messages
-from focus.agents.material_inputs import RunMaterialInputs
 
 
 class CommitSession:
     def __init__(self, latest=None):
         self.added = []
         self.latest = latest
+        self.input_owners = {}
+        self.released_input_owners = []
+        self.context_source = None
+        if latest is not None and latest.context_revision_id:
+            self.context_source = ContextRevisionContract(
+                ref=ContextRevisionRef(context_id=latest.task_id, revision_id=latest.context_revision_id,
+                    generation=1, execution_thread_id=latest.execution_thread_id,
+                    checkpoint_ns=latest.checkpoint_ns or "", checkpoint_id=latest.context_checkpoint_id,
+                    payload_mode="checkpoint"),
+                history_payload=HistoryPayload(), content_hash=content_hash([]),
+                projection_status="valid", origin_kind="root", created_at=datetime.now(UTC),
+            )
+            self.input_owners[("run", latest.run_id)] = self.context_source.ref.revision_id
 
     def add(self, value):
         self.added.append(value)
@@ -37,8 +57,48 @@ class CommitSession:
         return None
 
 
+@pytest.fixture(autouse=True)
+def _snapshot_persistence(monkeypatch):
+    """Provide exact Context inputs for the material-only in-memory Run port."""
+    async def by_id(session, token):
+        assert session.context_source is not None and session.context_source.ref.revision_id == token
+        return session.context_source
+
+    async def by_ref(session, ref):
+        source = await by_id(session, ref.revision_id)
+        assert source.ref == ref
+        return source
+
+    async def freeze(session, ref, *, owner_kind, owner_id):
+        source = await by_ref(session, ref)
+        session.input_owners[(owner_kind, owner_id)] = ref.revision_id
+        return source
+
+    async def for_run(session, run, *, resume=False):
+        assert not resume
+        source = await by_id(session, run.context_revision_id)
+        assert session.input_owners[("run", run.run_id)] == source.ref.revision_id
+        return source
+
+    async def release(session, owner_kind, owner_id):
+        session.released_input_owners.append((owner_kind, owner_id))
+        session.input_owners.pop((owner_kind, owner_id), None)
+
+    for name, handler in {"get_by_id": by_id, "get_input": by_ref, "input_for_run": for_run,
+                          "freeze": freeze, "release": release}.items():
+        original = getattr(ContextRevisionRepository, name)
+
+        async def invoke(repository, session, *args, _handler=handler, _original=original, **kwargs):
+            if isinstance(session, CommitSession):
+                return await _handler(session, *args, **kwargs)
+            return await _original(repository, session, *args, **kwargs)
+
+        monkeypatch.setattr(ContextRevisionRepository, name, invoke)
+
+
 def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -> None:
     service = object.__new__(DesktopService)
+    service.checkpointer = None
     # 执行身份的工作区必须是绝对路径（唯一派生会拒绝相对工作区），因此用真实临时目录
     workspace_path = str(tmp_path)
 
@@ -121,10 +181,11 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
         context_revision_id="revision",
         context_checkpoint_id="checkpoint",
     )
+    session = CommitSession(interrupted)
     resumed = asyncio.run(
         DesktopService._prepare_main_resume(
             service,
-            CommitSession(interrupted),
+            session,
             task,
             workspace,
             {"type": "compression", "decision": "retry"},
@@ -138,6 +199,8 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
     assert resumed.thread_id == "shadow:task:revision"
     assert resumed.body.context["checkpoint_ns"] == "context-revision-shadow"
     assert resumed.payload["context_revision_id"] == "revision"
+    assert session.released_input_owners == [("run", "interrupted")]
+    assert ("run", "interrupted") not in session.input_owners
 
 
 @pytest.mark.parametrize("equipment_source", ["run", "task"])
@@ -158,6 +221,7 @@ def test_legacy_image_survives_compression_resume_and_equipment_rewrite(tmp_path
         "must_view_materials": [image],
     }
     service = object.__new__(DesktopService)
+    service.checkpointer = None
     service.agent_factory._build_agent_factory = lambda *_args: lambda: None
     service.capabilities._model_supports_image_input = lambda _name: True
     interrupted = DesktopRun(
@@ -184,6 +248,7 @@ def test_legacy_image_survives_compression_resume_and_equipment_rewrite(tmp_path
     context = resumed.body.context
     assert [item["material_id"] for item in context["run_image_inputs"]["attached"]] == ["old-image"]
     stored = session.added[-1].equipment
+    assert session.released_input_owners == [("run", "interrupted")]
     assert stored["run_material_inputs"] == context["run_material_inputs"]
     assert "must_view_materials" not in stored
     assert "must_view_materials" not in context

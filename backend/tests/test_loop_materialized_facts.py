@@ -9,8 +9,6 @@ r"""本文件验证版本化 Loop Fact 的确定性 identity、验证权力、�
 
 from __future__ import annotations
 
-from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
-
 import asyncio
 import os
 import uuid
@@ -27,10 +25,18 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.patrol.agent_loop import AgentLoopService
-from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
-from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
-from backend.app.desktop.patrol.agent_loop.facts.fact_identity import FactIdentityResolver
+from backend.app.desktop.patrol.agent_loop.facts.fact_identity import (
+    FactIdentityResolver,
+)
 from backend.app.desktop.patrol.agent_loop.facts.fact_lifecycle import (
     FactLifecycleRepository,
     FactTransitionRejected,
@@ -40,7 +46,9 @@ from backend.app.desktop.patrol.agent_loop.facts.fact_models import (
     LoopFactRelationship,
     LoopFactRevision,
 )
-from backend.app.desktop.patrol.agent_loop.facts.fact_projection import LoopFactProjectionService
+from backend.app.desktop.patrol.agent_loop.facts.fact_projection import (
+    LoopFactProjectionService,
+)
 from backend.app.desktop.patrol.agent_loop.facts.fact_projector import FactProjector
 from backend.app.desktop.patrol.agent_loop.facts.fact_verification import (
     FactActor,
@@ -48,6 +56,14 @@ from backend.app.desktop.patrol.agent_loop.facts.fact_verification import (
     FactVerificationDecision,
     FactVerificationPolicy,
 )
+from backend.app.desktop.patrol.agent_loop.facts.materialized_fact_query import (
+    FactParityService,
+    MaterializedFactQueryService,
+)
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import (
+    CanonicalEventDraft,
+)
+from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
 from backend.app.desktop.patrol.agent_loop.journal.journal_models import (
     LoopJournalEvent,
     LoopProjectorCursor,
@@ -57,20 +73,14 @@ from backend.app.desktop.patrol.agent_loop.live.live_api import (
     LoopLiveEventFeed,
     LoopLiveSnapshotService,
 )
-from backend.app.desktop.patrol.agent_loop.facts.materialized_fact_query import (
-    FactParityService,
-    MaterializedFactQueryService,
-)
 from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopDelegationGrant
-from backend.app.desktop.contexts.evolution import (
-    ContextRevisionContract,
-    ContextRevisionOriginKind,
-    ContextRevisionPayloadMode,
-    ContextRevisionProjectionStatus,
-    ContextRevisionRef,
-    ContextRevisionRepository,
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
 )
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.runs.evidence.run_outcomes import RunOutcomeRecorder
+from backend.tests.workspace_loop_support import seed_workspace_patrol_loop
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -87,6 +97,21 @@ class _Checkpointer:
             ]}},
             metadata={},
         )
+
+
+async def _record_settled_outcome(session, run_id, checkpoint_id):
+    run = await session.get(DesktopRun, run_id)
+    # A real settlement records durable typed results before old Context input
+    # bodies can be released. Rebuilds consume these results, not a revision archive.
+    run.origin_message_id = f"human-{checkpoint_id}"
+    checkpoint = await _Checkpointer().aget_tuple({"configurable": {"checkpoint_id": checkpoint_id}})
+    messages = tuple({
+        "id": message.id,
+        "role": "human" if isinstance(message, HumanMessage) else "tool",
+        "content": message.content,
+        **({"tool_call_id": message.tool_call_id, "name": message.name} if isinstance(message, ToolMessage) else {}),
+    } for message in checkpoint.checkpoint["channel_values"]["messages"])
+    await RunOutcomeRecorder(secrets=()).record(session, run, messages)
 
 
 def test_materialized_fact_migration_round_trips_with_existing_loop(tmp_path: Path) -> None:
@@ -156,6 +181,8 @@ def test_materialized_fact_projection_rebuilds_without_duplicates(tmp_path) -> N
                 await repository.insert(session, ContextRevisionContract(ref=ref, content_hash="a" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=run_id, created_at=datetime.now(UTC)))
                 await repository.switch_current(session, ref, None)
                 session.add(DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, final_checkpoint_id=f"checkpoint-{suffix}", user_intent_id=correlation_id, workspace_result={"workspace_status": "settled", "revision": 2, "effect_evidence": [{"kind": "workspace_fingerprint_transition", "changed": True, "changed_files": ["src/service.py"]}], "artifacts": ["reports/pytest.xml"]}, settled_at=datetime.now(UTC)))
+                await session.flush()
+                await _record_settled_outcome(session, run_id, ref.checkpoint_id)
             service = AgentLoopService(sessions)
             await seed_workspace_patrol_loop(sessions, loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=run_id, holder_id=f"patrol-{suffix}", goal="Verify", task_contract="Use evidence", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "view_evidence"))
             async with sessions.begin() as session:
@@ -183,7 +210,10 @@ def test_materialized_fact_projection_rebuilds_without_duplicates(tmp_path) -> N
             async with sessions.begin() as session:
                 next_ref = ContextRevisionRef(context_id=context_id, revision_id=next_revision_id, generation=2, execution_thread_id=f"thread-{suffix}", checkpoint_ns="", checkpoint_id=f"checkpoint-{suffix}-next", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
                 await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=next_ref, content_hash="b" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=next_run_id, created_at=datetime.now(UTC)))
+                await ContextRevisionRepository().switch_current(session, next_ref, ref)
                 session.add(DesktopRun(run_id=next_run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="delegated_patrol", execution_thread_id=f"thread-{suffix}", context_revision_id=next_revision_id, final_checkpoint_id=f"checkpoint-{suffix}-next", loop_id=loop_id, settled_at=datetime.now(UTC)))
+                await session.flush()
+                await _record_settled_outcome(session, next_run_id, next_ref.checkpoint_id)
                 await LoopEventJournal().append(session, loop_id, CanonicalEventDraft(kind="context.run.settled", entity_type="context_run", entity_id=next_run_id, entity_revision=2, correlation_id=correlation_id, payload={"run_id": next_run_id, "status": "success"}, idempotency_key=f"run:{next_run_id}:settled"))
             assert await projector.project_loop(loop_id) == 1
             async with sessions() as session:

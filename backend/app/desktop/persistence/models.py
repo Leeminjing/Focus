@@ -57,12 +57,6 @@ class DesktopThread(Base):
     thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
     current_revision_id: Mapped[str | None] = mapped_column(
         String(32),
-        ForeignKey(
-            "desktop_context_revisions.revision_id",
-            name="fk_desktop_thread_current_revision",
-            ondelete="SET NULL",
-            use_alter=True,
-        ),
         nullable=True,
         index=True,
     )
@@ -382,7 +376,6 @@ class DesktopRun(Base):
     )
     context_revision_id: Mapped[str | None] = mapped_column(
         String(32),
-        ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"),
         nullable=True,
         index=True,
     )

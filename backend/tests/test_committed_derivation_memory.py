@@ -1,8 +1,7 @@
-"""本文件对外提供提交权威与完整 Revision DAG 的派生边界验收测试。
+"""本文件验证当前来源快照的提交、容量和内容授权边界。
 
-输入为隔离数据库中的多父来源、Context 回流、候选和回滚事务；输出为可重建图及提交后才变化的断言。
-具体工作流为创建 Architecture R4→Implementation R7→Architecture R5，加入独立父源，验证 shadow 与回滚不改变图。
-另外验证实际成员退出、超过 256 个祖先的完整分页，以及只有结构读取权限时不得取得祖先正文。
+输入为隔离数据库中的当前 Context、多来源、候选与回滚事务；输出为当前直接来源及发布边界断言。
+来源身份可随当前状态保留，旧正文不构成永久祖先库。另验证成员退出和容量限制不会授予额外正文读取权限。
 示例：python -m pytest backend/tests/test_committed_derivation_memory.py -q。
 """
 
@@ -22,17 +21,16 @@ from test_atomic_portfolio_publication import _contract
 from test_round_memory_boundaries import _prepare_portfolio, _world
 from test_round_task_progress import _Checkpointer
 
-from backend.app.desktop.patrol.agent_loop.models import LoopContextMembership
-from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
-    LoopObservationService,
-    PatrolReadRequest,
-)
 from backend.app.desktop.contexts.evolution import ContextRevisionRepository
 from backend.app.desktop.contexts.evolution.committed_lineage import (
     CommittedLineageReader,
 )
 from backend.app.desktop.contexts.evolution.lineage import ContextLineageResolver
 from backend.app.desktop.contexts.evolution.lineage_contracts import LineageSnapshot
+from backend.app.desktop.contexts.evolution.repository import (
+    ContextRevisionIdentityMismatch,
+    ContextRevisionNotFound,
+)
 from backend.app.desktop.contexts.evolution.schemas import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -41,11 +39,16 @@ from backend.app.desktop.contexts.evolution.schemas import (
     ContextRevisionRef,
     ContextRevisionSourceContract,
 )
+from backend.app.desktop.patrol.agent_loop.models import LoopContextMembership
+from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
+    LoopObservationService,
+    PatrolReadRequest,
+)
 from backend.app.desktop.persistence.models import DesktopThread
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
-def test_full_multi_parent_history_context_return_and_commit_boundary(tmp_path):
+def test_current_multi_source_context_return_and_commit_boundary(tmp_path):
     async def exercise():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -83,7 +86,7 @@ def test_full_multi_parent_history_context_return_and_commit_boundary(tmp_path):
                     ),
                     content_hash="a" * 64,
                     projection_status=status,
-                    origin_kind=ContextRevisionOriginKind.MANUAL_DERIVE,
+                    origin_kind=ContextRevisionOriginKind.CURATION,
                     created_at=datetime.now(UTC),
                 ),
             )
@@ -120,27 +123,26 @@ def test_full_multi_parent_history_context_return_and_commit_boundary(tmp_path):
                     session, {arch: a5.revision_id}, workspace_id=workspace_id
                 )
                 LineageSnapshot.model_validate(before)
-                assert len(before["edges"]) == 3
+                assert len(before["edges"]) == 2
                 assert {
-                    a4.revision_id,
                     b7.revision_id,
                     a5.revision_id,
                     primary.revision_id,
                 } == {node["revision_id"] for node in before["nodes"]}
-                with pytest.raises(ValueError, match="不是已发布"):
+                with pytest.raises(ContextRevisionNotFound, match="unpublished"):
                     await reader.snapshot(
                         session, {e2e: shadow.revision_id}, workspace_id=workspace_id
                     )
                 scoped = reader.scoped(before, {arch})
                 LineageSnapshot.model_validate(scoped)
-                assert len(scoped["edges"]) == 3
+                assert len(scoped["edges"]) == 2
                 assert (
                     await ContextLineageResolver().resolve(
                         session, {arch: a5.revision_id}
                     )
                     == ()
                 )
-                with pytest.raises(ValueError, match="未完成"):
+                with pytest.raises(ValueError, match="capacity"):
                     await reader.snapshot(
                         session,
                         {arch: a5.revision_id},
@@ -158,7 +160,7 @@ def test_full_multi_parent_history_context_return_and_commit_boundary(tmp_path):
                     )
                     == before
                 )
-                with pytest.raises(ValueError, match="不是已发布"):
+                with pytest.raises(ContextRevisionNotFound, match="unpublished"):
                     await reader.snapshot(
                         session, {e2e: shadow.revision_id}, workspace_id=workspace_id
                     )
@@ -168,13 +170,12 @@ def test_full_multi_parent_history_context_return_and_commit_boundary(tmp_path):
                 after = await reader.snapshot(
                     session, {e2e: shadow.revision_id}, workspace_id=workspace_id
                 )
-                assert len(after["edges"]) == 4
+                assert len(after["edges"]) == 1
                 assert after["topology_hash"] != before["topology_hash"]
-                assert (
+                with pytest.raises(ContextRevisionNotFound):
                     await reader.snapshot(
                         session, {arch: a4.revision_id}, workspace_id=workspace_id
                     )
-                )["edges"] == []
             async with sessions.begin() as session:
                 pending = await revision(
                     session,
@@ -186,12 +187,8 @@ def test_full_multi_parent_history_context_return_and_commit_boundary(tmp_path):
                 await repository.switch_current(session, pending, a5)
             async with sessions() as session:
                 published = await reader.published_roots(session, (arch,))
-                assert published == {arch: a5.revision_id}
-                assert (
-                    await reader.snapshot(session, published, workspace_id=workspace_id)
-                    == before
-                )
-                with pytest.raises(ValueError, match="projection 审核"):
+                assert published == {}
+                with pytest.raises(ContextRevisionIdentityMismatch, match="executable"):
                     await reader.snapshot(
                         session, {arch: pending.revision_id}, workspace_id=workspace_id
                     )
@@ -203,7 +200,7 @@ def test_full_multi_parent_history_context_return_and_commit_boundary(tmp_path):
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
-def test_lineage_pages_all_300_ancestors_and_rejects_truncation(tmp_path):
+def test_direct_provenance_covers_300_sources_and_rejects_truncation(tmp_path):
     async def exercise():
         async with _world(tmp_path) as (sessions, fixture):
             repository = ContextRevisionRepository()
@@ -211,9 +208,14 @@ def test_lineage_pages_all_300_ancestors_and_rejects_truncation(tmp_path):
             async with sessions.begin() as session:
                 source_context = await session.get(DesktopThread, fixture["context_id"])
                 parents = tuple(
-                    _contract(source_context.task_id, number, "private ancestor")
-                    for number in range(2, 302)
+                    _contract(uuid.uuid4().hex, 1, "private source")
+                    for _ in range(300)
                 )
+                session.add_all([
+                    DesktopThread(task_id=parent.ref.context_id, workspace_id=source_context.workspace_id,
+                                  thread_id=f"thread-{parent.ref.context_id}", title="source")
+                    for parent in parents
+                ])
                 child_id = uuid.uuid4().hex
                 session.add(
                     DesktopThread(
@@ -235,6 +237,8 @@ def test_lineage_pages_all_300_ancestors_and_rejects_truncation(tmp_path):
                     }
                 )
                 await repository.insert_many(session, (*parents, child))
+                for parent in parents:
+                    await repository.switch_current(session, parent.ref, None)
                 await repository.switch_current(session, child.ref, None)
                 workspace_id = source_context.workspace_id
             async with sessions() as session:
@@ -256,13 +260,13 @@ def test_lineage_pages_all_300_ancestors_and_rejects_truncation(tmp_path):
                         workspace_id=workspace_id,
                         max_nodes=256,
                     )
-                assert "private ancestor" not in json.dumps(snapshot)
+                assert "private source" not in json.dumps(snapshot)
 
     asyncio.run(exercise())
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
-def test_departed_membership_keeps_ancestry_without_granting_content_access(tmp_path):
+def test_departed_membership_keeps_direct_sources_without_granting_content_access(tmp_path):
     async def exercise():
         async with _world(tmp_path) as (sessions, fixture):
             frozen, publisher = await _prepare_portfolio(
@@ -317,7 +321,7 @@ def test_departed_membership_keeps_ancestry_without_granting_content_access(tmp_
                 )
             async with sessions() as session:
                 root = await session.get(DesktopThread, fixture["context_id"])
-                with pytest.raises(ValueError, match="不是已发布"):
+                with pytest.raises(ValueError, match="workspace scope"):
                     await CommittedLineageReader().snapshot(
                         session,
                         {child.context_id: child.revision_id},

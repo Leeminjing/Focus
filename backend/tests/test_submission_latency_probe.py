@@ -1,20 +1,29 @@
 """Real PostgreSQL checks for causal and publication gates in latency probes."""
 
 import asyncio
-from datetime import UTC, datetime
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop.models import LoopAction, LoopDecision, LoopDirective, LoopObservation, LoopRound
-from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.diagnostics.submission_latency import (
+    CommittedSubmissionProbe,
+)
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import (
+    CanonicalEventDraft,
+)
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
-from backend.app.desktop.patrol.agent_loop.diagnostics.submission_latency import CommittedSubmissionProbe
-from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt
-from backend.app.desktop.persistence.models import DesktopRun
+from backend.app.desktop.patrol.agent_loop.models import (
+    LoopAction,
+    LoopDecision,
+    LoopDirective,
+    LoopObservation,
+    LoopRound,
+)
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
 from backend.app.desktop.runs.orchestration.models import RunDispatch
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 
@@ -51,12 +60,13 @@ def test_probe_ignores_unrelated_decision_uncommitted_authority_and_unpublished_
                 session.add(LoopAction(action_id=uuid.uuid4().hex, loop_id=seed["loop_id"], decision_id=decision_id,
                     position=0, action_type=action_type, payload={}, status="applied",
                     result={"context_id": seed["context_id"], "context_revision_id": seed["revision_id"]}))
-                publication = await session.get(ContextPublicationReceipt, seed["revision_id"])
-                await session.delete(publication)
+                context = await session.get(DesktopThread, seed["context_id"])
+                context.current_revision_id = None
             milestones, _, _ = await probe.read(receipt)
             assert set(milestones) == {"patrol_decision_committed"}
             async with sessions.begin() as session:
-                session.add(ContextPublicationReceipt(revision_id=seed["revision_id"], context_id=seed["context_id"]))
+                context = await session.get(DesktopThread, seed["context_id"])
+                context.current_revision_id = seed["revision_id"]
             milestones, _, _ = await probe.read(receipt)
             if action_type == "create_lane":
                 assert set(milestones) == {"patrol_decision_committed", "derived_context_available"}

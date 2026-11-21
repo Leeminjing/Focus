@@ -1,27 +1,30 @@
-r"""本文件对外提供 ContextEvolutionService，作为 Context revision 的权威应用端口。
+"""本文件对外提供 ContextEvolutionService 与 ContextCheckpointBusy 应用端口。
 
-输入为 Context identity、精确 checkpoint、authored definition、版本化来源、审批 hashes 与操作
-origin；输出为不可变 current/historical revision、display view 或 tombstone。具体工作流为把外部
-checkpoint 规范化成 revision，definition 先在 shadow identity 编译并写 checkpoint，合法候选原子
-发布，待审批候选作为不可运行 current revision 留存，accept/reject 再产生新 revision；受管更新可从
-旧 current revision 计算初始前缀之后的真实运行后缀并接入新 checkpoint，全程不读写 identity-level
-definition/source 表。示例：`ref = await service.stage_definition(...)`。
-新 checkpoint publication 保存 V2 typed payload 与内容 hash；V1 migration 行不被重写，semantic 读取只提供资格允许的任务与证据。
+输入为 Context 身份、checkpoint 或自动策展定义；输出为当前引用、精确读取或明确的忙碌/发布冲突。
+具体工作流为自动策展与工作区初始化先准备合法候选，再原子发布；仅空闲 Main 的实际 HEAD 可导入，活动 Main 保有结算发布权。
+旧输入只在 current 或任务仍持有快照时可读取，不重建永久历史档案。
+示例：await service.ensure_checkpoint_revision(session, context_id, checkpoint_id)。
 """
 
 from __future__ import annotations
 
-from copy import deepcopy
-from datetime import UTC, datetime
 import hashlib
 import json
-from typing import Any
 import uuid
+from datetime import UTC, datetime
+from typing import Any
 
+from focus.history import HistoryPayload
+from focus.history import serialize_history_message as serialize_message
+from focus.history.bridge import checkpoint_records
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.contexts.evolution.checkpoint_writer import (
     LangGraphContextCheckpointWriter,
+)
+from backend.app.desktop.contexts.evolution.history import (
+    continued_revision_history,
 )
 from backend.app.desktop.contexts.evolution.publisher import ContextRevisionPublisher
 from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
@@ -36,10 +39,11 @@ from backend.app.desktop.contexts.evolution.schemas import (
     ContextRevisionRef,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.persistence.models import DesktopThread
-from focus.history import serialize_history_message as serialize_message
-from focus.history.bridge import checkpoint_records
-from backend.app.desktop.contexts.evolution.history import build_revision_history, continued_revision_history
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+
+
+class ContextCheckpointBusy(RuntimeError):
+    """A running Main owns publication of its execution checkpoints."""
 
 
 class ContextEvolutionService:
@@ -75,22 +79,6 @@ class ContextEvolutionService:
             raise TypeError("display reader 返回了错误视图")
         return value
 
-    async def read_checkpoint_display(
-        self,
-        session: AsyncSession,
-        context_id: str,
-        checkpoint_id: str,
-    ) -> ContextRevisionMessageView | None:
-        revision = await self._repository.find_by_checkpoint(
-            session, context_id, checkpoint_id
-        )
-        if revision is None:
-            return None
-        value = await self._reader.read(session, revision.ref, "display")
-        if not isinstance(value, ContextRevisionMessageView):
-            raise TypeError("display reader 返回了错误视图")
-        return value
-
     async def read_checkpoint_semantic(
         self, session: AsyncSession, context_id: str, checkpoint_id: str,
     ) -> ContextRevisionMessageView | None:
@@ -110,37 +98,46 @@ class ContextEvolutionService:
         *,
         make_current_if_empty: bool = True,
     ) -> ContextRevisionRef:
-        existing = await self._repository.find_by_checkpoint(
-            session, context_id, checkpoint_id
-        )
+        existing = await self._repository.find_by_checkpoint(session, context_id, checkpoint_id)
         if existing is not None:
-            return existing.ref
-        task = await session.get(DesktopThread, context_id)
+            return (await self._repository.get_input(session, existing.ref)).ref
+        task = await session.get(DesktopThread, context_id, with_for_update=True, populate_existing=True)
         if task is None:
             raise ValueError(f"Context 不存在: {context_id}")
-        await self._require_checkpoint(task.thread_id, "", checkpoint_id)
         current = await self._repository.current(session, context_id)
-        ref = ContextRevisionRef(
-            context_id=context_id,
-            revision_id=uuid.uuid4().hex,
-            generation=await self._repository.next_generation(session, context_id),
-            execution_thread_id=task.thread_id,
-            checkpoint_ns="",
-            checkpoint_id=checkpoint_id,
-            payload_mode=ContextRevisionPayloadMode.CHECKPOINT,
-        )
-        contract = ContextRevisionContract(
-            ref=ref,
-            sources=(),
-            content_hash=self._hash("checkpoint", context_id, checkpoint_id),
+        active = await session.scalar(select(DesktopRun.run_id).where(
+            DesktopRun.task_id == context_id,
+            DesktopRun.kind == "main",
+            or_(DesktopRun.status.in_(("pending", "running")), DesktopRun.settled_at.is_(None)),
+        ).limit(1))
+        if active is not None:
+            # Main admission pins its base under this same Context lock. Importing
+            # its graph HEAD here would replace that base before finalization and
+            # make the successful Run look superseded. Curation can use current
+            # or an already-pinned stable input while Main owns new publication.
+            raise ContextCheckpointBusy("Main is active; use its published stable Context input")
+        thread_id = current.ref.execution_thread_id if current is not None else task.thread_id
+        namespace = current.ref.checkpoint_ns if current is not None else ""
+        head = await self._checkpointer.aget_tuple({"configurable": {"thread_id": thread_id, "checkpoint_ns": namespace}})
+        actual_head = head.config.get("configurable", {}).get("checkpoint_id") if head is not None else None
+        if actual_head != checkpoint_id:
+            raise ValueError("checkpoint is neither current execution head nor a published pinned input")
+        if current is None and not make_current_if_empty:
+            raise ValueError("unpublished checkpoint imports require explicit current-state publication")
+        expected = current.ref if current is not None else None
+        ref = ContextRevisionRef(context_id=context_id, revision_id=uuid.uuid4().hex,
+            generation=expected.generation + 1 if expected else 1,
+            execution_thread_id=thread_id, checkpoint_ns=namespace,
+            checkpoint_id=checkpoint_id, payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
+        history = await self._checkpoint_history(thread_id, namespace, checkpoint_id, current)
+        contract = ContextRevisionContract(ref=ref, sources=current.sources if current else (),
+            history_payload=history, initial_message_ids=current.initial_message_ids if current else (),
+            content_hash=self._hash("checkpoint", context_id, checkpoint_id, history.model_dump(mode="json")),
             projection_status=ContextRevisionProjectionStatus.VALID,
-            origin_kind=ContextRevisionOriginKind.MIGRATION,
-            origin_id=context_id,
-            created_at=datetime.now(UTC),
-        )
+            origin_kind=ContextRevisionOriginKind.MIGRATION, origin_id=context_id,
+            created_at=datetime.now(UTC))
         await self._repository.insert(session, contract)
-        if make_current_if_empty and current is None:
-            await self._repository.switch_current(session, ref, None)
+        await self._repository.switch_current(session, ref, expected)
         return ref
 
     async def stage_definition(
@@ -166,14 +163,8 @@ class ContextEvolutionService:
             ),
             suffix_messages=suffix_messages,
         )
-        if candidate.publishable:
-            await self._publisher.publish(session, candidate)
-        else:
-            await self._repository.insert(session, candidate.revision)
-            await self._repository.switch_current(
-                session, candidate.revision.ref, candidate.expected_base
-            )
-        return candidate.revision
+        await self._publisher.publish(session, candidate)
+        return await self._repository.get(session, candidate.revision.ref)
 
     async def continuation_messages(
         self,
@@ -184,8 +175,7 @@ class ContextEvolutionService:
         messages: list[dict[str, Any]] = []
         initial_ids: set[str] = set()
         if current is not None:
-            ancestor = await self._definition_ancestor(session, current)
-            initial_ids = set(ancestor.initial_message_ids if ancestor is not None else ())
+            initial_ids = set(current.initial_message_ids)
             if current.ref.is_runnable:
                 checkpoint = await self._checkpointer.aget_tuple(
                     current.ref.checkpoint_config()
@@ -219,27 +209,6 @@ class ContextEvolutionService:
                 if message_id:
                     known.add(message_id)
         return tuple(messages)
-
-    async def decide_definition(
-        self,
-        session: AsyncSession,
-        context_id: str,
-        decision: str,
-        definition_hash: str,
-        projection_hash: str,
-    ) -> ContextRevisionContract:
-        current = await self._repository.current(session, context_id)
-        if current is None:
-            raise ValueError("Context 尚无 definition revision")
-        if current.projection_status is not ContextRevisionProjectionStatus.APPROVAL_REQUIRED:
-            raise ValueError("Context 当前不需要审批")
-        if current.definition_hash != definition_hash or current.projection_hash != projection_hash:
-            raise RuntimeError("Context 定义或投影已变化")
-        if decision == "accept":
-            return await self._approve(session, current)
-        if decision == "reject":
-            return await self._reject(session, current)
-        raise ValueError("未知投影决定")
 
     async def publish_checkpoint(
         self,
@@ -343,6 +312,7 @@ class ContextEvolutionService:
                 if expected is not None and expected.is_runnable
                 else ()
             ),
+            history_payload=HistoryPayload(),
             content_hash=self._hash("deleted", context_id, now.isoformat()),
             projection_status=ContextRevisionProjectionStatus.DELETED,
             origin_kind=ContextRevisionOriginKind.MIGRATION,
@@ -353,110 +323,6 @@ class ContextEvolutionService:
         await self._repository.insert(session, contract)
         await self._repository.switch_current(session, ref, expected)
         return ref
-
-    async def _approve(
-        self, session: AsyncSession, current: ContextRevisionContract
-    ) -> ContextRevisionContract:
-        revision_id = uuid.uuid4().hex
-        shadow = ContextRevisionRef(
-            context_id=current.ref.context_id,
-            revision_id=revision_id,
-            generation=await self._repository.next_generation(session, current.ref.context_id),
-            execution_thread_id=f"shadow:{current.ref.context_id}:{revision_id}",
-            checkpoint_ns="context-revision-shadow",
-            checkpoint_id=None,
-            payload_mode=ContextRevisionPayloadMode.DEFINITION,
-        )
-        checkpoint_id, initial_ids = await self._writer.write(
-            shadow, tuple(deepcopy(current.execution_messages))
-        )
-        ref = ContextRevisionRef.model_validate(
-            {**shadow.model_dump(mode="python"), "checkpoint_id": checkpoint_id}
-        )
-        contract = self._decision_contract(
-            current, ref, ContextRevisionProjectionStatus.APPROVED, initial_ids
-        )
-        records = await self._writer.read_records(ref)
-        payload = build_revision_history(current.authored_messages, records, previous=current.history_payload)
-        contract = contract.model_copy(update={
-            "history_payload": payload, "authored_messages": (), "execution_messages": (),
-            "content_hash": self._hash("decision-v2", current.content_hash, payload.model_dump(mode="json"), ref.checkpoint_id),
-        })
-        contract = ContextRevisionContract.model_validate(contract.model_dump(mode="python"))
-        await self._repository.insert(session, contract)
-        await self._repository.switch_current(session, ref, current.ref)
-        return contract
-
-    async def _reject(
-        self, session: AsyncSession, current: ContextRevisionContract
-    ) -> ContextRevisionContract:
-        ref = ContextRevisionRef(
-            context_id=current.ref.context_id,
-            revision_id=uuid.uuid4().hex,
-            generation=await self._repository.next_generation(session, current.ref.context_id),
-            execution_thread_id=current.ref.execution_thread_id,
-            checkpoint_ns="context-revision-rejected",
-            checkpoint_id=None,
-            payload_mode=ContextRevisionPayloadMode.DEFINITION,
-        )
-        contract = self._decision_contract(
-            current, ref, ContextRevisionProjectionStatus.REJECTED, ()
-        )
-        await self._repository.insert(session, contract)
-        await self._repository.switch_current(session, ref, current.ref)
-        return contract
-
-    def _decision_contract(
-        self,
-        current: ContextRevisionContract,
-        ref: ContextRevisionRef,
-        status: ContextRevisionProjectionStatus,
-        initial_ids: tuple[str, ...],
-    ) -> ContextRevisionContract:
-        return ContextRevisionContract(
-            ref=ref,
-            sources=current.sources,
-            history_payload=current.history_payload,
-            authored_messages=current.authored_messages,
-            execution_messages=current.execution_messages,
-            repair_manifest=current.repair_manifest,
-            issues=current.issues,
-            initial_message_ids=initial_ids,
-            definition_hash=current.definition_hash,
-            projection_hash=current.projection_hash,
-            content_hash=self._hash("decision", current.content_hash, status.value),
-            projection_status=status,
-            origin_kind=ContextRevisionOriginKind.PROJECTION_DECISION,
-            origin_id=current.ref.revision_id,
-            created_at=datetime.now(UTC),
-        )
-
-    async def _definition_ancestor(
-        self,
-        session: AsyncSession,
-        current: ContextRevisionContract,
-    ) -> ContextRevisionContract | None:
-        candidate = current
-        visited: set[str] = set()
-        while candidate.ref.revision_id not in visited:
-            visited.add(candidate.ref.revision_id)
-            if (
-                candidate.ref.payload_mode is ContextRevisionPayloadMode.DEFINITION
-                and candidate.initial_message_ids
-            ):
-                return candidate
-            same_context = next(
-                (
-                    edge.source
-                    for edge in candidate.sources
-                    if edge.source.context_id == current.ref.context_id
-                ),
-                None,
-            )
-            if same_context is None:
-                return None
-            candidate = await self._repository.get(session, same_context)
-        return None
 
     async def _require_checkpoint(
         self, thread_id: str, checkpoint_ns: str, checkpoint_id: str

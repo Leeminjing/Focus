@@ -22,14 +22,23 @@ from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import stable_expansion_hash
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionReader,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
+from backend.app.desktop.contexts.evolution.models import ContextRevision
+from backend.app.desktop.contexts.evolution.repository import (
+    ContextRevisionRepositoryError,
+)
+from backend.app.desktop.patrol.agent_loop.context_expansion.contracts import (
+    stable_expansion_hash,
+)
 from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
-from backend.app.desktop.contexts.evolution import ContextRevisionReader, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt, ContextRevision
-from backend.app.desktop.contexts.evolution.repository import ContextRevisionRepositoryError
+from backend.app.desktop.persistence.models import DesktopThread
 
 
 class Snapshot(BaseModel):
@@ -187,7 +196,7 @@ def select_cases(snapshots, *, automatic):
     tools = [s for s in candidates if snapshot_stats(s)["max_tool_chars"] >= 4096]
     appends = [chain for chain in chains if len(chain) >= 3]
     if not tools or not appends:
-        raise ValueError("need a long tool output (>=4096 chars) and three append-only revisions; use explicit IDs for partial coverage")
+        raise ValueError("need a long tool output (>=4096 chars) and three frozen append-only inputs; multiple_append pending_data: current-state discovery has no historical archive; use an existing exported corpus or explicit still-pinned input IDs")
     tool = min([s for s in tools if len(s.messages) > 30] or tools,
                key=lambda s: snapshot_stats(s)["estimated_tokens"])
     # Bound sample count, not message content; never trim a frozen Revision.
@@ -208,7 +217,7 @@ async def read_snapshots(config_path, *, context_ids=(), revision_ids=(), limit=
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     snapshots, skipped = [], []
     try:
-        # A separate read-only psycopg connection serves exact historical checkpoints.
+        # A separate read-only psycopg connection serves exact current/pinned checkpoints.
         conn = await psycopg.AsyncConnection.connect(
             url.set(drivername="postgresql").render_as_string(hide_password=False),
             autocommit=True, prepare_threshold=0, row_factory=dict_row,
@@ -218,17 +227,25 @@ async def read_snapshots(config_path, *, context_ids=(), revision_ids=(), limit=
             repository = ContextRevisionRepository()
             reader = ContextRevisionReader(repository, AsyncPostgresSaver(conn))
             async with sessions() as session:
-                query = select(ContextRevision).join(ContextPublicationReceipt).order_by(
-                    ContextRevision.created_at.desc(), ContextRevision.revision_id
-                )
+                query = select(ContextRevision).join(
+                    DesktopThread, DesktopThread.current_revision_id == ContextRevision.revision_id
+                ).order_by(ContextRevision.created_at.desc(), ContextRevision.revision_id)
                 if context_ids:
                     query = query.where(ContextRevision.context_id.in_(context_ids))
                 if revision_ids:
-                    query = query.where(ContextRevision.revision_id.in_(revision_ids))
-                rows = (await session.scalars(query.limit(limit))).all()
-                for row in rows:
+                    # Explicit still-pinned inputs may be exported, but are not
+                    # discovered as a permanent Context version archive.
+                    selected_ids = tuple(dict.fromkeys(revision_ids))[:limit]
+                else:
+                    selected_ids = tuple((await session.scalars(
+                        query.with_only_columns(ContextRevision.revision_id).limit(limit)
+                    )).all())
+                for revision_id in selected_ids:
                     try:
-                        revision = await repository.get_by_id(session, row.revision_id)
+                        revision = await repository.get_by_id(session, revision_id)
+                        revision = await repository.get_input(session, revision.ref)
+                        if context_ids and revision.ref.context_id not in context_ids:
+                            raise ValueError("selected input is outside requested Contexts")
                         view = await reader.read(session, revision.ref, "semantic")
                         messages = tuple(view.messages)
                         require_jsonb_text(messages)
@@ -238,7 +255,7 @@ async def read_snapshots(config_path, *, context_ids=(), revision_ids=(), limit=
                             semantic_hash=stable_expansion_hash("benchmark-semantic-snapshot-v1", messages),
                         ))
                     except (ValueError, KeyError, TypeError, LookupError, ContextRevisionRepositoryError) as exc:
-                        skipped.append({"revision_id": row.revision_id,
+                        skipped.append({"revision_id": revision_id,
                                         "error": "postgres_jsonb_incompatible_text" if "postgres_jsonb_incompatible_text" in str(exc)
                                         else type(exc).__name__})
     finally:
@@ -258,7 +275,7 @@ def main():
     parser.add_argument("--context-id", action="append", default=[])
     parser.add_argument("--revision-id", action="append", default=[])
     parser.add_argument("--limit", type=int, default=200)
-    parser.add_argument("--auto", action="store_true", help="select short, long-tool and multiple-append cases")
+    parser.add_argument("--auto", action="store_true", help="select short, long-tool and multiple-append cases; append data requires explicitly retained inputs")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--reports", type=Path, help="report directory for summarize (no database access)")
     args = parser.parse_args()
@@ -280,7 +297,10 @@ def main():
         args.config, context_ids=args.context_id, revision_ids=args.revision_id, limit=args.limit,
     ))
     if args.action == "list":
-        print(json.dumps({"revisions": [snapshot_stats(s) for s in snapshots], "skipped": skipped}, indent=2))
+        print(json.dumps({"revisions": [snapshot_stats(s) for s in snapshots], "skipped": skipped,
+                          "discovery": "current_inputs_only" if not args.revision_id else "explicit_current_or_pinned_inputs",
+                          "multiple_append_status": "pending_data" if not args.revision_id else "requires_append_validation",
+                          "multiple_append_note": "Use an existing exported corpus or explicitly pinned append-only inputs; current states do not preserve a version chain."}, indent=2))
     else:
         corpus = BenchmarkCorpus(cases=select_cases(snapshots, automatic=args.auto))
         args.output.parent.mkdir(parents=True, exist_ok=True)

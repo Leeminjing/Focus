@@ -7,8 +7,6 @@
 """
 
 import pytest
-from langchain_core.messages import HumanMessage
-
 from focus.agents.image_inputs import (
     MODEL_IMAGE_INPUT_KEY,
     RUN_IMAGE_INPUTS_CONTEXT_KEY,
@@ -16,6 +14,7 @@ from focus.agents.image_inputs import (
     project_run_image_context,
 )
 from focus.messages import estimate_messages_tokens, estimate_model_request_tokens
+from langchain_core.messages import HumanMessage
 
 
 def material(material_id: str, tokens: int = 10, size: int = 100) -> dict:
@@ -100,10 +99,18 @@ def test_compression_gate_uses_request_only_image_budget(monkeypatch) -> None:
     import focus.agents.compression.gate as compression
 
     seen = {}
+
+    class CompressionPending(Exception):
+        pass
+
+    def pending(payload):
+        seen.update(payload)
+        raise CompressionPending
+
     monkeypatch.setattr(
         compression,
         "interrupt",
-        lambda payload: seen.update(payload) or {"type": "compression", "decision": "cancel"},
+        pending,
     )
     inputs = RunImageInputs.build([material("m1", tokens=77)])
     runtime = type("Runtime", (), {"context": inputs.to_equipment()})()
@@ -111,6 +118,7 @@ def test_compression_gate_uses_request_only_image_budget(monkeypatch) -> None:
     baseline = estimate_model_request_tokens(state["messages"])
     gate = compression.CompressionGate(context_window=baseline + 77, threshold_ratio=0.75)
     assert baseline < gate._limit
-    gate.before_model(state, runtime)
+    with pytest.raises(CompressionPending):
+        gate.before_model(state, runtime)
     assert seen["type"] == "compression_request"
     assert seen["usage"] == baseline + 77

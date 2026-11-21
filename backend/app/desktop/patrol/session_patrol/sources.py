@@ -2,15 +2,18 @@
 
 输入为草稿身份、期望版本、精确来源与稳定行/目标锚点；输出为只读分页结果或已提交草稿及本次插入增量。
 具体工作流为在独立读取会话解析/冻结候选，再锁定草稿校验 CAS 和锚点，单次提交正文与冻结引用；旧追加调用兼容。
-示例：await resolver.import_into(draft_id, {"kind":"context", "revision_id":"r1", "draft_revision":2})。
+示例：await resolver.import_into(draft_id, {"kind":"context", "context_id":"c1", "draft_revision":2})。
 """
 from copy import deepcopy
+
 from fastapi import HTTPException
+
 from backend.app.desktop.persistence.models import PatrolDraft
-from .source_reader import PatrolSourceReader
+
+from .repository import DraftRepository
 from .source_browse import PatrolSourceBrowser
 from .source_projection import freeze_authoring_sources, source_fingerprint
-from .repository import DraftRepository
+from .source_reader import PatrolSourceReader
 
 
 class PatrolSourceResolver:

@@ -35,15 +35,29 @@ test("api sends grant mutations through the authority boundary", async () => {
   assert.deepEqual(JSON.parse(calls[0].options.body), { command: "revoke" });
 });
 
-test("api reads an immutable historical revision outside the Loop route prefix", async () => {
+test("api exposes no retired Context revision history readers", () => {
   const calls = [];
   const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options) => {
     calls.push({ url, options });
     return { ok: true, json: async () => ({ ref: { revision_id: "r one" } }) };
   });
-  const revision = await api.revision("r one");
-  assert.equal(calls[0].url, "http://focus/desktop/api/context-revisions/r%20one");
-  assert.equal(revision.ref.revision_id, "r one");
+  assert.equal(api.revision, undefined);
+  assert.equal(api.revisions, undefined);
+  assert.deepEqual(calls, []);
+});
+
+test("Context sources show current metadata and cannot render historical revision controls", () => {
+  const page = { context_id: "current", revision: { revision_id: "current-token", generation: 3 },
+    content_hash: "current-content-hash", sources: [{ context_id: "source" }],
+    versions: [{ revision_id: "retired-token", generation: 1, origin_kind: "root" }] };
+  const manifest = { nodes: [{ context_id: "source", title: "来源会话" }], edges: [] };
+  for (const presentation of ["default", "workbench"]) {
+    const html = PatrolView.context(page, {}, "sources", { manifest, presentation });
+    assert.match(html, /current-content-hash/);
+    assert.match(html, /来源会话/);
+    assert.match(html, /data-context-related="source"/);
+    assert.doesNotMatch(html, /data-patrol-inspect-revision|data-revision-id|retired-token|来源与版本/);
+  }
 });
 
 

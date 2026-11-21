@@ -19,7 +19,7 @@ from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector
 from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
 from backend.app.desktop.patrol.agent_loop.task_progress.runtime import TaskProgressRuntime
 from backend.tests.config_helpers import app_config_for
-from backend.tests.incremental_index_support import Checkpoints
+from backend.tests.index_test_support import Checkpoints
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from progress_test_support import register_progress
 

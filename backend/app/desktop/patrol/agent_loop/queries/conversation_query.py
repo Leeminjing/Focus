@@ -1,9 +1,10 @@
 r"""本文件对外提供 ContextConversationQueryService 的完整会话分页读取端口。
 
-输入为 Loop/Context id、可选 revision、反向游标与页大小；输出为按原始顺序排列的消息页、总数、
-下一游标和独立 provenance。具体工作流为校验 Loop membership，精确读取不可变 revision display
-投影，再从尾部向前切出有界页并只按该页 message id 关联审计来源；正文不注入来源标签。
-示例：`await service.read(session, loop_id, context_id, before=None, limit=40)`。
+输入为 Loop/Context id、可选分页一致性状态标识、反向游标与页大小；输出为当前内容的有界消息页、
+总数、下一游标、内容 hash、来源 Context 和独立 provenance。具体工作流为校验 Loop membership 后始终读取 current；
+revision_id 只校验同次分页的状态，内容变化返回 409 要求显式刷新，不读取其他 owner 固定的旧输入。
+内部 Observation 的精确快照读取独立保留；正文不注入来源标签。
+示例：`await service.read(session, loop_id, context_id, revision_id=None, before=None, limit=40)`。
 """
 
 from __future__ import annotations
@@ -12,17 +13,19 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.patrol.agent_loop.models import (
-    AgentLoop,
-    LoopContextMembership,
-    MessageProvenance,
-)
 from backend.app.desktop.contexts.evolution import (
     ContextRevisionNotFound,
     ContextRevisionReader,
     ContextRevisionRepository,
 )
-from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import ConversationFileSources
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopContextMembership,
+    MessageProvenance,
+)
+from backend.app.desktop.patrol.agent_loop.queries.file_link_sources import (
+    ConversationFileSources,
+)
 
 
 class ContextConversationQueryService:
@@ -52,15 +55,13 @@ class ContextConversationQueryService:
         if membership is None:
             raise HTTPException(404, "Context 不属于当前 Loop")
         try:
-            revision = (
-                await self._repository.get_by_id(session, revision_id)
-                if revision_id
-                else await self._repository.current(session, context_id)
-            )
+            revision = await self._repository.current(session, context_id)
         except ContextRevisionNotFound as exc:
-            raise HTTPException(404, "Context revision 不存在") from exc
+            raise HTTPException(404, "Context 当前内容不存在") from exc
         if revision is None or revision.ref.context_id != context_id:
-            raise HTTPException(404, "Context revision 不属于目标 Context")
+            raise HTTPException(404, "Context 当前内容不存在")
+        if revision_id is not None and revision_id != revision.ref.revision_id:
+            raise HTTPException(409, "Context 内容已更新，请刷新当前内容后继续阅读")
         page = await self._reader.read_message_page(
             revision,
             before=before,
@@ -85,6 +86,8 @@ class ContextConversationQueryService:
             "loop_id": loop_id,
             "context_id": context_id,
             "revision": revision.ref.model_dump(mode="json"),
+            "content_hash": revision.content_hash,
+            "sources": [{"context_id": edge.source.context_id} for edge in revision.sources],
             "projection_status": revision.projection_status.value,
             "total": page.total,
             "range": {"start": page.start, "end": page.end},

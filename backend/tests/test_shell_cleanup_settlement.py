@@ -1,7 +1,7 @@
 """本文件对外提供 Shell 清理回执与 Run 结算的持久边界验收。
 
 输入为真实工具账本、PostgreSQL Run/派发/工作区租约及明确或缺失的后端清理回执；输出为未知不结算、不重放、不复用目录和已确认正常收口的断言。
-具体工作流通过生产中间件执行替换的后端故障点，再运行 finalizer、重启恢复和租约获取；另在 claim 后模拟进程丢失，验证持久 pending 不能被重启当作退出。
+具体工作流在逐用例独立数据库中通过生产中间件执行替换的后端故障点，再运行全局 finalizer、重启恢复和租约获取；另在 claim 后模拟进程丢失，验证持久 pending 不能被重启当作退出。
 示例：python -m pytest backend/tests/test_shell_cleanup_settlement.py -q。
 """
 
@@ -36,7 +36,7 @@ from focus.sandbox.contracts import SandboxUnavailable, ShellExecutionResult
 from focus.security.middleware import AccessPolicyMiddleware
 from focus.tools.builtins import workspace_tools
 
-pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
 
 class _Checkpointer:

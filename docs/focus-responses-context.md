@@ -39,9 +39,9 @@ V2 的 JSONB `history_payload` 是唯一持久历史载荷。旧消息列继续�
 
 `WorldStateMiddleware.abefore_model` 同一 graph 更新提交消息、typed Items、snapshot、prepared request manifest。运行脊柱使用 `durability="sync"`。模型审计验证精确 prepared checkpoint 后记录尝试；completed result 保存后、graph checkpoint 前崩溃，恢复使用已保存 canonical result。Inbox receipt 验证其中的真实消息后才确认；rollback 到不含消息的旧 checkpoint 可以重新投递。
 
-最终请求准备位于 CompressionGate 之后，压缩恢复也会按 admission 时冻结的版本补齐当前 Run 的 Memory、selected Skill 与材料读取 policy。压缩预算通过相同准备端口预览这些块。宿主 Run admission 和兼容 Registrar 为新输入绑定 direct_user／delegated 来源，以及可用的 Run、Revision、checkpoint、directive 和 Round 引用；真实 HTTP Main 启动经过相同边界。Curator copy/compose 保留来源引用，指定 system role 的策展内容也只能投影成任务上下文，不能升级为平台 policy。
+Patrol 受管执行的最终请求准备位于 CompressionGate 之后，受管压缩恢复也会按 admission 时冻结的版本补齐当前 Run 的 Memory、selected Skill 与材料读取 policy。普通 Main 不再通过人工 `compression_request` 选择或恢复压缩；Provider 原生 compaction 与前缀证明仍按模型协议工作。压缩预算通过相同准备端口预览这些块。宿主 Run admission 和兼容 Registrar 为新输入绑定 direct_user／delegated 来源，以及可用的 Run、Revision、checkpoint、directive 和 Round 引用；真实 HTTP Main 启动经过相同边界。Curator copy/compose 保留来源引用，指定 system role 的策展内容也只能投影成任务上下文，不能升级为平台 policy。
 
-原生 reasoning／compaction 的请求来源保存 `focus-responses-prefix-v1` 证明，绑定实际投影后的完整有序 input 和 instructions。重放校验缺失证明或前缀变化时，最终准备在同一 checkpoint 显式重建 execution branch，核对源 typed 历史 hash，清除旧 runtime 与 opaque continuation，然后重新锚定 WorldState 和当前冻结引用。旧 checkpoint 和已发布 Revision 保留原始载荷供审计；新分支记录重建原因和来源哈希。历史图像转为文字、旧 Run 选择被过滤、请求临时附加图片未进入耐久历史，都可能要求此重建；不能把无损存储误当作任意前缀均可重放。
+原生 reasoning／compaction 的请求来源保存 `focus-responses-prefix-v1` 证明，绑定实际投影后的完整有序 input 和 instructions。重放校验缺失证明或前缀变化时，最终准备在同一 checkpoint 显式重建 execution branch，核对源 typed 历史 hash，清除旧 runtime 与 opaque continuation，然后重新锚定 WorldState 和当前冻结引用。恢复所需的原始输入由规范记录及 owner 引用持有，不为已释放的 Revision 另存永久正文；新分支记录重建原因和来源哈希。历史图像转为文字、旧 Run 选择被过滤、请求临时附加图片未进入耐久历史，都可能要求此重建；不能把无损存储误当作任意前缀均可重放。
 
 V1 semantic 从 canonical checkpoint 对象适配；若 settlement 保存的是同身份、同协议内容的 UI 消息，读取时只补回可证明的来源元数据，不写回旧数据。合成工具输出由共享 repair 模块生成 `status=error` 与 exclude 资格；删除并行结果中的一个时，空删除标记延后到交换结束，尚存真实结果继续作为证据。
 
@@ -88,7 +88,7 @@ DeepSeek 真实验证发现 high reasoning 与强制工具选择组合返回 400
 
 1. 设置 `context_run_admission: false`，经原配置生效/重启流程暂停新 Run。Desktop admission 与统一执行脊柱均检查该开关；历史 reader 继续读取 V1/V2。
 2. 保留支持 V2 的应用版本和当前 schema。数据库迁移拒绝删除已存在的 V2、delivery receipt 或 attempt ledger。
-3. 如需 legacy Chat，明确选择固定 legacy adapter 与 `protocol: chat_completions`，通过现有派生/定义/压缩边界创建新 execution branch。新分支保留任务来源，清除 opaque/native continuity 与旧 WorldState 基线。
+3. 如需 legacy Chat，明确选择固定 legacy adapter 与 `protocol: chat_completions`，通过 Patrol 自动策展或受管执行恢复端口创建新 execution branch。新分支保留任务来源，清除 opaque/native continuity 与旧 WorldState 基线。
 4. 不把旧 binary 部署到活动 V2 writer 上，不将 Responses reasonings 强塞入 Chat，不原位批量改写 revision 或删除 V2 数据。
 
 恢复继续使用旧 checkpoint 时先验证 retained refs，刷新当前 SecurityContext；旧 snapshot 不能恢复已失效授权。

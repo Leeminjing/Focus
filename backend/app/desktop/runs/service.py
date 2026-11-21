@@ -266,7 +266,7 @@ class RunService:
             compression_recovery = await compression_recovery_payload(
                 session, task_row, ports.checkpointer
             )
-            if compression_recovery is not None:
+            if compression_recovery is not None and identity.get("loop_id"):
                 await self._project_loop_pending_decision(
                     identity, "compression", compression_recovery
                 )

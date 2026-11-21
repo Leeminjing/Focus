@@ -1,0 +1,36 @@
+# 普通会话上下文手术退役
+
+2026-11-16，产品保留 Patrol Loop 的自动工作组织、语义索引和最新 Context，取消普通会话手工派生、定义重写、投影审批、手工压缩，以及永久保存所有 Context Revision 的产品能力。本决定覆盖 [旧 Context Loop 退役说明](context-loop-retirement.md) 原先保留普通 Context 编辑与派生的范围。
+
+## 删除的入口
+
+- 普通会话的来源消息拼装、手工派生和定义编辑器，包括 `POST /desktop/api/contexts/derive`、`PUT /desktop/api/contexts/{context_id}/definition` 与 `POST /desktop/api/contexts/{context_id}/projection/decision`。
+- 通过编辑用户消息或重新生成回答来手工派生会话的旧路径。
+- 普通会话的手工压缩页面、关键词整理、prepare/apply/restore 接口，以及人工选择消息范围的 `compression_request` 中断。
+- 任意历史 Context Revision 的版本列表和快照浏览，以及无调用方的 `frontier-summary`、`historical` 读取视图。文件产物版本、普通会话记录及 Run 状态不属于这项退役范围。
+
+旧请求不转换为自动策展请求。原普通 Context 编辑器及专属测试随入口移除；其他会话、导航、材料引用和工作区操作继续使用原流程。
+
+## 保留的上下文能力
+
+- Session Patrol `standard`：用户编辑独立任务的执行上下文，预览后投放，保存任务自己的冻结输入；这不是普通 Context 的手工改写接口。
+- Context Curator `context_curator`：跟踪根会话的最新稳定状态，持续整理受管 Context；模型配置、结构化输出验证、追踪控制与失败恢复保留。
+- Workspace Patrol Loop：通过 Lane Curator / Retrieval Cognitive Planner 读取索引与证据，自动派生、汇合和调整工作线，经过 Kernel 校验后执行。
+- 普通 Main 会话、当前 Context 的查看与来源导航、工作区材料、任务调度、取消和中断恢复。
+- Patrol 受管执行的窗口 CompressionGate、授权压缩准备与恢复，以及 Provider 原生 compaction、窗口预算和工具协议闭合。普通 Main 不再进入人工范围选择的 `compression_request`；本次删除手工操作入口，不删除 Patrol 所需的自动压缩和原生压缩协议。
+
+## 状态和索引
+
+Context 维护当前内容、版本身份和内容 hash。版本用于并发检查和索引绑定，不意味着为用户永久保存所有状态。
+
+正在执行或可恢复的任务固定自己的输入。同一份规范输入正文只保存一次，独立的 owner 记录表示 Run、Round 或策展任务对它的持有；Run 与 equipment 不再各嵌一份完整正文。Context 在执行期间更新时，已有任务仍按原输入身份读取；最后一个 owner 释放后，清理已失去用途的旧输入。任务恢复、并发检查、来源校验和原子发布继续存在。
+
+语义索引仍保留分段抽取、引文验证、整体解释和联合验证。局部段以同 Context、相同内容和相同模型合同作为复用条件，取消沿 Revision 祖先链寻找基线的要求。局部缓存和语义索引不构成历史 Context 浏览功能；本次简化也不承诺整体理解零模型调用。
+
+既有迁移文件和历史基准报告保留。新的向前迁移保留会话的当前内容、发布身份及活动任务所需输入，然后移除旧版本表及不再使用的完整正文。历史正文删除不可逆，降级不会重建已经清理的版本。
+
+删除源会话不会破坏其他活动任务持有的索引和证据；最后一个引用释放后，再清理对应完整索引和失去用途的局部证明。
+
+## 验证边界
+
+退役验证同时检查旧写入口不可用、前端没有普通手工派生/编辑/审批/压缩操作、普通 Main 不产生人工压缩请求，以及普通聊天、Context 导航、Session Patrol 编辑投放、两条自动策展、活动任务冻结读取、索引缓存复用与恢复仍可用。

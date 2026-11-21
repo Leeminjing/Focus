@@ -138,14 +138,6 @@
         return request(`/${encodeURIComponent(loopId)}/live/history?${query}`, { signal });
       },
       liveStream,
-      revisions: async (contextId, signal) => {
-        const response = await fetchImpl(`${root}/contexts/${encodeURIComponent(contextId)}/revisions`, { headers, signal });
-        return decode(response, "读取 Context 版本列表");
-      },
-      revision: async (revisionId, signal) => {
-        const response = await fetchImpl(`${root}/context-revisions/${encodeURIComponent(revisionId)}`, { headers, signal });
-        return decode(response, "读取 Context revision");
-      },
     });
   }
 

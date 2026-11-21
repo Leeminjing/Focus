@@ -1,33 +1,35 @@
 """
-本文件对外提供 ContextService，协调桌面 Context 的快照、活跃执行视图、派生、投影审批、受管发布与生命周期。
+本文件对外提供 ContextService，协调桌面 Context 的快照、活跃执行视图、受管发布与生命周期。
 
 输入为 session factory、LangGraph checkpointer、AppConfig 和 Context 请求模型；输出为 API 可序列化
 的 current/historical revision、Evolution Graph、display messages、执行身份上的最新执行状态视图与生命周期结果。
-具体工作流为把手工派生和审批交给 ContextEvolutionService，把一对一 Curator 先映射成单 Lane Curation Program，
+具体工作流为把一对一 Curator 先映射成单 Lane Curation Program，
 再经 SingleLanePortfolioPublisher 原子发布，发布游标与发起它的 Patrol attempt 在同一事务完成；已有
 受管 Context 的真实运行后缀会从旧 revision 提取并接到新 authored/execution 前缀之后；任务页读取会话时
 声明活跃执行视图，其实现只读取当前 revision 执行身份上的最新 checkpoint，不写入任何权威状态。
-删除时由 retention planner 保留仍被后代引用的最小 tombstone，本服务不再读写 identity-level definition/source 权威表。
+非级联删除保留仍有当前后代的最小 Context 墓碑；执行输入由 owner 独立持有，本服务不再读写旧定义/来源权威表。
 semantic_snapshot 读取精确版本的任务语义与关联证据；Curator 使用该端口，display snapshot 只供展示。
 由根 Context 派生的受管 Context 标题经 bounded_thread_title 收进 desktop_threads.title 的列宽。
-示例：`context = await service.derive(body)`；`view = await service.live_conversation(context_id)`。
+示例：`view = await service.live_conversation(context_id)`。
 """
 
 from __future__ import annotations
 
+import logging
+import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
-import logging
 from typing import Any, Literal
-import uuid
 
 from fastapi import HTTPException
+from focus.agents.lead import make_lead_agent
+from focus.config.app_config import AppConfig
+from focus.history import legacy_to_items, semantic_messages, validate_items
+from focus.history.bridge import checkpoint_records
+from focus.runtime.runs.events import serialize_message
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.contexts.projection import ContextProjection, compile_context_messages
-from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
-from backend.app.desktop.conversations.message_reference import contains_message_reference
 from backend.app.desktop.contexts.curation import (
     PortfolioPublicationError,
     PortfolioSuperseded,
@@ -39,22 +41,33 @@ from backend.app.desktop.contexts.evolution import (
     ContextEvolutionService,
     ContextLineageResolver,
     ContextRevisionContract,
-    ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
-    ContextRevisionRepository,
-    ContextRevisionRetentionPlanner,
     ContextRevisionRef,
-    ContextRevisionSourceContract,
+    ContextRevisionRepository,
 )
-from backend.app.desktop.persistence.models import AgentBoardTask, AgentMessage, DesktopMaterial, DesktopRun, DesktopThread, DesktopWorkspace, PatrolAgent, PatrolContextAttempt, PatrolContextBinding, PatrolContextRevision, PatrolDraft, SwarmAgent
-from backend.app.desktop.api.schemas import ContextDefinitionUpdate, ContextDeriveCreate, ContextProjectionDecision
+from backend.app.desktop.contexts.evolution.reader import ContextRevisionReader
+from backend.app.desktop.contexts.projection import (
+    ContextProjection,
+    compile_context_messages,
+)
+from backend.app.desktop.conversations.message_reference import (
+    contains_message_reference,
+)
 from backend.app.desktop.persistence.contracts import bounded_thread_title
-from focus.agents.lead import make_lead_agent
-from focus.config.app_config import AppConfig
-from focus.runtime.runs.events import serialize_message
-from focus.history import legacy_to_items, semantic_messages, validate_items
-from focus.history.bridge import checkpoint_records
-
+from backend.app.desktop.persistence.models import (
+    AgentBoardTask,
+    AgentMessage,
+    DesktopMaterial,
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+    PatrolAgent,
+    PatrolContextAttempt,
+    PatrolContextBinding,
+    PatrolContextRevision,
+    PatrolDraft,
+    SwarmAgent,
+)
 
 logger = logging.getLogger(__name__)
 _RUNNABLE_STATUSES = frozenset({"valid", "repaired", "approved"})
@@ -81,7 +94,6 @@ class ContextService:
             ContextRevisionRepository()
         )
         self.context_lineage = ContextLineageResolver()
-        self.revision_retention = ContextRevisionRetentionPlanner()
         self.single_lane_programs = SingleLaneCurationProgramService()
         self.single_lane_publications = SingleLanePortfolioPublisher(
             session_factory,
@@ -90,30 +102,23 @@ class ContextService:
         )
 
     async def snapshot(self, context_id: str, checkpoint_id: str | None = None) -> dict[str, Any]:
+        """Read current content; checkpoint_id only checks the caller's current token."""
         async with self.session_factory() as session:
             task = await session.get(DesktopThread, context_id)
             if not task:
                 raise HTTPException(404, "Context 不存在")
-            if checkpoint_id is not None:
-                view = await self.evolution.read_checkpoint_display(
-                    session, context_id, checkpoint_id
-                )
-                if view is not None:
-                    return {
-                        "context_id": context_id,
-                        "checkpoint_id": view.ref.checkpoint_id,
-                        "messages": [deepcopy(message) for message in view.messages],
-                    }
-        revision_view = await self.evolution.read_current_display(context_id)
-        if revision_view is not None and checkpoint_id is None:
-            return {
-                "context_id": context_id,
-                "checkpoint_id": revision_view.ref.checkpoint_id,
-                "messages": [deepcopy(message) for message in revision_view.messages],
-            }
+            view = await ContextRevisionReader(ContextRevisionRepository(), self.checkpointer).read_current(
+                session, context_id, "display"
+            )
+            if view is not None:
+                if checkpoint_id is not None and checkpoint_id != view.ref.checkpoint_id:
+                    raise HTTPException(409, "Context 已变化，请读取当前快照")
+                return {
+                    "context_id": context_id,
+                    "checkpoint_id": view.ref.checkpoint_id,
+                    "messages": [deepcopy(message) for message in view.messages],
+                }
         config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
-        if checkpoint_id is not None:
-            config["configurable"]["checkpoint_id"] = checkpoint_id
         checkpoint = await self.checkpointer.aget_tuple(config)
         if checkpoint is None:
             if checkpoint_id is not None:
@@ -121,7 +126,7 @@ class ContextService:
             return {"context_id": context_id, "checkpoint_id": None, "messages": []}
         actual_id = checkpoint.config.get("configurable", {}).get("checkpoint_id")
         if checkpoint_id is not None and actual_id != checkpoint_id:
-            raise HTTPException(404, "Context checkpoint 不属于该 Context")
+            raise HTTPException(409, "Context 已变化，请读取当前快照")
         return {
             "context_id": context_id,
             "checkpoint_id": actual_id,
@@ -236,98 +241,6 @@ class ContextService:
         )
         return checkpoint.config.get("configurable", {}).get("checkpoint_id") if checkpoint else None
 
-    async def derive(self, body: ContextDeriveCreate) -> dict[str, Any]:
-        refs = [(source.context_id, source.checkpoint_id) for source in body.sources]
-        if len(refs) != len(set(refs)):
-            raise HTTPException(422, "Context 来源不能重复")
-        context_id = _new_id()
-        async with self.session_factory.begin() as session:
-            parents = [await session.get(DesktopThread, context_id) for context_id, _ in refs]
-            if any(parent is None for parent in parents):
-                raise HTTPException(404, "来源 Context 不存在")
-            workspace_ids = {parent.workspace_id for parent in parents if parent is not None}
-            if len(workspace_ids) != 1:
-                raise HTTPException(422, "只能合并同一工作区的 Context")
-            task = DesktopThread(
-                task_id=context_id,
-                workspace_id=next(iter(workspace_ids)),
-                thread_id=_new_id(),
-                title=body.title,
-                ui_state={},
-            )
-            session.add(task)
-            await session.flush()
-            source_contracts = []
-            for index, source in enumerate(body.sources):
-                source_ref = await self.evolution.ensure_checkpoint_revision(
-                    session,
-                    source.context_id,
-                    source.checkpoint_id,
-                )
-                source_contracts.append(
-                    ContextRevisionSourceContract(source=source_ref, position=index)
-                )
-            await self.evolution.stage_definition(
-                session,
-                context_id,
-                tuple(deepcopy(body.messages)),
-                tuple(source_contracts),
-                ContextRevisionOriginKind.MANUAL_DERIVE,
-                context_id,
-            )
-        return await self.get(context_id)
-
-    async def update_definition(
-        self, context_id: str, body: ContextDefinitionUpdate
-    ) -> dict[str, Any]:
-        async with self.session_factory.begin() as session:
-            binding = await session.scalar(
-                select(PatrolContextBinding)
-                .where(PatrolContextBinding.managed_context_id == context_id)
-                .with_for_update()
-            )
-            if binding and binding.control_state != "stopped":
-                binding.control_state = "stopped"
-                binding.health_state = "idle"
-                binding.revision += 1
-            current = await self.evolution.current(session, context_id)
-            if current is None or current.ref.payload_mode is not ContextRevisionPayloadMode.DEFINITION:
-                raise HTTPException(404, "派生 Context 不存在")
-            has_main_run = await session.scalar(
-                select(DesktopRun.run_id)
-                .where(DesktopRun.task_id == context_id, DesktopRun.kind == "main")
-                .limit(1)
-            )
-            if has_main_run:
-                raise HTTPException(409, "Context 已开始运行；请从当前快照继续派生")
-            await self.evolution.stage_definition(
-                session,
-                context_id,
-                tuple(deepcopy(body.messages)),
-                self._next_definition_sources(current),
-                ContextRevisionOriginKind.DEFINITION_UPDATE,
-                context_id,
-            )
-        return await self.get(context_id)
-
-    async def decide(
-        self, context_id: str, body: ContextProjectionDecision
-    ) -> dict[str, Any]:
-        async with self.session_factory.begin() as session:
-            try:
-                await self.evolution.decide_definition(
-                    session,
-                    context_id,
-                    body.decision,
-                    body.definition_hash,
-                    body.projection_hash,
-                )
-            except RuntimeError as exc:
-                raise HTTPException(409, str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(409, str(exc)) from exc
-        return await self.get(context_id)
-
     async def publish_managed_revision(
         self,
         revision_id: str,
@@ -393,6 +306,7 @@ class ContextService:
             if not self._revision_is_current(binding, revision):
                 revision.status = "superseded"
                 revision.completed_at = datetime.now(timezone.utc)
+                await ContextRevisionRepository().release(session, "context_curator", revision_id)
                 return "superseded"
             task = await self._ensure_managed_identity(session, binding)
             active_main_run = await session.scalar(
@@ -494,6 +408,7 @@ class ContextService:
                 attempt.error_kind = None
                 attempt.error = None
                 attempt.completed_at = datetime.now(timezone.utc)
+            await ContextRevisionRepository().release(session, "context_curator", revision_id)
         return "published" if outcome == "replace" else "unchanged"
 
     async def _supersede_managed_revision(self, revision_id: str) -> str:
@@ -505,6 +420,7 @@ class ContextService:
                 binding = await session.get(PatrolContextBinding, revision.binding_id)
                 if binding is not None:
                     binding.health_state = "idle"
+            await ContextRevisionRepository().release(session, "context_curator", revision_id)
         return "superseded"
 
     async def _reject_invalid_managed_projection(
@@ -536,6 +452,7 @@ class ContextService:
             if not self._revision_is_current(binding, revision):
                 revision.status = "superseded"
                 revision.completed_at = datetime.now(timezone.utc)
+                await ContextRevisionRepository().release(session, "context_curator", revision_id)
                 await session.commit()
                 return "superseded"
             revision.authored_messages = deepcopy(projection.authored_messages)
@@ -789,13 +706,6 @@ class ContextService:
                 raise HTTPException(404, "Context 不存在")
             current = await self.evolution.current(session, context_id)
             sources = await self._external_sources(session, current)
-            has_main_run = bool(
-                await session.scalar(
-                    select(DesktopRun.run_id)
-                    .where(DesktopRun.task_id == context_id, DesktopRun.kind == "main")
-                    .limit(1)
-                )
-            )
             binding = await session.scalar(
                 select(PatrolContextBinding).where(
                     PatrolContextBinding.managed_context_id == context_id
@@ -812,15 +722,8 @@ class ContextService:
                 ),
                 "lifecycle": self._lifecycle(task),
                 "sources": [self._revision_source_payload(source, index) for index, source in enumerate(sources)],
-                "editable": bool(
-                    current is not None
-                    and current.ref.payload_mode is ContextRevisionPayloadMode.DEFINITION
-                    and not has_main_run
-                ),
                 "managed_status": binding.control_state if binding else None,
             }
-            if current is not None and current.ref.payload_mode is ContextRevisionPayloadMode.DEFINITION:
-                payload.update(self._revision_definition_payload(current))
             return payload
 
     async def lineage(self, context_id: str) -> dict[str, Any]:
@@ -896,11 +799,6 @@ class ContextService:
                     "lifecycle": self._lifecycle(task),
                     "projection_status": (
                         current.projection_status.value if current is not None else "root"
-                    ),
-                    "editable": bool(
-                        current is not None
-                        and current.ref.payload_mode is ContextRevisionPayloadMode.DEFINITION
-                        and task.task_id not in run_stats
                     ),
                     "cache_input_tokens": input_tokens,
                     "cache_hit_tokens": hit_tokens,
@@ -1071,15 +969,10 @@ class ContextService:
     async def _hard_delete_threads(
         self, session: AsyncSession, ids: list[str], to_clean: list[str]
     ) -> None:
-        plan = await self.revision_retention.plan(session, ids)
-        for cid in plan.tombstones:
-            row = await session.get(DesktopThread, cid)
-            if row is not None:
-                await self._tombstone_deleted(session, row, to_clean)
-        hard = list(plan.hard_delete)
+        hard = list(dict.fromkeys(ids))
         if not hard:
             return
-        await self.single_lane_programs.delete_for_contexts(session, hard)
+        await self._release_deleted_context_owners(session, hard)
         ordered = list(reversed(hard))
         for cid in ordered:
             row = await session.get(DesktopThread, cid)
@@ -1087,6 +980,38 @@ class ContextService:
                 continue
             to_clean.append(row.thread_id)
             await session.execute(delete(DesktopThread).where(DesktopThread.task_id == cid))
+        await self._prune_deleted_context_inputs(session, hard)
+
+    async def _release_deleted_context_owners(
+        self, session: AsyncSession, context_ids: list[str]
+    ) -> None:
+        await self._release_deleted_run_inputs(session, context_ids)
+        curator_revisions = tuple((await session.scalars(
+            select(PatrolContextRevision.revision_id)
+            .join(PatrolContextBinding, PatrolContextBinding.binding_id == PatrolContextRevision.binding_id)
+            .join(PatrolAgent, PatrolAgent.agent_id == PatrolContextBinding.agent_id)
+            .where(PatrolAgent.task_id.in_(context_ids))
+            .with_for_update()
+        )).all())
+        await ContextRevisionRepository().release_owners(
+            session, tuple(("context_curator", revision_id) for revision_id in curator_revisions)
+        )
+        await self.single_lane_programs.delete_for_contexts(session, context_ids)
+
+    @staticmethod
+    async def _prune_deleted_context_inputs(session: AsyncSession, context_ids: list[str]) -> None:
+        inputs = ContextRevisionRepository()
+        for context_id in context_ids:
+            await inputs.prune(session, context_id)
+
+    @staticmethod
+    async def _release_deleted_run_inputs(session: AsyncSession, context_ids: list[str]) -> None:
+        run_ids = tuple((await session.scalars(
+            select(DesktopRun.run_id).where(DesktopRun.task_id.in_(context_ids)).with_for_update()
+        )).all())
+        await ContextRevisionRepository().release_owners(
+            session, tuple(("run", run_id) for run_id in run_ids)
+        )
 
     async def _tombstone_deleted(
         self, session: AsyncSession, task: DesktopThread, to_clean: list[str]
@@ -1096,15 +1021,17 @@ class ContextService:
             return
         await self.evolution.publish_tombstone(session, cid, origin_id=cid)
         task.deleted_at = datetime.now(timezone.utc)
+        await self._release_deleted_context_owners(session, [cid])
         await session.execute(delete(DesktopRun).where(DesktopRun.task_id == cid))
         await session.execute(delete(DesktopMaterial).where(DesktopMaterial.task_id == cid))
         await session.execute(delete(PatrolDraft).where(PatrolDraft.task_id == cid))
         await session.execute(
-            delete(PatrolAgent).where(PatrolAgent.task_id == cid, PatrolAgent.mode == "standard")
+            delete(PatrolAgent).where(PatrolAgent.task_id == cid)
         )
         await session.execute(delete(SwarmAgent).where(SwarmAgent.task_id == cid))
         await session.execute(delete(AgentMessage).where(AgentMessage.task_id == cid))
         await session.execute(delete(AgentBoardTask).where(AgentBoardTask.thread_task_id == cid))
+        await self._prune_deleted_context_inputs(session, [cid])
         to_clean.append(task.thread_id)
 
     @staticmethod
@@ -1133,32 +1060,3 @@ class ContextService:
             "revision_id": source.revision_id,
             "position": position,
         }
-
-    @staticmethod
-    def _revision_definition_payload(
-        revision: ContextRevisionContract,
-    ) -> dict[str, Any]:
-        decision = None
-        if revision.projection_status.value == "approved":
-            decision = "accept"
-        elif revision.projection_status.value == "rejected":
-            decision = "reject"
-        return {
-            "projection_status": revision.projection_status.value,
-            "authored_messages": deepcopy(list(revision.authored_messages)),
-            "execution_messages": deepcopy(list(revision.execution_messages)),
-            "repair_manifest": deepcopy(list(revision.repair_manifest)),
-            "issues": deepcopy(list(revision.issues)),
-            "definition_hash": revision.definition_hash,
-            "projection_hash": revision.projection_hash,
-            "initial_checkpoint_id": revision.ref.checkpoint_id,
-            "decision": decision,
-        }
-
-    @staticmethod
-    def _next_definition_sources(
-        current: ContextRevisionContract,
-    ) -> tuple[ContextRevisionSourceContract, ...]:
-        if current.ref.is_runnable:
-            return (ContextRevisionSourceContract(source=current.ref, position=0),)
-        return current.sources

@@ -1,67 +1,101 @@
-from backend.tests.workspace_loop_support import seed_workspace_patrol_loop, advance_workspace_mission
-r"""本文件对外提供 Patrol 自主压缩的领域契约、候选/结果证据、事务提交、迁移往返与用户优先级回归测试。
+from backend.tests.workspace_loop_support import (
+    advance_workspace_mission,
+    seed_workspace_patrol_loop,
+)
+
+r"""本文件对外提供 Patrol 自主压缩的领域契约、候选/结果证据、事务提交、存储边界与用户优先级回归测试。
 
 输入为消息协议组、保护锚点、版本化授权 facts、并发 Kernel intent 与隔离 PostgreSQL；输出为 bounded
 manifest、纯 policy、唯一 resolution、内容哈希、无 Context 副作用及可逆 schema 的确定性断言。
 具体工作流为先验证无正文 manifest、closed action 和 checkpoint evidence，再以真实候选服务覆盖
 候选持久化、并发提交、用户 supersession 及
-`head → down_revision → head` 迁移。示例：`pytest test_agent_loop_compression_authority.py`。
+无永久版本外键的当前存储合同。示例：`pytest test_agent_loop_compression_authority.py`。
 初始化失败回归保留原始异常，清理只处理已创建Loop，且始终释放自身AsyncEngine。
 """
 
-from datetime import UTC, datetime, timedelta
 import asyncio
-import importlib
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from pydantic import ValidationError
-
-from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy, CompressionCandidateRequest
-from backend.app.desktop.patrol.agent_loop.compression_authority.candidates import CompressionCandidateService
-from backend.app.desktop.patrol.agent_loop.compression_authority.evidence import CompressionCheckpointEvidence, CompressionEvidenceVerifier
-from backend.app.desktop.patrol.agent_loop.compression_authority.manifest import CompressionManifestBuilder
-from backend.app.desktop.patrol.agent_loop.compression_authority.policy import CompressionAuthorityFacts, CompressionAuthorityPolicy
-from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import PatrolCognitiveStep, StructuredPatrolDecisionModel
-from backend.app.desktop.patrol.agent_loop.schemas import PATROL_ACTION_ADAPTER
 from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.patrol.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
-from backend.app.desktop.patrol.agent_loop.compression_authority.gate_projector import LoopCompressionGateProjector
-from backend.app.desktop.patrol.agent_loop.compression_authority.resolution import CompressionResolutionCoordinator
-from backend.app.desktop.patrol.agent_loop.governance.gates import PendingDecisionProjector
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.candidates import (
+    CompressionCandidateService,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.contracts import (
+    AutonomousCompressionPolicy,
+    CompressionCandidateRequest,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.evidence import (
+    CompressionCheckpointEvidence,
+    CompressionEvidenceVerifier,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.gate_projector import (
+    LoopCompressionGateProjector,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.manifest import (
+    CompressionManifestBuilder,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.models import (
+    LoopCompressionCandidate,
+    LoopCompressionResolution,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.policy import (
+    CompressionAuthorityFacts,
+    CompressionAuthorityPolicy,
+)
+from backend.app.desktop.patrol.agent_loop.compression_authority.resolution import (
+    CompressionResolutionCoordinator,
+)
+from backend.app.desktop.patrol.agent_loop.governance.gates import (
+    PendingDecisionProjector,
+)
 from backend.app.desktop.patrol.agent_loop.kernel import LoopKernel
-from backend.app.desktop.patrol.agent_loop.models import AgentLoop, LoopAction, LoopPendingDecision, LoopRound
-from backend.app.desktop.patrol.agent_loop.schemas import PatrolDecisionIntent
+from backend.app.desktop.patrol.agent_loop.models import (
+    AgentLoop,
+    LoopAction,
+    LoopPendingDecision,
+    LoopRound,
+)
+from backend.app.desktop.patrol.agent_loop.rounds.round_orchestration import (
+    PatrolCognitiveStep,
+    StructuredPatrolDecisionModel,
+)
+from backend.app.desktop.patrol.agent_loop.schemas import (
+    PATROL_ACTION_ADAPTER,
+    PatrolDecisionIntent,
+)
 from backend.app.desktop.patrol.agent_loop.service import AgentLoopService
-from backend.app.desktop.contexts.evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+)
 
 
-def test_compression_authority_migration_downgrades_and_upgrades(isolated_postgres_database) -> None:
-    migration = importlib.import_module("focus.persistence.migrations.versions.f3a4b5c6d7e8_add_loop_compression_authority")
-    def migrate(engine, action):
-        with engine.begin() as connection:
-            with Operations.context(MigrationContext.configure(connection)):
-                action()
+def test_compression_schema_preserves_actions_without_permanent_revision_foreign_keys(isolated_postgres_database) -> None:
     database_url = make_url(os.environ["FOCUS_DATABASE_URL"]).set(drivername="postgresql+psycopg")
     engine = create_engine(database_url)
     try:
-        migrate(engine, migration.downgrade)
-        schema = inspect(engine)
-        assert "loop_compression_candidates" not in schema.get_table_names()
-        assert "loop_compression_resolutions" not in schema.get_table_names()
-        assert "compression_policy" not in {column["name"] for column in schema.get_columns("loop_delegation_grants")}
-        migrate(engine, migration.upgrade)
         schema = inspect(engine)
         assert {"loop_compression_candidates", "loop_compression_resolutions"} <= set(schema.get_table_names())
         assert "compression_policy" in {column["name"] for column in schema.get_columns("loop_delegation_grants")}
+        for table in ("loop_compression_candidates", "loop_compression_resolutions"):
+            assert all(fk["referred_table"] != "desktop_context_revisions" for fk in schema.get_foreign_keys(table))
     finally:
         engine.dispose()
 
@@ -305,7 +339,7 @@ def test_patrol_candidate_branch_reads_body_free_manifest_before_exact_preparati
     asyncio.run(exercise())
 
 
-def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkpoint() -> None:
+def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkpoint(monkeypatch) -> None:
     resolution = LoopCompressionResolution(
         resolution_id="resolution",
         loop_id="loop",
@@ -354,13 +388,27 @@ def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkp
         (DesktopRun, "resume-run"): run,
     }
 
+    released = []
+
+    async def release(_repository, _session, owner_kind, owner_id):
+        released.append({"owner_kind": owner_kind, "owner_id": owner_id})
+
+    monkeypatch.setattr(ContextRevisionRepository, "release", release)
+
     class ScalarRows:
+        def __init__(self, values):
+            self.values = values
+
+        def __iter__(self):
+            return iter(self.values)
+
         def all(self):
-            return [resolution]
+            return self.values
 
     class Session:
         async def scalars(self, _statement):
-            return ScalarRows()
+            model = _statement.column_descriptions[0]["entity"]
+            return ScalarRows([resolution] if model is LoopCompressionResolution else [])
 
         async def get(self, model, identity, **_kwargs):
             return rows.get((model, identity))
@@ -408,6 +456,55 @@ def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkp
         assert resolution.actual_after_tokens == 300
         assert pending.status == "resolved"
         assert action.status == "applied"
+        assert len(released) == 2
+        assert all("compression_candidate" in values.values() and "candidate" in values.values() for values in released)
+
+    asyncio.run(exercise())
+
+
+def test_compression_recovery_uses_pinned_input_and_exact_run_checkpoint():
+    from focus.runtime.runs.events import deserialize_messages
+
+    from backend.app.desktop.patrol.agent_loop.compression_authority.recovery_evidence import (
+        CompressionRecoveryEvidenceReader,
+    )
+
+    source_messages = ({"id": "old", "role": "human", "content": "old details " * 50},)
+    ranges = CompressionEvidenceVerifier.bind_ranges(source_messages, [{"source_ids": ["old"], "replacement": "summary"}])
+    block = {"id": "block", "role": "human", "content": "summary", "compression": {"block_id": "block", "source": list(source_messages)}}
+    config = {"thread_id": "execution", "checkpoint_ns": "branch", "checkpoint_id": "result"}
+    checkpoint = SimpleNamespace(config={"configurable": config}, checkpoint={"channel_values": {"messages": deserialize_messages([block], validate=False)}}, pending_writes=[])
+    candidate = SimpleNamespace(context_id="context", base_context_revision_id="input", base_checkpoint_id="base", normalized_ranges=ranges)
+    run = SimpleNamespace(task_id="context", context_revision_id="input", context_checkpoint_id="base", execution_thread_id="execution", checkpoint_ns="branch", final_checkpoint_id="result")
+    pinned = SimpleNamespace(ref=SimpleNamespace(context_id="context", revision_id="input", checkpoint_id="base", execution_thread_id="execution", checkpoint_ns="branch"))
+
+    class Revisions:
+        async def get_by_id(self, _session, identity):
+            assert identity == "input"
+            return pinned
+
+        async def get_input(self, _session, ref):
+            assert ref is pinned.ref
+            return pinned
+
+    class Checkpointer:
+        async def aget_tuple(self, request):
+            assert request == {"configurable": config}
+            return checkpoint
+
+    async def exercise():
+        reader = CompressionRecoveryEvidenceReader(Checkpointer())
+        reader._revisions = Revisions()
+        # No result Revision is required, even if latest Context has advanced.
+        assert (await reader.inspect(None, candidate, run)).matched
+        checkpoint.config = {"configurable": {**config, "checkpoint_id": "unrelated"}}
+        assert (await reader.inspect(None, candidate, run)).reason == "result_checkpoint_identity_mismatch"
+        checkpoint.config = {"configurable": config}
+        checkpoint.pending_writes = [("task", "__interrupt__", {"type": "compression_request"})]
+        assert (await reader.inspect(None, candidate, run)).reason == "compression_interrupt_still_pending"
+        checkpoint.pending_writes = []
+        run.execution_thread_id = "other"
+        assert (await reader.inspect(None, candidate, run)).reason == "result_execution_identity_mismatch"
 
     asyncio.run(exercise())
 
@@ -522,7 +619,10 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 recovery,
             )
             from test_loop_execution_ownership import _seed_launching_directive
-            from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import create_observation_round
+
+            from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import (
+                create_observation_round,
+            )
             old_round_id = snapshot["current_round_id"]
             directive_id = await _seed_launching_directive(sessions, {"loop_id": loop_id,
                 "round_id": old_round_id, "context_id": context_id, "revision_id": revision_id,
@@ -578,11 +678,19 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 ),
             )
             async with sessions() as session:
+                from backend.app.desktop.contexts.evolution.models import (
+                    ContextInputSnapshot,
+                )
                 round_row = await session.get(LoopRound, snapshot["current_round_id"])
                 persisted_candidate = await session.get(LoopCompressionCandidate, candidate.candidate_id)
                 assert persisted_candidate.status == "prepared"
                 assert persisted_candidate.normalized_ranges[0]["source_hash"]
                 assert persisted_candidate.normalized_ranges[0]["replacement_hash"] == persisted_candidate.replacement_hash
+                pinned = await session.scalar(select(ContextInputSnapshot).where(
+                    ContextInputSnapshot.owner_kind == "compression_candidate",
+                    ContextInputSnapshot.owner_id == candidate.candidate_id,
+                ))
+                assert pinned is not None and pinned.revision_id == revision_id
             intent = PatrolDecisionIntent(
                 decision_id=uuid.uuid4().hex,
                 idempotency_key=f"compression:{suffix}",
@@ -628,6 +736,10 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 candidate = await session.get(LoopCompressionCandidate, candidate.candidate_id)
                 assert resolution.status == "superseded"
                 assert candidate.status == "superseded"
+                assert await session.scalar(select(ContextInputSnapshot).where(
+                    ContextInputSnapshot.owner_kind == "compression_candidate",
+                    ContextInputSnapshot.owner_id == candidate.candidate_id,
+                )) is None
         finally:
             try:
                 if snapshot is not None:

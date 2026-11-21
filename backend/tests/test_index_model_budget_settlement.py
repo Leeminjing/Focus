@@ -30,6 +30,14 @@ class Answer(BaseModel):
     answer: str
 
 
+class ProviderRequest:
+    """Expose the prompt-JSON request for the production budget preflight."""
+
+    @staticmethod
+    def _get_request_payload(messages, **options):
+        return {"model": "budget-test", "messages": messages, **options}
+
+
 class Receipts:
     """只替换耐久存储；使用生产模型调用和用量报告路径。"""
 
@@ -48,7 +56,7 @@ class Receipts:
 
 def test_legacy_finite_budget_releases_each_reported_production_attempt(monkeypatch):
     async def run():
-        class Provider:
+        class Provider(ProviderRequest):
             async def ainvoke(self, messages, config):
                 config["callbacks"][0].usage_metadata["budget-test"] = {
                     "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
@@ -80,7 +88,7 @@ def test_each_reported_retry_is_released_before_the_next_attempt(monkeypatch, va
     async def run():
         calls = 0
 
-        class Provider:
+        class Provider(ProviderRequest):
             async def ainvoke(self, messages, config):
                 nonlocal calls
                 calls += 1
@@ -246,16 +254,29 @@ def test_refund_preserves_frozen_usage_unlimited_and_actual_overruns(unlimited):
 def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeypatch, production_model):
     from sqlalchemy import select
 
-    from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import RevisionInterpretationProposal
-    from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-    from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import PortfolioSemanticIndexService
+    from backend.app.desktop.patrol.agent_loop.context_expansion.interpretation_record import (
+        RevisionInterpretationProposal,
+    )
+    from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
+        LoopIndexBudgetReservation,
+    )
+    from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
+        PortfolioSemanticIndexService,
+    )
     from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_grounding import (
-        SemanticClaimSupportProposal, SemanticProjectionProposal,
+        SemanticClaimSupportProposal,
+        SemanticProjectionProposal,
     )
     from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
-    from backend.tests.incremental_index_support import Checkpoints, ModelProbe, messages, observation, revision
-    from backend.tests.test_incremental_index_real_model import observed_model_factory
-    from backend.tests.test_incremental_revision_index import exercise
+    from backend.tests.index_test_support import (
+        Checkpoints,
+        ModelProbe,
+        exercise,
+        messages,
+        observation,
+        revision,
+    )
+    from backend.tests.test_index_provider import observed_model_factory
 
     budgets = _legacy_finite_budgets()
 
@@ -266,7 +287,7 @@ def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeyp
             config = app_config_for("budget-test", None)
             config.models[0].curation_output_method = "prompt_json"
 
-            class Provider:
+            class Provider(ProviderRequest):
                 async def ainvoke(self, request, config):
                     content = request[-1].content
                     payload = json.loads(content.split("<worker_input>", 1)[1].split("</worker_input>", 1)[0])
@@ -294,10 +315,10 @@ def test_legacy_finite_budget_full_index_cold_append_and_cache(tmp_path, monkeyp
         cold = await service.build(observation(seed, first, budget=budgets))
         assert cold.blocker_code is None, cold.blocker_summary
         assert cold.indexes[0].quality_state == "complete" and len(probe.calls) > 6
-        target = await revision(sessions, seed["context_id"], history + messages(1, 37), parent=first)
+        target = await revision(sessions, seed["context_id"], history + messages(1, 37))
         appended = await service.build(observation(seed, target, budget=budgets))
         assert appended.blocker_code is None, appended.blocker_summary
-        assert appended.indexes[0].inheritance.reused_segment_ids
+        assert len(set(cold.indexes[0].inheritance.record_ids).intersection(appended.indexes[0].inheritance.record_ids)) == 3
         count = len(probe.calls)
         cached = await service.build(observation(seed, target, budget=budgets))
         assert cached.indexes == appended.indexes and len(probe.calls) == count

@@ -144,7 +144,7 @@ async def memory_snapshot(sessions, loop_id: str):
         publications = (
             await session.scalars(
                 text(
-                    "SELECT to_jsonb(p) FROM desktop_context_publications p JOIN desktop_context_revisions r USING(revision_id) JOIN desktop_threads c ON c.task_id=r.context_id JOIN agent_loops l ON l.workspace_id=c.workspace_id WHERE l.loop_id=:loop"
+                    "SELECT jsonb_build_object('context_id', r.context_id, 'revision_id', r.revision_id) FROM desktop_context_states r JOIN desktop_threads c ON c.task_id=r.context_id AND c.current_revision_id=r.revision_id JOIN agent_loops l ON l.workspace_id=c.workspace_id WHERE l.loop_id=:loop"
                 ),
                 {"loop": loop_id},
             )
@@ -153,8 +153,8 @@ async def memory_snapshot(sessions, loop_id: str):
             publications, key=lambda row: json.dumps(row, sort_keys=True)
         )
         for name, query in {
-            "context_revisions": "SELECT to_jsonb(r) FROM desktop_context_revisions r JOIN desktop_threads c ON c.task_id=r.context_id JOIN agent_loops l ON l.workspace_id=c.workspace_id WHERE l.loop_id=:loop",
-            "revision_sources": "SELECT to_jsonb(s) FROM desktop_context_revision_sources s JOIN desktop_context_revisions r ON r.revision_id=s.target_revision_id JOIN desktop_threads c ON c.task_id=r.context_id JOIN agent_loops l ON l.workspace_id=c.workspace_id WHERE l.loop_id=:loop",
+            "context_states": "SELECT to_jsonb(r) FROM desktop_context_states r JOIN desktop_threads c ON c.task_id=r.context_id JOIN agent_loops l ON l.workspace_id=c.workspace_id WHERE l.loop_id=:loop",
+            "input_snapshots": "SELECT to_jsonb(s) FROM desktop_context_input_snapshots s JOIN desktop_threads c ON c.task_id=s.context_id JOIN agent_loops l ON l.workspace_id=c.workspace_id WHERE l.loop_id=:loop",
             "context_pointers": "SELECT jsonb_build_object('context_id', c.task_id, 'revision_id', c.current_revision_id) FROM desktop_threads c JOIN agent_loops l ON l.workspace_id=c.workspace_id WHERE l.loop_id=:loop",
         }.items():
             rows = (await session.scalars(text(query), {"loop": loop_id})).all()

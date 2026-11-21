@@ -49,10 +49,6 @@ async def start_main_run(
 @router.post("/threads/{thread_id}/runs/resume")
 async def resume_run(thread_id: str, body: ResumeRequest, request: Request) -> dict:
     """承诺层人工确认恢复：以相同 thread_id resume，返回新 run 供前端订阅 SSE。"""
-    if isinstance(body.resume, dict) and body.resume.get("type") == "compression":
-        await request.app.state.agent_loop_service.user_resolved_compression_gate(
-            thread_id
-        )
     prepared = await request.app.state.desktop_service.resume_run(
         thread_id, body.resume
     )

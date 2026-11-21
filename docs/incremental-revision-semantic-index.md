@@ -1,5 +1,7 @@
 # Revision 继承式语义索引
 
+> 2026-11-16：本文记录原 Revision 继承索引设计及历史基准。当前索引不再沿祖先 Revision 链查找基线；按目标最新状态及同 Context、同合同的局部段缓存重用证据，仍执行整体解释和验证。运行期间需要的旧输入由有生命周期的任务快照保护，不提供永久历史 Revision 档案。下文祖先查找和历史合同说明仅适用于原实现，历史基准数据保留原样。当前边界见 [上下文手术退役说明](context-surgery-retirement.md)。
+
 Focus 为每个精确、冻结的 Context Revision 发布完整且不可变的 Semantic Index。稳定局部证据按权威追加证明继承；内容变化的 Revision 重新做跨 segment 整体解释。完整目标和两类合同精确命中时零模型调用。
 
 ```text

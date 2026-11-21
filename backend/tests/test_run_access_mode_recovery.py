@@ -6,6 +6,11 @@ from types import SimpleNamespace
 from typing import TypedDict
 
 import pytest
+from fastapi import HTTPException
+from focus.security.context import security_context_of
+from focus.security.middleware import AccessPolicyMiddleware
+from focus.security.policy import AccessMode
+from focus.tools.builtins.workspace_tools import powershell, write_file
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
@@ -14,18 +19,18 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Command
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    DesktopWorkspace,
+)
 from backend.app.desktop.runs.assembly_service import RunAssemblyService
+from backend.app.desktop.runs.policy import _RUN_DISPATCH_EQUIPMENT_KEY
 from backend.app.desktop.runs.recovery_service import RunRecoveryService
 from backend.app.desktop.runs.security_service import RunSecurityService
-from backend.app.desktop.runs.policy import _RUN_DISPATCH_EQUIPMENT_KEY
-from focus.security.context import security_context_of
-from focus.security.middleware import AccessPolicyMiddleware
-from focus.security.policy import AccessMode
-from focus.tools.builtins.workspace_tools import powershell, write_file
 
 
 @tool
@@ -38,6 +43,7 @@ class _Session:
     """In-memory persistence port; recovery, identities and checkpoint reads stay real."""
 
     def __init__(self, workspace):
+        self.released_input_owners = []
         self.workspace = DesktopWorkspace(workspace_id="ws", path=str(workspace), display_name="ws")
         self.task = DesktopThread(task_id="task", thread_id="thread", workspace_id="ws", title="test",
                                   ui_state={"access_mode": "read-only"})
@@ -68,6 +74,20 @@ class _Session:
 
     async def commit(self):
         pass
+
+
+@pytest.fixture(autouse=True)
+def _snapshot_owner_persistence(monkeypatch):
+    """Supply the snapshot cleanup port for the in-memory permission scenarios."""
+    release = ContextRevisionRepository.release
+
+    async def release_owner(repository, session, owner_kind, owner_id):
+        if isinstance(session, _Session):
+            session.released_input_owners.append((owner_kind, owner_id))
+            return
+        await release(repository, session, owner_kind, owner_id)
+
+    monkeypatch.setattr(ContextRevisionRepository, "release", release_owner)
 
 
 def _ports(tmp_path):
@@ -140,6 +160,7 @@ def test_recovered_run_uses_saved_mode_and_keeps_live_resolver(tmp_path, mode):
         assert resumed.origin == "resume"
         assert resumed.equipment["access_mode"] == mode
         assert session.runs[0].equipment["access_mode"] == "read-only"
+        assert session.released_input_owners == [("run", "original")]
         security = security_context_of(prepared.body.context)
         assert security.authorization.access_mode == AccessMode(mode)
         assert security.authorization.permissions == ("read", "write")

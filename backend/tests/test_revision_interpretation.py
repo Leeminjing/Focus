@@ -15,8 +15,7 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_indexer im
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
-from backend.tests.incremental_index_support import ModelProbe, observation, revision
-from backend.tests.test_incremental_revision_index import exercise
+from backend.tests.index_test_support import ModelProbe, exercise, observation, revision
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -229,12 +228,10 @@ def test_append_discovery_prefills_nonadjacent_originals_and_refreshes_empty_res
             sessions,
             seed["context_id"],
             NARRATIVE[:2] + filler + NARRATIVE[2:],
-            parent=first,
         )
         current = await service.build(observation(seed, target))
         assert current.blocker_code is None, current.blocker_summary
         index = current.indexes[0]
-        assert len(index.inheritance.reused_segment_ids) == 2 + gap
         assert len(probe.local_calls) == 5
         assert len(probe.interpretation_calls) == 1
         initial = probe.interpretation_calls[0][1]
@@ -321,7 +318,7 @@ def test_discovery_is_not_gated_by_local_summary_or_keywords(tmp_path, case):
             else [right]
         )
         target = await revision(
-            sessions, seed["context_id"], old_history + appended, parent=first
+            sessions, seed["context_id"], old_history + appended
         )
         probe.calls.clear()
         result = await service.build(observation(seed, target))
@@ -410,7 +407,7 @@ def test_summaries_and_unread_messages_are_not_original_evidence(tmp_path, inval
             first = await revision(sessions, seed["context_id"], NARRATIVE[:2])
             await service.build(observation(seed, first, budget=budget))
         ready = True
-        target = await revision(sessions, seed["context_id"], NARRATIVE, parent=first)
+        target = await revision(sessions, seed["context_id"], NARRATIVE)
         result = await service.build(observation(seed, target, budget=budget))
         assert result.blocker_code is None, result.blocker_summary
         record = result.indexes[0].interpretation
@@ -570,7 +567,7 @@ def test_changed_interpretation_model_reuses_compatible_local_prefix(tmp_path):
         )
         assert (await a.build(observation(seed, first))).blocker_code is None
         local.calls.clear()
-        target = await revision(sessions, seed["context_id"], NARRATIVE, parent=first)
+        target = await revision(sessions, seed["context_id"], NARRATIVE)
         next_interpreter = ModelProbe(version="interp-2")
         b = narrative_service(
             local,
@@ -579,7 +576,6 @@ def test_changed_interpretation_model_reuses_compatible_local_prefix(tmp_path):
         )
         result = await b.build(observation(seed, target))
         assert result.blocker_code is None, result.blocker_summary
-        assert len(result.indexes[0].inheritance.reused_segment_ids) == 3
         assert (
             len(local.local_calls) == 2
             and len(next_interpreter.interpretation_calls) == 1
@@ -761,10 +757,12 @@ def test_curator_receives_an_already_synthesized_joint_diagnosis(tmp_path):
         from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
             SemanticDerivationArtifactRepository,
         )
+        from backend.app.desktop.patrol.agent_loop.schemas import (
+            LoopObservationEnvelope,
+        )
         from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
             CuratorCoordinationStage,
         )
-        from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
         target = await revision(sessions, seed["context_id"], NARRATIVE)
         frozen = observation(seed, target)
@@ -827,7 +825,6 @@ def test_original_expansion_preserves_tool_exchange_and_frozen_pointer(tmp_path)
                             "content": "A later pointer must not leak.",
                         },
                     ],
-                    parent=target,
                 )
                 advanced = True
             return joint_response(
@@ -846,7 +843,6 @@ def test_original_expansion_preserves_tool_exchange_and_frozen_pointer(tmp_path)
             sessions,
             seed["context_id"],
             [assistant, result_message, added],
-            parent=first,
         )
         ready = True
         current = await service.build(observation(seed, target))
@@ -895,14 +891,13 @@ def test_later_denial_replaces_an_unchanged_earlier_overall_diagnosis(tmp_path):
         first = await revision(sessions, seed["context_id"], [old_message])
         old = (await service.build(observation(seed, first))).indexes[0]
         target = await revision(
-            sessions, seed["context_id"], [old_message, new_message], parent=first
+            sessions, seed["context_id"], [old_message, new_message]
         )
         current = (await service.build(observation(seed, target))).indexes[0]
         assert old_statement in {u.statement for u in old.semantic_units}
         assert old_statement not in {u.statement for u in current.semantic_units}
         assert new_statement in {u.statement for u in current.semantic_units}
         assert old.interpretation.record_id != current.interpretation.record_id
-        assert len(current.inheritance.reused_segment_ids) == 1
 
     exercise(tmp_path, run)
 

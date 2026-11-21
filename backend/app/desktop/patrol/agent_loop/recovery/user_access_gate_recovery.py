@@ -12,15 +12,24 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from sqlalchemy import func,select
-
-from backend.app.desktop.patrol.agent_loop.models import LoopContextMembership,LoopDirective,LoopEventOutbox,LoopPendingDecision
-from backend.app.desktop.runs.identity import latest_main_run
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
-from backend.app.desktop.conversations.interrupts import pending_interrupt_payload
-from backend.app.desktop.workspaces.coordination.models import RunExecutionAnchor,WorkspaceLease,WorkspaceSlot
 from focus.security import canonical_text
 from focus.security.approval import APPROVAL_TYPE
+from sqlalchemy import func, select
+
+from backend.app.desktop.conversations.interrupts import pending_interrupt_payload
+from backend.app.desktop.patrol.agent_loop.models import (
+    LoopContextMembership,
+    LoopDirective,
+    LoopEventOutbox,
+    LoopPendingDecision,
+)
+from backend.app.desktop.persistence.models import DesktopRun, DesktopThread
+from backend.app.desktop.runs.identity import latest_main_run
+from backend.app.desktop.workspaces.coordination.models import (
+    RunExecutionAnchor,
+    WorkspaceLease,
+    WorkspaceSlot,
+)
 
 
 class UserAccessGateRecovery:
@@ -51,7 +60,9 @@ class UserAccessGateRecovery:
         await self._record(session,loop,gate,original,resumed,checkpoint,response_id,actor_id)
 
     async def _supersede_orphan(self, session, loop, gate, response_id, actor_id):
-        from backend.app.desktop.contexts.evolution.repository import ContextRevisionRepository
+        from backend.app.desktop.contexts.evolution.repository import (
+            ContextRevisionRepository,
+        )
 
         source = gate.payload.get('source') or {}
         original = await session.get(DesktopRun, source.get('run_id'), with_for_update=True)
@@ -83,8 +94,7 @@ class UserAccessGateRecovery:
                 or revision.ref.revision_id == original.context_revision_id
                 or (revision.ref.execution_thread_id, revision.ref.checkpoint_ns)
                 == (original.execution_thread_id, original.checkpoint_ns)
-                or not any(item.source.revision_id == original.context_revision_id
-                           and item.source.context_id == original.task_id for item in revision.sources)):
+                or not await self._published_replacement(session, loop, original, revision)):
             raise ValueError('孤立审批尚无可信的替代 Context 版本，须先显式重建旧流程')
         old_config = {'configurable': {'thread_id': original.execution_thread_id,
                                       'checkpoint_ns': original.checkpoint_ns or ''}}
@@ -114,6 +124,32 @@ class UserAccessGateRecovery:
                      'checkpoint_id': revision.ref.checkpoint_id, 'actor_id': actor_id,
                      'response_id': response_id, 'resolution': 'source_execution_superseded',
                      'access_approved_by_recovery': False}))
+
+    @staticmethod
+    async def _published_replacement(session, loop, original, revision):
+        from backend.app.desktop.contexts.curation.models import (
+            CurationLane,
+            CurationProgram,
+            PortfolioLaneCandidate,
+            PortfolioRevision,
+        )
+
+        if not original.context_revision_id or revision.origin_kind != 'curation' or not revision.origin_id:
+            return False
+        candidate = await session.scalar(select(PortfolioLaneCandidate.candidate_id)
+            .join(PortfolioRevision, PortfolioRevision.portfolio_revision_id == PortfolioLaneCandidate.portfolio_revision_id)
+            .join(CurationProgram, CurationProgram.program_id == PortfolioRevision.program_id)
+            .join(CurationLane, CurationLane.lane_id == PortfolioLaneCandidate.lane_id)
+            .where(PortfolioRevision.portfolio_revision_id == revision.origin_id,
+                PortfolioRevision.status == 'published', PortfolioRevision.published_at.is_not(None),
+                CurationProgram.workspace_id == loop.workspace_id,
+                CurationLane.program_id == CurationProgram.program_id,
+                CurationLane.managed_context_id == original.task_id,
+                PortfolioLaneCandidate.action == 'update', PortfolioLaneCandidate.status == 'published',
+                PortfolioLaneCandidate.target_context_id == original.task_id,
+                PortfolioLaneCandidate.base_context_revision_id == original.context_revision_id,
+                PortfolioLaneCandidate.candidate_context_revision_id == revision.ref.revision_id).limit(1))
+        return candidate is not None
 
     async def _source(self,session,loop,wait,gate,*,require_settled=True):
         recovery=gate.payload.get('recovery') or {}

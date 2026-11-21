@@ -75,7 +75,13 @@ test("Patrol graph controls and exact identity details follow the interface lang
   const details = c.FocusWorkspacePatrolView.context({ context_id: "source", revision: { revision_id: "source-r" } }, manifest.nodes[0], "overview", { presentation: "workbench", manifest });
   assert.doesNotMatch(graph + details, /\p{Script=Han}/u);
   assert.match(graph, /Source relationships/);
-  assert.match(details, /Exact identity/);
+  assert.match(details, /Content identity/);
+  const sources = c.FocusWorkspacePatrolView.context({ context_id: "source", revision: { revision_id: "source-r" },
+    content_hash: "current-source-hash", sources: [{ context_id: "target" }] }, manifest.nodes[0], "sources", { manifest });
+  assert.doesNotMatch(sources, /\p{Script=Han}/u);
+  assert.match(sources, /Current content sources/);
+  assert.match(sources, /current-source-hash/);
+  assert.equal(c.FocusI18n.text("此策展记录的来源输入已释放。"), "The source input for this curation record has been released.");
 });
 
 test("memory category emptiness and search recovery follow the interface language", () => {
@@ -105,18 +111,6 @@ test("strategy methods, publishing, capacity and rehearsal copy are translated",
   assert.doesNotMatch(editor + importing, /\p{Script=Han}/u);
   assert.match(editor, /When to apply/);
   assert.match(editor, /Rehearsal results \(simulation\)/);
-});
-
-test("context body and JSON editors translate labels while preserving message fields", () => {
-  const c = surface();
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../../src/renderer/features/context/context-editor.js"), "utf8"), c);
-  const messages = [{ role: "assistant", content: [{ type: "text", text: "用户正文" }], tool_call_id: "call-1" }];
-  for (const mode of ["body", "json"]) {
-    const html = c.FocusContextEditor.renderMessages(messages, ["a"], "a", false, mode);
-    assert.doesNotMatch(html.replaceAll("用户正文", ""), /\p{Script=Han}/u);
-    assert.match(html, /Create duplicate/);
-    assert.match(html, /用户正文/);
-  }
 });
 
 test("language changes refresh generated labels and preserve user content", () => {
@@ -197,7 +191,8 @@ test("Patrol feedback uses stable bilingual keys without the source catalog", as
     const host = createElement("div");
     host.innerHTML = feedback.delivery({ loop: { state: loop } });
     const action = host.querySelector('[data-patrol-delivery-context="context-1"]');
-    assert.equal(action.dataset.revisionId, "revision-2");
+    assert.equal(action.dataset.patrolDeliveryContext, "context-1");
+    assert.equal(action.hasAttribute("data-revision-id"), false);
     assert.equal(host.querySelector("nav").getAttribute("aria-label"), c.FocusI18n.t("patrol.delivery.view"));
     assert.ok(host.querySelector("[data-patrol-files-open]"));
   }
@@ -219,7 +214,8 @@ test("translated Patrol templates preserve and escape user text and action ident
     final_path: [{ context_id: userText, revision_id: userText, title: userText }],
   } } } });
   assert.ok(html.includes(escaped));
-  assert.ok(html.includes(`data-patrol-delivery-context="${escaped}" data-revision-id="${escaped}"`));
+  assert.ok(html.includes(`data-patrol-delivery-context="${escaped}"`));
+  assert.doesNotMatch(html, /data-revision-id=/);
   assert.ok(html.includes(`Revise Execution boundary: ${escaped}`), "translated interpolation preserves the whole user quote");
   assert.doesNotMatch(html, /<img|<script|<svg|<iframe/);
   assert.doesNotMatch(html.replaceAll(escaped, ""), /\p{Script=Han}/u);

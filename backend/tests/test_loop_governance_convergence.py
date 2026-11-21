@@ -174,7 +174,7 @@ def test_last_worker_cleanup_and_publication_only_round_advance_once(tmp_path):
                 assert (await session.get(AgentLoop, fixture["loop_id"])).current_round_id != fixture["round_id"]
                 next_id = (await session.get(AgentLoop, fixture["loop_id"])).current_round_id
             from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
-            from backend.tests.incremental_index_support import Checkpoints
+            from backend.tests.index_test_support import Checkpoints
             from backend.app.desktop.patrol.agent_loop.projections.live_projection_projector import LoopLiveSnapshotProjector
 
             await LoopObservationService(sessions, Checkpoints()).capture(fixture["loop_id"], next_id)

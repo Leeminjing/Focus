@@ -16,10 +16,16 @@ from datetime import UTC, datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.patrol.agent_loop.journal.event_contract import CanonicalEventDraft
+from backend.app.desktop.patrol.agent_loop.curation.curator_assignments import (
+    CuratorAssignmentRepository,
+)
+from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import (
+    DirectiveLifecycleRepository,
+)
+from backend.app.desktop.patrol.agent_loop.journal.event_contract import (
+    CanonicalEventDraft,
+)
 from backend.app.desktop.patrol.agent_loop.journal.event_journal import LoopEventJournal
-from backend.app.desktop.patrol.agent_loop.execution.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.patrol.agent_loop.curation.curator_assignments import CuratorAssignmentRepository
 from backend.app.desktop.patrol.agent_loop.models import (
     AgentLoop,
     LoopDecision,
@@ -27,10 +33,20 @@ from backend.app.desktop.patrol.agent_loop.models import (
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import LoopCuratorAssignment, LoopPatrolSession
-from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_repository import PatrolSessionRepository
-from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import PatrolActivity, PatrolPhase
-from backend.app.desktop.patrol.agent_loop.waits.wait_requests import LoopWaitRequestService
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_models import (
+    LoopCuratorAssignment,
+    LoopPatrolSession,
+)
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_repository import (
+    PatrolSessionRepository,
+)
+from backend.app.desktop.patrol.agent_loop.sessions.patrol_session_state import (
+    PatrolActivity,
+    PatrolPhase,
+)
+from backend.app.desktop.patrol.agent_loop.waits.wait_requests import (
+    LoopWaitRequestService,
+)
 from backend.app.desktop.persistence.models import DesktopRun
 
 
@@ -44,7 +60,9 @@ class LoopRuntimeConvergence:
 
     async def converge(self, session: AsyncSession, loop: AgentLoop, reason: str, *, preserve_waits: bool = False) -> tuple[str, ...]:
         now = datetime.now(UTC)
-        from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequest
+        from backend.app.desktop.patrol.agent_loop.waits.wait_models import (
+            LoopWaitRequest,
+        )
         waits = tuple(await session.scalars(select(LoopWaitRequest).where(LoopWaitRequest.loop_id == loop.loop_id,
             LoopWaitRequest.status.in_(("open", "resolving"))).order_by(LoopWaitRequest.request_id).with_for_update()))
         for request in waits:
@@ -64,9 +82,15 @@ class LoopRuntimeConvergence:
             .values(status="superseded", settled_at=now)
             .returning(LoopRound)
         )).all())
-        from backend.app.desktop.patrol.agent_loop.journal.round_events import RoundStateEventRecorder
+        from backend.app.desktop.contexts.evolution.repository import (
+            ContextRevisionRepository,
+        )
+        from backend.app.desktop.patrol.agent_loop.journal.round_events import (
+            RoundStateEventRecorder,
+        )
 
         for round_row in terminated_rounds:
+            await ContextRevisionRepository().release(session, "round", round_row.round_id)
             await RoundStateEventRecorder().record(session, round_row)
         await session.execute(
             update(LoopDecision)

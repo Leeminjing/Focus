@@ -31,29 +31,6 @@ class SessionAccessModeUpdate(StrictRequest):
     access_mode: Literal["read-only", "workspace-write", "danger-full-access"]
 
 
-class ContextSourceRef(StrictRequest):
-    context_id: str = Field(min_length=1)
-    checkpoint_id: str = Field(min_length=1)
-
-
-class ContextDeriveCreate(StrictRequest):
-    title: str = Field(
-        default="新 Context", min_length=1, max_length=THREAD_TITLE_LIMIT
-    )
-    sources: list[ContextSourceRef] = Field(min_length=1)
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ContextDefinitionUpdate(StrictRequest):
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ContextProjectionDecision(StrictRequest):
-    decision: Literal["accept", "reject"]
-    definition_hash: str = Field(min_length=64, max_length=64)
-    projection_hash: str = Field(min_length=64, max_length=64)
-
-
 class BatchDeleteRequest(StrictRequest):
     context_ids: list[str] = Field(min_length=1)
     cascade: bool = False
@@ -191,6 +168,12 @@ class ResumeRequest(StrictRequest):
     """承诺层人工确认的 resume 载荷：decision=approve 或 decision=revise + feedback/replacement。"""
 
     resume: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_public_resume(self):
+        if self.resume.get("type") == "compression":
+            raise ValueError("上下文压缩仅由 Patrol 自动处理")
+        return self
 
 
 class MaterialCreate(StrictRequest):

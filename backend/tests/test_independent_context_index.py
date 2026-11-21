@@ -24,14 +24,14 @@ from backend.app.desktop.patrol.agent_loop.observations.observation_capture impo
 from backend.app.desktop.patrol.agent_loop.sessions.patrol_runtime import (
     CuratorCoordinationStage,
 )
-from backend.tests.incremental_index_support import (
+from backend.tests.index_test_support import (
     Checkpoints,
     ModelProbe,
+    exercise,
     messages,
     observation,
     revision,
 )
-from backend.tests.test_incremental_revision_index import exercise
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -47,7 +47,7 @@ def make_service(sessions, probe, **kwargs):
     )
 
 
-def test_frozen_revision_independent_engine_publication_and_curator_input(tmp_path):
+def test_current_input_index_feeds_curator_and_exact_cache(tmp_path):
     async def run(sessions, seed):
         probe = ModelProbe()
         service = make_service(sessions, probe, segment_max_messages=2)
@@ -60,10 +60,11 @@ def test_frozen_revision_independent_engine_publication_and_curator_input(tmp_pa
         exact = await service.build(observation(seed, first))
         assert exact.indexes == built.indexes
         assert len(probe.calls) == initial_calls
-        second = await revision(sessions, seed["context_id"], messages(6), parent=first)
+        second = await revision(sessions, seed["context_id"], messages(6))
         appended = await service.build(observation(seed, second))
         assert appended.blocker_code is None, appended.blocker_summary
-        assert len(appended.indexes[0].inheritance.reused_segment_ids) == 2
+        assert len(probe.calls) - initial_calls == 3  # one changed segment + interpretation
+        assert len(appended.indexes[0].inheritance.record_ids) == 3
         assert all(
             ref.source == second.ref
             for unit in appended.indexes[0].semantic_units
@@ -88,6 +89,194 @@ def test_frozen_revision_independent_engine_publication_and_curator_input(tmp_pa
             ).all()
             assert len(receipts) == len(probe.calls)
             assert all(row.settled_at is not None for row in receipts)
+
+    exercise(tmp_path, run)
+
+
+@pytest.mark.parametrize("changed_prefix", [False, True])
+def test_segment_cache_reuses_only_unchanged_current_input(tmp_path, changed_prefix):
+    async def run(sessions, seed):
+        probe = ModelProbe()
+        service = make_service(sessions, probe, segment_max_messages=2)
+        first = await revision(sessions, seed["context_id"], messages(4))
+        initial = await service.build(observation(seed, first))
+        assert initial.blocker_code is None, initial.blocker_summary
+        old = initial.indexes[0]
+        current_messages = messages(5)
+        if changed_prefix:
+            current_messages[0]["content"] = "Corrected evidence number zero"
+        # Replace current input; released content is not an implicit history archive.
+        current = await revision(sessions, seed["context_id"], current_messages)
+        assert current.sources == ()
+        from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+        from backend.app.desktop.contexts.evolution.repository import (
+            ContextRevisionNotFound,
+        )
+        async with sessions() as session:
+            with pytest.raises(ContextRevisionNotFound):
+                await ContextRevisionRepository().get_input(session, first.ref)
+            assert await session.get(LoopSemanticIndexArtifact, old.index_id) is None
+        probe.calls.clear()
+        built = await service.build(observation(seed, current))
+        assert built.blocker_code is None, built.blocker_summary
+        index = built.indexes[0]
+        assert len(probe.local_calls) == (4 if changed_prefix else 2)
+        assert len(probe.interpretation_calls) == 1
+        assert index.interpretation.completed
+        assert index.coverage.covered_message_count == 5
+        assert all(ref.source == current.ref for unit in index.semantic_units for ref in unit.evidence_refs)
+        previous_ids = set(old.inheritance.record_ids)
+        assert len(previous_ids.intersection(index.inheritance.record_ids)) == (1 if changed_prefix else 2)
+        probe.calls.clear()
+        exact = await service.build(observation(seed, current))
+        assert exact.indexes == built.indexes
+        assert probe.calls == []
+
+    exercise(tmp_path, run)
+
+
+def test_unpublished_candidate_cannot_be_indexed(tmp_path):
+    async def run(sessions, seed):
+        probe = ModelProbe()
+        candidate = await revision(sessions, seed["context_id"], messages(2), published=False)
+        result = await make_service(sessions, probe).build(observation(seed, candidate))
+        assert result.blocker_code is not None
+        assert result.indexes == ()
+        assert probe.calls == []
+
+    exercise(tmp_path, run)
+
+
+@pytest.mark.parametrize("planning_pin", [False, True])
+def test_old_complete_index_is_reclaimed_after_owners_finish(tmp_path, planning_pin):
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+    from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
+        SemanticDerivationArtifactRepository,
+    )
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
+        AuthorizedSemanticRetriever,
+        PlanningRetrievalSession,
+        RetrievalBudget,
+    )
+    from backend.app.desktop.patrol.agent_loop.models import LoopRound
+
+    async def run(sessions, seed):
+        repository = ContextRevisionRepository()
+        artifacts = SemanticDerivationArtifactRepository()
+        service = make_service(sessions, ModelProbe(), segment_max_messages=2)
+        first = await revision(sessions, seed["context_id"], messages(4))
+        old = await service.build(observation(seed, first))
+        old_index = old.indexes[0]
+        async with sessions.begin() as session:
+            await repository.freeze(session, first.ref, owner_kind="round", owner_id=seed["round_id"])
+            if planning_pin:
+                planning = PlanningRetrievalSession.create(
+                    observation_hash="a" * 64,
+                    frontier_hash="b" * 64,
+                    catalog=old.catalog,
+                    planner_version="retention-test",
+                    retrieval_version=AuthorizedSemanticRetriever.VERSION,
+                    budget=RetrievalBudget(max_queries=1, max_candidates=8, max_exact_reads=8,
+                                           max_model_calls=0, max_tokens=10000),
+                )
+                await artifacts.save_session(session, planning, loop_id=seed["loop_id"], round_id=seed["round_id"])
+        current = await revision(sessions, seed["context_id"], messages(5))
+        built = await service.build(observation(seed, current))
+        assert built.blocker_code is None, built.blocker_summary
+        async with sessions() as session:
+            assert await session.get(LoopSemanticIndexArtifact, old_index.index_id) is not None
+        async with sessions.begin() as session:
+            await repository.release(session, "round", seed["round_id"])
+        async with sessions() as session:
+            assert (await session.get(LoopSemanticIndexArtifact, old_index.index_id) is not None) == planning_pin
+        if planning_pin:
+            async with sessions.begin() as session:
+                row = await session.get(LoopRound, seed["round_id"])
+                row.status = "settled"
+                await session.flush()
+                assert await artifacts.prune_indexes(session, seed["context_id"]) == 1
+        async with sessions() as session:
+            assert await session.get(LoopSemanticIndexArtifact, old_index.index_id) is None
+            assert await session.get(LoopSemanticIndexArtifact, built.indexes[0].index_id) is not None
+            for proof_id in old_index.inheritance.record_ids:
+                assert await session.get(LoopSegmentProjectionRecord, proof_id) is not None
+
+    exercise(tmp_path, run)
+
+
+@pytest.mark.parametrize("borrowed", [False, True])
+def test_deleted_source_releases_only_unowned_indexes_and_proofs(tmp_path, borrowed):
+    import uuid
+
+    from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+    from backend.app.desktop.contexts.service import ContextService
+    from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval import (
+        AuthorizedSemanticRetriever,
+        PlanningRetrievalSession,
+        PlanningRetrievalSessionController,
+        RetrievalBudget,
+        SemanticRetrievalQuery,
+    )
+    from backend.app.desktop.persistence.models import DesktopThread
+    from backend.tests.config_helpers import app_config_for
+
+    class SourceCheckpoints(Checkpoints):
+        async def adelete_thread(self, thread_id):
+            pass
+
+    async def run(sessions, seed):
+        source_id = uuid.uuid4().hex
+        async with sessions.begin() as session:
+            parent = await session.get(DesktopThread, seed["context_id"])
+            session.add(DesktopThread(task_id=source_id, workspace_id=parent.workspace_id,
+                                      thread_id=uuid.uuid4().hex, title="index source"))
+            grant = await session.scalar(select(LoopDelegationGrant).where(
+                LoopDelegationGrant.loop_id == seed["loop_id"]
+            ))
+            grant.context_scope = [*grant.context_scope, source_id]
+        target = await revision(sessions, source_id, messages(4))
+        probe = ModelProbe()
+        service = make_service(sessions, probe, segment_max_messages=2)
+        built = await service.build(observation(seed, target))
+        assert built.blocker_code is None, built.blocker_summary
+        index = built.indexes[0]
+        repository = ContextRevisionRepository()
+        if borrowed:
+            async with sessions.begin() as session:
+                await repository.freeze(session, target.ref, owner_kind="round", owner_id=seed["round_id"])
+        await ContextService(sessions, SourceCheckpoints(), app_config_for("test", None)).delete(source_id)
+        async with sessions() as session:
+            assert await session.get(DesktopThread, source_id) is None
+            assert (await session.get(LoopSemanticIndexArtifact, index.index_id) is not None) == borrowed
+            for identity in index.inheritance.record_ids:
+                assert (await session.get(LoopSegmentProjectionRecord, identity) is not None) == borrowed
+        if borrowed:
+            probe.calls.clear()
+            exact = await service.build(observation(seed, target))
+            assert exact.blocker_code is None, exact.blocker_summary
+            assert exact.indexes == built.indexes and probe.calls == []
+            planning = PlanningRetrievalSession.create(
+                observation_hash="a" * 64, frontier_hash="b" * 64, catalog=exact.catalog,
+                planner_version="deleted-source-test", retrieval_version=AuthorizedSemanticRetriever.VERSION,
+                budget=RetrievalBudget(max_queries=1, max_candidates=8, max_exact_reads=8,
+                                       max_model_calls=0, max_tokens=10000),
+            )
+            retriever = AuthorizedSemanticRetriever()
+            query = SemanticRetrievalQuery.create(
+                text="Evidence", kinds=("semantic_unit",), limit=8
+            )
+            candidates = retriever.retrieve(planning, query, exact.indexes)
+            planning = PlanningRetrievalSessionController().record_query(planning, query, candidates)
+            assert candidates
+            candidate = next(item for item in planning.candidates
+                             if item.entry_id == candidates[0].entry_id and item.index_id == index.index_id)
+            assert retriever.read(planning, candidate, exact.indexes).source == target.ref
+            async with sessions.begin() as session:
+                await repository.release(session, "round", seed["round_id"])
+            async with sessions() as session:
+                assert await session.get(LoopSemanticIndexArtifact, index.index_id) is None
+                for identity in index.inheritance.record_ids:
+                    assert await session.get(LoopSegmentProjectionRecord, identity) is None
 
     exercise(tmp_path, run)
 
@@ -208,6 +397,7 @@ def test_catalog_rejection_preserves_completed_context_index(tmp_path):
 
 def test_scoped_independent_build_uses_current_worker_budget_owner(tmp_path):
     import uuid
+
     from backend.app.desktop.patrol.agent_loop.models import LoopWorkerRequest
     from backend.app.desktop.patrol.agent_loop.workers.runtime import LoopWorkerRuntime
 

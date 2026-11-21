@@ -1,7 +1,7 @@
 /* 本文件对外提供 Patrol 与全图共用的只读 Context 检查器。
  * 输入为 Loop API、精确 Loop/Context 身份、节点摘要和显式任务打开回调；输出为非模态三页签或工作台摘要、只读 selection 和变更通知；manifest 回调仅提供已返回关系。
  * 具体工作流为取消旧读请求并按 owner 隔离迟到响应，保留表面与阅读位置、可逆退出后归还焦点；检查不改变发送身份，只有显式打开任务调用操作回调。
- * 选择决定详情显隐；工作台关闭立即移除内容，区域名称及描述对应当前对象与固定版本，内部来源跳转保留外部返回入口。
+ * 选择决定详情显隐；区域对应当前内容，分页状态冲突保留已读正文并要求显式刷新，内部来源跳转保留外部返回入口。
  * 示例：const inspector = FocusContextInspector.create({ api, onOpenTask }); inspector.mount(panel); await inspector.select(loopId, contextId, node, trigger)。
  */
 (function (root) {
@@ -42,7 +42,7 @@
       }
       root.focusContextBrowser?.patch();
       panel.classList.toggle("is-expanded", presentation === "workbench" && tab !== "overview");
-      if (active.readError) content.querySelector(".patrol-context-body")?.insertAdjacentHTML("afterbegin", localize`<p role="alert">完整会话不可用：${view.escape(active.readError)} <button data-context-inspection-retry>重试读取</button></p>`);
+      if (active.readError) content.querySelector(".patrol-context-body")?.insertAdjacentHTML("afterbegin", localize`<p role="alert">完整会话不可用：${view.escape(active.readError)} <button data-context-inspection-retry>${active.readConflict ? localize("刷新当前内容") : localize("重试读取")}</button></p>`);
       panel.scrollTop = scroll;
       const body = panel.querySelector(".patrol-context-body");
       if (body) body.scrollTop = bodyScroll;
@@ -51,17 +51,18 @@
     function failure(error) {
       if (!panel || error.name === "AbortError") return;
       active.readError = error.message;
+      active.readConflict = error.status === 409;
       render();
     }
-    async function read(older = false, revisionId = null) {
+    async function read(older = false) {
       if (!active || !panel) return;
       request?.abort(); request = new AbortController();
       const owner = ++generation, identity = active;
-      if (revisionId) identity.revisionId = revisionId;
       identity.readError = null;
+      identity.readConflict = false;
       try {
         const page = await api.conversation(identity.loopId, identity.contextId, {
-          signal: request.signal, revisionId: revisionId || identity.page?.revision?.revision_id || identity.revisionId,
+          signal: request.signal, revisionId: older ? identity.page?.revision?.revision_id : undefined,
           before: older ? identity.page?.next_before ?? identity.page?.range?.start : undefined,
         });
         if (owner !== generation || active !== identity) return;
@@ -74,20 +75,6 @@
           const scroller = panel.querySelector(".patrol-context-body") || panel;
           scroller.scrollTop = scroll + scroller.scrollHeight - height;
         }
-        if (tab === "sources") await sources();
-      } catch (error) { if (owner === generation) failure(error); }
-    }
-    async function sources() {
-      if (!active || !panel || active.readError) return;
-      const identity = active, page = active.page, owner = generation;
-      try {
-        const [versions, snapshot] = await Promise.all([
-          api.revisions(identity.contextId, request.signal),
-          page.revision?.revision_id ? api.revision(page.revision.revision_id, request.signal) : null,
-        ]);
-        if (owner !== generation || active !== identity || active.page !== page) return;
-        active.page = { ...page, versions, sources: snapshot?.revision?.sources || snapshot?.sources || [] };
-        render();
       } catch (error) { if (owner === generation) failure(error); }
     }
     function close() {
@@ -112,14 +99,13 @@
       event.stopPropagation();
       if (root.FocusMessageReading.handleCopy(event)) return;
       if (button.hasAttribute("data-patrol-context-close")) return close();
-      if (button.dataset.patrolContextTab) { tab = button.dataset.patrolContextTab; render(); if (tab === "sources") await sources(); }
+      if (button.dataset.patrolContextTab) { tab = button.dataset.patrolContextTab; render(); }
       else if (button.dataset.contextRelated) {
         const node = getManifest()?.nodes.find(node => node.context_id === button.dataset.contextRelated);
-        await select(active.loopId, button.dataset.contextRelated, node, button, button.dataset.revisionId);
+        await select(active.loopId, button.dataset.contextRelated, node, button);
       }
       else if (button.hasAttribute("data-patrol-context-older")) await read(true);
-      else if (button.dataset.patrolInspectRevision) await read(false, button.dataset.patrolInspectRevision);
-      else if (button.hasAttribute("data-context-inspection-retry")) await read(false, active.page?.revision?.revision_id);
+      else if (button.hasAttribute("data-context-inspection-retry")) await read();
       else if (button.dataset.patrolOpenTask) { try { await onOpenTask(button.dataset.patrolOpenTask); } catch (error) { failure(error); } }
     }
     function mount(node) {
@@ -132,17 +118,17 @@
         if (!panel.querySelector("[data-context-inspector-menu]:popover-open")) close();
       }, { signal: lifetime.signal });
     }
-    async function select(loopId, contextId, node, trigger, revisionId = null) {
+    async function select(loopId, contextId, node, trigger) {
       hideActions();
       void root.focusContextBrowser?.select(contextId);
-      active = { loopId, contextId, revisionId, node: { context_id: contextId, ...node }, page: {} };
+      active = { loopId, contextId, node: { context_id: contextId, ...node }, page: {} };
       tab = "overview";
       // 来源跳转和重绘不能把返回焦点绑定到即将被替换的详情按钮。
       if (trigger && !panel.contains(trigger)) returnFocus = trigger;
       render(); onSelectionChange(selection());
       if (panel.hidden || panel.inert) void root.FocusSurfaceTransition.visible(panel, true, { axis: "x", distance: 40 });
       panel.querySelector("[data-patrol-context-close]").focus({ preventScroll: true });
-      await read(false, revisionId);
+      await read();
     }
     function dispose() { generation++; lifetime?.abort(); request?.abort(); hideActions(); if (panel) root.FocusSurfaceTransition.finish(panel); panel = null; active = null; returnFocus = null; }
     return Object.freeze({ mount, select, close, dispose, selection, refresh: render });

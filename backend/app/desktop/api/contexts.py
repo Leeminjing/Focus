@@ -6,9 +6,6 @@ from fastapi import APIRouter, Query, Request
 
 from backend.app.desktop.api.schemas import (
     BatchDeleteRequest,
-    ContextDefinitionUpdate,
-    ContextDeriveCreate,
-    ContextProjectionDecision,
     ContextTrackingUpdate,
 )
 
@@ -17,7 +14,9 @@ router = APIRouter()
 
 @router.get("/contexts/{context_id}/snapshot")
 async def get_context_snapshot(
-    context_id: str, request: Request, checkpoint_id: str | None = None
+    context_id: str,
+    request: Request,
+    checkpoint_id: str | None = Query(default=None, description="仅校验当前 checkpoint，不读取历史版本"),
 ) -> dict:
     return await request.app.state.desktop_service.contexts.snapshot(
         context_id, checkpoint_id
@@ -32,30 +31,6 @@ async def get_context_lineage(context_id: str, request: Request) -> dict:
 @router.get("/workspaces/{workspace_id}/contexts/tree")
 async def get_context_tree(workspace_id: str, request: Request) -> list[dict]:
     return await request.app.state.desktop_service.contexts.tree(workspace_id)
-
-
-@router.post("/contexts/derive")
-async def derive_context(body: ContextDeriveCreate, request: Request) -> dict:
-    return await request.app.state.desktop_service.contexts.derive(body)
-
-
-@router.put("/contexts/{context_id}/definition")
-async def update_context_definition(
-    context_id: str, body: ContextDefinitionUpdate, request: Request
-) -> dict:
-    return await request.app.state.desktop_service.contexts.update_definition(
-        context_id, body
-    )
-
-
-@router.post("/contexts/{context_id}/projection/decision")
-async def decide_context_projection(
-    context_id: str, body: ContextProjectionDecision, request: Request
-) -> dict:
-    service = request.app.state.desktop_service
-    result = await service.contexts.decide(context_id, body)
-    service.context_patrol.wake()
-    return result
 
 
 @router.post("/contexts/{context_id}/archive")

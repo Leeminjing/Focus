@@ -1,19 +1,19 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
- * 历史提问提供复制、编辑重发与从此重试，助手提供复制、引用和重新回答；重试从冻结 checkpoint 的提问前缀派生，保留原会话与附件清单，并复用普通提交恢复。任务工具从完整消息快照导出 Markdown。
+ * 历史消息提供复制与引用追问，普通发送保留会话与附件清单并复用提交恢复。任务工具从完整消息快照导出 Markdown。
  * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面工作台使用独立 userData 仓库，浏览器使用 IndexedDB，恢复后开放编辑；机器人继续使用独立输入仓库。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
  * 任务继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
  * 控制材质复用语义 token；检查器显隐使用 FocusSurfaceTransition 保留壳层，退出即隔离命中、结束后退出布局；业务状态仍来自原 API/Live。
  * 全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
- * 任务工具提供手工整理并复用既有 quick-apply；已有压缩待决仍使用原 resume。授权/等待表单解析复用共享视图，文件预览暂时隐藏材料检查器，关闭后恢复原 UI 偏好；独立会话的内部目录不呈现为用户已绑定工作区。
+ * 会话历史通过只读 helper 展开压缩来源、保留图片与策展证据。授权/等待表单解析复用共享视图，文件预览暂时隐藏材料检查器，关闭后恢复原 UI 偏好；独立会话的内部目录不呈现为用户已绑定工作区。
  * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
  * 传统任务与独立会话在同任务刷新时保持输入区及其祖先挂载，只更新消息与外围状态；后台其他任务结束只更新任务列表，回执不清除正在组字的草稿。
  * 示例：refreshMaterialView(taskId, true) 使该任务材料变更后的检查过期并刷新当前路由；await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
- * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、Context Expansion 资源授权/状态、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和逐材料备注
+ * 对话/Context/Agent/Commitment/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、Context Expansion 资源授权/状态、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和逐材料备注
  * 表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。具体工作流为在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
  * Loop 运行活动由 journal 增量投影到选中 Context 的当前执行区，分钟计时只刷新活动栏而不重取历史会话；任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话容器只有一个
@@ -54,7 +54,6 @@ function localize(source, ...values) {
 // Shared reader also supplies the Markdown instance used by streaming blocks.
 const messageReading = window.FocusMessageReading.create({ translate: (key, fallback) => uiText(key, fallback) });
 const mdRenderer = messageReading.markdown;
-const keywordCommand = window.FocusKeywordCommand;
 const interfaceI18n = window.FocusI18n || {
   apply() {},
   locale: () => "zh-CN",
@@ -150,7 +149,6 @@ const state = {
   capabilityRefreshResults: new Map(),
   contextTrees: new Map(),
   openContextDiagnostics: new Set(),
-  contextDraft: null,
   pickerActive: { main: 0, draft: 0 },
   equipment: { models: [], tools: [], skills: [], permissions: [] },
   soldierArmed: false,
@@ -195,15 +193,6 @@ const state = {
     terminalError: null,
     handoffStarted: false,
   },
-  compression: {
-    taskId: null,
-    request: null,
-    messages: [],
-    selected: new Set(),
-    ranges: [],
-    busy: false,
-    recovery: null,
-  },
   accessReviews: { panel: null, payload: null, taskId: null, key: null, busy: false },
   plugins: { plugins: [], interfaces: {}, activation: {}, traces: [], filter: "all", selectedName: null, loading: false, reloading: false },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
@@ -226,8 +215,8 @@ dialog?.addEventListener("cancel", event => { event.preventDefault(); void windo
 const settingsDialog = document.querySelector("#settingsDialog");
 settingsDialog?.addEventListener("cancel", event => { event.preventDefault(); void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true }); });
 const skillPicker = window.FocusSkillPicker;
-const contextEditor = window.FocusContextEditor;
-const compressionPanel = window.FocusCompressionPanel;
+const contextNavigation = window.FocusContextNavigation;
+const conversationHistory = window.FocusConversationHistory;
 const pluginView = window.FocusPluginView;
 const mapCollapsibleView = window.FocusMapCollapsibleView;
 const memoryView = window.FocusMemoryView;
@@ -393,15 +382,10 @@ interfaceI18n.apply(document);
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
 window.__focusPluginViews = window.__focusPluginViews || {};
 const pluginViews = window.__focusPluginViews;
-let contextUiSequence = 0;
-let contextRequestSequence = 0;
-let contextPointerDrag = null;
-let contextUndoTimer = null;
 let agentDetailsRequestSequence = 0;
 let taskSwitchSequence = 0;
 // 各资源独立提交；导航复用在途请求，事务刷新仍以最新请求为准。
 const taskResourceLoads = new Map();
-let compressionRequestSequence = 0;
 let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
@@ -668,11 +652,6 @@ function restoreZoomLevel() {
   return applyZoomLevel(normalizeZoomLevel(stored), { announce: false });
 }
 
-function nextContextUiKey() {
-  contextUiSequence += 1;
-  return `context-ui-${contextUiSequence}`;
-}
-
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-Focus-Session", runtime.session);
@@ -714,8 +693,6 @@ function loadPluginScript(src) {
 
 function cancelPendingViewRequests() {
   workspacePatrolNavigation += 1;
-  contextRequestSequence += 1;
-  compressionRequestSequence += 1;
   draftOpenRequestSequence += 1;
   pluginViewRequestSequence += 1;
   memoryViewRequestSequence += 1;
@@ -818,8 +795,8 @@ function conversationMarkdown(detail, task) {
   const title = String(task.title || uiText("conversation.title", "对话")).replace(/[\r\n]+/g, " ");
   const sections = [`# ${title}`];
   // 从完整快照展开压缩来源，不受会话 DOM 的窗口上限影响。
-  for (const message of compressionPanel.expandForConversation(detail.messages || [])) {
-    if (message.divider || compressionPanel.degradedParts(message)) continue;
+  for (const message of conversationHistory.expandForConversation(detail.messages || [])) {
+    if (message.divider || conversationHistory.degradedParts(message)) continue;
     const kind = contextCuratorPresentation.messageSemantics(message).kind;
     if (kind !== "human" && kind !== "ai") continue;
     const text = messageBodyText(message);
@@ -1019,9 +996,8 @@ function applyTaskDetail(taskId, detail, { preserveMount = false } = {}) {
       state.mainRecoveryRestored.set(taskId, mainRecovery.request_id);
     }
   }
-  if (state.activeTaskId === taskId && ["focus", "compress"].includes(state.view)) {
+  if (state.activeTaskId === taskId && state.view === "focus") {
     reconcileCommitmentRecovery(detail);
-    reconcileCompressionRecovery(detail);
     reconcileAccessReview(detail);
   }
   if (detail.active_run?.status === "pending" || detail.active_run?.status === "running") {
@@ -1052,7 +1028,7 @@ function render() {
   if (shownDraft && (state.view !== 'draft' || state.drafts.get(state.activeTaskId)?.draft_id !== shownDraft)) window.FocusPatrolWorkbench?.leave(shownDraft);
   document.body.dataset.view = state.view;
   renderShellChrome();
-  if (!state.tasks.length && ["draft", "compress", "context"].includes(state.view)) {
+  if (!state.tasks.length && ["draft", "context"].includes(state.view)) {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     interfaceI18n.apply(app);
     return;
@@ -1066,14 +1042,12 @@ function render() {
   else if (state.view === "map") renderMap();
   else if (state.view === "history") renderHistoryReader();
   else if (state.view === "draft") renderDraft();
-  else if (state.view === "compress") renderCompress();
   else if (state.view === "plugins") renderPlugins();
   else if (state.view === "memory") renderMemory();
   else if (state.view && pluginViews[state.view]) {
     app.replaceChildren();
     pluginViews[state.view].render(app, state);
   }
-  else if (state.view === "context") renderContextEditor();
   else {
     state.view = "focus";
     setStatus(localize("当前视图已不可用，已返回任务"), true);
@@ -1425,31 +1399,14 @@ function selectedSkills(kind) {
   return normalizeSkillNames(state.details.get(state.activeTaskId)?.ui_state?.skills);
 }
 
-function atHighlightHtml(value) {
-  return keywordCommand.highlightHtml(value, escapeHtml);
-}
-
-function updateAtHighlight(input) {
-  if (!input) return;
-  const wrap = typeof input.closest === "function" ? input.closest(".composer-input-wrap") : null;
-  const highlight = wrap?.querySelector(".composer-input-highlight");
-  if (!highlight) return;
-  highlight.innerHTML = atHighlightHtml(input.value) + "\u200b";
-  highlight.scrollTop = input.scrollTop;
-  highlight.scrollLeft = input.scrollLeft;
-}
-
-function renderSkillPicker(kind, textarea, highlight = false) {
+function renderSkillPicker(kind, textarea) {
   const selected = selectedSkills(kind);
   const listId = `${kind}SkillList`;
   const tags = selected.map(name => `<span class="skill-tag">${escapeHtml(name)}<button type="button" data-action="remove-skill" data-picker-kind="${kind}" data-skill-name="${escapeHtml(name)}" aria-label="Remove ${escapeHtml(name)}"><span class="ui-icon is-sm icon-x" aria-hidden="true"></span></button></span>`).join("");
   const textareaWithAttrs = textarea.replace(">", ` data-skill-input="${kind}" aria-controls="${listId}" aria-expanded="false">`);
-  const inputNode = highlight
-    ? `<div class="composer-input-wrap"><div class="composer-input-highlight" aria-hidden="true"></div>${textareaWithAttrs}</div>`
-    : textareaWithAttrs;
   return `<div class="skill-picker-shell ${kind === "draft" ? "draft-skill-picker" : ""}" data-skill-picker="${kind}">
     <div class="skill-tags" aria-label="Selected skills">${tags}</div>
-    ${inputNode}
+    ${textareaWithAttrs}
     <div class="skill-menu" id="${listId}" role="listbox" aria-label="Skills" hidden></div>
     ${kind === "main" ? `<div id="mainSkillLoadStatus">${renderTaskResourceStatus(state.activeTaskId, ["skills"])}</div>` : ""}
   </div>`;
@@ -1575,7 +1532,6 @@ function composerFeedback(detail, projectionBlocked) {
   if (state.mainPreparations.has(state.activeTaskId)) return { kind: "warning", text: localize("正在准备本次附件，完成后将自动发送…") };
   if (projectionBlocked) return { kind: "warning", text: localize("该 Context 需要完成执行投影决断后才能继续。") };
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: localize("当前任务正在等待 Commitment 审批，请先处理上方审批区。") };
-  if (detail?.pending_compression) return { kind: "warning", text: localize("存在待确认的压缩计划，请先确认或取消。") };
   if (detail?.pending_access_review) return { kind: "warning", text: localize("存在待批准的本机资源访问请求，请先批准或拒绝。") };
   return null;
 }
@@ -1664,7 +1620,7 @@ async function withdrawQueuedMain(inputId, edit) {
       composerDraft.claim(taskId, input);
       if (state.activeTaskId === taskId && state.view === "focus") {
         const editor = document.querySelector("#mainInput");
-        if (editor) { editor.value = input; updateAtHighlight(editor); }
+        if (editor) { editor.value = input; }
       }
       await persistUiState(taskId);
     }
@@ -1712,7 +1668,7 @@ function renderContextDiagnostics(item, node) {
 }
 
 function renderContextRail(task) {
-  const tasks = contextEditor.contextFamilyTasks(state.tasks, state.contextTrees, task.task_id);
+  const tasks = contextNavigation.contextFamilyTasks(state.tasks, state.contextTrees, task.task_id);
   const tree = state.contextTrees.get(task.workspace_id) || [];
   const nodes = new Map(tree.map(node => [node.context_id, node]));
   const taskById = new Map(state.tasks.map(item => [item.task_id, item]));
@@ -1739,23 +1695,20 @@ function renderContextRail(task) {
     }).join("");
     const healthAlert = node?.managed_health === "degraded" ? localize("更新失败，请查看协作详情")
       : node?.managed_health === "blocked" ? localize("更新受阻，请查看协作详情") : "";
-    return `<div class="context-rail-item${tombstone ? " is-tombstone" : node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}" data-context-id="${escapeHtml(item.task_id)}" data-parent-context-ids="${escapeHtml(JSON.stringify(parents.map(parent => parent.context_id)))}">
+    return `<div class="context-rail-item${tombstone ? " is-tombstone" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}" data-context-id="${escapeHtml(item.task_id)}" data-parent-context-ids="${escapeHtml(JSON.stringify(parents.map(parent => parent.context_id)))}">
       ${tombstone ? `<div class="context-rail-card is-deleted"><span class="context-rail-title">${escapeHtml(item.title)}</span><span class="context-rail-lifecycle">${escapeHtml(lifecycleLabel)}</span></div>` : `<button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"${parents.length ? ` aria-describedby="${escapeHtml(relationId)}"` : ""}>
         <span class="context-rail-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
-        ${blocked ? localize`<span class="context-rail-alert">需要确认后继续</span>` : ""}
+        ${blocked ? localize`<span class="context-rail-alert">受阻</span>` : ""}
         ${healthAlert ? `<span class="context-rail-alert">${escapeHtml(healthAlert)}</span>` : ""}
       </button>`}
       ${sources ? localize`<div class="context-rail-parents" id="${escapeHtml(relationId)}" role="group" aria-label="来源 Context"><span>来源：</span>${sources}</div>` : ""}
-      ${!tombstone && blocked ? localize`<button type="button" class="context-rail-resolve text-button" data-action="resume-context-decision" data-context-id="${escapeHtml(item.task_id)}">查看并决断</button>` : ""}
       ${renderContextDiagnostics(item, node)}
-      ${!tombstone && node?.editable ? localize`<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
     </div>`;
   }).filter(Boolean);
   return localize`<aside class="context-rail" aria-label="Context 关系">
     <header class="context-rail-heading"><strong>${uiText("nav.contexts", "上下文")}</strong><span>${cardList.length}</span></header>
     <nav class="context-rail-list" aria-label="当前聊天关联的 Context">
       ${cardList.join("")}
-      <button type="button" class="context-rail-add" data-action="derive-context">${uiText("focus.context_add", "新增 Context")}</button>
     </nav>
   </aside>`;
 }
@@ -1877,7 +1830,7 @@ function renderFocus(task = activeTask()) {
   const projectionStatus = detail.context?.projection_status || "root";
   const projectionBlocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
   const contextBlock = projectionBlocked
-    ? localize`<section class="context-block-banner"><strong>该 Context 尚未获得安全执行投影</strong><span>${escapeHtml(projectionStatus)}</span><button class="primary" data-action="resume-context-decision">查看并决断</button></section>`
+    ? localize`<section class="context-block-banner"><strong>该 Context 尚未获得安全执行投影</strong><span>${escapeHtml(projectionStatus)}</span></section>`
     : "";
   const feedback = composerFeedback(detail, projectionBlocked);
   const previousConversation = app.dataset.taskId === task.task_id ? document.querySelector("#conversation") : null;
@@ -1900,7 +1853,7 @@ function renderFocus(task = activeTask()) {
     ${isAssembly ? localize`<header class="task-page-heading"><div><small>独立会话</small><h1>无工作区模式</h1><p>从一个问题或一份材料开始。</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>` : ""}
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}"${isAssembly ? "" : ' aria-labelledby="currentTaskTitle"'}>
-        <header class="task-workspace-tools">${isAssembly ? `<strong>${escapeHtml(task.title)}</strong>` : `<div class="task-heading"><h1 id="currentTaskTitle">${escapeHtml(task.title)}</h1><div class="task-identity-meta"><span class="ui-badge is-${taskStatus.tone}">${escapeHtml(taskStatus.label)}</span><code title="${escapeHtml(localize("任务 ID"))}">${escapeHtml(task.task_id)}</code></div></div><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button>`}${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-task-patrol">工作区 Patrol 详情</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
+        <header class="task-workspace-tools">${isAssembly ? `<strong>${escapeHtml(task.title)}</strong>` : `<div class="task-heading"><h1 id="currentTaskTitle">${escapeHtml(task.title)}</h1><div class="task-identity-meta"><span class="ui-badge is-${taskStatus.tone}">${escapeHtml(taskStatus.label)}</span><code title="${escapeHtml(localize("任务 ID"))}">${escapeHtml(task.task_id)}</code></div></div><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button>`}${contextBrowser?.render(task.task_id) || ""}<details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">${uiText("nav.contexts", "上下文")}</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-task-patrol">工作区 Patrol 详情</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
         ${admission ? localize`<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-task-patrol">查看工作区 Patrol 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
@@ -1918,7 +1871,7 @@ function renderFocus(task = activeTask()) {
               <div id="composerReference">${conversationReference.render(mainReference(task.task_id))}</div>
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
               <div id="composerFileReferences" class="composer-file-references" aria-label="本次问题引用的文件">${composerFiles.cards(fileReferences(task.task_id))}</div>
-              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，输入 @ 引用文件，或 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
+              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，输入 @ 引用文件，或 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`)}
               <div id="composerFileMenu" class="composer-file-menu" role="listbox" aria-label="工作区文件" hidden></div>
               ${renderSessionControls(task.task_id)}
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><button type="button" class="attach-button" data-action="add-composer-attachment">${uiText("focus.add_file", "添加文件")}</button><input id="fileInput" type="file" multiple hidden>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? localize`<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
@@ -1951,7 +1904,6 @@ function renderFocus(task = activeTask()) {
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
   const commitmentBlocked = activeTaskHasCommitmentLock() || projectionBlocked
-    || !!detail.pending_compression
     || !!detail.pending_access_review;
   const mainInput = document.querySelector("#mainInput");
   const sendButton = document.querySelector('[data-action="send-main"]');
@@ -1961,7 +1913,6 @@ function renderFocus(task = activeTask()) {
   // 原身份重试只核对/重放既有受理，不受随后出现的执行审批阻断。
   if (sendButton && taskRunOperations?.recovery(task.task_id)?.editing === false) sendButton.disabled = false;
   updateMainRecoveryControls();
-  updateAtHighlight(mainInput);
   if (!keepEditor && inputFocused && mainInput && !mainInput.disabled) {
     mainInput.focus({ preventScroll: true });
     if (inputSelection) mainInput.setSelectionRange(inputSelection.start, inputSelection.end, inputSelection.direction);
@@ -2268,8 +2219,8 @@ function messageMaterialHistory(message) {
     .sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
   if (history.length) return history;
   // Inherited questions retain their manifest, while binding rows remain with
-  // the original task. Keep their cards and prose readable in the new branch.
-  try { return FocusMessageRetry.materialBindings(message); } catch { return []; }
+  // the original task. Keep inherited attachment cards and prose readable.
+  try { return FocusMessageMaterials.materialBindings(message); } catch { return []; }
 }
 
 function stripRunMaterialProtocol(text, message) {
@@ -2298,7 +2249,7 @@ function messageKeyOf(message, fallbackIndex) {
 
 function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, historyActions = false } = {}) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
-  const degraded = compressionPanel.degradedParts(message);
+  const degraded = conversationHistory.degradedParts(message);
   const messageKey = messageKeyOf(message, fallbackKey);
   if (degraded) {
     return localize`<article class="work-record message tool" data-message-key="${escapeHtml(messageKey)}"><header class="work-record-header"><span class="work-record-kicker">TOOL</span><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span></header><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
@@ -2344,28 +2295,15 @@ function renderHistoryMessageActions(message, kind, enabled) {
     : kind === "human" ? messageReading.renderActions(source, uiText("conversation.copy_question", "复制提问")).replace('data-action="copy-answer"', 'data-action="copy-question"') : "";
   if (!enabled || message.curation_synthetic || !(message.id || message.message_id)) return copy;
   const action = (name, key, label) => `<button type="button" class="text-button" data-action="${name}">${escapeHtml(uiText(key, label))}</button>`;
-  const extra = kind === "human"
-    ? action("edit-history-message", "conversation.edit_resend", localize("编辑后重新发送")) + action("retry-history-message", "conversation.retry_here", localize("从这里重新尝试"))
-    : kind === "ai" && source.trim()
-      ? action("quote-history-message", "conversation.quote", localize("引用追问")) + action("retry-history-message", "conversation.regenerate", localize("重新回答")) : "";
+  const extra = kind === "ai" && source.trim()
+    ? action("quote-history-message", "conversation.quote", localize("引用追问")) : "";
   if (!extra) return copy;
   return copy ? copy.replace("</div>", `${extra}</div>`) : `<div class="message-actions">${extra}</div>`;
 }
 
-let messageRetryDraft = null;
-let messageRetryLoading = false;
-
-function closeMessageRetry() {
-  if (messageRetryDraft?.pending) return;
-  const draft = messageRetryDraft;
-  messageRetryDraft = null;
-  document.querySelector("#messageRetryDialog")?.remove();
-  draft?.trigger?.focus();
-}
-
 function quoteHistoryMessage(button) {
   const key = button.closest("[data-message-key]")?.dataset.messageKey;
-  const messages = compressionPanel.expandForConversation(state.details.get(state.activeTaskId)?.messages || []);
+  const messages = conversationHistory.expandForConversation(state.details.get(state.activeTaskId)?.messages || []);
   const message = messages.find(item => messageKeyOf(item) === key);
   const source = message && messageBodyText(message);
   const input = document.querySelector("#mainInput");
@@ -2374,102 +2312,9 @@ function quoteHistoryMessage(button) {
   const current = composerDraft.value(taskId, input.value || "");
   input.value = `${current}${current ? "\n\n" : ""}${source.split("\n").map(line => `> ${line}`).join("\n")}\n\n`;
   composerDraft.claim(taskId, input.value);
-  updateAtHighlight(input);
   void persistFocusState();
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length);
-}
-
-async function openMessageRetry(button, edit) {
-  if (messageRetryLoading || messageRetryDraft) return;
-  const task = activeTask();
-  const messageId = button.closest("[data-message-key]")?.dataset.messageKey;
-  if (!task || !messageId || task.loop || state.details.get(task.task_id)?.context?.managed_status) return;
-  const navigation = taskSwitchSequence;
-  messageRetryLoading = true;
-  try {
-    const snapshot = await api(`/desktop/api/contexts/${task.task_id}/snapshot`);
-    if (navigation !== taskSwitchSequence || state.view !== "focus") return;
-    if (!snapshot.checkpoint_id) throw new Error(localize("这条消息尚无已提交的会话快照，请稍后重试"));
-    const turn = FocusMessageRetry.selectTurn(snapshot.messages, messageId);
-    messageRetryDraft = {
-      task, snapshot, turn, edit, navigation, trigger: button, pending: false, context: null, materials: new Map(),
-      options: { skills: selectedSkills("main"), ...accessMode.requestBody(accessModeOf("main")) },
-    };
-    const title = edit ? uiText("conversation.edit_resend", "编辑后重新发送") : uiText("conversation.retry_here", "从这里重新尝试");
-    document.querySelector("#overlayRoot").innerHTML = `<dialog id="messageRetryDialog" class="message-retry-dialog" aria-labelledby="messageRetryTitle"><div class="dialog-form">
-      <h2 id="messageRetryTitle">${escapeHtml(title)}</h2><p>${escapeHtml(uiText("conversation.branch_notice", "将从这条提问之前创建新分支。原会话及之后的记录会保留，文件改动不会回退。"))}</p>
-      <label>${escapeHtml(uiText("conversation.question", "提问"))}<textarea id="messageRetryInput" ${edit ? "autofocus" : "readonly"}>${escapeHtml(FocusMessageRetry.editableText(turn.message))}</textarea></label>
-      <p id="messageRetryError" class="danger" role="alert"></p><div class="dialog-actions"><button type="button" data-action="cancel-message-retry">${escapeHtml(uiText("conversation.cancel", "取消"))}</button><button type="button" class="primary" data-action="submit-message-retry">${escapeHtml(uiText("conversation.send_branch", "在新分支重新发送"))}</button></div>
-    </div></dialog>`;
-    const dialog = document.querySelector("#messageRetryDialog");
-    dialog.addEventListener("cancel", event => { event.preventDefault(); closeMessageRetry(); });
-    dialog.showModal();
-    if (!edit) await submitMessageRetry();
-  } catch (error) { setStatus(error.message, true); }
-  finally { messageRetryLoading = false; }
-}
-
-async function submitMessageRetry() {
-  const draft = messageRetryDraft;
-  if (!draft || draft.pending) return;
-  const input = document.querySelector("#messageRetryInput");
-  const editedText = draft.edit ? input.value.trim() : null;
-  const errorNode = document.querySelector("#messageRetryError");
-  if (draft.edit && !editedText) { errorNode.textContent = uiText("conversation.question_required", "提问不能为空"); return; }
-  const dialog = document.querySelector("#messageRetryDialog");
-  draft.pending = true;
-  dialog.querySelectorAll("button, textarea").forEach(node => { node.disabled = true; });
-  errorNode.textContent = "";
-  try {
-    // Freeze the source by checkpoint, never slice the visible/windowed DOM history.
-    if (!draft.context) draft.context = await api("/desktop/api/contexts/derive", { method: "POST", body: JSON.stringify({
-      title: localize`${draft.task.title.slice(0, 180)} · 重试`,
-      sources: [{ context_id: draft.task.task_id, checkpoint_id: draft.snapshot.checkpoint_id }], messages: draft.turn.messages,
-    }) });
-    const context = draft.context;
-    if (!["valid", "repaired", "approved"].includes(context.projection_status)) throw new Error(localize("该历史上下文需要先处理安全执行投影，请在上下文与派生中查看"));
-    const history = await api(`/desktop/api/tasks/${draft.task.task_id}/material-history`);
-    const localBindings = history.filter(item => item.message_id === (draft.turn.message.id || draft.turn.message.message_id));
-    const inheritedBindings = FocusMessageRetry.materialBindings(draft.turn.message);
-    const bindings = (inheritedBindings.length ? inheritedBindings.map(item => localBindings.find(local => local.material_id === item.material_id) || item) : localBindings).sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
-    // Material IDs belong to a task. Re-enroll their paths in the branch and carry
-    // notes; never silently drop an unavailable attachment.
-    for (const binding of bindings) {
-      if (binding.current_available === false) throw new Error(localize`原提问的材料已不可用：${binding.relative_path}`);
-      if (!draft.materials.has(binding.material_id)) draft.materials.set(binding.material_id, await api(`/desktop/api/tasks/${context.context_id}/materials`, { method: "POST", body: JSON.stringify({ path: binding.relative_path }) }));
-    }
-    let content = FocusMessageRetry.replayContent(draft.turn.message, editedText);
-    const remap = text => {
-      for (const [oldId, material] of draft.materials) text = text.replaceAll(`material_id=${oldId}`, `material_id=${material.material_id}`);
-      return text;
-    };
-    content = typeof content === "string" ? remap(content) : content.map(block => typeof block.text === "string" ? { ...block, text: remap(block.text) } : block);
-    const taskId = context.context_id;
-    const message = editedText ?? FocusMessageRetry.editableText(draft.turn.message);
-    await api(`/desktop/api/tasks/${taskId}/access-mode`, { method: "PUT", body: JSON.stringify({ access_mode: draft.options.access_mode }) });
-    const requestId = crypto.randomUUID();
-    const replayBindings = bindings.map(item => ({ materialId: draft.materials.get(item.material_id).material_id, note: item.note || "" }));
-    taskRunOperations.freeze(taskId, requestId, { input: message, message, selectionSignature: JSON.stringify({ bindings: replayBindings, notes: Object.fromEntries(replayBindings.map(item => [item.materialId, item.note])) }), body: JSON.stringify({
-      message: content, ...draft.options,
-      ...(draft.turn.message.additional_kwargs?.message_reference ? { message_reference: draft.turn.message.additional_kwargs.message_reference } : {}),
-      material_inputs: replayBindings.map(item => ({ material_id: item.materialId, note: item.note })),
-    }) });
-    await refreshTasks();
-    await hydrateContextTrees();
-    draft.pending = false;
-    closeMessageRetry();
-    if (draft.navigation !== taskSwitchSequence || state.view !== "focus" || state.activeTaskId !== draft.task.task_id) return;
-    await switchTask(taskId);
-    // A newer navigation owns the screen. Its composer must never submit this retry.
-    if (state.activeTaskId === taskId && state.view === "focus") await sendMain(true);
-  } catch (error) {
-    errorNode.textContent = error.message;
-    setStatus(error.message, true);
-  } finally {
-    draft.pending = false;
-    dialog.querySelectorAll("button, textarea").forEach(node => { node.disabled = false; });
-  }
 }
 
 function collectImagesFromMessages(messages, depth = 0) {
@@ -2500,7 +2345,7 @@ function renderCompressionDivider(item) {
   // 压缩块/删除墓碑分界标记：原文已在其后原位展开显示；删除无摘要，仅提示
   const dividerKey = item.deleted ? `deleted:${item.block_id || item.count}` : `block:${item.block_id || item.count}`;
   if (item.deleted) {
-    return localize`<div class="compression-block-divider is-deleted" data-divider-key="${escapeHtml(dividerKey)}"><span><span class="ui-icon is-sm icon-trash-2" aria-hidden="true"></span>已删除 · 来源 ${item.count} 条（模型不可见，可在压缩面板中恢复）</span></div>`;
+    return localize`<div class="compression-block-divider is-deleted" data-divider-key="${escapeHtml(dividerKey)}"><span><span class="ui-icon is-sm icon-trash-2" aria-hidden="true"></span>已删除 · 来源 ${item.count} 条（历史记录）</span></div>`;
   }
   return localize`<div class="compression-block-divider" data-divider-key="${escapeHtml(dividerKey)}">
     <details class="compression-block-summary"><summary><span class="ui-icon is-sm icon-package" aria-hidden="true"></span>压缩块 · 来源 ${item.count} 条</summary><div class="compression-block-summary-body">${escapeHtml(item.summary)}</div></details>
@@ -2522,7 +2367,7 @@ function _conversationRenderInput(detail, task) {
     },
     markdown: mdRenderer,
     events: conversationEvents,
-    expandMessages: compressionPanel.expandForConversation,
+    expandMessages: conversationHistory.expandForConversation,
     renderMessage: (message, options) => renderMessage(message, { ...options, historyActions: !detail.context?.managed_status && !task.loop }),
     renderDivider: renderCompressionDivider,
     escapeHtml,
@@ -3619,7 +3464,8 @@ function renderCurationAudit(curation) {
       <dl class="curation-meta"><div><dt>投影</dt><dd>${escapeHtml(revision.projection_status || "—")}</dd></div><div><dt>发布时间</dt><dd>${escapeHtml(revision.published_at || "—")}</dd></div></dl>
       <p class="tiny muted">使用 ${summary.used || (summary.retained || 0) + (summary.synthesized || 0)} · 舍弃 ${summary.discarded || 0}${planItemTypes.length ? localize` · 计划 ${planItemTypes.map(escapeHtml).join(" / ")}` : ""}</p>
       ${revision.error ? `<p class="tiny danger">${escapeHtml(revision.error)}</p>` : ""}
-      ${sourceMessages.length ? localize`<details class="curation-source-evidence"><summary>来源证据 · ${sourceMessages.length} 条</summary><div>${sourceMessages.map(message => `<div><code>${escapeHtml(message.source_message_id || "—")}</code><span>${escapeHtml(message.role || "—")}</span><span>${escapeHtml(compressionPanel.messageText(message).replace(/\s+/g, " ").slice(0, 160))}</span></div>`).join("")}</div></details>` : ""}
+      ${revision.input_released ? localize('<p class="tiny muted">此策展记录的来源输入已释放。</p>') : ""}
+      ${sourceMessages.length ? localize`<details class="curation-source-evidence"><summary>来源证据 · ${sourceMessages.length} 条</summary><div>${sourceMessages.map(message => `<div><code>${escapeHtml(message.source_message_id || "—")}</code><span>${escapeHtml(message.role || "—")}</span><span>${escapeHtml(conversationHistory.messageText(message).replace(/\s+/g, " ").slice(0, 160))}</span></div>`).join("")}</div></details>` : ""}
       <div class="curation-dispositions">${dispositions.map(item => {
         const targets = item.target_message_indexes || (item.target_message_index == null ? [] : [item.target_message_index]);
         const itemTypes = (item.plan_items || []).map(planItem => planItem.plan_item_type).filter(Boolean);
@@ -3776,7 +3622,7 @@ function taskCardMarkup(task, draftMode = false) {
 }
 
 function taskCards(draftMode = false) {
-  return contextEditor.orderTasksByTree(state.tasks, state.contextTrees)
+  return contextNavigation.orderTasksByTree(state.tasks, state.contextTrees)
     .map(task => taskCardMarkup(task, draftMode))
     .join("");
 }
@@ -3798,7 +3644,7 @@ function contextRootId(task, tree) {
  * 工作区与根 Context 组都由任务派生，因此全图不会出现「0 个 Context」的空工作区，也不需要空态分支。
  */
 function renderMapGroups(activeTasks) {
-  const ordered = contextEditor.orderTasksByTree(activeTasks, state.contextTrees);
+  const ordered = contextNavigation.orderTasksByTree(activeTasks, state.contextTrees);
   const workspaces = new Map();
   ordered.forEach(task => {
     const tree = state.contextTrees.get(task.workspace_id) || [];
@@ -4157,368 +4003,6 @@ async function hydrateContextTrees(workspaceIds = null) {
   ]));
   if (requestId !== contextTreeRequestSequence) return;
   trees.forEach(([workspaceId, tree]) => state.contextTrees.set(workspaceId, tree));
-}
-
-async function openContextEditor(contextId) {
-  const task = state.tasks.find(item => item.task_id === contextId);
-  if (!task) return;
-  const requestId = ++contextRequestSequence;
-  const navigationId = taskSwitchSequence;
-  setStatus(localize("读取 Context checkpoint…"));
-  try {
-    const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
-    if (requestId !== contextRequestSequence || navigationId !== taskSwitchSequence) return;
-    if (!snapshot.checkpoint_id) throw new Error(localize("该 Context 尚无可派生的已提交 checkpoint"));
-    state.contextDraft = {
-      title: localize`${task.title} · 派生`,
-      workspace_id: task.workspace_id,
-      sources: [{ context_id: contextId, checkpoint_id: snapshot.checkpoint_id }],
-      sourceSnapshots: [{ context_id: contextId, checkpoint_id: snapshot.checkpoint_id, messages: contextEditor.cloneMessages(snapshot.messages) }],
-      activeSourceId: contextId,
-      messages: [],
-      uiKeys: [],
-      expandedKey: null,
-      undo: null,
-      context: null,
-    };
-    state.view = "context";
-    setStatus("");
-    render();
-  } catch (error) { if (requestId === contextRequestSequence) setStatus(error.message, true); }
-}
-
-async function reopenContextDecision(contextId) {
-  const requestId = ++contextRequestSequence;
-  const navigationId = taskSwitchSequence;
-  try {
-    const detail = state.details.get(contextId) || await api(`/desktop/api/tasks/${contextId}`);
-    const task = state.tasks.find(item => item.task_id === contextId);
-    if (!detail.context || !task) throw new Error(localize("Context 决断数据不存在"));
-    const sources = contextEditor.cloneMessages(detail.context.sources || []);
-    const sourceSnapshots = await Promise.all(sources.map(async source => {
-      const checkpoint = encodeURIComponent(source.checkpoint_id);
-      const snapshot = await api(`/desktop/api/contexts/${source.context_id}/snapshot?checkpoint_id=${checkpoint}`);
-      return { ...source, messages: contextEditor.cloneMessages(snapshot.messages) };
-    }));
-    if (requestId !== contextRequestSequence || navigationId !== taskSwitchSequence) return;
-    const messages = contextEditor.cloneMessages(detail.context.authored_messages || []);
-    state.contextDraft = {
-      title: task.title,
-      workspace_id: task.workspace_id,
-      sources,
-      sourceSnapshots,
-      activeSourceId: sources[0]?.context_id || null,
-      messages,
-      uiKeys: contextEditor.createUiKeys(messages, nextContextUiKey),
-      expandedKey: null,
-      undo: null,
-      context: detail.context,
-    };
-    state.view = "context";
-    render();
-  } catch (error) { if (requestId === contextRequestSequence) setStatus(error.message, true); }
-}
-
-function syncContextDraft() {
-  const draft = state.contextDraft;
-  if (!draft) return null;
-  const panel = document.querySelector(".context-editor-view");
-  if (!panel) return draft;
-  draft.title = panel.querySelector("[data-context-title]").value.trim();
-  draft.messages = contextEditor.readMessages(panel, draft.messages);
-  return draft;
-}
-
-function renderContextDecision(context) {
-  if (!context) return "";
-  const repairs = (context.repair_manifest || []).filter(item => item.kind !== "regex_flag");
-  const repairList = repairs.length
-    ? localize`<details open><summary>Focus 无损补齐了 ${repairs.length} 处协议结构</summary><pre>${escapeHtml(JSON.stringify(repairs, null, 2))}</pre></details>`
-    : "";
-  if (context.projection_status === "repaired" && !context.editable) {
-    return localize`<section class="context-decision repaired"><span class="ui-badge is-success">已修复</span><h2>执行投影已安全生成</h2><p>协议结构已补齐，来源消息与用户定义未被静默改写。</p>${repairList}<div class="context-decision-actions ui-action-bar"><span class="muted tiny">可以安全进入派生 Context</span><button class="primary" data-action="open-derived-context">进入新 Context</button></div></section>`;
-  }
-  if (!["approval_required", "rejected", "initialization_failed"].includes(context.projection_status)) return repairList;
-  const issues = (context.issues || []).map(issue => localize`<article class="context-issue">
-    <strong>${escapeHtml(issue.reason)}</strong>
-    <div class="context-diff"><div><span>原始片段</span><pre>${escapeHtml(JSON.stringify(issue.original, null, 2))}</pre></div><div><span>拟议投影</span><pre>${escapeHtml(JSON.stringify(issue.proposed, null, 2))}</pre></div></div>
-  </article>`).join("");
-  const actions = context.projection_status === "approval_required"
-    ? localize`<button class="primary" data-action="accept-context-projection">接受本次降级</button><button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="cancel-context-projection">取消发送</button>`
-    : localize`<button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="exit-context-editor">关闭</button>`;
-  return localize`<section class="context-decision blocked"><span class="ui-badge is-warning">需要决断</span><h2>执行投影需要你的确认</h2><p>以下差异会影响 Agent 实际接收的上下文；Focus 不会静默采用降级。</p>${repairList}${issues}<div class="context-decision-actions ui-action-bar"><span class="muted tiny">确认前不会启动新 Context</span><div class="dialog-actions">${actions}</div></div></section>`;
-}
-
-function contextDraftLocked(draft = state.contextDraft) {
-  return Boolean(draft?.context && !draft.context.editable);
-}
-
-function ensureContextUiKeys(draft) {
-  draft.uiKeys ||= [];
-  while (draft.uiKeys.length < draft.messages.length) draft.uiKeys.push(nextContextUiKey());
-  if (draft.uiKeys.length > draft.messages.length) draft.uiKeys.length = draft.messages.length;
-  if (draft.expandedKey && !draft.uiKeys.includes(draft.expandedKey)) draft.expandedKey = null;
-}
-
-function contextSourcePanelMarkup(draft) {
-  const created = Boolean(draft.context);
-  const locked = contextDraftLocked(draft);
-  const active = draft.sourceSnapshots?.find(source => source.context_id === draft.activeSourceId) || draft.sourceSnapshots?.[0];
-  const tabs = draft.sources.map((source, index) => {
-    const task = state.tasks.find(item => item.task_id === source.context_id);
-    return `<span class="context-source-tab-wrap"><button type="button" class="context-source-tab${source.context_id === active?.context_id ? " is-active" : ""}" data-action="context-source-select" data-context-id="${escapeHtml(source.context_id)}">${escapeHtml(task?.title || source.context_id)}</button>${!created && draft.sources.length > 1 ? localize`<button type="button" class="context-source-remove" data-action="remove-context-source" data-source-index="${index}" aria-label="移除此来源"><span class="ui-icon is-sm icon-x" aria-hidden="true"></span></button>` : ""}</span>`;
-  }).join("");
-  const sourceIds = new Set(draft.sources.map(source => source.context_id));
-  const tree = state.contextTrees.get(draft.workspace_id) || [];
-  const candidates = tree.filter(item => !sourceIds.has(item.context_id)).map(item => {
-    const task = state.tasks.find(candidate => candidate.task_id === item.context_id);
-    return `<button class="context-source-candidate" style="--context-depth:${item.depth}" data-action="add-context-source" data-context-id="${escapeHtml(item.context_id)}">${escapeHtml(task?.title || item.title)}</button>`;
-  }).join("") || localize('<span class="muted tiny">没有其他可加入的 Context</span>');
-  return localize`<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2 id="context-source-heading">来源</h2><p class="muted tiny">点击“加入”复制到新上下文末尾；拖放可选择插入位置。</p></div></header>
-    <div class="context-source-tabs" role="group" aria-label="来源 Context">${tabs}</div>
-    <div class="context-source-message-list">${contextEditor.renderSourceMessages(active?.messages || [], active?.context_id || "", locked)}</div>
-    <details class="context-source-add"${created ? " hidden" : ""}><summary>加入其他来源</summary><div class="context-source-tree">${candidates}</div></details>`;
-}
-
-function renderContextSourcePanel() {
-  const panel = document.querySelector(".context-source-panel");
-  if (panel && state.contextDraft) panel.innerHTML = contextSourcePanelMarkup(state.contextDraft);
-}
-
-function contextMessageElement(message, index, uiKey, expanded = false) {
-  const template = document.createElement("template");
-  template.innerHTML = contextEditor.renderMessage(message, index, uiKey, expanded ? uiKey : null, contextDraftLocked(), state.contextDraft?.editMode).trim();
-  return template.content.firstElementChild;
-}
-
-function contextListPositions() {
-  return new Map([...document.querySelectorAll(".context-message-editor[data-context-ui-key]")].map(row => [row.dataset.contextUiKey, row.getBoundingClientRect().top]));
-}
-
-function animateContextReflow(previous) {
-  if (!previous || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-  document.querySelectorAll(".context-message-editor[data-context-ui-key]").forEach(row => {
-    const before = previous.get(row.dataset.contextUiKey);
-    if (before == null) return;
-    const delta = before - row.getBoundingClientRect().top;
-    if (Math.abs(delta) > 1) row.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: 190, easing: "cubic-bezier(.2,.8,.2,1)" });
-  });
-}
-
-function updateContextMessageIndices() {
-  const draft = state.contextDraft;
-  const list = document.querySelector(".context-message-list");
-  if (!draft || !list) return;
-  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
-  rows.forEach((row, index) => {
-    row.dataset.contextMessageIndex = String(index);
-    const role = draft.messages[index]?.role || localize("未指定角色");
-    row.querySelector("header strong").textContent = `${String(index + 1).padStart(2, "0")} · ${role}`;
-    row.querySelectorAll("textarea").forEach(input => {
-      input.dataset.contextMessageIndex = String(index);
-      input.setAttribute("aria-label", input.hasAttribute("data-context-message-json") ? localize`消息 ${index + 1} JSON`
-        : input.dataset.contextPartIndex == null ? localize`消息 ${index + 1} 正文`
-          : localize`消息 ${index + 1} 正文 ${Number(input.dataset.contextPartIndex) + 1}`);
-    });
-  });
-  const count = document.querySelector(".context-compose-heading > div > span");
-  if (count) count.textContent = localize`${draft.messages.length} 条消息`;
-  if (!rows.length && !list.querySelector(".context-empty-drop")) list.insertAdjacentHTML("beforeend", contextEditor.renderMessages([], []));
-}
-
-function renderContextEditor(scrollTop = null) {
-  const draft = state.contextDraft;
-  if (!draft) { state.view = "map"; return renderMap(); }
-  ensureContextUiKeys(draft);
-  const created = Boolean(draft.context);
-  const locked = contextDraftLocked(draft);
-  app.innerHTML = localize`<section class="context-editor-view">
-    <aside class="context-source-panel" aria-labelledby="context-source-heading">${contextSourcePanelMarkup(draft)}</aside>
-    <section class="context-definition-panel" aria-labelledby="context-definition-heading">
-      <header><div><span class="review-kicker">NEW CONTEXT</span><h1 id="context-definition-heading">新上下文</h1></div><button class="text-button" data-action="exit-context-editor">关闭</button></header>
-      <label>Context 标题<input data-context-title value="${escapeHtml(draft.title)}" ${created ? "disabled" : ""}></label>
-      <div class="context-compose-heading"><div><strong>消息列表</strong><span>${draft.messages.length} 条消息</span></div><div class="history-actions"><button class="text-button" data-action="context-message-add" ${locked ? "disabled" : ""}>新增消息</button><button class="text-button danger" data-action="context-message-clear" ${locked ? "disabled" : ""}>清空</button></div></div>
-      <div class="context-message-list" data-context-drop-zone>${contextEditor.renderMessages(draft.messages, draft.uiKeys, draft.expandedKey, locked, draft.editMode)}</div>
-      ${renderContextDecision(draft.context)}
-      <div class="context-undo-toast" hidden><span>已删除消息</span><button type="button" class="text-button" data-action="context-message-undo">撤销</button></div>
-      ${locked ? "" : localize`<footer><span class="muted tiny">仅使用“新上下文”中的消息创建 Context；来源保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? localize("重新编译") : localize("创建 Context")}</button></footer>`}
-    </section>
-  </section>`;
-  if (Number.isFinite(scrollTop)) document.querySelector(".context-definition-panel").scrollTop = scrollTop;
-}
-
-function insertContextMessage(message, index, options = {}) {
-  const draft = syncContextDraft();
-  ensureContextUiKeys(draft);
-  const list = document.querySelector(".context-message-list");
-  const previous = contextListPositions();
-  const safeIndex = Math.max(0, Math.min(Number(index), draft.messages.length));
-  const key = options.key || nextContextUiKey();
-  draft.messages.splice(safeIndex, 0, contextEditor.cloneMessages([message])[0]);
-  draft.uiKeys.splice(safeIndex, 0, key);
-  list.querySelector(".context-empty-drop")?.remove();
-  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
-  list.insertBefore(contextMessageElement(draft.messages[safeIndex], safeIndex, key), rows[safeIndex] || null);
-  updateContextMessageIndices();
-  animateContextReflow(previous);
-  if (options.expand) toggleContextMessage(key);
-  if (options.focus) requestAnimationFrame(() => list.querySelector(`[data-context-ui-key="${key}"] textarea`)?.focus());
-  return key;
-}
-
-function moveContextMessage(from, to, focus = false) {
-  const draft = syncContextDraft();
-  if (from < 0 || from >= draft.messages.length || to < 0 || to >= draft.messages.length || from === to) return;
-  const previous = contextListPositions();
-  const key = draft.uiKeys[from];
-  contextEditor.move(draft.messages, from, to);
-  contextEditor.move(draft.uiKeys, from, to);
-  const rows = new Map([...document.querySelectorAll(".context-message-editor[data-context-ui-key]")].map(row => [row.dataset.contextUiKey, row]));
-  const list = document.querySelector(".context-message-list");
-  draft.uiKeys.forEach(uiKey => list.append(rows.get(uiKey)));
-  updateContextMessageIndices();
-  animateContextReflow(previous);
-  if (focus) document.querySelector(`[data-context-ui-key="${key}"] [data-context-pointer-handle]`)?.focus();
-}
-
-function toggleContextMessage(uiKey, editMode = "body") {
-  const draft = syncContextDraft();
-  const previousExpanded = draft.expandedKey;
-  draft.expandedKey = previousExpanded === uiKey && (draft.editMode || "body") === editMode ? null : uiKey;
-  draft.editMode = editMode;
-  const replace = key => {
-    if (!key) return;
-    const index = draft.uiKeys.indexOf(key);
-    const row = document.querySelector(`[data-context-ui-key="${key}"]`);
-    if (row && index >= 0) {
-      const replacement = contextMessageElement(draft.messages[index], index, key, draft.expandedKey === key);
-      if (key === uiKey && editMode === "json") replacement.querySelector(".context-source-json").open = true;
-      row.replaceWith(replacement);
-    }
-  };
-  replace(previousExpanded);
-  if (uiKey !== previousExpanded) replace(uiKey);
-  const focusSelector = draft.expandedKey ? `[data-context-ui-key="${draft.expandedKey}"] textarea`
-    : `[data-context-ui-key="${uiKey}"] [data-action="${editMode === "json" ? "context-message-edit-json" : "context-message-toggle"}"]`;
-  requestAnimationFrame(() => document.querySelector(focusSelector)?.focus());
-}
-
-function showContextUndo() {
-  clearTimeout(contextUndoTimer);
-  const toast = document.querySelector(".context-undo-toast");
-  if (toast) toast.hidden = false;
-  contextUndoTimer = setTimeout(() => {
-    if (state.contextDraft) state.contextDraft.undo = null;
-    const current = document.querySelector(".context-undo-toast");
-    if (current) current.hidden = true;
-  }, 4500);
-}
-
-async function deleteContextMessage(uiKey) {
-  const index = state.contextDraft?.uiKeys.indexOf(uiKey) ?? -1;
-  if (index < 0) return;
-  const row = document.querySelector(`.context-message-editor[data-context-ui-key="${uiKey}"]`);
-  if (!row) return;
-  const draft = syncContextDraft();
-  const panel = document.querySelector(".context-definition-panel");
-  const scrollTop = panel?.scrollTop || 0;
-  const [message] = draft.messages.splice(index, 1);
-  const [key] = draft.uiKeys.splice(index, 1);
-  if (draft.expandedKey === key) draft.expandedKey = null;
-  draft.undo = { message, key, index };
-  // Retire the row synchronously; only its visual shell survives the exit animation.
-  row.setAttribute("inert", "");
-  row.setAttribute("aria-hidden", "true");
-  row.removeAttribute("data-context-ui-key");
-  row.removeAttribute("data-context-message-index");
-  row.querySelectorAll("button, textarea").forEach(input => { input.disabled = true; });
-  row.querySelector("[data-context-message-json]")?.removeAttribute("data-context-message-json");
-  row.querySelectorAll("[data-context-message-content]").forEach(input => input.removeAttribute("data-context-message-content"));
-  updateContextMessageIndices();
-  showContextUndo();
-  try {
-    if (!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-      const animation = row.animate([{ opacity: 1, transform: "scale(1)", maxHeight: `${row.offsetHeight}px` }, { opacity: 0, transform: "scale(.98)", maxHeight: "0px" }], { duration: 150, easing: "ease-in", fill: "forwards" });
-      await Promise.race([animation.finished.catch(() => {}), new Promise(resolve => setTimeout(resolve, 180))]);
-    }
-  } finally {
-    const previous = contextListPositions();
-    row.remove();
-    if (state.contextDraft === draft && panel?.isConnected) {
-      panel.scrollTop = Math.min(scrollTop, Math.max(0, panel.scrollHeight - panel.clientHeight));
-      animateContextReflow(previous);
-    }
-  }
-}
-
-function undoContextMessageDelete() {
-  const draft = state.contextDraft;
-  if (!draft?.undo) return;
-  const undo = draft.undo;
-  draft.undo = null;
-  clearTimeout(contextUndoTimer);
-  document.querySelector(".context-undo-toast")?.setAttribute("hidden", "");
-  insertContextMessage(undo.message, undo.index, { key: undo.key });
-}
-
-function clearContextMessages() {
-  const draft = syncContextDraft();
-  draft.messages = [];
-  draft.uiKeys = [];
-  draft.expandedKey = null;
-  document.querySelector(".context-message-list").innerHTML = contextEditor.renderMessages([], []);
-  document.querySelector(".context-compose-heading span").textContent = localize("0 条消息");
-}
-
-async function addContextSource(contextId) {
-  const draft = syncContextDraft();
-  if (!draft || draft.sources.some(source => source.context_id === contextId)) return;
-  try {
-    const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
-    if (!snapshot.checkpoint_id) throw new Error(localize("来源 Context 尚无已提交 checkpoint"));
-    draft.sources.push({ context_id: contextId, checkpoint_id: snapshot.checkpoint_id });
-    draft.sourceSnapshots.push({ context_id: contextId, checkpoint_id: snapshot.checkpoint_id, messages: contextEditor.cloneMessages(snapshot.messages) });
-    draft.activeSourceId = contextId;
-    renderContextSourcePanel();
-  } catch (error) { setStatus(error.message, true); }
-}
-
-async function submitContext() {
-  let draft;
-  try { draft = syncContextDraft(); }
-  catch (error) { return setStatus(error.message, true); }
-  if (!draft.title) return setStatus(localize("Context 标题不能为空"), true);
-  try {
-    const context = draft.context
-      ? await api(`/desktop/api/contexts/${draft.context.context_id}/definition`, { method: "PUT", body: JSON.stringify({ messages: draft.messages }) })
-      : await api("/desktop/api/contexts/derive", { method: "POST", body: JSON.stringify({ title: draft.title, sources: draft.sources, messages: draft.messages }) });
-    draft.context = context;
-    await refreshTasks();
-    await hydrateContextTrees();
-    if (context.projection_status === "valid") return openDerivedContext();
-    renderContextEditor();
-  } catch (error) { setStatus(error.message, true); }
-}
-
-async function decideContextProjection(decision) {
-  const context = state.contextDraft?.context;
-  if (!context) return;
-  try {
-    const updated = await api(`/desktop/api/contexts/${context.context_id}/projection/decision`, {
-      method: "POST",
-      body: JSON.stringify({ decision, definition_hash: context.definition_hash, projection_hash: context.projection_hash }),
-    });
-    state.contextDraft.context = updated;
-    if (decision === "accept") return openDerivedContext();
-    renderContextEditor();
-  } catch (error) { setStatus(error.message, true); }
-}
-
-async function openDerivedContext() {
-  const contextId = state.contextDraft?.context?.context_id;
-  if (!contextId) return;
-  state.contextDraft = null;
-  await switchTask(contextId);
 }
 
 function renderDraft() {
@@ -5016,9 +4500,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   if (!retry && activeTaskHasCommitmentLock()) {
     return setStatus(localize("存在尚未处理的承诺流程，请先处理审批面板"), true);
   }
-  if (!retry && state.details.get(taskId)?.pending_compression) {
-    return setStatus(localize("存在待确认的压缩请求，请先完成压缩或取消"), true);
-  }
   if (!retry && state.accessReviews.panel) {
     return setStatus(localize("存在待批准的本机资源访问请求，请先批准或拒绝"), true);
   }
@@ -5031,14 +4512,6 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
     .filter(entry => entry.status !== "ready");
   if (!retry && !message && !submittedFileRefs.length && !submittedSelection.bindings.length && !attachments.length) return;
   if (!retry) composerDraft.claim(taskId, input.value);
-  // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
-  const quickKeyword = keywordCommand.parse(message);
-  if (!retry && !submittedFileRefs.length && !submittedSelection.bindings.length && !attachments.length && quickKeyword !== null && !mainReference(taskId)) {
-    const keyword = quickKeyword;
-    input.value = "";
-    composerDraft.release(taskId);
-    return openCompressionView(task, null, keyword);
-  }
   setComposerError();
   const submittedInput = retry?.input ?? input.value;
   const frozenBody = retry ? JSON.parse(retry.body) : null;
@@ -5239,11 +4712,9 @@ async function settleRunStream(run, source, ownerTaskId, terminal) {
     : state.tasks.find(item => item.thread_id === run.thread_id);
   if (task) settleCommitmentRun(task.task_id, terminal);
   renderRunUpdate(ownerTaskId);
-  const detail = task ? state.details.get(task.task_id) : null;
   if (wasMainInterrupted
       && !state.commitment.review
-      && !state.commitment.recovery
-      && !detail?.pending_compression) {
+      && !state.commitment.recovery) {
     setStatus(localize("主 Agent 已中断，可继续对话"));
   } else if (terminal.status === "error" && terminal.error) {
     setStatus(terminal.error, true);
@@ -5338,7 +4809,7 @@ function listenToRun(run) {
     if (value.type === "compression_request") {
       const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
       if (!task) return;
-      openCompressionView(task, value);
+      if (state.activeTaskId === task.task_id) setStatus(localize("此运行已中断，请通过 Patrol 整理上下文后重新开始。"));
       return;
     }
     if (accessApproval.isAccessReview(value)) {
@@ -6324,393 +5795,7 @@ function scrollConversation() {
   requestAnimationFrame(() => { conversation.scrollTop = conversation.scrollHeight; });
 }
 
-// === 压缩视图（human-in-the-loop 上下文压缩）===
-
-function formatTokens(value) {
-  const number = Number(value || 0);
-  return number >= 1000 ? `${Math.round(number / 1000)}k` : String(number);
-}
-
-function compressionRoleLabel(message) {
-  const base = { human: localize("你"), user: localize("你"), ai: localize("助手"), assistant: localize("助手"), system: localize("系统"), tool: localize("工具") }[message?.role] || message?.role || localize("消息");
-  return message?.role === "tool" && message.name ? localize`工具 · ${message.name}` : base;
-}
-
-function compressionBelongsToTask(envelope) {
-  const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
-  if (!task) return false;
-  if (state.compression.taskId === task.task_id) return true;
-  state.compression.taskId = task.task_id;
-  return true;
-}
-
-async function openCompressionView(task, request, quickKeyword, manual = false) {
-  if (!task) return setStatus(localize("当前没有活动任务"), true);
-  if (state.compression.busy && state.compression.taskId === task.task_id) return;
-  const requestId = ++compressionRequestSequence;
-  const navigationId = taskSwitchSequence;
-  try {
-    const [detail, snapshot] = await Promise.all([
-      api(`/desktop/api/tasks/${task.task_id}`),
-      api(`/desktop/api/tasks/${task.task_id}/messages`),
-    ]);
-    if (requestId !== compressionRequestSequence || navigationId !== taskSwitchSequence) return;
-    state.activeTaskId = task.task_id;
-    state.compression = {
-      taskId: task.task_id,
-      request: request || detail.pending_compression || null,
-      messages: snapshot.messages || [],
-      selected: new Set(),
-      ranges: [],
-      busy: false,
-      recovery: detail.compression_recovery || null,
-      quick: quickKeyword ? { keyword: quickKeyword } : null,
-      manual: manual && !request && !detail.pending_compression,
-    };
-    // 快捷关键字压缩：自动把命中该词的消息勾选进 SOURCE，供用户调粒度
-    if (quickKeyword) {
-      const hitIds = compressionPanel.hitKeywordMessageIds(state.compression.messages, quickKeyword);
-      const indexes = [];
-      state.compression.messages.forEach((message, index) => {
-        if (hitIds.includes(message.id)) indexes.push(index);
-      });
-      state.compression.selected = new Set(indexes);
-      setStatus(localize`关键字快捷压缩「${quickKeyword}」共命中 ${indexes.length} 条，请确认后继续`);
-    } else if (manual) {
-      setStatus(localize("选择需要整理的消息；确认前不会修改上下文"));
-    } else {
-      setStatus(localize("上下文接近上限，等待压缩确认"));
-    }
-    state.view = "compress";
-    render();
-  } catch (error) { setStatus(error.message, true); }
-}
-
-function closeCompressionView() {
-  compressionRequestSequence += 1;
-  state.compression = {
-    taskId: null, request: null, messages: [], selected: new Set(),
-    ranges: [], busy: false, recovery: null,
-  };
-  state.view = "focus";
-  render();
-}
-
-function reconcileCompressionRecovery(detail) {
-  const recovery = detail?.compression_recovery || null;
-  if (!recovery) {
-    if (state.compression.taskId === state.activeTaskId && state.compression.recovery) {
-      closeCompressionView();
-    }
-    return;
-  }
-  if (state.compression.taskId === state.activeTaskId && state.view === "compress") return;
-  if (recovery.status === "resumable" || recovery.status === "orphaned") {
-    const task = state.tasks.find(item => item.task_id === state.activeTaskId);
-    return openCompressionView(task, detail.pending_compression || recovery.request);
-  }
-  setStatus(localize("压缩请求正在处理，请等待当前运行结束"), true);
-}
-
-function compressionRowPreview(message, isBlock) {
-  // 行预览文案：块/墓碑显示标记，合成占位与空内容显示友好提示，降级消息取去标签内容
-  if (isBlock) {
-    const sourceCount = message.compression?.source?.length ?? 0;
-    // 压缩块：显示该块的摘要内容（它具体把这段对话浓缩成了什么），而非笼统的"压缩块"标记。
-    if (message.compression?.deleted) {
-      return sourceCount ? localize`已删除 · 来源 ${sourceCount} 条` : localize("已删除");
-    }
-    const summary = compressionPanel.messageText(message).replace(/\s+/g, " ").trim();
-    if (summary) return summary.slice(0, 140);
-    return sourceCount ? localize`来源 ${sourceCount} 条` : localize("（空压缩消息）");
-  }
-  if (compressionPanel.isProtocolPlaceholder(message)) return localize("（工具结果已在压缩中省略）");
-  const degraded = compressionPanel.degradedParts(message);
-  const raw = degraded ? degraded.content : compressionPanel.messageText(message);
-  const text = raw.replace(/\s+/g, " ").trim().slice(0, 140);
-  if (!text) return message.tool_calls?.length ? localize("（工具调用）") : localize("（空内容）");
-  return text;
-}
-
-function renderCompressionNested(messages, level = 0) {
-  // 来源原文的递归渲染：嵌套压缩块继续展开，降级消息按工具结果展示
-  return (Array.isArray(messages) ? messages : []).map(message => {
-    const isBlock = Boolean(message.compression);
-    const sourceCount = message.compression?.source?.length ?? 0;
-    const nested = isBlock && sourceCount ? renderCompressionNested(message.compression.source, level + 1) : "";
-    return `<div class="compression-nested-row" style="--nested-level: ${level}">
-      <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
-      <span class="compression-body">
-        <span class="compression-preview">${isBlock ? `<span class="ui-icon is-sm ${message.compression?.deleted ? "icon-trash-2" : "icon-package"}" aria-hidden="true"></span>` : ""}${escapeHtml(compressionRowPreview(message, isBlock))}</span>
-        ${nested ? `<div class="compression-nested-source">${nested}</div>` : ""}
-      </span>
-    </div>`;
-  }).join("");
-}
-
-function renderCompressionMessages() {
-  const c = state.compression;
-  const plannedSourceIds = new Set(c.ranges.flatMap(range => range.source_ids || []));
-  return c.messages.map((message, index) => {
-    const isBlock = Boolean(message.compression);
-    const isProtocolPlaceholder = compressionPanel.isProtocolPlaceholder(message);
-    const planned = plannedSourceIds.has(message.id);
-    return `<label class="compression-message-row${isBlock ? " is-block" : ""}${message.compression?.deleted ? " is-deleted" : ""}${isProtocolPlaceholder ? " is-synthetic" : ""}${planned ? " is-planned" : ""}">
-      <input type="checkbox" data-action="toggle-compress-message" data-index="${index}" ${c.selected.has(index) ? "checked" : ""} ${planned ? localize("disabled title=\"已加入变更计划\"") : ""}>
-      <span class="compression-index">${String(index + 1).padStart(2, "0")}</span>
-      <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
-      <span class="compression-body">
-        <span class="compression-preview">${isBlock ? `<span class="ui-icon is-sm ${message.compression?.deleted ? "icon-trash-2" : "icon-package"}" aria-hidden="true"></span>` : ""}${escapeHtml(compressionRowPreview(message, isBlock))}</span>
-        ${isBlock ? localize`<details class="compression-block-source"><summary>展开来源原文</summary><div class="compression-block-source-body">${renderCompressionNested(message.compression.source || [], 1)}</div></details>` : ""}
-      </span>
-    </label>`;
-  }).join("");
-}
-
-function renderCompressionRanges() {
-  const c = state.compression;
-  if (!c.ranges.length) return localize`<p class="muted">在左侧勾选消息并加入计划或直接删除；确认前当前上下文不会发生任何变化。</p>`;
-  return c.ranges.map((range, rangeIndex) => {
-    const indexes = range.source_ids.map(id => c.messages.findIndex(message => message.id === id));
-    const label = indexes.length ? localize`消息 ${Math.min(...indexes) + 1}~${Math.max(...indexes) + 1}` : localize("范围");
-    const singleBlock = range.source_ids.length === 1
-      && c.messages.find(message => message.id === range.source_ids[0])?.compression;
-    if (range.delete) {
-      return localize`<article class="compression-range-card is-delete">
-        <header><strong>${label}</strong><span class="muted tiny">${range.source_ids.length} 条消息</span></header>
-        <p>从上下文中删除这 ${range.source_ids.length} 条消息（不生成摘要）</p>
-        <div class="compression-range-actions">
-          <button class="text-button" data-action="undelete-range" data-range-index="${rangeIndex}">改回压缩</button>
-          <button class="text-button" data-action="remove-range" data-range-index="${rangeIndex}">移除</button>
-        </div>
-      </article>`;
-    }
-    return localize`<article class="compression-range-card${range.restore ? " is-restore" : ""}">
-      <header><strong>${label}</strong><span class="muted tiny">${range.source_ids.length} 条消息</span></header>
-      ${range.restore
-        ? localize`<p>恢复该压缩块的来源原文（撤销此次压缩）</p>
-           <div class="compression-range-actions">
-             <button class="text-button" data-action="unrestore-range" data-range-index="${rangeIndex}">改回压缩</button>
-             <button class="text-button" data-action="remove-range" data-range-index="${rangeIndex}">移除</button>
-           </div>`
-        : localize`<textarea data-range-index="${rangeIndex}" placeholder="摘要内容（可编辑，也可完全重写）">${escapeHtml(range.replacement)}</textarea>
-           ${range.error ? `<p class="compression-range-error" role="alert">${escapeHtml(range.error)}</p>` : ""}
-           <div class="compression-range-actions">
-             <button class="text-button" data-action="summarize-range" data-range-index="${rangeIndex}" ${range.summarizing ? "disabled" : ""}>${range.summarizing ? localize("生成中…") : range.generated ? localize("重新生成") : localize("生成摘要")}</button>
-             <button class="text-button danger" data-action="delete-range" data-range-index="${rangeIndex}">删除</button>
-             <button class="text-button" data-action="remove-range" data-range-index="${rangeIndex}">移除</button>
-             ${singleBlock ? localize`<button class="text-button" data-action="restore-range" data-range-index="${rangeIndex}">恢复原消息</button>` : ""}
-           </div>`}
-    </article>`;
-  }).join("");
-}
-
-function compressionReady() {
-  const ranges = state.compression.ranges;
-  const allSourceIds = ranges.flatMap(range => range.source_ids || []);
-  return ranges.length > 0
-    && new Set(allSourceIds).size === allSourceIds.length
-    && ranges.every(range => range.restore || range.delete || String(range.replacement || "").trim());
-}
-
-function renderCompress() {
-  const c = state.compression;
-  const task = state.tasks.find(item => item.task_id === c.taskId) || activeTask();
-  if (!task || !c.messages.length) { state.view = "focus"; return render(); }
-  // 勾选/生成等操作会整体重渲染：保留左右两栏滚动位置，避免列表弹回顶部
-  const previousList = document.querySelector(".compression-message-list");
-  const previousPlan = document.querySelector(".compression-plan");
-  const listScrollTop = previousList?.scrollTop;
-  const planScrollTop = previousPlan?.scrollTop;
-  const stats = compressionPanel.beforeAfter(c.messages, c.ranges);
-  const usage = c.request?.usage ?? 0;
-  const limit = c.request?.limit ?? 0;
-  app.innerHTML = localize`
-    <section class="compression-view">
-      <header class="compression-heading">
-        <p class="compression-usage">当前用量 <strong>${formatTokens(usage)} / ${formatTokens(limit)} tokens</strong>${c.request ? localize` · 触发阈值 ${Math.round((c.request.ratio ?? 0.9) * 100)}%` : ""}</p>
-        <div class="compression-heading-actions"><span class="ui-badge is-warning">确认前不写入</span><button class="text-button" data-action="cancel-compression">取消压缩</button></div>
-      </header>
-      <div class="compression-panels">
-        <aside class="compression-messages">
-          <header class="compression-panel-heading"><div><span class="workspace-kicker">01 · SOURCE</span><strong>选择原始消息</strong></div><span>${c.messages.length} 条</span></header>
-          <div class="compression-message-list">${renderCompressionMessages()}</div>
-          <footer>
-            <button class="text-button danger" data-action="compression-delete-selection" ${c.selected.size ? "" : "disabled"}>直接删除</button>
-            <button class="primary" data-action="compression-join-selection" ${c.selected.size ? "" : "disabled"}>加入计划（${compressionPanel.selectionRanges(c.selected).length} 个范围）</button>
-          </footer>
-        </aside>
-        <section class="compression-plan">
-          <header class="compression-panel-heading"><div><span class="workspace-kicker">02 · PLAN</span><strong>审阅变更计划</strong></div><span>${c.ranges.length} 个范围</span></header>
-          ${renderCompressionRanges()}
-          <div class="compression-stats">
-            <span><small>变更前</small><strong>${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</strong></span>
-            <span><small>预计变更后</small><strong>${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</strong></span>
-          </div>
-          <details class="compression-mapping-details" ${stats.mapping.length ? "open" : ""}><summary>来源映射 · ${stats.mapping.length} 项</summary><ul class="compression-mapping">${stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? localize("删除") : item.restore ? localize("恢复原消息") : localize("压缩块")}</li>`).join("")}</ul></details>
-          <footer>
-            <span class="muted tiny">只有确认后才会写入 checkpoint</span><button class="primary" data-action="confirm-compression" ${compressionReady() ? "" : "disabled"}>确认压缩并继续</button>
-          </footer>
-        </section>
-      </div>
-    </section>`;
-  if (listScrollTop != null) document.querySelector(".compression-message-list").scrollTop = listScrollTop;
-  if (planScrollTop != null) document.querySelector(".compression-plan").scrollTop = planScrollTop;
-}
-
-function refreshCompressionStats() {
-  if (state.view !== "compress") return;
-  const c = state.compression;
-  const stats = compressionPanel.beforeAfter(c.messages, c.ranges);
-  const statsNode = document.querySelector(".compression-stats");
-  const mappingNode = document.querySelector(".compression-mapping");
-  if (statsNode) {
-    statsNode.innerHTML = localize`<span><small>变更前</small><strong>${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</strong></span><span><small>预计变更后</small><strong>${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</strong></span>`;
-  }
-  if (mappingNode) {
-    mappingNode.innerHTML = stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? localize("删除") : item.restore ? localize("恢复原消息") : localize("压缩块")}</li>`).join("");
-  }
-  const confirm = document.querySelector('[data-action="confirm-compression"]');
-  if (confirm) confirm.disabled = !compressionReady();
-}
-
-function joinCompressionSelection() {
-  const c = state.compression;
-  const plannedSourceIds = new Set(c.ranges.flatMap(range => range.source_ids || []));
-  const ranges = compressionPanel.selectionRanges(c.selected).map(range => ({
-    source_ids: c.messages.slice(range.start, range.end + 1).map(message => message.id),
-    replacement: "",
-    generated: false,
-    restore: false,
-    summarizing: false,
-  })).filter(range => range.source_ids.every(id => !plannedSourceIds.has(id)));
-  c.ranges.push(...ranges);
-  c.selected = new Set();
-  renderCompress();
-}
-
-function deleteCompressionSelection() {
-  const c = state.compression;
-  const plannedSourceIds = new Set(c.ranges.flatMap(range => range.source_ids || []));
-  const ranges = compressionPanel.selectionRanges(c.selected).map(range => ({
-    source_ids: c.messages.slice(range.start, range.end + 1).map(message => message.id),
-    delete: true,
-  })).filter(range => range.source_ids.every(id => !plannedSourceIds.has(id)));
-  c.ranges.push(...ranges);
-  c.selected = new Set();
-  renderCompress();
-}
-
-
-async function summarizeRange(rangeIndex) {
-  const c = state.compression;
-  const range = c.ranges[rangeIndex];
-  if (!range || range.summarizing) return;
-  const indexes = range.source_ids.map(id => c.messages.findIndex(message => message.id === id));
-  const slice = c.messages.slice(Math.min(...indexes), Math.max(...indexes) + 1);
-  // 每范围独立 busy 标记：多个范围可并发生成摘要
-  range.summarizing = true;
-  range.error = "";
-  renderCompress();
-  try {
-    const result = await api("/desktop/api/compression/summarize", {
-      method: "POST",
-      body: JSON.stringify({
-        messages: slice,
-        forbid_terms: state.compression.quick
-          ? [state.compression.quick.keyword]
-          : [],
-      }),
-    });
-    range.replacement = result.summary;
-    range.generated = true;
-    range.restore = false;
-  } catch (error) { range.error = error.message; }
-  finally { range.summarizing = false; renderCompress(); }
-}
-
-async function confirmCompression() {
-  const c = state.compression;
-  if (c.busy) return;
-  const task = state.tasks.find(item => item.task_id === c.taskId) || activeTask();
-  if (!task) return setStatus(localize("当前没有活动任务"), true);
-  const ranges = c.ranges.map(range => range.delete
-    ? { source_ids: range.source_ids, delete: true }
-    : range.restore
-      ? { source_ids: range.source_ids, restore: true }
-      : { source_ids: range.source_ids, replacement: range.replacement });
-  c.busy = true;
-  try {
-    if (c.quick || c.manual) {
-      // 快捷关键字压缩：先机械剥离禁用词再写回，不走 resume
-      const keyword = c.quick?.keyword;
-      await api("/desktop/api/compression/quick-apply", {
-        method: "POST",
-        body: JSON.stringify({
-          task_id: task.task_id,
-          ranges,
-          scrub_terms: keyword ? [keyword] : [],
-        }),
-      });
-      // 快捷 apply 无 run/SSE，需手动重载会话与上下文树，否则压缩块不会立刻显示
-      await refreshActiveAfterTxn();
-      closeCompressionView();
-      setStatus(keyword ? localize`已关键字快捷压缩「${keyword}」，上下文已更新` : localize("上下文整理已提交"));
-      return;
-    }
-    const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
-      method: "POST",
-      body: JSON.stringify({ resume: { type: "compression", decision: "apply", ranges } }),
-    });
-    closeCompressionView();
-    listenToRun(run);
-    setStatus(localize("压缩已确认，Agent 继续运行…"));
-  } catch (error) {
-    // 上下文已变化（部分消息被折叠进块）：清掉 busy，重新从最新 checkpoint 加载并命中关键词
-    if (c.quick && error?.detail?.code === "context_changed") {
-      c.busy = false; // 必须清：否则 openCompressionView 开头的忙守卫会短路，刷新不会发生
-      setStatus(localize("上下文已更新，已按最新内容重新加载压缩面板"));
-      return openCompressionView(task, null, c.quick.keyword);
-    }
-    setStatus(error.message, true);
-  }
-  finally { c.busy = false; }
-}
-
-async function cancelCompression() {
-  const c = state.compression;
-  if (c.busy) return;
-  const task = state.tasks.find(item => item.task_id === c.taskId) || activeTask();
-  if (!task) return setStatus(localize("当前没有活动任务"), true);
-  c.busy = true;
-  try {
-    if (c.quick || c.manual) {
-      // 快捷关键字压缩不经 interrupt/resume 通道（quick-apply 直接写回，无中断可取消）：
-      // 取消只需关闭本地面板并清空状态，调用 resume 只会得到 409「无可恢复的承诺流程」。
-      closeCompressionView();
-      setStatus(c.manual ? localize("已取消上下文整理") : localize("已取消关键字快捷压缩"));
-      return;
-    }
-    const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
-      method: "POST",
-      body: JSON.stringify({ resume: { type: "compression", decision: "cancel" } }),
-    });
-    closeCompressionView();
-    listenToRun(run);
-    setStatus(localize("已取消压缩，Agent 原样继续…"));
-  } catch (error) { setStatus(error.message, true); }
-  finally { c.busy = false; }
-}
-
 async function refreshTasks() { return replaceTasks(await api("/desktop/api/tasks")); }
-
-// 一次 run/事务结束后重载任务列表、上下文树与当前任务详情，使对话区反映最新消息。
-// run 结束事件与快捷压缩 apply 共用，避免两处重复刷新逻辑。渲染由调用方负责。
-async function refreshActiveAfterTxn() {
-  await refreshTasks();
-  await hydrateContextTrees();
-  if (state.activeTaskId) await hydrateActive();
-}
 
 async function refreshTaskAfterTxn(taskId) {
   await refreshTasks();
@@ -6945,8 +6030,6 @@ async function switchTask(taskId) {
   render();
   await hydrateActive(taskId, { reusePending: true });
   if (requestId !== taskSwitchSequence || state.activeTaskId !== taskId || state.view !== "focus") return;
-  const projectionStatus = state.details.get(taskId)?.context?.projection_status || "root";
-  if (!["root", "valid", "repaired", "approved"].includes(projectionStatus)) return reopenContextDecision(taskId);
 }
 
 async function goFocusHome() {
@@ -8094,11 +7177,7 @@ async function handleDocumentClick(event) {
   }
   if (action === "open-file-panel") return openFileCard(button);
   if (action === "copy-answer" || action === "copy-question") return copyMessageText(button, button.dataset.copyText);
-  if (action === "edit-history-message") return openMessageRetry(button, true);
-  if (action === "retry-history-message") return openMessageRetry(button, false);
   if (action === "quote-history-message") return quoteHistoryMessage(button);
-  if (action === "cancel-message-retry") return closeMessageRetry();
-  if (action === "submit-message-retry") return submitMessageRetry();
   if (action === "copy-code") return copyMessageText(button, button.closest(".message-code-block")?.querySelector("pre > code")?.textContent);
   if (action === "export-conversation") return exportConversation();
   if (action === "show-patrol") {
@@ -8289,8 +7368,6 @@ async function handleDocumentClick(event) {
     return renderPlugins();
   }
   if (action === "focus-home") return state.activeTaskId ? goFocusHome() : (state.view = "focus", render());
-  if (action === "derive-context") return openContextEditor(state.activeTaskId);
-  if (action === "organize-context") return openCompressionView(activeTask(), null, null, true);
   if (action === "open-settings") return openSettings({ tab: button.dataset.settingsTab, section: button.dataset.settingsSection });
   if (action === "focus-main-input") return document.querySelector("#mainInput")?.focus();
   if (action === "refresh-file-modes") return loadFileModeSettings();
@@ -8350,60 +7427,7 @@ async function handleDocumentClick(event) {
   if (action === "toggle-select-session") return toggleSelectSession(button.dataset.taskId);
   if (action === "batch-delete-selected") return batchDeleteSessions(false);
   if (action === "batch-cascade-delete-selected") return batchDeleteSessions(true);
-  if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);
   if (action === "context-rail-card") return switchTask(button.dataset.taskId);
-  if (action === "resume-context-decision") return reopenContextDecision(button.dataset.contextId || state.activeTaskId);
-  if (action === "exit-context-editor") { state.contextDraft = null; state.view = "map"; return render(); }
-  if (action === "add-context-source") return addContextSource(button.dataset.contextId);
-  if (action === "context-source-select") {
-    state.contextDraft.activeSourceId = button.dataset.contextId;
-    return renderContextSourcePanel();
-  }
-  if (action === "remove-context-source") {
-    try {
-      const draft = syncContextDraft();
-      const [removed] = draft.sources.splice(Number(button.dataset.sourceIndex), 1);
-      draft.sourceSnapshots = draft.sourceSnapshots.filter(source => source.context_id !== removed.context_id);
-      if (draft.activeSourceId === removed.context_id) draft.activeSourceId = draft.sources[0]?.context_id || null;
-      return renderContextSourcePanel();
-    } catch (error) { return setStatus(error.message, true); }
-  }
-  if (action === "context-source-copy") {
-    try {
-      const row = button.closest("[data-context-source-index]");
-      const source = state.contextDraft.sourceSnapshots.find(item => item.context_id === row.dataset.sourceContextId);
-      return insertContextMessage(source.messages[Number(row.dataset.contextSourceIndex)], state.contextDraft.messages.length);
-    } catch (error) { return setStatus(error.message, true); }
-  }
-  if (action === "context-message-add") {
-    try { return insertContextMessage({ role: "human", content: "" }, state.contextDraft.messages.length, { expand: true, focus: true }); }
-    catch (error) { return setStatus(error.message, true); }
-  }
-  if (action === "context-message-clear") {
-    try { return clearContextMessages(); }
-    catch (error) { return setStatus(error.message, true); }
-  }
-  if (["context-message-toggle", "context-message-edit-json"].includes(action)) {
-    const row = button.closest("[data-context-ui-key]");
-    try { if (row) return toggleContextMessage(row.dataset.contextUiKey, action === "context-message-edit-json" ? "json" : "body"); }
-    catch (error) { return setStatus(error.message, true); }
-    return;
-  }
-  if (action === "context-message-undo") return undoContextMessageDelete();
-  if (["context-message-duplicate", "context-message-delete"].includes(action)) {
-    try {
-      const uiKey = button.closest("[data-context-ui-key]")?.dataset.contextUiKey;
-      const index = state.contextDraft?.uiKeys.indexOf(uiKey) ?? -1;
-      if (index < 0) return;
-      if (action === "context-message-duplicate") return insertContextMessage(syncContextDraft().messages[index], index + 1);
-      return deleteContextMessage(uiKey);
-    } catch (error) { return setStatus(error.message, true); }
-  }
-  if (action === "submit-context") return submitContext();
-  if (action === "accept-context-projection") return decideContextProjection("accept");
-  if (action === "cancel-context-projection") return decideContextProjection("reject");
-  if (action === "edit-context-projection") return renderContextEditor();
-  if (action === "open-derived-context") return openDerivedContext();
   if (action === "arm-soldier") { state.soldierArmed = !state.soldierArmed; return renderMap(); }
   if (action === "task-card") {
     const taskId = button.dataset.taskId;
@@ -8434,41 +7458,6 @@ async function handleDocumentClick(event) {
     if (buffer && buffer.taskId === state.activeTaskId) return conversationView.expandStreaming(article, buffer);
     return;
   }
-  if (action === "toggle-compress-message") {
-    state.compression.selected = compressionPanel.toggleSelect(
-      state.compression.selected, Number(button.dataset.index)
-    );
-    return renderCompress();
-  }
-  if (action === "compression-join-selection") return joinCompressionSelection();
-  if (action === "compression-delete-selection") return deleteCompressionSelection();
-  if (action === "delete-range") {
-    const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
-    if (range) { range.delete = true; range.replacement = ""; range.summarizing = false; }
-    return renderCompress();
-  }
-  if (action === "undelete-range") {
-    const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
-    if (range) { range.delete = false; }
-    return renderCompress();
-  }
-  if (action === "summarize-range") return summarizeRange(Number(button.dataset.rangeIndex));
-  if (action === "remove-range") {
-    state.compression.ranges.splice(Number(button.dataset.rangeIndex), 1);
-    return renderCompress();
-  }
-  if (action === "restore-range") {
-    const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
-    if (range) { range.restore = true; range.replacement = ""; }
-    return renderCompress();
-  }
-  if (action === "unrestore-range") {
-    const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
-    if (range) { range.restore = false; }
-    return renderCompress();
-  }
-  if (action === "confirm-compression") return confirmCompression();
-  if (action === "cancel-compression") return cancelCompression();
   if (action === "abandon-commitment") return abandonCommitment();
   if (action === "toggle-access-mode") return toggleAccessModeMenu(button);
   if (action === "select-access-mode") return selectAccessMode(button);
@@ -8573,7 +7562,6 @@ document.addEventListener("input", event => {
     return;
   }
   if (event.target.id === "mainInput") {
-    updateAtHighlight(event.target);
     composerDraft.claim(state.activeTaskId, event.target.value);
     scheduleComposerPersist();
   }
@@ -8591,25 +7579,12 @@ document.addEventListener("input", event => {
   if (event.target.matches("[data-strategy-import-field]")) syncStrategyImportField(event.target.dataset.strategyImportField, event.target.type === "checkbox" ? event.target.checked : event.target.value);
   if (event.target.matches("[data-source-field]")) editSourceText(Number(event.target.dataset.sourceIndex), event.target.value);
   if (event.target.matches("[data-segment-field]")) editMemorySegment(Number(event.target.dataset.segmentIndex), event.target.dataset.segmentField, event.target.value);
-  if (event.target.matches("[data-range-index]")) {
-    const range = state.compression.ranges[Number(event.target.dataset.rangeIndex)];
-    if (range) {
-      range.replacement = event.target.value;
-      range.generated = false;
-      refreshCompressionStats();
-    }
-  }
   if (event.target.matches("[data-model-field]")) updateModelField(event.target);
   // 密钥输入只进内存、不回填：任何响应都不携带凭据值
   if (event.target.matches("[data-model-credential]") && !modelSettings.saving) {
     updateModelCredential(event.target.value);
   }
 });
-
-// 主输入框滚动时同步 @命令高亮 backdrop（textarea 的 scroll 不冒泡，用捕获监听）。
-document.addEventListener("scroll", event => {
-  if (event.target.id === "mainInput") updateAtHighlight(event.target);
-}, true);
 
 // 记忆库：划选原文文字 → 高亮 → 采集 text + 字符区间 + message_id（供「加入选中文字」/拖拽）。
 document.addEventListener("mouseup", event => {
@@ -8672,10 +7647,6 @@ document.addEventListener("keydown", event => {
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
     event.preventDefault(); (app.querySelector("[data-page-search]") || app.querySelector("[data-patrol-content]:not(:disabled), #mainInput") || app.querySelector("[data-patrol-switch]"))?.focus(); return;
   }
-  if (event.key === "Escape" && contextPointerDrag) {
-    event.preventDefault();
-    return cancelContextPointerDrag();
-  }
   if (event.key === "Escape" && state.inspector.open) {
     event.preventDefault();
     closeInspector();
@@ -8712,18 +7683,6 @@ document.addEventListener("keydown", event => {
     interfaceI18n.setLocale(next.dataset.locale);
     syncLanguageControls();
     next.focus();
-    return;
-  }
-  const contextHandle = event.target.closest?.('[data-context-pointer-handle][data-context-drag-origin="draft"]');
-  if (contextHandle && event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
-    event.preventDefault();
-    const index = Number(contextHandle.closest("[data-context-message-index]").dataset.contextMessageIndex);
-    const target = index + (event.key === "ArrowUp" ? -1 : 1);
-    try {
-      if (target >= 0 && target < state.contextDraft.messages.length) {
-        moveContextMessage(index, target, true);
-      }
-    } catch (error) { setStatus(error.message, true); }
     return;
   }
   const input = event.target.closest("[data-skill-input]");
@@ -8775,183 +7734,6 @@ document.addEventListener("toggle", event => {
   if (!event.target.matches(".draft-advanced")) return;
   state.openDraftSection = event.target.open ? "system" : null;
 }, true);
-
-function beginContextPointerDrag(drag, event) {
-  try { syncContextDraft(); }
-  catch (error) { setStatus(error.message, true); return cancelContextPointerDrag(); }
-  const rect = drag.card.getBoundingClientRect();
-  drag.started = true;
-  drag.offsetX = Math.max(18, Math.min(event.clientX - rect.left, rect.width - 18));
-  drag.offsetY = Math.max(18, Math.min(event.clientY - rect.top, rect.height - 18));
-  drag.preview = drag.card.cloneNode(true);
-  drag.preview.className = "context-drag-preview";
-  drag.preview.removeAttribute("data-context-message-index");
-  drag.preview.querySelectorAll("button, textarea, details").forEach(node => { node.tabIndex = -1; });
-  drag.preview.style.width = `${rect.width}px`;
-  drag.placeholder = document.createElement("div");
-  drag.placeholder.className = "context-drop-placeholder";
-  drag.placeholder.style.height = `${Math.min(rect.height, 180)}px`;
-  drag.card.classList.add("is-lifted");
-  document.body.append(drag.preview);
-  document.querySelector(".context-message-list")?.classList.add("is-drag-active");
-  positionContextDragPreview(event.clientX, event.clientY);
-  drag.autoFrame = requestAnimationFrame(runContextAutoScroll);
-}
-
-function positionContextDragPreview(clientX, clientY) {
-  if (!contextPointerDrag?.preview) return;
-  contextPointerDrag.clientX = clientX;
-  contextPointerDrag.clientY = clientY;
-  contextPointerDrag.preview.style.transform = `translate3d(${clientX - contextPointerDrag.offsetX}px, ${clientY - contextPointerDrag.offsetY}px, 0) scale(1.015)`;
-}
-
-function updateContextDropTarget(clientX, clientY) {
-  const drag = contextPointerDrag;
-  const list = document.querySelector(".context-message-list");
-  if (!drag?.started || !list) return;
-  const rect = list.getBoundingClientRect();
-  const inside = clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-  if (!inside) {
-    drag.dropIndex = null;
-    drag.placeholder?.remove();
-    return;
-  }
-  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")].filter(row => row !== drag.card);
-  let index = rows.findIndex(row => clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
-  if (index < 0) index = rows.length;
-  if (drag.dropIndex === index && drag.placeholder?.isConnected) return;
-  const previous = contextListPositions();
-  drag.dropIndex = index;
-  list.insertBefore(drag.placeholder, rows[index] || null);
-  animateContextReflow(previous);
-}
-
-function scrollContextPanelNearPointer(clientY) {
-  const panel = document.querySelector(".context-definition-panel");
-  const rect = panel?.getBoundingClientRect();
-  if (panel && rect) {
-    const edge = 58;
-    const delta = clientY < rect.top + edge ? -12 : clientY > rect.bottom - edge ? 12 : 0;
-    if (delta) {
-      panel.scrollTop += delta;
-      return true;
-    }
-  }
-  return false;
-}
-
-function runContextAutoScroll() {
-  const drag = contextPointerDrag;
-  if (!drag?.started) return;
-  if (scrollContextPanelNearPointer(drag.clientY)) updateContextDropTarget(drag.clientX, drag.clientY);
-  drag.autoFrame = requestAnimationFrame(runContextAutoScroll);
-}
-
-function cleanupContextPointerDrag(keepPreview = false) {
-  const drag = contextPointerDrag;
-  if (!drag) return null;
-  contextPointerDrag = null;
-  cancelAnimationFrame(drag.autoFrame);
-  drag.placeholder?.remove();
-  drag.card?.classList.remove("is-lifted");
-  document.querySelector(".context-message-list")?.classList.remove("is-drag-active");
-  if (!keepPreview) drag.preview?.remove();
-  try {
-    if (drag.handle.hasPointerCapture?.(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
-  } catch {}
-  return drag;
-}
-
-function cancelContextPointerDrag() {
-  const drag = cleanupContextPointerDrag(true);
-  if (!drag?.preview) return;
-  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return drag.preview.remove();
-  const remove = () => drag.preview.remove();
-  drag.preview.animate([{ opacity: 1 }, { opacity: 0, transform: `${drag.preview.style.transform} scale(.96)` }], { duration: 120, easing: "ease-out" }).finished.finally(remove);
-  setTimeout(remove, 150);
-}
-
-function settleContextPointerPreview(drag, uiKey) {
-  if (!drag.preview) return;
-  const target = document.querySelector(`[data-context-ui-key="${uiKey}"]`);
-  if (!target || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return drag.preview.remove();
-  const rect = target.getBoundingClientRect();
-  const remove = () => drag.preview.remove();
-  drag.preview.animate([
-    { transform: drag.preview.style.transform, opacity: 1 },
-    { transform: `translate3d(${rect.left}px, ${rect.top}px, 0) scale(1)`, opacity: .2 },
-  ], { duration: 170, easing: "cubic-bezier(.2,.8,.2,1)" }).finished.finally(remove);
-  setTimeout(remove, 200);
-}
-
-document.addEventListener("pointerdown", event => {
-  const handle = event.target.closest?.("[data-context-pointer-handle]");
-  if (!handle || handle.disabled || event.button !== 0 || state.view !== "context") return;
-  const origin = handle.dataset.contextDragOrigin;
-  const card = origin === "source" ? handle.closest(".context-source-message") : handle.closest(".context-message-editor");
-  if (!card) return;
-  event.preventDefault();
-  contextPointerDrag = {
-    pointerId: event.pointerId,
-    handle,
-    card,
-    origin,
-    uiKey: card.dataset.contextUiKey,
-    sourceContextId: card.dataset.sourceContextId,
-    sourceIndex: Number(card.dataset.contextSourceIndex),
-    startX: event.clientX,
-    startY: event.clientY,
-    clientX: event.clientX,
-    clientY: event.clientY,
-    started: false,
-    dropIndex: null,
-  };
-  try { handle.setPointerCapture(event.pointerId); } catch {}
-});
-
-document.addEventListener("pointermove", event => {
-  const drag = contextPointerDrag;
-  if (!drag || event.pointerId !== drag.pointerId) return;
-  if (!drag.started && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
-  event.preventDefault();
-  if (!drag.started) beginContextPointerDrag(drag, event);
-  if (!contextPointerDrag) return;
-  positionContextDragPreview(event.clientX, event.clientY);
-  updateContextDropTarget(event.clientX, event.clientY);
-  if (scrollContextPanelNearPointer(event.clientY)) updateContextDropTarget(event.clientX, event.clientY);
-});
-
-document.addEventListener("pointerup", event => {
-  const current = contextPointerDrag;
-  if (!current || event.pointerId !== current.pointerId) return;
-  if (!current.started || current.dropIndex == null) return cancelContextPointerDrag();
-  const dropIndex = current.dropIndex;
-  const drag = cleanupContextPointerDrag(true);
-  try {
-    let uiKey;
-    if (drag.origin === "source") {
-      const source = state.contextDraft.sourceSnapshots.find(item => item.context_id === drag.sourceContextId);
-      uiKey = insertContextMessage(source.messages[drag.sourceIndex], dropIndex);
-    } else {
-      const from = state.contextDraft.uiKeys.indexOf(drag.uiKey);
-      const to = Math.max(0, Math.min(dropIndex, state.contextDraft.messages.length - 1));
-      moveContextMessage(from, to);
-      uiKey = drag.uiKey;
-    }
-    settleContextPointerPreview(drag, uiKey);
-  } catch (error) {
-    drag.preview?.remove();
-    setStatus(error.message, true);
-  }
-});
-
-document.addEventListener("pointercancel", event => {
-  if (contextPointerDrag?.pointerId === event.pointerId) cancelContextPointerDrag();
-});
-
-document.addEventListener("lostpointercapture", event => {
-  if (contextPointerDrag?.pointerId === event.pointerId) cancelContextPointerDrag();
-});
 
 document.addEventListener("dragstart", event => {
   if (event.target.matches(".soldier-source")) event.dataTransfer.setData("application/x-focus-soldier", "new");
@@ -9371,7 +8153,7 @@ async function openTaskNotification(target) {
     state.inspector.open = true;
     state.inspector.tab = "run";
     render();
-    const pending = document.querySelector(".access-review-panel, .review-panel, .compression-panel");
+    const pending = document.querySelector(".access-review-panel, .review-panel");
     pending?.scrollIntoView?.({ block: "center" });
   }
 }

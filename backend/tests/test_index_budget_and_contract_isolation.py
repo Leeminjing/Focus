@@ -32,21 +32,23 @@ from backend.app.desktop.patrol.agent_loop.models import (
     LoopDelegationGrant,
 )
 from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
-from backend.tests.incremental_index_support import (
+from backend.tests.index_test_support import (
     ModelProbe,
+    exercise,
     messages,
     observation,
     revision,
 )
-from backend.tests.test_incremental_revision_index import exercise
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
 def test_new_observation_reuses_only_identical_revision_index(tmp_path):
     async def run(sessions, seed):
-        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
-        from backend.tests.incremental_index_support import Checkpoints
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
+            LoopObservationService,
+        )
+        from backend.tests.index_test_support import Checkpoints
 
         target = await revision(sessions, seed["context_id"], messages(2))
         probe = ModelProbe()
@@ -102,7 +104,7 @@ def test_new_contract_does_not_adopt_old_projection_record(
         a = ModelProbe(variant=" A")
         old = (await a.service(sessions).build(observation(seed, first))).indexes[0]
         new_revision = await revision(
-            sessions, seed["context_id"], messages(2), parent=first
+            sessions, seed["context_id"], messages(2)
         )
         b = ModelProbe(variant=" B")
         service = b.service(sessions)
@@ -133,7 +135,7 @@ def test_new_contract_does_not_adopt_old_projection_record(
         result = await service.build(observation(seed, new_revision))
         assert result.blocker_code is None, result.blocker_summary
         current = result.indexes[0]
-        assert current.inheritance.mode == "full" and len(b.local_calls) == 2
+        assert len(b.local_calls) == 2
         assert all(unit.statement.endswith(" B") for unit in current.semantic_units)
         assert current.inheritance.record_ids != old.inheritance.record_ids, (
             "Full build under different schema/segmentation adopted the previous contract record"
@@ -246,8 +248,10 @@ def test_explicit_new_authorization_can_retry_without_changing_frozen_source(
             (await session.get(AgentLoop, seed["loop_id"])).authority_revision = 2
         assert (await service.build(retry)).blocker_code == "portfolio_index_budget"
         assert (await service.build(frozen, budget_authority_revision=2)).blocker_code == "portfolio_index_budget"
-        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import LoopObservationService
-        from backend.tests.incremental_index_support import Checkpoints
+        from backend.app.desktop.patrol.agent_loop.observations.observation_capture import (
+            LoopObservationService,
+        )
+        from backend.tests.index_test_support import Checkpoints
 
         current = await LoopObservationService(sessions, Checkpoints()).refresh(seed["loop_id"], seed["round_id"])
         refreshed = SimpleNamespace(**copy.deepcopy(vars(frozen)))

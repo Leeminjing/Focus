@@ -1,7 +1,6 @@
 """桌面装配范围的 API、Run 冻结、durable 重装配与权限边界验收。"""
 
 import backend.app.desktop.capabilities.service as _desktop_capabilities_service
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
 
@@ -52,7 +51,6 @@ def test_assembly_scope_binds_catalog_permissions_and_durable_run(tmp_path, monk
 
     monkeypatch.setattr(_desktop_capabilities_service, 'get_available_tools', pool)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'get_available_tools', pool)
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', make_agent)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', make_agent)
     monkeypatch.setattr(module.DurableRunDispatchWorker, "drain", idle_dispatch)
 

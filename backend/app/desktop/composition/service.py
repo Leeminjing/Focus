@@ -1,4 +1,9 @@
-"""桌面组合根：装配资源与领域端口，协调启动、关闭和持久派发。"""
+"""本文件对外提供 DesktopService 桌面组合根。
+
+输入为数据库会话、运行存储、应用配置与宿主桥接端口；输出为已装配的桌面领域服务。
+具体工作流为安装 Context 输入释放处理器并装配资源、Run 与 Patrol 端口，协调启动、关闭和持久派发。
+示例：service = DesktopService(sessions, checkpointer, store, bridge, config, run_manager)。
+"""
 
 from __future__ import annotations
 
@@ -29,7 +34,6 @@ from backend.app.desktop.api.schemas import (
 )
 from backend.app.desktop.capabilities.service import CapabilityService
 from backend.app.desktop.contexts.service import ContextService
-from backend.app.desktop.conversations.compression_service import CompressionService
 from backend.app.desktop.conversations.service import ConversationService
 from backend.app.desktop.materials.content import (
     MaterialContentService,
@@ -41,6 +45,9 @@ from backend.app.desktop.materials.service import MaterialService
 from backend.app.desktop.materials.snapshots import MaterialSnapshotVerifier
 from backend.app.desktop.materials.upload import MaterialUploadService
 from backend.app.desktop.memory.service import MemoryService
+from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
+    install_context_index_lifecycle,
+)
 from backend.app.desktop.patrol.context_service import ContextPatrolService
 from backend.app.desktop.patrol.service import PatrolService
 from backend.app.desktop.persistence.models import (
@@ -86,6 +93,7 @@ class DesktopService:
         app_config: AppConfig,
         run_manager: RunManager,
     ) -> None:
+        install_context_index_lifecycle()
         self.session_factory = session_factory
         self.checkpointer = checkpointer
         self.store = store
@@ -313,31 +321,6 @@ class DesktopService:
     ) -> list[dict[str, Any]]:
         return await self.conversations.get_checkpoint_messages(
             thread_id, checkpoint_ns
-        )
-
-    async def _compression_execution_identity(
-        self, session: AsyncSession, task: DesktopThread
-    ) -> tuple[str, str]:
-        return await self.compression._compression_execution_identity(session, task)
-
-    async def get_compression_messages(self, task_id: str) -> list[dict[str, Any]]:
-        return await self.compression.get_compression_messages(task_id)
-
-    async def quick_compression_preview(
-        self, task_id: str, keyword: str, case_sensitive: bool = False
-    ) -> dict[str, Any]:
-        return await self.compression.quick_compression_preview(
-            task_id, keyword, case_sensitive
-        )
-
-    async def quick_compression_apply(
-        self,
-        task_id: str,
-        ranges: list[dict[str, Any]],
-        scrub_terms: list[str] | None = None,
-    ) -> dict[str, Any]:
-        return await self.compression.quick_compression_apply(
-            task_id, ranges, scrub_terms
         )
 
     async def open_draft(self, task_id: str) -> dict[str, Any]:
@@ -857,10 +840,6 @@ class DesktopService:
     @cached_property
     def capabilities(self) -> CapabilityService:
         return CapabilityService(self)
-
-    @cached_property
-    def compression(self) -> CompressionService:
-        return CompressionService(self)
 
     @cached_property
     def conversations(self) -> ConversationService:

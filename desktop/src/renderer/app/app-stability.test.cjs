@@ -70,44 +70,6 @@ async function testTaskScopedHydration() {
   });
 }
 
-async function testStaleWorkspaceRequestsDoNotNavigate() {
-  const harness = createAppHarness({ globals: { setTimeout } });
-  harness.vm.runInContext(readAppSource(), harness.context);
-  const result = await harness.vm.runInContext(`(async () => {
-    state.tasks = [
-      { task_id: 'task-a', workspace_id: 'workspace', thread_id: 'thread-a', title: 'A' },
-      { task_id: 'task-b', workspace_id: 'workspace', thread_id: 'thread-b', title: 'B' },
-    ];
-    state.activeTaskId = 'task-a';
-    state.view = 'focus';
-    render = () => {};
-    setStatus = () => {};
-    api = async path => {
-      await new Promise(resolve => setTimeout(resolve, 20));
-      if (path.endsWith('/messages')) return { messages: [{ id: 'm1', role: 'human', content: 'A' }] };
-      if (path.includes('/snapshot')) return { checkpoint_id: 'cp-a', messages: [] };
-      return { task_id: 'task-a', pending_compression: { usage: 90, limit: 100 } };
-    };
-    const compression = openCompressionView(state.tasks[0], { usage: 90, limit: 100 });
-    taskSwitchSequence += 1;
-    state.activeTaskId = 'task-b';
-    await compression;
-    const afterCompression = { active: state.activeTaskId, view: state.view, task: state.compression.taskId };
-
-    taskSwitchSequence -= 1;
-    state.activeTaskId = 'task-a';
-    const context = openContextEditor('task-a');
-    cancelPendingViewRequests();
-    state.view = 'plugins';
-    await context;
-    return { afterCompression, afterContext: { active: state.activeTaskId, view: state.view, draft: state.contextDraft } };
-  })()`, harness.context);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), {
-    afterCompression: { active: "task-b", view: "focus", task: null },
-    afterContext: { active: "task-a", view: "plugins", draft: null },
-  });
-}
-
 async function testLatestDraftAndPluginNavigationWins() {
   const harness = createAppHarness({ globals: { setTimeout } });
   harness.vm.runInContext(readAppSource(), harness.context);
@@ -392,7 +354,6 @@ async function testUiActionErrorBoundary() {
 Promise.resolve()
   .then(testApiErrorBody)
   .then(testTaskScopedHydration)
-  .then(testStaleWorkspaceRequestsDoNotNavigate)
   .then(testLatestDraftAndPluginNavigationWins)
   .then(testLatestDraftSaveWins)
   .then(testAttachmentCommitBoundary)

@@ -277,9 +277,9 @@
       if (!selected) relatedOnly = false;
       patchGraph();
     }
-    async function inspectContext(contextId, trigger, revisionId) {
+    async function inspectContext(contextId, trigger) {
       const node = manifest().nodes.find(node => node.context_id === contextId) || projection?.contexts?.[contextId]?.state || {};
-      const reading = inspector.select(loopId, contextId, node, trigger, revisionId || node.current_revision_id);
+      const reading = inspector.select(loopId, contextId, node, trigger);
       showPanel("context");
       host.querySelector("[data-patrol-context-close]").focus({ preventScroll: true });
       await reading;
@@ -790,7 +790,7 @@
         }
         else if (button.dataset.patrolDeliveryContext) {
           if (!detailsOpen) toggleDetails();
-          await inspectContext(button.dataset.patrolDeliveryContext, button, button.dataset.revisionId);
+          await inspectContext(button.dataset.patrolDeliveryContext, button);
         }
         else if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
         else if (button.dataset.patrolFileAdd) addFileReference(JSON.parse(button.dataset.patrolFileAdd));
@@ -806,8 +806,8 @@
         else if (button.hasAttribute("data-patrol-related")) { relatedOnly = !relatedOnly; patchGraph(); }
         else if (button.hasAttribute("data-patrol-progress-locate")) locateProgress(JSON.parse(button.dataset.patrolProgressLocate));
         else if (button.dataset.patrolEdgeContext) {
-          const id = button.dataset.patrolEdgeContext, revisionId = button.dataset.revisionId;
-          await closeDialog(); await inspectContext(id, host.querySelector("[data-patrol-related]"), revisionId);
+          const id = button.dataset.patrolEdgeContext;
+          await closeDialog(); await inspectContext(id, host.querySelector("[data-patrol-related]"));
           showPanel("context");
         }
         else if (button.hasAttribute("data-patrol-dialog-close")) void closeDialog();
@@ -878,7 +878,7 @@
           const entity = projection.wait_requests[card?.dataset.waitRequestId];
           if (entity) await root.FocusLoopWaitRecovery.confirmAndResume({ request: { request_id: entity.entity_id, revision: entity.revision, ...entity.state }, loopId, confirm: message => root.confirm(message), submit: (id, requestId, body) => api.resumeWithCurrentMission(id, requestId, body) });
         }
-        else if (button.dataset.contextId) await inspectContext(button.dataset.contextId, button, button.dataset.revisionId);
+        else if (button.dataset.contextId) await inspectContext(button.dataset.contextId, button);
         else if (button.dataset.factId) {
           const owner = token, version = ++fileVersion;
           const revision = button.closest("[data-fact-revision]")?.dataset.factRevision;
@@ -1054,10 +1054,10 @@
         showDialog("requests", localize("待处理工作"), "", host.querySelector("[data-patrol-requests]"));
         locateAttention();
       },
-      async showContext(contextId, revisionId) {
+      async showContext(contextId) {
         if (!host || !loopId) return;
         if (!detailsOpen) toggleDetails();
-        await inspectContext(contextId, host.querySelector("[data-patrol-details]"), revisionId);
+        await inspectContext(contextId, host.querySelector("[data-patrol-details]"));
       },
       isMounted(node, id) { return host === node && workspace?.workspace_id === id && node.contains(node.querySelector("[data-patrol-composer]")); },
       dispose() { leave(); unsubscribe(); },

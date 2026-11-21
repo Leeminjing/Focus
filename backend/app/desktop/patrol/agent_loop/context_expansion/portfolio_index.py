@@ -1,7 +1,7 @@
 r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildResult。
 
 输入为冻结 Observation、Revision reader、监督模型 factories 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
-具体工作流为冻结独立局部／整体合同，精确缓存优先，权威追加继承局部 records，再用完整目录及任意冻结原文做整体解释和联合验证。
+具体工作流为冻结独立局部／整体合同，精确缓存优先，局部 records 按 Context 与段合同复用，再用完整目录及任意冻结原文做整体解释和联合验证。
 模型工作不持有事务；局部成功即保存不可变赢家，每个完整 Context Index 在短事务校验依赖后独立发布，Portfolio catalog 后续按需组装。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
 索引采样绑定冻结 Observation 及当前 Worker attempt（同步兼容调用绑定 Round），复用逐次 owner receipt，混合成功和取消分别结算，不把通用预算行当作独立执行权威；批次汇总跳过已托管 attempts 避免重复计费。
 新 Index 包含 interpretation proof；必要综合失败不发布局部-only artifact。显式新授权重试记录版本，冻结认知输入不变。
@@ -28,6 +28,13 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.contexts.evolution import (
+    ContextRevisionIdentityMismatch,
+    ContextRevisionReader,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
+from backend.app.desktop.contexts.evolution.repository import ContextRevisionNotFound
 from backend.app.desktop.patrol.agent_loop.context_expansion.artifact_repository import (
     SemanticDerivationArtifactRepository,
 )
@@ -57,32 +64,30 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.semantic_retrieval 
 from backend.app.desktop.patrol.agent_loop.context_expansion.stage_telemetry import (
     DerivationStageTimer,
 )
+from backend.app.desktop.patrol.agent_loop.missions.mission_projection import (
+    EffectiveMissionProjector,
+)
 from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import (
     resolve_expansion_resources,
 )
-from backend.app.desktop.patrol.agent_loop.missions.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta, LoopUsageLedger
-from backend.app.desktop.contexts.evolution import (
-    ContextRevisionIdentityMismatch,
-    ContextRevisionReader,
-    ContextRevisionRef,
-    ContextRevisionRepository,
+from backend.app.desktop.patrol.agent_loop.resources.usage import (
+    LoopUsageDelta,
+    LoopUsageLedger,
 )
-from backend.app.desktop.contexts.evolution.repository import ContextRevisionNotFound
+from backend.app.desktop.patrol.agent_loop.schemas import LoopObservationEnvelope
 
 from .contracts import stable_expansion_hash
 from .index_assembly import assemble_revision_index
 from .index_budget_repository import IndexBudgetReservationRepository
-from .index_inheritance import RevisionIndexInheritancePlanner
+from .index_build_contracts import IndexBuildPlan
 from .index_model_budget import (
     BudgetedIndexModel,
     IndexBudgetExceeded,
     IndexModelBudget,
     index_failure_progress_status,
 )
-from .index_scheduling import IndexModelSlots, SegmentLocks
 from .index_progress import IndexProgressReporter
+from .index_scheduling import IndexModelSlots, SegmentLocks
 from .interpretation_record import (
     RevisionInterpretationProposal,
     RevisionInterpretationRecord,
@@ -266,7 +271,9 @@ class PortfolioSemanticIndexService:
         observation = deepcopy(observation)
         options = {}
         if required_context_ids:
-            from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import source_revisions
+            from backend.app.desktop.patrol.agent_loop.decisions.evidence_jobs import (
+                source_revisions,
+            )
 
             source_revisions(observation, required_context_ids)
             options["required_context_ids"] = tuple(sorted(set(required_context_ids)))
@@ -469,8 +476,9 @@ class PortfolioSemanticIndexService:
 
     async def prewarm_revision(self, loop_id, authority_revision, revision):
         """只准备不可变局部 records；每次实际请求仍重验授权及发布凭据。"""
-        from .index_prewarm import PrewarmUsage, validate_prewarm_owner
         from backend.app.desktop.patrol.agent_loop.models import AgentLoop
+
+        from .index_prewarm import PrewarmUsage, validate_prewarm_owner
 
         token = _BUILD_STATE.set(_IndexBuildState(background=True))
         try:
@@ -519,7 +527,9 @@ class PortfolioSemanticIndexService:
         return True
 
     def _owned_usage(self, observation, *, fencing_token=None):
-        from backend.app.desktop.patrol.agent_loop.resources.model_usage_owner import OwnedModelUsage
+        from backend.app.desktop.patrol.agent_loop.resources.model_usage_owner import (
+            OwnedModelUsage,
+        )
 
         worker = _BUILD_STATE.get().worker_request
         if worker is not None:
@@ -573,6 +583,7 @@ class PortfolioSemanticIndexService:
                 projector_version=index.projector_version,
             )
             if cached is not None:
+                await self._artifacts.prune_indexes(session, index.source.context_id)
                 return cached
             winners = await self._records.by_ids(
                 session, index.source.context_id,
@@ -589,6 +600,7 @@ class PortfolioSemanticIndexService:
                 projector_version=index.projector_version,
             )
             if committed is not None:
+                await self._artifacts.prune_indexes(session, index.source.context_id)
                 return committed
             index = assemble_revision_index(
                 self._indexer,
@@ -603,6 +615,7 @@ class PortfolioSemanticIndexService:
             index,
             attempt_records=self._projection_attempts.get(index.source.revision_id, ()),
         )
+        await self._artifacts.prune_indexes(session, index.source.context_id)
         return (
             RevisionSemanticIndex.model_validate(row.payload)
             if row is not None
@@ -762,7 +775,7 @@ class PortfolioSemanticIndexService:
         if scope and source.context_id not in scope:
             raise ValueError("semantic index source 超出 delegation context scope")
         async with self._sessions.begin() as session:
-            revision = await self._revision_repository.get(session, source)
+            revision = await self._revision_repository.get_input(session, source)
             if revision.content_hash != frozen_hash:
                 raise ValueError("semantic index source content hash 已 stale")
             cached = await self._artifacts.cached_index(
@@ -781,7 +794,7 @@ class PortfolioSemanticIndexService:
                     "reused_segments": len(cached.segments),
                     "recomputed_segments": 0,
                 }
-                return cached, None, ()
+                return cached, None
             view = await self._reader.read(session, source, "semantic")
             frozen = self._indexer.index(
                 source=source,
@@ -794,35 +807,32 @@ class PortfolioSemanticIndexService:
                 raw_messages=tuple(view.messages),
                 projector_version=self._projection_contract,
             )
-            planner = RevisionIndexInheritancePlanner(
-                self._revision_repository,
-                self._artifacts,
-                self._records,
-                self._projection_contract,
-                local_contract=_BUILD_STATE.get().local_contract,
-            )
-            plan, inherited = await planner.plan(session, revision, frozen)
-        return frozen, plan, inherited
+        # A build depends only on its exact frozen input. Each segment resolves
+        # its own Context-scoped proof cache; no historical Revision is needed.
+        plan = IndexBuildPlan(
+            recomputed_segment_ids=tuple(s.segment_id for s in frozen.segments),
+            full_build_reason="current_snapshot",
+        )
+        return frozen, plan
 
     async def _index_one(self, observation, frontier_item) -> RevisionSemanticIndex:
-        frozen, plan, inherited = await self._read_and_plan(observation, frontier_item)
+        frozen, plan = await self._read_and_plan(observation, frontier_item)
         if plan is None:
             return frozen
         source = frozen.source
         telemetry = _BUILD_STATE.get().telemetry.setdefault(source.revision_id, {})
         telemetry.update(local_cache_hits=0, projected_segments=0)
-        telemetry.update(completed_segments=len(inherited), total_segments=len(frozen.segments))
+        telemetry.update(completed_segments=0, total_segments=len(frozen.segments))
         await self._progress(source.revision_id, "local", **{
             k: telemetry[k] for k in ("completed_segments", "total_segments")
         })
         local_started = perf_counter_ns()
-        records = list(inherited)
         tasks = [
             asyncio.create_task(self._project_segment(frozen, segment))
-            for segment in frozen.segments[len(inherited) :]
+            for segment in frozen.segments
         ]
         try:
-            records.extend(await asyncio.gather(*tasks))
+            records = await asyncio.gather(*tasks)
         finally:
             for task in tasks:
                 if not task.done():
@@ -858,10 +868,9 @@ class PortfolioSemanticIndexService:
         _BUILD_STATE.get().telemetry[source.revision_id] = {
             **telemetry,
             "mode": plan.mode,
-            "baseline_index_id": plan.baseline_index_id,
             "full_build_reason": plan.full_build_reason,
-            "reused_segments": len(plan.reused_segment_ids),
-            "recomputed_segments": len(plan.recomputed_segment_ids),
+            "reused_segments": telemetry["local_cache_hits"],
+            "recomputed_segments": telemetry["projected_segments"],
             "read_message_count": len(frozen.messages),
             "interpretation_original_segments": len(interpretation.provided),
             "interpretation_read_rounds": len(interpretation.read_requests),

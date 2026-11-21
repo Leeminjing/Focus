@@ -3,11 +3,13 @@
 输入为宿主读取的 canonical Items/旧消息、精确来源身份及记录/投影行选择；输出为稳定只读行、快照指纹或冻结 typed 条目。
 工作流按逐项语义资格筛选、展开旧调用组、生成确定性行身份，确认导入后才生成目标引用；显式历史只提取白名单可读正文。
 reasoning/compaction/未知载荷/修复证明始终留在宿主历史，不转成作者文本；原来源记录与 hash 不被改写。
-示例：entries, sources = freeze_authoring_sources(records, {'revision_id':'r1'})。
+示例：entries, sources = freeze_authoring_sources(records, {'kind':'context', 'context_id':'c1'})。
 """
-from copy import deepcopy
 import uuid
-from focus.history import FocusItem, legacy_to_items, semantic_policy, content_hash
+from copy import deepcopy
+
+from focus.history import FocusItem, content_hash, legacy_to_items, semantic_policy
+
 from .authoring_adapters import expand_record
 from .contracts import AuthoringEntry
 
@@ -73,7 +75,7 @@ def freeze_authoring_sources(records, source, *, selected=None, selected_rows=No
         value = deepcopy(row["entry"])
         value["entry_id"] = uuid.uuid4().hex
         entry = AuthoringEntry.model_validate(value)
-        entry.source_label = source.get("title") or source.get("path") or (f"Context · R{source.get('generation', '')}" if source.get("revision_id") else "历史来源")
+        entry.source_label = source.get("title") or source.get("path") or ("会话来源" if source.get("kind") == "context" else "历史来源")
         ref = uuid.uuid4().hex
         entry.source_ref, entry.source_hash = ref, content_hash(record)
         sources[ref] = {"record": deepcopy(record), "source": {**source, "message_id": row["message_id"] or record.get("id"),

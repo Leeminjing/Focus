@@ -1,8 +1,8 @@
-r"""本文件对外提供显式启用的真实 provider 增量索引 smoke。
+r"""本文件对外提供显式启用的真实 provider 当前输入索引与段缓存质量检查。
 
 输入为宿主已配置模型、隔离数据库和合成消息；输出为真实局部复用、联合原文综合、独立 verdict、provider 用量与 exact 零调用证据。
 工作流为 FOCUS_INDEX_REAL_MODEL=1 在普通任务额度和默认单次输出上限下启用两项演练：稳定旧段追加、四段怀疑／否定／诊断综合并展开冻结旧原文。
-示例：FOCUS_INDEX_REAL_MODEL=1 python -m pytest backend/tests/test_incremental_index_real_model.py -q。
+示例：FOCUS_INDEX_REAL_MODEL=1 python -m pytest backend/tests/test_index_provider.py -q。
 """
 
 import json
@@ -15,10 +15,18 @@ from focus.config.app_config import get_app_config
 from backend.app.desktop.patrol.agent_loop.context_expansion.portfolio_index import (
     PortfolioSemanticIndexService,
 )
-from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import unlimited_loop_budgets
-from backend.tests.incremental_index_support import Checkpoints, observation, revision
-from backend.tests.test_incremental_revision_index import exercise
+from backend.app.desktop.patrol.agent_loop.resources.unlimited_budget import (
+    unlimited_loop_budgets,
+)
+from backend.app.desktop.patrol.agent_loop.workers.derivation_worker import (
+    RoleBoundStructuredModel,
+)
+from backend.tests.index_test_support import (
+    Checkpoints,
+    exercise,
+    observation,
+    revision,
+)
 
 pytestmark = [
     pytest.mark.usefixtures("isolated_postgres_database"),
@@ -122,11 +130,10 @@ def test_real_provider_locality_support_and_cache(tmp_path):
             "content": "The authentication defect was fixed. Two failing tests still need investigation.",
         }
         new = await revision(
-            sessions, seed["context_id"], history + [next_message], parent=first
+            sessions, seed["context_id"], history + [next_message]
         )
         b = await service.build(observation(seed, new, budget=budgets))
         assert b.blocker_code is None, b.blocker_summary
-        assert len(b.indexes[0].inheritance.reused_segment_ids) == 1
         projector_inputs = [
             p
             for role, p in calls
@@ -191,7 +198,7 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
         first = await revision(sessions, seed["context_id"], NARRATIVE[:2])
         before = await service.build(observation(seed, first, budget=budgets))
         assert before.blocker_code is None, before.blocker_summary
-        target = await revision(sessions, seed["context_id"], NARRATIVE, parent=first)
+        target = await revision(sessions, seed["context_id"], NARRATIVE)
         calls.clear()
         result = await service.build(observation(seed, target, budget=budgets))
         assert result.blocker_code is None, result.blocker_summary
@@ -207,10 +214,7 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
             (u.statement, [r.message_id for r in u.evidence_refs])
             for u in index.semantic_units
         ]
-        assert (
-            index.interpretation.completed
-            and len(index.inheritance.reused_segment_ids) == 2
-        )
+        assert index.interpretation.completed
         assert not index.interpretation.read_requests
         assert any(len(p["segments"]) >= 3 for _, p in calls if "inventory" in p)
         assert any(

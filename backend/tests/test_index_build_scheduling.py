@@ -11,9 +11,13 @@ from backend.app.desktop.patrol.agent_loop.context_expansion.models import (
     LoopSemanticIndexArtifact,
 )
 from backend.app.desktop.patrol.agent_loop.models import LoopBudgetUsage
-from backend.tests.incremental_index_support import ModelProbe, messages, observation, revision
-from backend.tests.test_incremental_revision_index import exercise
-
+from backend.tests.index_test_support import (
+    ModelProbe,
+    exercise,
+    messages,
+    observation,
+    revision,
+)
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 

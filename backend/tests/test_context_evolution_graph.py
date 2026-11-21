@@ -1,16 +1,16 @@
-r"""本文件验证完整 Context Evolution Graph 与第一父链兼容树的多来源及反馈环语义。
+r"""本文件验证当前 Context 来源图与第一父树的多来源及反馈环语义。
 
-输入为 root、派生、更新、多来源和跨代反馈 revision fixture；输出为无损图边、稳定 primary/
-secondary source、深度与 identity 环抑制断言。具体工作流为经 repository 插入不可变 revision 并
-切换 current pointer，再分别查询完整图和兼容树。示例：`pytest test_context_evolution_graph.py`。
+输入为当前状态、多来源与跨 Context 反馈 fixture；输出为当前节点、来源身份和环抑制断言。
+更新仅保留最新状态，来源引用作为当前状态的一部分保留，不要求旧版本正文仍存在。
+示例：`pytest test_context_evolution_graph.py`。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import delete
@@ -26,9 +26,8 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.contexts.evolution.models import ContextRevision, ContextRevisionSource
+from backend.app.desktop.contexts.evolution.models import ContextRevision
 from backend.app.desktop.persistence.models import DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -121,10 +120,12 @@ def test_graph_keeps_all_sources_while_tree_projects_deterministically() -> None
                 graph = await queries.graph(session, workspace_id)
                 tree = await queries.first_parent_tree(session, workspace_id)
 
-            assert len(graph.nodes) == 5
-            assert len(graph.edges) == 5
-            c1_edges = [edge for edge in graph.edges if edge.target == c1]
-            assert [(edge.source, edge.position) for edge in c1_edges] == [(a1, 0), (b1, 1)]
+            assert len(graph.nodes) == 3
+            assert {node.ref for node in graph.nodes} == {a2, b1, c2}
+            assert all(node.current for node in graph.nodes)
+            assert len(graph.edges) == 4
+            c2_edges = [edge for edge in graph.edges if edge.target == c2]
+            assert [(edge.source, edge.position) for edge in c2_edges] == [(a1, 0), (b1, 1)]
             by_context = {node.context_id: node for node in tree.nodes}
             assert by_context[context_c].current_revision == c2
             assert by_context[context_c].primary_source == a1
@@ -136,11 +137,6 @@ def test_graph_keeps_all_sources_while_tree_projects_deterministically() -> None
             assert suppressed.tree_parent_context_id is None
         finally:
             async with sessions.begin() as session:
-                await session.execute(
-                    delete(ContextRevisionSource).where(
-                        ContextRevisionSource.source_context_id.in_([context_a, context_b, context_c])
-                    )
-                )
                 await session.execute(
                     delete(ContextRevision).where(
                         ContextRevision.context_id.in_([context_a, context_b, context_c])

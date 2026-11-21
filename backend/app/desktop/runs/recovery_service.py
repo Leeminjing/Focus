@@ -131,6 +131,11 @@ class RunRecoveryService:
                 session, task, ports.checkpointer
             )
             if compression_recovery is not None:
+                identity = run_identity or {}
+                if identity.get("origin") != "delegated_patrol_compression" or not all(
+                    identity.get(key) for key in ("resolution_id", "context_revision_id", "context_checkpoint_id")
+                ):
+                    raise HTTPException(409, "压缩恢复仅接受 Patrol 的精确授权来源")
                 if not isinstance(resume, dict) or resume.get("type") != "compression":
                     raise HTTPException(
                         409,
@@ -291,7 +296,31 @@ class RunRecoveryService:
             },
         )
         run.equipment = equipment
+        from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+        from backend.app.desktop.runs.orchestration.admission import admit_run_input
+
+        repository = ContextRevisionRepository()
+        source = None
+        if identity.get("context_revision_id") is not None:
+            source = await repository.get_by_id(session, identity["context_revision_id"])
+            await repository.get_input(session, source.ref)
+            if source.ref.checkpoint_id != identity.get("context_checkpoint_id"):
+                raise ValueError("Recovery input does not match its pinned Context checkpoint")
+        elif interrupted_run is not None and (interrupted_run.context_revision_id or interrupted_run.final_checkpoint_id):
+            source = await repository.input_for_run(
+                session, interrupted_run, resume=interrupted_run.final_checkpoint_id is not None
+            )
+        if source is not None:
+            if (source.ref.context_id, source.ref.execution_thread_id, source.ref.checkpoint_ns) != (
+                task.task_id, execution_identity.thread_id, execution_identity.checkpoint_ns,
+            ):
+                raise ValueError("Recovery checkpoint belongs to another execution")
+            run.context_revision_id = source.ref.revision_id
+            run.context_checkpoint_id = source.ref.checkpoint_id
+        await admit_run_input(session, run)
         session.add(run)
+        if interrupted_run is not None and interrupted_run.run_id != run.run_id:
+            await repository.release(session, owner_kind="run", owner_id=interrupted_run.run_id)
         await session.commit()
         projection = MaterialContextProjector.project(run_materials, workspace.path)
         material_context = projection.policy_text
@@ -388,5 +417,11 @@ class RunRecoveryService:
                         if item["kind"] != "commitment"
                     ]
                     latest.workspace_result = result
+                if not result.get("task_attention"):
+                    from backend.app.desktop.contexts.evolution import (
+                        ContextRevisionRepository,
+                    )
+
+                    await ContextRevisionRepository().release(session, owner_kind="run", owner_id=latest.run_id)
         getattr(ports, "_task_attention_cache", {}).clear()
         return {"ok": True, "thread_id": thread_id}

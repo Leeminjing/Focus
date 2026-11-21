@@ -1,18 +1,24 @@
 """本文件对外提供 PatrolSourceBrowser 的 catalog、preview 只读来源端口。
 
-输入为来源类型、精确版本、查询/有界游标以及调用方草稿身份；输出为分页目录或稳定投影行/完整行详情。
+输入为来源类型、当前会话或执行来源、查询/有界游标以及调用方草稿身份；输出为分页目录或稳定投影行/完整行详情。
 具体工作流为读取精确来源，复用唯一投影/指纹，验证游标范围并只序列化命中页；不保存草稿、不冻结引用或执行模型/工具。
-示例：await browser.preview(draft_id, {"kind": "context", "revision_id": "r1", "limit": 50})。
+示例：await browser.preview(draft_id, {"kind": "context", "context_id": "c1", "limit": 50})。
 """
 import base64
-from datetime import datetime
 import json
+from datetime import datetime
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select
-from backend.app.desktop.persistence.models import DesktopThread, DesktopRun, PatrolDraft
-from backend.app.desktop.contexts.evolution.models import ContextRevision
 from focus.history import content_hash
+from sqlalchemy import and_, or_, select
+
+from backend.app.desktop.contexts.evolution.models import ContextRevision
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    PatrolDraft,
+)
+
 from .source_projection import project_authoring_sources, source_fingerprint
 
 
@@ -39,17 +45,15 @@ class PatrolSourceBrowser:
     async def catalog(self, *, kind="context", query="", cursor=None, limit=None):
         if kind not in {"context", "patrol"}:
             raise HTTPException(422, "目录仅支持 Context 或 Patrol")
-        scope = content_hash(["catalog-v1", kind, query])
+        scope = content_hash(["catalog-v2", kind, query])
         after = _decode_cursor(cursor, scope)
         async with self._host.session_factory() as session:
             if limit is None:
                 contexts = await self._contexts(session)
                 branches = await self._branches(session)
-                grouped = {}
-                for row in contexts:
-                    group = grouped.setdefault(row.context_id, {"context_id": row.context_id, "title": row.title, "revisions": []})
-                    group["revisions"].append({"revision_id": row.revision_id, "generation": row.generation, "checkpoint_id": row.checkpoint_id})
-                return {"contexts": list(grouped.values()), "branches": [dict(row._mapping) for row in branches]}
+                return {"contexts": [{"context_id": row.context_id, "title": row.title,
+                                      "checkpoint_id": row.checkpoint_id} for row in contexts],
+                        "branches": [dict(row._mapping) for row in branches]}
             limit = max(1, min(int(limit), 100))
             rows = await (self._contexts(session, query, after, limit + 1) if kind == "context"
                           else self._branches(session, query, after, limit + 1))
@@ -57,23 +61,23 @@ class PatrolSourceBrowser:
             items = []
             for row in page:
                 if kind == "context":
-                    ref = {"kind": kind, "context_id": row.context_id, "revision_id": row.revision_id}
-                    label = f"{row.title} · R{row.generation}"
+                    ref = {"kind": kind, "context_id": row.context_id}
+                    label = row.title
                 else:
                     ref = {"kind": kind, "run_id": row.run_id, "checkpoint_id": row.checkpoint_id}
                     label = f"{row.title} · {row.status} · {row.run_id[:8]}"
                 items.append({"source_ref": ref, "label": label, "available": kind == "context" or bool(row.checkpoint_id)})
             tail = page[-1] if page else None
-            next_cursor = (_encode_cursor(scope, [tail.created_at.isoformat(), tail.revision_id if kind == "context" else tail.run_id])
+            next_cursor = (_encode_cursor(scope, [tail.created_at.isoformat(), tail.context_id if kind == "context" else tail.run_id])
                            if len(rows) > limit and tail else None)
             return {"items": items, "next_cursor": next_cursor}
 
     async def _contexts(self, session, query="", after=None, limit=None):
-        statement = select(ContextRevision.revision_id, ContextRevision.context_id, ContextRevision.generation,
-                           ContextRevision.checkpoint_id, ContextRevision.created_at, DesktopThread.title).join(
-                           DesktopThread, DesktopThread.task_id == ContextRevision.context_id).where(
+        statement = select(ContextRevision.context_id, ContextRevision.checkpoint_id,
+                           DesktopThread.created_at, DesktopThread.title).join(
+                           DesktopThread, DesktopThread.current_revision_id == ContextRevision.revision_id).where(
                            DesktopThread.deleted_at.is_(None), ContextRevision.deleted_at.is_(None))
-        statement = self._page(statement, ContextRevision, ContextRevision.revision_id, query, after, limit)
+        statement = self._page(statement, DesktopThread, DesktopThread.task_id, query, after, limit)
         return (await session.execute(statement)).all()
 
     async def _branches(self, session, query="", after=None, limit=None):

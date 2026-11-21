@@ -49,7 +49,6 @@ from backend.app.desktop.patrol.agent_loop.models import (
     LoopDelegationGrant,
     LoopEventOutbox,
     LoopGoalRevision,
-    LoopPendingDecision,
     LoopRound,
 )
 from backend.app.desktop.patrol.agent_loop.rounds.lifecycle import create_observation_round
@@ -64,9 +63,6 @@ from backend.app.desktop.patrol.agent_loop.waits.wait_models import LoopWaitRequ
 from backend.app.desktop.patrol.agent_loop.waits.wait_requests import (
     LoopWaitRequestService,
     WaitRequestConflict,
-)
-from backend.app.desktop.persistence.models import (
-    DesktopThread,
 )
 from backend.app.desktop.patrol.agent_loop.journal.accounting_query import LoopAccountingQuery
 
@@ -236,41 +232,6 @@ class AgentLoopService:
                 idempotency_key=event_key,
             ))
             return {"request": self._wait_request_payload(request), "recovery_event_id": recovery_event_id, "created": True, "loop_status": loop.status, "current_round_id": loop.current_round_id}
-
-    async def user_resolved_compression_gate(self, thread_id: str) -> None:
-        async with self._sessions.begin() as session:
-            loop = await session.scalar(
-                select(AgentLoop)
-                .join(LoopContextMembership, LoopContextMembership.loop_id == AgentLoop.loop_id)
-                .join(DesktopThread, DesktopThread.task_id == LoopContextMembership.context_id)
-                .where(
-                    DesktopThread.thread_id == thread_id,
-                    AgentLoop.interaction_mode == "workspace_patrol",
-                    AgentLoop.status.in_(["running", "paused", "waiting_user"]),
-                )
-                .order_by(AgentLoop.created_at.desc())
-                .with_for_update()
-                .limit(1)
-            )
-            if loop is None:
-                return
-            await self._cancel_autonomous_compression_runs(session, loop.loop_id)
-            await CompressionAuthorityRepository().supersede(session, loop.loop_id, "manual_compression_resolution")
-            pending = list(
-                (
-                    await session.scalars(
-                        select(LoopPendingDecision)
-                        .where(
-                            LoopPendingDecision.loop_id == loop.loop_id,
-                            LoopPendingDecision.kind == "compression",
-                            LoopPendingDecision.status.in_(["pending", "resolving"]),
-                        )
-                        .with_for_update()
-                    )
-                ).all()
-            )
-            for row in pending:
-                row.status = "superseded"
 
     async def control(self, loop_id: str, command: str) -> dict:
         transitions = {"pause": ({"running"}, "paused"), "resume": ({"paused", "waiting_user"}, "running"), "stop": ({"running", "paused", "waiting_user"}, "stopped")}

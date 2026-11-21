@@ -8,20 +8,41 @@ r"""本文件对外提供 CompressionAuthorityRepository 的候选、resolution 
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import hashlib
 import json
 import uuid
-from typing import Any
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.patrol.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
-from backend.app.desktop.patrol.agent_loop.models import LoopAction, LoopEventOutbox, LoopPendingDecision
+from backend.app.desktop.contexts.evolution import ContextRevisionRepository
+from backend.app.desktop.patrol.agent_loop.compression_authority.models import (
+    LoopCompressionCandidate,
+    LoopCompressionResolution,
+)
+from backend.app.desktop.patrol.agent_loop.models import (
+    LoopAction,
+    LoopEventOutbox,
+    LoopPendingDecision,
+)
 
 
 class CompressionAuthorityRepository:
+    async def release_candidate(self, session: AsyncSession, candidate_id: str) -> None:
+        await ContextRevisionRepository().release(session, "compression_candidate", candidate_id)
+
+    async def expire_candidates(self, session: AsyncSession) -> None:
+        candidates = (await session.scalars(
+            select(LoopCompressionCandidate).where(
+                LoopCompressionCandidate.status == "prepared",
+                LoopCompressionCandidate.expires_at <= datetime.now(UTC),
+            ).with_for_update(skip_locked=True)
+        )).all()
+        for candidate in candidates:
+            candidate.status = "expired"
+            await self.release_candidate(session, candidate.candidate_id)
+
     async def live_candidate(self, session: AsyncSession, pending_decision_id: str) -> LoopCompressionCandidate | None:
         return await session.scalar(
             select(LoopCompressionCandidate)
@@ -104,6 +125,7 @@ class CompressionAuthorityRepository:
         )
         for candidate in candidates:
             candidate.status = "superseded"
+            await self.release_candidate(session, candidate.candidate_id)
         resolutions = list(
             (
                 await session.scalars(

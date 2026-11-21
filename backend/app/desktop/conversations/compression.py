@@ -1,38 +1,10 @@
-"""本文件对外提供桌面压缩流程的摘要生成与恢复投影函数。
+"""Patrol 自动压缩的内部摘要生成与精确执行中断读取。
 
-对外提供:
-    summarize_messages — 用指定模型为选定消息范围生成中文候选摘要
-    compression_recovery_payload — 从主图 checkpoint 投影待确认压缩请求的恢复状态
-
-输入为:
-    summarize_messages: messages — 面板消息快照（serialize_message 产物）；
-        model_name — 目标模型名，None 时取默认；app_config — 组合根配置；
-        forbid_terms — 明文禁止出现在摘要中的词列表（快捷压缩禁提关键词用），
-            非空时摘要指令追加禁提条款（用指代表达，模型不写出该词）
-    SummarizeRequest: messages / model_name / forbid_terms
-    compression_recovery_payload: session — 桌面 DB 会话；task — DesktopThread；
-        checkpointer — LangGraph checkpointer
-
-输出为:
-    summarize_messages → str 候选摘要；compression_recovery_payload → dict | None
-    （None 表示无待确认压缩请求；否则为 {"status": processing|resumable|orphaned,
-    "request": 原始 compression_request 载荷}）
-
-具体工作流为:
-    (1) 摘要：消息按 role 分节格式化（跳过协议占位、剥离 compression
-        元数据），以中文概括 system prompt 单次 ainvoke
-    (2) 恢复投影：未决中断的枚举与状态归一委托 backend.app.desktop.conversations.interrupts，
-        只读主图命名空间，因此压缩与准入两条待决共用同一份投影
-
-示例:
-    summary = await summarize_messages(messages, None, app_config)
-    recovery = await compression_recovery_payload(session, task, checkpointer)
+候选服务提供冻结原文，摘要模型仅生成候选文本，最终应用由 Kernel 授权。
+本模块没有消息编辑 HTTP 入口，也不接受手工关键词剥离或原文恢复请求。
 """
 
 from typing import Any
-
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from pydantic import BaseModel, ConfigDict, Field
 
 from focus.models import create_chat_model
 from focus.models.lifecycle import model_client_scope
@@ -45,28 +17,6 @@ _SUMMARY_SYSTEM_PROMPT = """你是上下文压缩器。把给定对话片段概�
 - 保留关键决策、约束条件、事实信息、未完成事项与下一步计划
 - 不要寒暄，不要评价，不要编造原文没有的内容
 - 直接输出概括正文，不要 Markdown 标题或代码块"""
-
-
-def _build_summary_prompt(forbid_terms: tuple[str, ...] | list[str] | None = None) -> str:
-
-
-    terms = tuple(dict.fromkeys(forbid_terms or ()))
-    if not terms:
-        return _SUMMARY_SYSTEM_PROMPT
-    quoted = "、".join(f"「{term}」" for term in terms)
-    return (
-        f"{_SUMMARY_SYSTEM_PROMPT}\n"
-        f"- 明确禁止出现以下词：{quoted}；如需表达该含义请用指代（如『该方向』），"
-        "不得写出这些词"
-    )
-
-
-class SummarizeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    messages: list[dict[str, Any]]
-    model_name: str | None = None
-    forbid_terms: list[str] = Field(default_factory=list)
 
 
 def _role_label(message: dict[str, Any]) -> str:
@@ -108,32 +58,18 @@ def _format_transcript(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def _scrub_terms(text: str, terms: tuple[str, ...] | list[str] | None) -> str:
-
-
-    scrubbed = text
-    for term in dict.fromkeys(terms or ()):
-        if term:
-            scrubbed = scrubbed.replace(term, "")
-    if not scrubbed.strip():
-        return "（该话题已从上下文移除）"
-    return scrubbed.strip()
-
-
 @model_client_scope()
 async def summarize_messages(
     messages: list[dict[str, Any]],
     model_name: str | None,
     app_config: Any,
-    forbid_terms: tuple[str, ...] | list[str] | None = None,
 ) -> str:
-    raw_transcript = _format_transcript(messages)
-    if not raw_transcript.strip():
+    transcript = _format_transcript(messages)
+    if not transcript.strip():
         raise ValueError("所选范围没有可概括的内容")
-    transcript = _scrub_terms(raw_transcript, forbid_terms)
     model = create_chat_model(model_name, app_config=app_config)
     from focus.context.requests import frozen_request_messages
-    response = await model.ainvoke(frozen_request_messages(_build_summary_prompt(forbid_terms), transcript))
+    response = await model.ainvoke(frozen_request_messages(_SUMMARY_SYSTEM_PROMPT, transcript))
     text = ""
     content = getattr(response, "content", "")
     if isinstance(content, str):
@@ -147,7 +83,7 @@ async def summarize_messages(
         )
     if not text.strip():
         raise RuntimeError("摘要模型未返回内容")
-    return _scrub_terms(text.strip(), forbid_terms)
+    return text.strip()
 
 
 COMPRESSION_INTERRUPT_TYPE = "compression_request"

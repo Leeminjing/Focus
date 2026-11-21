@@ -56,7 +56,6 @@ class LoopContextExpansion(Base):
     )
     source_revision_id: Mapped[str | None] = mapped_column(
         String(32),
-        ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"),
         nullable=True,
     )
     state: Mapped[str] = mapped_column(
@@ -176,13 +175,11 @@ class LoopSemanticIndexArtifact(Base):
     index_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     context_id: Mapped[str] = mapped_column(
         String(32),
-        ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
     revision_id: Mapped[str] = mapped_column(
         String(32),
-        ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
@@ -213,7 +210,6 @@ class LoopSegmentProjectionRecord(Base):
     record_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     context_id: Mapped[str] = mapped_column(
         String(32),
-        ForeignKey("desktop_threads.task_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

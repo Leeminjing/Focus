@@ -59,7 +59,6 @@ from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, De
 
 from test_agent_loop_round_liveness import _seed_loop, _stop
 
-
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
@@ -591,7 +590,7 @@ def test_loop_entry_points_record_lineage_facts() -> None:
     """Loop 纳成员（创建）与发布 portfolio 两条入口都必须登记成员派生事实。"""
 
     root = Path(__file__).resolve().parents[2] / "backend" / "app" / "desktop" / "patrol" / "agent_loop"
-    for name in ("service.py", "curation/portfolio_publication.py"):
+    for name in ("lifecycle/initialization.py", "curation/portfolio_publication.py"):
         source = (root / name).read_text(encoding="utf-8")
         assert "record_loop_members" in source, f"{name} 必须在 Loop 拓扑变化时登记 lineage 事实"
 

@@ -126,7 +126,7 @@ def test_production_index_attempts_keep_reported_failure_and_cancelled_reservati
     from backend.app.desktop.patrol.agent_loop.resources.expansion_resource_policy import resolve_expansion_resources
     from backend.app.desktop.patrol.agent_loop.context_expansion.index_model_budget import BudgetedIndexModel, IndexModelBudget
     from backend.app.desktop.patrol.agent_loop.context_expansion.models import LoopIndexBudgetReservation
-    from backend.tests.incremental_index_support import Checkpoints
+    from backend.tests.index_test_support import Checkpoints
     from backend.tests.config_helpers import app_config_for
     from focus.models.deepseek import DeepSeekChatOpenAI
 

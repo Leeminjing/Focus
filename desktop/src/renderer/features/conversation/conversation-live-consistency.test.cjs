@@ -211,6 +211,29 @@ test("SSE 未收到 end 就断开时从运行 API 对账终态并刷新会话", 
   assert.strictEqual(harness.vm.runInContext("state.streams.has(__run.run_id)", context), false);
 });
 
+test("晚到的旧压缩中断仅提示状态，不导航或调用已退役的编辑接口", async () => {
+  let source;
+  class TestEventSource {
+    constructor() { source = this; this.listeners = new Map(); }
+    addEventListener(type, handler) { this.listeners.set(type, handler); }
+    close() {}
+  }
+  const harness = createAppHarness({ fetch: true, statusNode: "record" });
+  const { context } = harness;
+  context.EventSource = TestEventSource;
+  harness.vm.runInContext(readAppSource(), context);
+  context.__task = { task_id: TASK_ID, thread_id: THREAD_ID, workspace_id: WORKSPACE_ID };
+  context.__run = { run_id: "legacy-interrupt", task_id: TASK_ID, kind: "main", status: "running" };
+  harness.vm.runInContext('state.tasks=[__task]; state.activeTaskId=__task.task_id; state.view="focus"; listenToRun(__run);', context);
+  const before = harness.fetches.length;
+  source.listeners.get("interrupt")({ data: JSON.stringify({ thread_id: THREAD_ID, workspace_id: WORKSPACE_ID,
+    run_id: "legacy-interrupt", data: { value: { type: "compression_request", usage: 90, limit: 100 } } }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.vm.runInContext("state.view", context), "focus");
+  assert.equal(harness.fetches.length, before);
+  assert.match(harness.statusState.text, /此运行已中断.*Patrol/);
+});
+
 test("流缺口补读权威消息和待审批状态，同时继续接收保留的增量", async () => {
   let source;
   class TestEventSource {

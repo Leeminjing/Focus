@@ -1,15 +1,16 @@
 r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 
 输入为已结束 RunRecord 或未启动成功的持久 Run、最终 checkpoint 和 workspace result；输出为安全规范化的终态 Run、
-新 Context revision 与 MainRunSettled event identity。具体工作流为先在事务外精确读取执行 checkpoint，
+最新 Context 状态与 MainRunSettled event identity。具体工作流为先在事务外精确读取执行 checkpoint，
 再在单事务中锁 Run、保存终态及完整模型用量；仅以精确 source checkpoint 的消息 identity 证明终端未闭合调用属于当前 Run，
-来源不可读时不授予自动修复因果；随后用共享协议编译器验证 execution view，按 base revision CAS 发布合法 revision，
+来源不可读时不授予自动修复因果；随后用共享协议编译器验证 execution view，按冻结 base token CAS 覆盖唯一 current 状态，
 按 lease 模式结算 workspace effect、释放 lease，保存使用当前注入秘密值脱敏的类型化任务领域来源并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
 权威 Writer 才推进权威 slot。控制终止只改变业务状态，finalize 仍回填用量与清理且不复活执行；
 slot 有未恢复的采用意图时仅记录 adoption_recovery_pending，不由迟到 Run 结算推进该 slot。
 未启动的 abort_prepared 同事务按 Run→Dispatch 顺序保存终态、终结派发和释放租约，再登记 outbox。
 重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。Run.workspace_result 中未清理的 Shell attempt 阻止结算、派发完成和租约释放；重启只记录 interrupted，绝不将未知进程树当作已退出。
-checkpoint 的 canonical typed bridge 在结算前验证，新 publication 保存 V2 execution Items，UI codec 不参与恢复。
+checkpoint 的 canonical typed bridge 在结算前验证，current 保存 V2 execution Items，UI codec 不参与恢复。
+普通终态释放 Run 的输入引用，待恢复的中断执行持有精确来源直到新恢复 Run 受理，不永久归档每次执行的 Context 正文。
 示例：`settlement = await finalizer.finalize(record)`。
 """
 
@@ -24,7 +25,6 @@ from typing import Any
 
 from focus.history import content_hash
 from focus.history.bridge import checkpoint_records
-from backend.app.desktop.contexts.evolution.history import continued_revision_history
 from focus.runtime.runs.manager import RunRecord
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -40,6 +40,7 @@ from backend.app.desktop.contexts.evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
+from backend.app.desktop.contexts.evolution.history import continued_revision_history
 from backend.app.desktop.contexts.evolution.repository import (
     ContextRevisionIdentityMismatch,
     ContextRevisionNotFound,
@@ -49,9 +50,14 @@ from backend.app.desktop.contexts.projection import (
     compile_context_messages,
 )
 from backend.app.desktop.contexts.protocol import ToolExchangeInspector
-from backend.app.desktop.runs.evidence.run_outcomes import RunOutcomeRecorder
-from backend.app.desktop.persistence.models import DesktopRun, DesktopThread, ModelAttemptAudit
+from backend.app.desktop.persistence.models import (
+    DesktopRun,
+    DesktopThread,
+    ModelAttemptAudit,
+)
 from backend.app.desktop.persistence.safety import PersistencePayloadNormalizer
+from backend.app.desktop.runs.evidence.run_outcomes import RunOutcomeRecorder
+from backend.app.desktop.runs.orchestration.admission import admit_run_input
 from backend.app.desktop.runs.orchestration.outbox import RunOutboxRepository
 from backend.app.desktop.workspaces.coordination.fingerprints import (
     WorkspaceFingerprinter,
@@ -153,7 +159,9 @@ class RunLifecycleFinalizer:
             if attention is not None:
                 locked.workspace_result = {**locked.workspace_result, "task_attention": attention if locked.status == "interrupted" else []}
             locked.settled_at = datetime.now(UTC)
-            from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+            from backend.app.desktop.runs.orchestration.dispatch import (
+                RunDispatchRepository,
+            )
 
             await RunDispatchRepository().settle_by_run(session, locked.run_id)
             await self._release_workspace_lease(session, locked)
@@ -171,6 +179,7 @@ class RunLifecycleFinalizer:
                 locked.run_id,
                 self._payload(locked, revision, publication),
             )
+            await self._release_context_input(session, locked)
             return RunSettlement(
                 run_id=locked.run_id,
                 task_id=locked.task_id,
@@ -243,8 +252,12 @@ class RunLifecycleFinalizer:
             return await self._settlement(session, locked, idempotent=False)
 
     async def _settle_interrupted(self, session: AsyncSession, run: DesktopRun, captured) -> None:
-        from backend.app.desktop.runs.execution_attempts.usage_receipts import ModelUsageReceipts
-        from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+        from backend.app.desktop.runs.execution_attempts.usage_receipts import (
+            ModelUsageReceipts,
+        )
+        from backend.app.desktop.runs.orchestration.dispatch import (
+            RunDispatchRepository,
+        )
 
         audits = tuple((await session.scalars(select(ModelAttemptAudit).where(ModelAttemptAudit.run_id == run.run_id).with_for_update())).all())
         for audit in audits:
@@ -267,6 +280,7 @@ class RunLifecycleFinalizer:
         }, "desktop-run.workspace-result")
         await self._release_workspace_lease(session, run)
         await self._outbox.enqueue_settled(session, run.run_id, self._payload(run, None, "unknown_after_restart"))
+        await self._release_context_input(session, run)
 
     @staticmethod
     async def _reconcile_workspace_evidence(session: AsyncSession, run: DesktopRun, captured) -> dict[str, Any]:
@@ -316,7 +330,9 @@ class RunLifecycleFinalizer:
                 "context_publication": "not_started",
                 "launch_error": reason,
             }, "desktop-run.workspace-result")
-            from backend.app.desktop.runs.orchestration.dispatch import RunDispatchRepository
+            from backend.app.desktop.runs.orchestration.dispatch import (
+                RunDispatchRepository,
+            )
 
             await RunDispatchRepository().settle_by_run(session, run.run_id)
             await self._release_workspace_lease(session, run)
@@ -325,7 +341,13 @@ class RunLifecycleFinalizer:
                 run.run_id,
                 self._payload(run, None, "not_started"),
             )
+            await self._release_context_input(session, run, force=True)
             return True
+
+    async def _release_context_input(self, session, run, *, force=False):
+        if run.status == "interrupted" and not force:
+            return
+        await self._contexts.release(session, owner_kind="run", owner_id=run.run_id)
 
     async def _identity(self, run_id: str) -> tuple[DesktopRun, DesktopThread]:
         async with self._sessions() as session:
@@ -388,7 +410,7 @@ class RunLifecycleFinalizer:
             else ()
         )
         inherited_message_ids, source_available = (
-            await self._inherited_message_ids(session, current)
+            await self._inherited_message_ids(session, current, run=run)
             if run.status in {"interrupted", "cancelled", "error"}
             and ToolExchangeInspector.terminal_unresolved_calls(list(checkpoint_messages)) is not None
             else (set(), False)
@@ -413,6 +435,23 @@ class RunLifecycleFinalizer:
             "repaired": ContextRevisionProjectionStatus.REPAIRED,
             "approval_required": ContextRevisionProjectionStatus.APPROVAL_REQUIRED,
         }[projection.status]
+        if status is ContextRevisionProjectionStatus.APPROVAL_REQUIRED:
+            # There is no manual projection-approval workflow. Keep the failure
+            # diagnosis, not an ownerless candidate containing the whole history.
+            issue_fields = {"kind", "index", "before_index", "call_id", "reason"}
+            repair_fields = {"kind", "before_index", "call_id", "compiler_version", "source_run_id", "cause"}
+            run.workspace_result = self._safe_json({
+                **(run.workspace_result or {}),
+                "context_protocol_diagnostic": {
+                    "checkpoint_id": checkpoint_id,
+                    "status": "unresolved",
+                    "issues": [{key: value for key, value in issue.items() if key in issue_fields}
+                               for issue in projection.issues],
+                    "repairs": [{key: value for key, value in repair.items() if key in repair_fields}
+                                for repair in projection.repair_manifest],
+                },
+            }, "desktop-run.context-protocol-diagnostic")
+            return None, "approval_required"
         history = continued_revision_history(
             current.authored_messages if current is not None else (), projection.execution_messages,
             previous=current.history_payload if current else None,
@@ -437,10 +476,10 @@ class RunLifecycleFinalizer:
             origin_id=run.run_id,
             created_at=datetime.now(UTC),
         )
-        await self._contexts.insert(session, contract)
-        if status is ContextRevisionProjectionStatus.APPROVAL_REQUIRED:
-            return ref, "approval_required"
+        contract = await self._contexts.insert(session, contract)
         await self._contexts.switch_current(session, ref, expected)
+        if run.status == "interrupted":
+            await admit_run_input(session, run, resume_ref=ref)
         return ref, "published"
 
     @staticmethod
@@ -483,21 +522,27 @@ class RunLifecycleFinalizer:
         self,
         session: AsyncSession,
         current: ContextRevisionContract | None,
+        *,
+        run: DesktopRun,
     ) -> tuple[set[str], bool]:
         if current is None:
             return set(), False
-        inherited = {
-            str(message.get("id"))
-            for message in (*current.authored_messages, *current.execution_messages)
-            if message.get("id")
-        }
-        inherited.update(current.initial_message_ids)
         try:
+            source = await self._contexts.input_for_run(session, run)
+            if source is None or source.ref != current.ref:
+                return set(), False
+            inherited = {
+                str(message["id"])
+                for message in (*source.authored_messages, *source.execution_messages)
+                if message.get("id")
+            } | set(source.initial_message_ids)
+            if source.history_payload is not None:
+                return inherited, True
             authored = await ContextRevisionReader(self._contexts, self._checkpointer).read(
-                session, current.ref, "authored"
+                session, source.ref, "authored"
             )
         except (ContextRevisionNotFound, ContextRevisionIdentityMismatch):
-            return inherited, False
+            return set(), False
         inherited.update(str(message["id"]) for message in authored.messages if message.get("id"))
         return inherited, True
 

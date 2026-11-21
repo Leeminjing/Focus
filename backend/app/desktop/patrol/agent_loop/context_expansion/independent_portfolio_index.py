@@ -1,9 +1,8 @@
-"""Focus publication/authorization adapters for the independent semantic-index engine.
+"""本文件对外提供 IndependentPortfolioSemanticIndexService、FocusIndexStore 与 FocusIndexAdmission。
 
-The inherited service owns frozen Revision reads, ancestry, admission and each
-Context's publication transaction. The library owns indexing and scheduling.
-Local proofs commit during model work; each complete artifact validates and adopts
-the database winner independently before its scoped catalog reaches a Curator.
+输入为精确冻结 Context 输入、模型与预算端口；输出为已验证发布的完整语义索引及真实消费回执。
+具体工作流为宿主读取冻结输入和执行准入，独立库调度段缓存、理解及验证，宿主独立提交每个完整索引后组装策展目录。
+示例：result = await IndependentPortfolioSemanticIndexService(sessions, checkpoints, **models).build(observation)。
 """
 
 from contextlib import contextmanager
@@ -26,7 +25,7 @@ from focus_context_index.segment_projection import (
 from focus_context_index.semantic_index import RevisionSemanticIndex as EngineIndex
 from sqlalchemy import select
 
-from backend.app.desktop.contexts.evolution.models import ContextPublicationReceipt
+from backend.app.desktop.contexts.evolution import ContextRevisionRef
 from backend.app.desktop.patrol.agent_loop.resources.usage import LoopUsageDelta
 
 from .index_budget_repository import IndexBudgetReservationRepository
@@ -184,14 +183,10 @@ class FocusIndexAdmission:
                 raise IndexBudgetExceeded(
                     "independent index source outside current grant scope"
                 )
-            publication = await session.get(
-                ContextPublicationReceipt, snapshot.source.revision_id
-            )
-            if (
-                publication is None
-                or publication.context_id != snapshot.source.context_id
-            ):
-                raise ValueError("independent index source is not published")
+            ref = ContextRevisionRef.model_validate(snapshot.source.model_dump(mode="json"))
+            source = await self.service._revision_repository.get_input(session, ref)
+            if source.content_hash != snapshot.source_content_hash:
+                raise ValueError("independent index source content hash mismatch")
             repository = IndexBudgetReservationRepository(
                 self.service._sessions,
                 auth["loop_id"],
@@ -401,22 +396,13 @@ class IndependentPortfolioSemanticIndexService(PortfolioSemanticIndexService):
         )
 
     async def _index_one(self, observation, frontier_item):
-        frozen, plan, _inherited = await self._read_and_plan(observation, frontier_item)
+        frozen, plan = await self._read_and_plan(observation, frontier_item)
         snapshot = self._snapshot(frozen)
         authorization = self._authorization(snapshot)
         await self._engine_admission.authorize(snapshot, authorization)
         if plan is None:
             await self._engine_store.artifact_from_index(frozen)
             return frozen
-        baseline = None
-        if plan.baseline_index_id:
-            async with self._sessions() as session:
-                old = (
-                    await self._artifacts.indexes_by_ids(
-                        session, (plan.baseline_index_id,)
-                    )
-                )[0]
-                baseline = await self._engine_store.artifact_from_index(old, session)
         policy = self._policy()
 
         async def progress(item):
@@ -431,7 +417,9 @@ class IndependentPortfolioSemanticIndexService(PortfolioSemanticIndexService):
             with self._engine_store.bind(snapshot, self._engine.contracts(policy)):
                 built = await self._engine.build(
                     snapshot=snapshot,
-                    baseline=baseline,
+                    # Local proofs are keyed by the current segment and model
+                    # contract. Reuse never requires an ancestor artifact.
+                    baseline=None,
                     policy=policy,
                     authorization=authorization,
                     on_progress=progress,

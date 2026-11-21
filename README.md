@@ -97,11 +97,11 @@ Use Patrol for everyday input. Open the workbench when you want a closer look.
 | **Task Progress** | Verified, ongoing, blocked, or superseded work, with associated contexts and evidence status. |
 | **[Observation](docs/observation.md)** | The user input, task state, and execution snapshot used for a particular round's decisions. |
 | **LoopFact** | Incoming execution, test, file, and workspace-result facts, together with their sources. |
-| **Context graph** | Relationships between lines of work, execution status, conversations, and historical versions. |
+| **Context graph** | Relationships between lines of work, execution status, and current conversations. |
 
 Open important file outputs and modifications to inspect saved content and available diffs. Use **@ file-version references** to give feedback on a specific result. Inspecting a Context keeps your everyday input directed to the same Patrol.
 
-You can also pause, resume, or stop execution, adjust authorization, or open a line of work in the task interface to inspect, edit, and derive contexts directly. Loop budgets are fixed and unlimited; usage remains visible. See [Loop budgets](docs/loop-budgets.md).
+You can pause, resume, or stop execution, adjust authorization, and open a line of work to read its current context. Patrol automatically derives and curates contexts; Session Patrol retains its custom execution-context editor. Manual derivation, rewriting, projection approval, and context compression in ordinary conversations are retired. See [Context surgery retirement](docs/context-surgery-retirement.md). Loop budgets remain fixed and unlimited; usage is still visible. See [Loop budgets](docs/loop-budgets.md).
 
 ### Patrol on your desktop
 
@@ -300,7 +300,7 @@ The “No workspace” mode also lets you select a global or specific-workspace 
 | Object | Responsibility |
 | --- | --- |
 | **Patrol** | Receives user intent, observes the overall situation, and proposes the next arrangement of work. |
-| **Context** | Holds the background and results of a continuing line of work, with immutable Revisions recording versions and sources. |
+| **Context** | Holds the current background and results of a continuing line of work; running tasks retain their own fixed input snapshots. |
 | **Run** | One actual execution based on a Context. |
 | **Round** | A frozen observation, a decision, and the associated execution, retaining the inputs and evidence used at the time. |
 | **Kernel** | Validates permissions, versions, and state before committing a decision into executable work. |
@@ -318,7 +318,7 @@ Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScri
 | Directory | Contents |
 | --- | --- |
 | [backend/app/desktop/patrol/agent_loop](backend/app/desktop/patrol/agent_loop/) | Patrol, rounds, task progress, execution coordination, and completion checks. |
-| [backend/app/desktop/contexts/evolution](backend/app/desktop/contexts/evolution/) | Context versions, source relationships, and the evolution graph. |
+| [backend/app/desktop/contexts/evolution](backend/app/desktop/contexts/evolution/) | Current Context state, task input snapshots, and source relationships. |
 | [backend/app/desktop/workspaces/coordination](backend/app/desktop/workspaces/coordination/) | Workspace access, isolation, and result adoption. |
 | [backend/packages/harness/focus](backend/packages/harness/focus/) | Agent runtime, models, tools, Skills, MCP, and persistence. |
 | [desktop](desktop/) | Desktop shell, robot entry point, and workbench. |

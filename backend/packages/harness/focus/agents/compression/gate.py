@@ -3,12 +3,11 @@
 对外提供:
     CompressionGate — 可装配到 create_agent 的压缩门中间件
     build_compression_gate — 按上下文窗口与阈值比例构造压缩门的同步工厂
-    apply_compression_ranges — 把压缩范围编译为新的 messages 状态（阈值压缩与
-        快捷压缩共用的应用编译器）
+    apply_compression_ranges — 把 Patrol 授权的摘要替换编译为新的 messages 状态
 
 输入为:
     apply_compression_ranges(messages, ranges): messages 为当前 BaseMessage 列表；
-        ranges 为规范化范围列表（每条 {source_ids, replacement|restore|delete}）
+        ranges 为规范化范围列表（每条 {source_ids, replacement}）
     build_compression_gate(context_window, threshold_ratio): context_window 为窗口上限
         （None 时恒放行）；threshold_ratio 为阈值比例（默认 0.9）
 
@@ -18,12 +17,10 @@
 
 具体工作流为:
     (1) before_model 估算 messages 与 run 图片附件组成的最终请求用量；未达阈值、
-        本轮已取消或窗口未知时放行
-    (2) 达阈值时以 interrupt() 暂停图并发起 compression_request；resume 后：
-        cancel → 记录该 run 后本轮放行；apply → 校验后按范围重建 messages
-        （压缩范围为块、restore 范围原位展开来源原文，均经 RemoveMessage 全量重建）
+        窗口未知时放行
+    (2) 达阈值时以 interrupt() 暂停图并交给 Patrol 自动生成候选；内部 apply 校验后重建 messages
         显式重建同时清除旧 typed authority、WorldState 基线与 opaque Provider continuation，下一节点重新锚定
-        合同兼容镜像与 typed 来源同时按保留／恢复的 canonical 合同更新，删除或摘要替换不留下旧 scalar
+        合同兼容镜像与 typed 来源同时更新，摘要替换不留下旧 scalar
         最终请求准备再按原冻结版本补齐当前 Run 引用；工具协议占位使用共享 error repair 合同
     (3) wrap_model_call 在每次模型调用前剥离 messages 的 compression 元数据，
         来源原文永不进入模型上下文
@@ -35,41 +32,28 @@
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
-from langchain.messages import RemoveMessage
-from langchain_core.messages import BaseMessage, HumanMessage
-from langgraph.config import get_config
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
-from langgraph.types import interrupt
-
 from focus.agents.compression.schemas import validate_apply_decision
+from focus.agents.image_attachment import project_image_messages, select_image_messages
 from focus.agents.material_inputs import RunMaterialInputs
+from focus.context.scoped import scoped_messages
+from focus.history import serialize_history_message as serialize_message
+from focus.history.repair import repair_tool_messages
+from focus.history.task_contract import task_contract_state_update
 from focus.messages import estimate_model_request_tokens
 from focus.messages.request_budget import estimate_request_budget
-from focus.context.scoped import scoped_messages
-from focus.agents.image_attachment import select_image_messages, project_image_messages
 from focus.runtime.runs.events import (
     validate_messages,
 )
-from focus.history import deserialize_history_messages, serialize_history_message as serialize_message
-from focus.history.repair import repair_tool_messages
-from focus.history.task_contract import task_contract_state_update
+from langchain.agents.middleware import AgentMiddleware
+from langchain.messages import RemoveMessage
+from langchain_core.messages import BaseMessage, HumanMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.types import interrupt
 
 _COMPRESSION_KWARG = "compression"
-
-
-_cancelled_runs: set[str] = set()
-
-
-def _run_id() -> str:
-    try:
-        configurable = get_config().get("configurable", {})
-    except RuntimeError:
-        configurable = {}
-    return str(configurable.get("run_id") or "")
 
 
 def _strip_compression_kwargs(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -97,47 +81,15 @@ def _strip_compression_kwargs(messages: list[BaseMessage]) -> list[BaseMessage]:
     return cleaned if changed else messages
 
 
-def _compression_source(message: BaseMessage) -> list[dict]:
-    metadata = getattr(message, "additional_kwargs", {}).get(_COMPRESSION_KWARG, {})
-    return metadata.get("source", [])
-
-
 def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) -> dict[str, Any]:
 
 
     by_id = {message.id: message for message in messages if message.id}
     removed: set[str] = set()
-    restore_map: dict[str, list[BaseMessage]] = {}
     block_by_first: dict[str, BaseMessage] = {}
     for message_range in ranges:
         source_ids = message_range["source_ids"]
         removed.update(source_ids)
-        if message_range.get("restore"):
-            for source_id in source_ids:
-
-
-                restore_map[source_id] = deserialize_history_messages(_compression_source(by_id[source_id]))
-            continue
-        if message_range.get("delete"):
-
-
-            block_id = uuid.uuid4().hex
-            block_by_first[source_ids[0]] = HumanMessage(
-                content="",
-                additional_kwargs={
-                    _COMPRESSION_KWARG: {
-                        "block_id": block_id,
-                        "source": [
-                            serialize_message(by_id[source_id])
-                            for source_id in source_ids
-                        ],
-                        "deleted": True,
-                        "compressed_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                },
-                id=block_id,
-            )
-            continue
         block_id = uuid.uuid4().hex
         block = HumanMessage(
             content=message_range["replacement"],
@@ -148,7 +100,7 @@ def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) ->
                         serialize_message(by_id[source_id])
                         for source_id in source_ids
                     ],
-                    "compressed_at": datetime.now(timezone.utc).isoformat(),
+                    "compressed_at": datetime.now(UTC).isoformat(),
                 }
             },
             id=block_id,
@@ -156,9 +108,7 @@ def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) ->
         block_by_first[source_ids[0]] = block
     rebuilt: list[BaseMessage] = []
     for message in messages:
-        if message.id in restore_map:
-            rebuilt.extend(restore_map[message.id])
-        elif message.id in block_by_first:
+        if message.id in block_by_first:
             rebuilt.append(block_by_first[message.id])
         elif message.id in removed:
             continue
@@ -179,7 +129,7 @@ def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) ->
 
 
 class CompressionGate(AgentMiddleware):
-    """主 Agent 模型调用前的 human-in-the-loop 压缩门。"""
+    """Patrol 托管 Agent 的自动摘要候选门控。"""
 
     def __init__(self, context_window: int | None, threshold_ratio: float) -> None:
         super().__init__()
@@ -198,6 +148,7 @@ class CompressionGate(AgentMiddleware):
 
     async def abefore_model(self, state, runtime):
         from types import SimpleNamespace
+
         from focus.security.context import has_security_context
         from focus.security.live_mode import refreshed_runtime_context
 
@@ -214,9 +165,9 @@ class CompressionGate(AgentMiddleware):
                 messages = self._world_state.preview_messages(state, context)
         messages = scoped_messages(list(messages), str(context.get("run_id", "")))
         if self._model is not None:
-            from langchain_core.messages import SystemMessage
-            from focus.models.response_projection import ResponsesRequestProjector
             from focus.messages.request_budget import estimate_responses_budget
+            from focus.models.response_projection import ResponsesRequestProjector
+            from langchain_core.messages import SystemMessage
 
             projected = project_image_messages(_strip_compression_kwargs(messages), context)
             payload = ResponsesRequestProjector(self._model.provider_contract).build(
@@ -238,9 +189,6 @@ class CompressionGate(AgentMiddleware):
         limit = self._limit
         if limit is None:
             return None
-        run_id = _run_id()
-        if run_id in _cancelled_runs:
-            return None
         messages = list(state.get("messages", []))
         run_materials = RunMaterialInputs.from_context(getattr(runtime, "context", None))
         run_images = run_materials.images
@@ -256,14 +204,6 @@ class CompressionGate(AgentMiddleware):
                 "ratio": self._threshold_ratio,
             }
         )
-        if not isinstance(decision, dict) or decision.get("type") != "compression":
-            return None
-        if decision.get("decision") == "cancel":
-            if run_id:
-                _cancelled_runs.add(run_id)
-            return None
-        if decision.get("decision") != "apply":
-            return None
         ranges, error = validate_apply_decision(
             decision,
             messages,

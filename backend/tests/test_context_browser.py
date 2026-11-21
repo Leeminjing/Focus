@@ -1,23 +1,25 @@
 """Protocol multiplexing and the existing Run worker's browser resource boundary."""
 import asyncio
-from dataclasses import replace
 import json
 import sys
-
-import pytest
+from dataclasses import replace
 from types import SimpleNamespace
 
-from backend.app.desktop.browser.transport import BrowserError, BrowserTransport
-from backend.tests.runtime_context_support import runtime_context, tool_runtime
+import pytest
 from focus.runtime.runs.manager import RunManager
 from focus.runtime.runs.schemas import RunStatus
 from focus.runtime.runs.worker import run_agent
 from focus.runtime.stream_bridge.memory import MemoryStreamBridge
 
+from backend.app.desktop.browser.transport import BrowserError, BrowserTransport
+from backend.tests.runtime_context_support import runtime_context, tool_runtime
+
 
 def test_jsonl_out_of_order_and_events_do_not_block_other_browser(tmp_path):
     host = tmp_path / "host.py"
     host.write_text('''import json,sys
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
 print(json.dumps({"event":"ready","pid":1,"protocol_version":1}),flush=True)
 held=None
 for line in sys.stdin:
@@ -51,8 +53,9 @@ for line in sys.stdin:
 
 
 def test_uncertain_tool_result_is_an_error_message_and_is_not_replayed():
-    from backend.app.desktop.browser.tools import build_browser_tools
     from langchain_core.messages import ToolMessage
+
+    from backend.app.desktop.browser.tools import build_browser_tools
     class Run:
         calls = 0
         async def act(self, *args):
@@ -134,8 +137,8 @@ def test_closed_browser_interrupts_pending_model_as_run_error_and_releases():
 
 
 def test_late_context_selection_cannot_present_over_the_newer_context():
-    from backend.app.desktop.browser.service import BrowserSession, ContextBrowsers
     from backend.app.desktop.browser.routes import BrowserPresentation
+    from backend.app.desktop.browser.service import BrowserSession, ContextBrowsers
     async def scenario():
         browsers = ContextBrowsers(None, MemoryStreamBridge())
         delayed = asyncio.Event()
@@ -299,8 +302,9 @@ def test_site_events_notify_shared_runs_and_do_not_resume_them_or_affect_other_b
 
 
 def test_model_waits_for_explicit_handback_then_receives_download_and_permission_results():
-    from backend.app.desktop.browser.middleware import BrowserControlMiddleware
     from langchain_core.messages import HumanMessage
+
+    from backend.app.desktop.browser.middleware import BrowserControlMiddleware
     async def scenario():
         owner, run = page_run()
         runtime = tool_runtime(agent_id="main:context", task_id="context")

@@ -9,7 +9,6 @@ StreamBridge、checkpoint、cancel 与续跑链路，确认数据库收尾后再
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
 import backend.app.desktop.capabilities.service as _desktop_capabilities_service
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 
 
 import asyncio
@@ -77,9 +76,8 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
     async def fake_get_available_tools(*, workspace=None):
         return []
 
-    original = _desktop_conversations_compression_service.make_lead_agent
+    original = _desktop_runs_agent_factory.make_lead_agent
     original_get_available_tools = _desktop_capabilities_service.get_available_tools
-    _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
     _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
     _desktop_capabilities_service.get_available_tools = fake_get_available_tools
     _desktop_runs_agent_factory.get_available_tools = fake_get_available_tools
@@ -159,7 +157,6 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
                 _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id
             )
     finally:
-        _desktop_conversations_compression_service.make_lead_agent = original
         _desktop_runs_agent_factory.make_lead_agent = original
         _desktop_capabilities_service.get_available_tools = original_get_available_tools
         _desktop_runs_agent_factory.get_available_tools = original_get_available_tools

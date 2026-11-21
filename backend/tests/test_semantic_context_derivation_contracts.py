@@ -34,7 +34,6 @@ from backend.tests._semantic_context_fixtures import (
     duplicate_message_id_fixture,
     failure_analysis_fixture,
     incomplete_tool_exchange_fixture,
-    revision_ref,
     single_source_fixture,
 )
 
@@ -301,15 +300,6 @@ def test_incomplete_tool_exchange_is_rejected_before_compilation() -> None:
 
     with pytest.raises(LaneCompilationError, match="ToolMessage"):
         compile_lane(plan, evidence)
-
-
-def test_stale_revision_fixture_has_distinct_exact_identity() -> None:
-    frozen = revision_ref("stale", 1)
-    latest = revision_ref("stale", 2)
-
-    assert frozen.context_id == latest.context_id
-    assert frozen.revision_id != latest.revision_id
-    assert frozen.checkpoint_id != latest.checkpoint_id
 
 
 def test_compiler_rejects_missing_declared_structured_evidence() -> None:

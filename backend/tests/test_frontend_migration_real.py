@@ -121,7 +121,9 @@ def test_real_patrol_frontend_intake_frozen_inspection_and_pause(tmp_path):
                 async with sessions() as session:
                     loop = await session.get(AgentLoop, loop_id)
                     assert loop.status == "paused"
-                    observation = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
+                    observation = await session.get(LoopObservation, complete["observation_id"])
+                    assert observation is not None
+                    assert observation.loop_id == loop_id and observation.round_id == round_id
                     assert observation.observation_id in complete["frozen"]
                     assert await session.scalar(select(func.count()).select_from(LoopUserIntent).where(LoopUserIntent.loop_id == loop_id)) == 6
                     assert await session.scalar(select(func.count()).select_from(DesktopRun).where(DesktopRun.loop_id == loop_id)) == 0

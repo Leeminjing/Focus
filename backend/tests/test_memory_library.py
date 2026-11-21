@@ -6,7 +6,6 @@
 """
 
 
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
 
@@ -181,8 +180,7 @@ def test_memory_crud_and_injection(monkeypatch):
                 captured["frozen_contexts"] = kwargs["frozen_contexts"]
                 return create_agent(model=FakeListChatModel(responses=["unused"]), tools=[])
 
-            original = _desktop_conversations_compression_service.make_lead_agent
-            _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
+            original = _desktop_runs_agent_factory.make_lead_agent
             _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
             try:
                 prepared2 = await service.start_main_run(
@@ -193,7 +191,6 @@ def test_memory_crud_and_injection(monkeypatch):
                 assert any("编辑后的最终内容" in item.content for item in captured["frozen_contexts"])
                 assert graph is not None
             finally:
-                _desktop_conversations_compression_service.make_lead_agent = original
                 _desktop_runs_agent_factory.make_lead_agent = original
 
             # text 来源按 ranges 切片（真实 message_id）
@@ -290,7 +287,6 @@ def test_patrol_and_swarm_do_not_inject_memory(monkeypatch):
         captured["system_prompt"] = kwargs.get("system_prompt", "")
         return create_agent(model=FakeListChatModel(responses=["unused"]), tools=[])
 
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', fake_make_lead_agent)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', fake_make_lead_agent)
     folder = _make_workspace_folder()
     with _client() as client:

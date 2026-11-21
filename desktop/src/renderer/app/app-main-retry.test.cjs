@@ -51,6 +51,16 @@ function receipt(payload = { run_id: "run", task_id: "task", message_id: "messag
 }
 const identity = request => request.options.headers.get("Idempotency-Key");
 
+test("退役关键词压缩命令作为普通消息发送，不打开上下文编辑器", async () => {
+  const h = setup({ onMain: () => receipt() });
+  h.input.value = "@关键字快捷压缩 调试记录";
+  h.evaluate('state.materialSelections.set("task", runMaterialPicker.empty()); composerDraft.claim("task", "@关键字快捷压缩 调试记录");');
+  await h.evaluate("sendMain()");
+  assert.equal(h.requests.length, 1);
+  assert.equal(JSON.parse(h.requests[0].options.body).message, "@关键字快捷压缩 调试记录");
+  assert.equal(h.evaluate("state.view"), "focus");
+});
+
 function localRepository(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "focus-main-retry-"));
   t.after(() => {
@@ -204,7 +214,7 @@ test("原请求重试不混入变化后的材料、技能、权限或执行审�
     state.materialSelections.set("task", runMaterialPicker.empty());
     state.details.get("task").ui_state.skills = ["changed-skill"];
     state.details.get("task").ui_state.access_mode = "danger-full-access";
-    state.details.get("task").pending_compression = { id: "new-gate" };
+    state.details.get("task").pending_access_review = { id: "new-gate" };
   `);
   await h.evaluate("sendMain()");
   assert.equal(h.requests.length, 2);

@@ -11,7 +11,6 @@ import backend.app.desktop.api.launch as _desktop_api_launch
 import backend.app.desktop.api.runs as _desktop_api_runs
 
 import focus.tools.tools as _focus_tools
-import backend.app.desktop.conversations.compression_service as _desktop_conversations_compression_service
 import backend.app.desktop.runs.agent_factory as _desktop_runs_agent_factory
 
 
@@ -274,8 +273,7 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path, wait_until):
     async def fake_make_lead_agent(**kwargs):
         return create_agent(model=FakeListChatModel(responses=["你好"]), tools=[])
 
-    original = _desktop_conversations_compression_service.make_lead_agent
-    _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
+    original = _desktop_runs_agent_factory.make_lead_agent
     _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
     thread_id = f"desktop-e2e-{uuid.uuid4().hex}"
     try:
@@ -346,7 +344,6 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path, wait_until):
                 _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id
             )
     finally:
-        _desktop_conversations_compression_service.make_lead_agent = original
         _desktop_runs_agent_factory.make_lead_agent = original
 
 
@@ -393,7 +390,6 @@ def test_main_run_uses_current_revision_execution_identity(
             await publisher.publish(session, candidate)
             return candidate.revision.ref
 
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', fake_make_lead_agent)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', fake_make_lead_agent)
     with _client() as client:
         workspace_folder = tmp_path / "workspace"
@@ -445,7 +441,6 @@ def test_desktop_resume_run_is_immediately_streamable(tmp_path, monkeypatch, wai
         graph.add_edge("pause_for_review", END)
         return graph.compile()
 
-    monkeypatch.setattr(_desktop_conversations_compression_service, 'make_lead_agent', fake_make_lead_agent)
     monkeypatch.setattr(_desktop_runs_agent_factory, 'make_lead_agent', fake_make_lead_agent)
     thread_id = f"desktop-resume-e2e-{uuid.uuid4().hex}"
 
@@ -1086,8 +1081,7 @@ def test_main_run_permissions(tmp_path):
     async def fake_make_lead_agent(**kwargs):
         return create_agent(model=FakeListChatModel(responses=["ok"]), tools=[])
 
-    original = _desktop_conversations_compression_service.make_lead_agent
-    _desktop_conversations_compression_service.make_lead_agent = fake_make_lead_agent
+    original = _desktop_runs_agent_factory.make_lead_agent
     _desktop_runs_agent_factory.make_lead_agent = fake_make_lead_agent
     thread_id = f"main-perm-{uuid.uuid4().hex}"
     try:
@@ -1150,5 +1144,4 @@ def test_main_run_permissions(tmp_path):
                 _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id
             )
     finally:
-        _desktop_conversations_compression_service.make_lead_agent = original
         _desktop_runs_agent_factory.make_lead_agent = original

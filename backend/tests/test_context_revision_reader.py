@@ -1,7 +1,7 @@
 r"""本文件对外提供以下合同的验证统一 Context revision reader 对迁移 root、derived 与 managed 语义的稳定投影。
 
 输入为 migration-origin revision 合同与精确 checkpoint fixture；输出为 authored、execution、
-display、checkpoint、historical、frontier 和 deleted-source 视图断言。具体工作流为用只读内存仓储
+display 和 checkpoint 视图断言。具体工作流为用只读内存仓储
 模拟已迁移记录并以假 checkpointer 返回冻结消息。示例：`pytest backend/tests/test_context_revision_reader.py`。
 V2定义混合未知作者原文与合法消息时展示原文和稳定身份，semantic仍读取合法执行投影，读取前后冻结载荷不变。
 """
@@ -14,20 +14,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
 from focus.history import FocusItem, HistoryPayload, messages_to_items
+from langchain_core.messages import AIMessage, HumanMessage
 
 from backend.app.desktop.contexts.evolution import (
-    ContextFrontierSummary,
     ContextRevisionContract,
-    ContextRevisionHistoricalView,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
     ContextRevisionProjectionStatus,
     ContextRevisionReader,
     ContextRevisionRef,
-    ContextRevisionSourceContract,
-    DeletedContextSourceView,
 )
 
 
@@ -82,27 +78,19 @@ def _revision(
     authored: tuple[dict[str, Any], ...] = (),
     execution: tuple[dict[str, Any], ...] = (),
     initial_ids: tuple[str, ...] = (),
-    sources: tuple[ContextRevisionSourceContract, ...] = (),
-    deleted: bool = False,
 ) -> ContextRevisionContract:
     return ContextRevisionContract(
         ref=ref,
-        sources=sources,
         authored_messages=authored,
         execution_messages=execution,
         initial_message_ids=initial_ids,
         definition_hash="d" * 64 if ref.payload_mode is ContextRevisionPayloadMode.DEFINITION else None,
         projection_hash="p" * 64 if ref.payload_mode is ContextRevisionPayloadMode.DEFINITION else None,
         content_hash=(ref.revision_id[-1] * 64),
-        projection_status=(
-            ContextRevisionProjectionStatus.DELETED
-            if deleted
-            else ContextRevisionProjectionStatus.VALID
-        ),
+        projection_status=ContextRevisionProjectionStatus.VALID,
         origin_kind=ContextRevisionOriginKind.MIGRATION,
         origin_id=ref.context_id,
         created_at=datetime(2026, 9, 14, tzinfo=UTC),
-        deleted_at=datetime(2026, 9, 14, tzinfo=UTC) if deleted else None,
     )
 
 
@@ -189,7 +177,7 @@ def test_migrated_definition_display_preserves_authored_prefix_and_runtime_suffi
     asyncio.run(run())
 
 
-def test_checkpoint_backed_root_and_historical_views_use_exact_checkpoint() -> None:
+def test_checkpoint_backed_root_views_use_exact_checkpoint() -> None:
     async def run() -> None:
         ref = _ref("root-context", "root-revision-1", ContextRevisionPayloadMode.CHECKPOINT)
         revision = _revision(ref)
@@ -206,47 +194,13 @@ def test_checkpoint_backed_root_and_historical_views_use_exact_checkpoint() -> N
         )
 
         current = await reader.read_current(None, ref.context_id, "display")
-        historical = await reader.read(None, ref, "historical")
+        execution = await reader.read(None, ref, "execution")
+        checkpoint = await reader.read(None, ref, "checkpoint")
 
         assert [item["id"] for item in current.messages] == ["root-human", "root-ai"]
-        assert isinstance(historical, ContextRevisionHistoricalView)
-        assert historical.authored.messages == historical.execution.messages
-        assert historical.checkpoint.ref == ref
-        assert historical.checkpoint.metadata == {"source": "reader-fixture"}
-
-    asyncio.run(run())
-
-
-def test_frontier_is_bounded_and_deleted_source_history_remains_visible() -> None:
-    async def run() -> None:
-        deleted_ref = _ref("old-context", "old-revision-1", ContextRevisionPayloadMode.CHECKPOINT)
-        target_ref = _ref("target-context", "target-revision-1", ContextRevisionPayloadMode.DEFINITION)
-        deleted = _revision(deleted_ref, deleted=True)
-        target = _revision(
-            target_ref,
-            authored=({"id": "target-human", "role": "human", "content": "x" * 400},),
-            execution=({"id": "target-execution", "role": "human", "content": "x" * 400},),
-            initial_ids=("target-execution",),
-            sources=(ContextRevisionSourceContract(source=deleted_ref, position=0),),
-        )
-        reader = ContextRevisionReader(
-            _RevisionStore(deleted, target),
-            _Checkpointer(
-                {
-                    deleted_ref.checkpoint_id: [HumanMessage(id="old", content="旧来源")],
-                    target_ref.checkpoint_id: [HumanMessage(id="target-execution", content="x" * 400)],
-                }
-            ),
-        )
-
-        frontier = await reader.read(None, target_ref, "frontier-summary")
-        deleted_sources = await reader.read(None, target_ref, "deleted-source")
-
-        assert isinstance(frontier, ContextFrontierSummary)
-        assert len(frontier.summary) == 280
-        assert frontier.source_frontier == (deleted_ref,)
-        assert isinstance(deleted_sources, DeletedContextSourceView)
-        assert deleted_sources.sources[0].deleted is True
-        assert deleted_sources.sources[0].source == deleted_ref
+        assert execution.messages == current.messages
+        assert checkpoint.ref == ref
+        assert checkpoint.messages == execution.messages
+        assert checkpoint.metadata == {"source": "reader-fixture"}
 
     asyncio.run(run())

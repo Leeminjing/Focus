@@ -43,9 +43,15 @@ app.whenReady().then(async () => {
   await wait('!document.querySelector("[data-patrol-observation-open]").disabled');
   await wait('document.querySelector("[data-patrol-lineage] [data-context-id]")');
   await snapshot("real-patrol-details");
-  await evaluate('document.querySelector("[data-patrol-observation-open]").click(); document.querySelector("[data-patrol-observation-section=sources]").click()');
+  await wait('!document.querySelector("[data-patrol-observation-open]").disabled');
+  await evaluate('document.querySelector("[data-patrol-observation-open]").click()');
+  await wait('document.querySelector("[data-patrol-observation-section=sources]")');
+  await evaluate('document.querySelector("[data-patrol-observation-section=sources]").click()');
   await wait('document.querySelector(".observation-inspection").textContent.includes("已读取")');
   const frozen = await evaluate('document.querySelector(".observation-inspection").textContent');
+  const observationId = await evaluate('[...document.querySelectorAll(".observation-inspection > details.observation-audit dt")].find(node => node.textContent === "observation_id")?.nextElementSibling.textContent');
+  assert.match(observationId, /^[a-f0-9]{32}$/);
+  assert.ok(frozen.includes(observationId));
   await snapshot("real-observation");
   await evaluate('document.querySelector("[data-patrol-observation-progress]").click()');
   await wait('document.querySelector("[data-patrol-progress-version]")');
@@ -78,7 +84,7 @@ app.whenReady().then(async () => {
   assert.equal(await evaluate('closedLoopForm===document.querySelector("[data-patrol-composer]") && document.querySelector("[data-patrol-details-content]").hidden'), true);
   const state = await evaluate('document.querySelector("[data-patrol-state]").textContent');
   assert.ok(state.includes("已暂停"), state);
-  fs.writeFileSync(process.env.FOCUS_FRONTEND_RESULT, JSON.stringify({ complete: true, loop_id: binding.loop_id, frozen, state }));
+  fs.writeFileSync(process.env.FOCUS_FRONTEND_RESULT, JSON.stringify({ complete: true, loop_id: binding.loop_id, observation_id: observationId, frozen, state }));
   win.destroy(); app.quit();
 }).catch(error => {
   fs.writeFileSync(process.env.FOCUS_FRONTEND_RESULT, JSON.stringify({ error: error.stack }));
